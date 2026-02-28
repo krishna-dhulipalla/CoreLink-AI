@@ -63,8 +63,10 @@ class AgentState(TypedDict):
 
     - messages: The conversation history (LangChain message format).
                 Uses a custom reducer that supports both append and replace.
+    - reflection_count: Number of reflection-revision cycles completed.
     """
     messages: Annotated[list[BaseMessage], _messages_reducer]
+    reflection_count: int
 
 
 # ---------------------------------------------------------------------------
@@ -95,6 +97,9 @@ def get_current_time() -> str:
 
 BUILTIN_TOOLS = [calculator, get_current_time]
 
+# Reflective feedback loop configuration
+MAX_REFLECTIONS = int(os.getenv("MAX_REFLECTIONS", "2"))
+
 
 # ---------------------------------------------------------------------------
 # 3. System Prompt
@@ -113,6 +118,17 @@ Rules:
 - If no tool is needed, answer directly from your knowledge.
 - Be concise and accurate in your final response.
 """
+
+REFLECTION_PROMPT = """You are a quality reviewer. Examine the assistant's draft answer below and check for:
+1. **Completeness** – Does it fully address the original question?
+2. **Correctness** – Are all facts, calculations, and logic correct?
+3. **Clarity** – Is the answer clear and well-structured?
+
+Respond with EXACTLY one line in one of these two formats:
+PASS: <brief justification why the answer is good>
+REVISE: <specific issue that must be fixed>
+
+Do NOT rewrite the answer. Only provide your verdict."""
 
 
 # ---------------------------------------------------------------------------
@@ -150,11 +166,11 @@ def _make_reasoner(tools: list):
 
 
 def should_use_tools(state: AgentState) -> str:
-    """Conditional edge: route to tool_executor if the last AI message has tool_calls."""
+    """Conditional edge: route to tool_executor or reflector."""
     last_message = state["messages"][-1]
     if isinstance(last_message, AIMessage) and last_message.tool_calls:
         return "tool_executor"
-    return END
+    return "reflector"
 
 
 # ---------------------------------------------------------------------------
@@ -207,7 +223,72 @@ def context_window(state: AgentState) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 6. Build the Compiled Graph
+# 6. Reflective Feedback Node
+# ---------------------------------------------------------------------------
+
+def reflector(state: AgentState) -> dict:
+    """Graph node: critique the draft answer before submission.
+
+    Uses a separate LLM call (no tools) with REFLECTION_PROMPT to evaluate
+    the agent's last answer. Appends the critique to the message history.
+    """
+    messages = state["messages"]
+    count = state.get("reflection_count", 0)
+
+    # Skip reflection if we've hit the retry limit
+    if count >= MAX_REFLECTIONS:
+        logger.info(
+            f"Reflection limit reached ({MAX_REFLECTIONS}). "
+            "Submitting answer as-is."
+        )
+        return {"reflection_count": count}
+
+    # Build reflection input: system prompt + conversation + reflection ask
+    reflection_messages = [
+        SystemMessage(content=REFLECTION_PROMPT),
+    ]
+    # Include the last few messages for context (user question + draft answer)
+    for msg in messages:
+        if isinstance(msg, (HumanMessage, AIMessage)):
+            reflection_messages.append(msg)
+
+    llm = ChatOpenAI(
+        model="gpt-4o-mini",
+        temperature=0,
+        api_key=os.getenv("OPENAI_API_KEY"),
+    )
+    verdict = llm.invoke(reflection_messages)
+    verdict_text = verdict.content.strip() if verdict.content else "PASS: no verdict"
+
+    logger.info(f"Reflection #{count + 1}: {verdict_text}")
+
+    return {
+        "messages": [AIMessage(content=f"[Reflection]: {verdict_text}")],
+        "reflection_count": count + 1,
+    }
+
+
+def should_revise(state: AgentState) -> str:
+    """Conditional edge after reflector: REVISE loops back, PASS goes to END."""
+    count = state.get("reflection_count", 0)
+
+    # If we hit the limit, go to END regardless
+    if count >= MAX_REFLECTIONS:
+        return END
+
+    # Check the last message for the reflection verdict
+    last_msg = state["messages"][-1]
+    if isinstance(last_msg, AIMessage) and last_msg.content:
+        text = last_msg.content.upper()
+        if "REVISE:" in text:
+            logger.info("Reflector requested revision → looping back to reasoner")
+            return "reasoner"
+
+    return END
+
+
+# ---------------------------------------------------------------------------
+# 7. Build the Compiled Graph
 # ---------------------------------------------------------------------------
 
 
@@ -220,7 +301,8 @@ def build_agent_graph(external_tools: list | None = None):
 
     Graph topology:
         reasoner ──(has tool_calls?)──▶ tool_executor ──▶ context_window ──▶ reasoner
-                 └─(no tool_calls)───▶ END
+                 └─(no tool_calls)───▶ reflector ──(PASS)──▶ END
+                                                    └─(REVISE)─▶ reasoner
     """
     all_tools = BUILTIN_TOOLS + (external_tools or [])
     raw_tool_node = ToolNode(all_tools)
@@ -231,6 +313,7 @@ def build_agent_graph(external_tools: list | None = None):
     graph.add_node("reasoner", _make_reasoner(all_tools))
     graph.add_node("tool_executor", _tool_executor_with_truncation(raw_tool_node))
     graph.add_node("context_window", context_window)
+    graph.add_node("reflector", reflector)
 
     # Set entry point
     graph.set_entry_point("reasoner")
@@ -242,48 +325,64 @@ def build_agent_graph(external_tools: list | None = None):
     graph.add_edge("tool_executor", "context_window")
     graph.add_edge("context_window", "reasoner")
 
+    # Reflector decision: PASS → END, REVISE → reasoner
+    graph.add_conditional_edges("reflector", should_revise)
+
     return graph.compile()
 
 
 # ---------------------------------------------------------------------------
-# 6. Convenience Runner (used by executor.py)
+# 8. Convenience Runner (used by executor.py)
 # ---------------------------------------------------------------------------
 
 async def run_agent(graph, input_text: str) -> tuple[str, list[dict]]:
     """Run the compiled graph with a user message and return (final_answer, steps).
 
     Returns:
-        final_answer: The text content of the last AIMessage.
+        final_answer: The text content of the last AIMessage (excluding reflections).
         steps: A list of dicts describing each node that executed,
                useful for streaming status updates to the A2A EventQueue.
     """
-    initial_state = {"messages": [HumanMessage(content=input_text)]}
+    initial_state = {
+        "messages": [HumanMessage(content=input_text)],
+        "reflection_count": 0,
+    }
     steps = []
 
     # Use astream to capture node-by-node progression
-    final_state = None
+    all_messages = []
     async for event in graph.astream(initial_state):
         for node_name, node_output in event.items():
             step_info = {"node": node_name}
             if node_name == "reasoner":
-                last_msg = node_output["messages"][-1]
-                if isinstance(last_msg, AIMessage) and last_msg.tool_calls:
-                    tool_names = [tc["name"] for tc in last_msg.tool_calls]
-                    step_info["action"] = f"Calling tools: {', '.join(tool_names)}"
-                else:
-                    step_info["action"] = "Generating final answer"
+                msgs = node_output.get("messages", [])
+                if msgs:
+                    last_msg = msgs[-1]
+                    if isinstance(last_msg, AIMessage) and last_msg.tool_calls:
+                        tool_names = [tc["name"] for tc in last_msg.tool_calls]
+                        step_info["action"] = f"Calling tools: {', '.join(tool_names)}"
+                    else:
+                        step_info["action"] = "Generating draft answer"
             elif node_name == "tool_executor":
                 step_info["action"] = "Executing tools"
+            elif node_name == "reflector":
+                msgs = node_output.get("messages", [])
+                if msgs and isinstance(msgs[-1], AIMessage):
+                    step_info["action"] = f"Self-review: {msgs[-1].content[:80]}"
+                else:
+                    step_info["action"] = "Reflecting on answer"
+            elif node_name == "context_window":
+                step_info["action"] = "Managing context window"
             steps.append(step_info)
-        final_state = event
 
-    # Extract final answer
-    if final_state:
-        # The last node's output contains the final messages
-        for node_output in final_state.values():
-            messages = node_output.get("messages", [])
-            for msg in reversed(messages):
-                if isinstance(msg, AIMessage) and msg.content:
-                    return msg.content, steps
+            # Collect all messages for final answer extraction
+            for msg in node_output.get("messages", []):
+                all_messages.append(msg)
+
+    # Extract final answer: last AIMessage that is NOT a reflection
+    for msg in reversed(all_messages):
+        if isinstance(msg, AIMessage) and msg.content:
+            if not msg.content.startswith("[Reflection]"):
+                return msg.content, steps
 
     return "I was unable to generate a response.", steps
