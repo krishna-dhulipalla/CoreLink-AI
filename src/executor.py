@@ -8,6 +8,9 @@ updates back through the A2A EventQueue.
 Architecture Reference: docs/A2A_INTERFACE_SPEC.md
 """
 
+import asyncio
+import logging
+
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
 from a2a.server.tasks import TaskUpdater
@@ -27,7 +30,9 @@ from a2a.utils import (
 )
 
 from agent import build_agent_graph, run_agent
+from mcp_client import load_mcp_tools_from_env
 
+logger = logging.getLogger(__name__)
 
 TERMINAL_STATES = {
     TaskState.completed,
@@ -41,7 +46,28 @@ class Executor(AgentExecutor):
     """A2A executor that delegates reasoning to the LangGraph agent."""
 
     def __init__(self):
-        self.graph = build_agent_graph()
+        # Load MCP tools (runs async in a sync context)
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # If already in an async context, schedule as a task
+                self._mcp_tools = []
+                self._mcp_loaded = False
+            else:
+                self._mcp_tools = loop.run_until_complete(
+                    load_mcp_tools_from_env()
+                )
+                self._mcp_loaded = True
+        except RuntimeError:
+            self._mcp_tools = []
+            self._mcp_loaded = False
+
+        if self._mcp_tools:
+            logger.info(
+                f"MCP tools loaded: {[t.name for t in self._mcp_tools]}"
+            )
+
+        self.graph = build_agent_graph(external_tools=self._mcp_tools)
 
     async def execute(
         self, context: RequestContext, event_queue: EventQueue

@@ -66,7 +66,7 @@ def get_current_time() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-TOOLS = [calculator, get_current_time]
+BUILTIN_TOOLS = [calculator, get_current_time]
 
 
 # ---------------------------------------------------------------------------
@@ -92,29 +92,34 @@ Rules:
 # 4. Graph Nodes
 # ---------------------------------------------------------------------------
 
-def _build_model():
+def _build_model(tools: list):
     """Instantiate the LLM with tool bindings."""
     llm = ChatOpenAI(
         model="gpt-4o-mini",
         temperature=0,
         api_key=os.getenv("OPENAI_API_KEY"),
     )
-    return llm.bind_tools(TOOLS)
+    return llm.bind_tools(tools)
 
 
-def reasoner(state: AgentState) -> dict:
-    """The 'Brain' node – calls the LLM with the current conversation.
+def _make_reasoner(tools: list):
+    """Factory: returns a reasoner node that uses the given tool list."""
 
-    If the LLM decides to use a tool, the response will contain tool_calls,
-    which the conditional edge will route to the tool_executor node.
-    """
-    model = _build_model()
-    # Prepend system prompt if this is the first turn
-    messages = state["messages"]
-    if not messages or not isinstance(messages[0], SystemMessage):
-        messages = [SystemMessage(content=SYSTEM_PROMPT)] + messages
-    response = model.invoke(messages)
-    return {"messages": [response]}
+    def reasoner(state: AgentState) -> dict:
+        """The 'Brain' node – calls the LLM with the current conversation.
+
+        If the LLM decides to use a tool, the response will contain tool_calls,
+        which the conditional edge will route to the tool_executor node.
+        """
+        model = _build_model(tools)
+        # Prepend system prompt if this is the first turn
+        messages = state["messages"]
+        if not messages or not isinstance(messages[0], SystemMessage):
+            messages = [SystemMessage(content=SYSTEM_PROMPT)] + messages
+        response = model.invoke(messages)
+        return {"messages": [response]}
+
+    return reasoner
 
 
 def should_use_tools(state: AgentState) -> str:
@@ -129,19 +134,24 @@ def should_use_tools(state: AgentState) -> str:
 # 5. Build the Compiled Graph
 # ---------------------------------------------------------------------------
 
-def build_agent_graph():
+def build_agent_graph(external_tools: list | None = None):
     """Construct and compile the LangGraph StateGraph.
+
+    Args:
+        external_tools: Optional list of LangChain tools loaded from MCP
+                        servers. These are merged with built-in tools.
 
     Graph topology:
         reasoner ──(has tool_calls?)──▶ tool_executor ──▶ reasoner
                  └─(no tool_calls)───▶ END
     """
-    tool_node = ToolNode(TOOLS)
+    all_tools = BUILTIN_TOOLS + (external_tools or [])
+    tool_node = ToolNode(all_tools)
 
     graph = StateGraph(AgentState)
 
     # Add nodes
-    graph.add_node("reasoner", reasoner)
+    graph.add_node("reasoner", _make_reasoner(all_tools))
     graph.add_node("tool_executor", tool_node)
 
     # Set entry point

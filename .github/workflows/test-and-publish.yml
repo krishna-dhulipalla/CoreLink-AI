@@ -1,12 +1,14 @@
 name: Test and Publish Agent
 
 on:
-  pull_request:
-  push:
-    branches:
-      - main
-    tags:
-      - 'v*'  # Trigger on version tags like v1.0.0, v1.1.0
+  workflow_dispatch: # Manual trigger only during development
+  # Re-enable these when ready to publish:
+  # pull_request:
+  # push:
+  #   branches:
+  #     - main
+  #   tags:
+  #     - 'v*'
 
 jobs:
   test-and-publish:
@@ -46,7 +48,7 @@ jobs:
 
       - name: Start agent container
         env:
-            SECRETS_JSON: ${{ toJson(secrets) }}
+          SECRETS_JSON: ${{ toJson(secrets) }}
         run: |
           echo "$SECRETS_JSON" | jq -r 'to_entries[] | "\(.key)=\(.value)"' > .env
           docker run -d -p 9009:9009 --name agent-container --env-file .env $(echo "${{ steps.meta.outputs.tags }}" | head -n1) --host 0.0.0.0 --port 9009

@@ -38,3 +38,10 @@ _(When the chat limit is reached, older context is summarized here.)_
 - **Actions Taken:** Implemented the LangGraph ReAct reasoning engine. Updated `pyproject.toml` (added langgraph, langchain-openai, python-dotenv), rewrote `agent.py` (StateGraph with reasoner/tool_executor nodes, conditional routing, built-in calculator & time tools), rewrote `executor.py` (A2A-to-LangGraph bridge with streaming status), updated `server.py` (CoreLink AI branding, skill metadata). All 3 A2A conformance tests pass.
 - **Blockers:** None.
 - **Handoff Notes:** The basic ReAct loop works end-to-end. Next priorities: (1) MCP client integration for dynamic tool discovery from Green Agents, (2) Observation masking / message windowing for long tasks, (3) Reflective feedback loop before final answer submission. The `.env` file must contain `OPENAI_API_KEY`.
+
+### Chat 3: MCP Client Integration & CI Hold
+
+- **Role:** Coder
+- **Actions Taken:** Integrated `langchain-mcp-adapters` for dynamic tool discovery. Created `src/mcp_client.py` (wraps `MultiServerMCPClient`, supports HTTP and stdio transports, configurable via `MCP_SERVER_URLS` / `MCP_SERVER_STDIO` env vars). Updated `agent.py` (`build_agent_graph()` now accepts `external_tools` param, merged with built-ins). Updated `executor.py` to load MCP tools at init and pass to graph. Disabled CI workflow auto-triggers (`workflow_dispatch` only). All 3 A2A conformance tests pass.
+- **Blockers:** None.
+- **Handoff Notes:** MCP integration is in place but untested with a live MCP server. To test: set `MCP_SERVER_URLS=math=http://localhost:3000/mcp` in `.env` and run a local MCP math server. Next priorities: (1) Observation masking for long contexts, (2) Reflective feedback loop, (3) End-to-end test with a real MCP server.
