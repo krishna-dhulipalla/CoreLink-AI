@@ -350,50 +350,66 @@ async def run_agent(
     Returns:
         final_answer: The text content of the last AIMessage (excluding reflections).
         steps: A list of dicts describing each node that executed.
-        updated_history: The full message list after execution, for persistence.
+        updated_history: The cleaned message list after execution, for persistence.
     """
     messages = list(history) if history else []
     messages.append(HumanMessage(content=input_text))
+
+    # ── Fix #2: Front-gate pruning ────────────────────────────────────
+    # Apply context windowing BEFORE graph entry so the first reasoner
+    # call never exceeds the token budget (context_window node only fires
+    # after tool_executor, not before the first reasoner call).
+    messages = summarize_and_window(messages)
 
     initial_state = {
         "messages": messages,
         "reflection_count": 0,
     }
+
+    # ── Fix #1: Use ainvoke for correct post-windowing state ──────────
+    # ainvoke returns the final accumulated state after the graph completes.
+    # This state has been through the custom _messages_reducer, so it
+    # correctly reflects any ReplaceMessages compressions from context_window.
+    final_state = await graph.ainvoke(initial_state)
+
+    # Build step list from the final state (lightweight summary)
     steps = []
+    all_messages = final_state.get("messages", [])
+    for msg in all_messages:
+        if isinstance(msg, AIMessage):
+            if msg.tool_calls:
+                tool_names = [tc["name"] for tc in msg.tool_calls]
+                steps.append({
+                    "node": "reasoner",
+                    "action": f"Calling tools: {', '.join(tool_names)}",
+                })
+            elif msg.content and msg.content.startswith("[Reflection]"):
+                steps.append({
+                    "node": "reflector",
+                    "action": f"Self-review: {msg.content[:80]}",
+                })
+            else:
+                steps.append({
+                    "node": "reasoner",
+                    "action": "Generating draft answer",
+                })
+        elif isinstance(msg, ToolMessage):
+            steps.append({
+                "node": "tool_executor",
+                "action": f"Tool result: {msg.name}",
+            })
 
-    # Use astream to capture node-by-node progression
-    all_messages = []
-    async for event in graph.astream(initial_state):
-        for node_name, node_output in event.items():
-            step_info = {"node": node_name}
-            if node_name == "reasoner":
-                msgs = node_output.get("messages", [])
-                if msgs:
-                    last_msg = msgs[-1]
-                    if isinstance(last_msg, AIMessage) and last_msg.tool_calls:
-                        tool_names = [tc["name"] for tc in last_msg.tool_calls]
-                        step_info["action"] = f"Calling tools: {', '.join(tool_names)}"
-                    else:
-                        step_info["action"] = "Generating draft answer"
-            elif node_name == "tool_executor":
-                step_info["action"] = "Executing tools"
-            elif node_name == "reflector":
-                msgs = node_output.get("messages", [])
-                if msgs and isinstance(msgs[-1], AIMessage):
-                    step_info["action"] = f"Self-review: {msgs[-1].content[:80]}"
-                else:
-                    step_info["action"] = "Reflecting on answer"
-            elif node_name == "context_window":
-                step_info["action"] = "Managing context window"
-            steps.append(step_info)
-
-            # Collect all messages for final answer extraction
-            for msg in node_output.get("messages", []):
-                all_messages.append(msg)
-
-    # Build the complete updated history from initial + all new messages
-    updated_history = list(messages)  # starts with the input messages
-    updated_history.extend(all_messages)
+    # ── Fix #3: Strip reflection messages from persisted history ──────
+    # [Reflection] messages are internal quality-control artifacts; they
+    # should NOT leak into the conversation store for future turns.
+    updated_history = [
+        msg for msg in all_messages
+        if not (
+            isinstance(msg, AIMessage)
+            and msg.content
+            and msg.content.startswith("[Reflection]")
+        )
+    ]
 
     # Extract final answer: last AIMessage that is NOT a reflection
     for msg in reversed(all_messages):
