@@ -46,21 +46,20 @@ class Executor(AgentExecutor):
     """A2A executor that delegates reasoning to the LangGraph agent."""
 
     def __init__(self):
-        # Load MCP tools (runs async in a sync context)
+        # Load MCP tools from a synchronous constructor. `asyncio.run()` is the
+        # most reliable option here as long as we are not already inside a
+        # running event loop.
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # If already in an async context, schedule as a task
-                self._mcp_tools = []
-                self._mcp_loaded = False
-            else:
-                self._mcp_tools = loop.run_until_complete(
-                    load_mcp_tools_from_env()
-                )
-                self._mcp_loaded = True
-        except RuntimeError:
+            asyncio.get_running_loop()
             self._mcp_tools = []
             self._mcp_loaded = False
+            logger.warning(
+                "Skipping MCP tool initialization because an event loop is "
+                "already running during Executor construction."
+            )
+        except RuntimeError:
+            self._mcp_tools = asyncio.run(load_mcp_tools_from_env())
+            self._mcp_loaded = True
 
         if self._mcp_tools:
             logger.info(

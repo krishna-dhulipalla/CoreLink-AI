@@ -16,6 +16,7 @@ Architecture Reference: docs/DESIGN.md (Section 2 - Foundational Reasoning)
 
 import os
 import logging
+import shlex
 from typing import Any
 
 from dotenv import load_dotenv
@@ -23,6 +24,46 @@ from dotenv import load_dotenv
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_legacy_stdio_args(cmd_args: str) -> tuple[str, list[str]]:
+    """Parse legacy colon-delimited stdio config.
+
+    Supports the original `command:arg1:arg2` format and repairs a Windows
+    drive-letter path in the first argument, e.g.:
+
+        python:C:\\path\\to\\server.py
+    """
+    parts = cmd_args.strip().split(":")
+    command = parts[0]
+    args = parts[1:] if len(parts) > 1 else []
+
+    if len(args) >= 2 and len(args[0]) == 1 and args[1].startswith("\\"):
+        args = [f"{args[0]}:{args[1]}", *args[2:]]
+
+    return command, args
+
+
+def _parse_stdio_command(cmd_args: str) -> tuple[str, list[str]]:
+    """Parse stdio config from either shell-style or legacy colon syntax.
+
+    Preferred format:
+        name=python src/mock_mcp_server.py --transport stdio
+
+    Backward-compatible format:
+        name=python:src/mock_mcp_server.py
+    """
+    raw = cmd_args.strip()
+    if not raw:
+        return "", []
+
+    if any(ch.isspace() for ch in raw) or '"' in raw or "'" in raw:
+        parts = shlex.split(raw, posix=False)
+        if not parts:
+            return "", []
+        return parts[0], parts[1:]
+
+    return _parse_legacy_stdio_args(raw)
 
 
 def _parse_server_config() -> dict[str, dict[str, Any]]:
@@ -62,9 +103,10 @@ def _parse_server_config() -> dict[str, dict[str, Any]]:
                 logger.warning(f"Skipping malformed MCP_SERVER_STDIO entry: {entry}")
                 continue
             name, cmd_args = entry.split("=", 1)
-            parts = cmd_args.strip().split(":")
-            command = parts[0]
-            args = parts[1:] if len(parts) > 1 else []
+            command, args = _parse_stdio_command(cmd_args)
+            if not command:
+                logger.warning(f"Skipping empty MCP_SERVER_STDIO entry: {entry}")
+                continue
             config[name.strip()] = {
                 "command": command,
                 "args": args,

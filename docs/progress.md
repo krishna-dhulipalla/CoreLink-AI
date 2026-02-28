@@ -45,3 +45,24 @@ _(When the chat limit is reached, older context is summarized here.)_
 - **Actions Taken:** Integrated `langchain-mcp-adapters` for dynamic tool discovery. Created `src/mcp_client.py` (wraps `MultiServerMCPClient`, supports HTTP and stdio transports, configurable via `MCP_SERVER_URLS` / `MCP_SERVER_STDIO` env vars). Updated `agent.py` (`build_agent_graph()` now accepts `external_tools` param, merged with built-ins). Updated `executor.py` to load MCP tools at init and pass to graph. Disabled CI workflow auto-triggers (`workflow_dispatch` only). All 3 A2A conformance tests pass.
 - **Blockers:** None.
 - **Handoff Notes:** MCP integration is in place but untested with a live MCP server. To test: set `MCP_SERVER_URLS=math=http://localhost:3000/mcp` in `.env` and run a local MCP math server. Next priorities: (1) Observation masking for long contexts, (2) Reflective feedback loop, (3) End-to-end test with a real MCP server.
+
+### Chat 4: Tester Review & MCP Test Coverage
+
+- **Role:** Tester
+- **Actions Taken:** Reviewed the current implementation against `docs/` and runtime code. Confirmed the repo contains an A2A agent with MCP client integration, not an MCP server implementation. Identified key risks: Windows `MCP_SERVER_STDIO` path parsing can break on drive-letter paths, MCP loading is static at `Executor` initialization, and current tests only cover A2A conformance. Added `tests/test_mcp_integration.py` with three checks: direct MCP discovery from env, executor registration of discovered tools, and a live end-to-end streamed-status assertion gated by `EXPECTED_MCP_TOOL_NAME`.
+- **Blockers:** Live MCP verification still depends on a running external MCP server plus a prompt that uniquely requires one of its tools. If the prompt overlaps with built-in tools, the model may choose the built-in path and create a false negative/positive signal.
+- **Handoff Notes:** Preferred live path is HTTP MCP via `MCP_SERVER_URLS`; use `MCP_SERVER_STDIO` on Windows only after fixing path parsing in `src/mcp_client.py`. For end-to-end testing, run the external MCP server first, then start `uv run src/server.py`, then run `uv run pytest -k mcp --agent-url http://localhost:9009`. Set `EXPECTED_MCP_TOOL_NAME` and `MCP_TEST_PROMPT` in the environment to make the live assertion deterministic.
+
+### Chat 5: Local Mock MCP Server & Windows Stdio Fix
+
+- **Role:** Coder
+- **Actions Taken:** Added `src/mock_mcp_server.py`, a minimal local MCP server built with `FastMCP` that exposes deterministic `echo_magic` and `sum_magic` tools for end-to-end testing. Updated `src/mcp_client.py` so `MCP_SERVER_STDIO` now accepts a Windows-safe shell-style command (`python src/mock_mcp_server.py --transport stdio`) and remains backward-compatible with the older colon-delimited format while repairing a drive-letter first argument.
+- **Blockers:** The live end-to-end assertion still depends on the LLM choosing the external tool. Use a prompt that explicitly names `echo_magic` or `sum_magic`, and set `EXPECTED_MCP_TOOL_NAME` accordingly.
+- **Handoff Notes:** Simplest verification path is HTTP: run `uv run src/mock_mcp_server.py --host 127.0.0.1 --port 3001`, set `MCP_SERVER_URLS=mock=http://127.0.0.1:3001/mcp`, then start the A2A server and run the MCP tests. Stdio mode is now viable on Windows with `MCP_SERVER_STDIO=mock=python src/mock_mcp_server.py --transport stdio`.
+
+### Chat 6: Executor MCP Initialization Fix
+
+- **Role:** Coder
+- **Actions Taken:** Fixed `src/executor.py` MCP initialization so it now uses `asyncio.run(load_mcp_tools_from_env())` when `Executor()` is constructed outside a running event loop. This avoids the test failure where `asyncio.run(...)` in the test clears the current event loop and the old `asyncio.get_event_loop()` path fell back to an empty MCP tool list.
+- **Blockers:** If `Executor()` is ever constructed inside an already-running event loop, MCP loading is still intentionally skipped because `__init__` is synchronous. The current server startup path is safe because construction happens before `uvicorn` starts its loop.
+- **Handoff Notes:** Re-run `uv run pytest -k mcp --agent-url http://127.0.0.1:9009 -v`. The `test_executor_registers_mcp_tools` assertion should now match the direct discovery result.
