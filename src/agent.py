@@ -2,11 +2,13 @@
 Purple Agent: LangGraph ReAct Reasoning Engine
 ================================================
 Implements a Plan-Act-Learn loop using LangGraph's StateGraph.
-The agent uses a ReAct-style cycle: Reasoner → Tool Executor → (loop or END).
+The agent uses a ReAct-style cycle:
+    Reasoner → Tool Executor → Context Window → (loop or END).
 
 Architecture Reference: docs/DESIGN.md (Brain-to-Arm paradigm)
 """
 
+import logging
 import os
 import operator
 from datetime import datetime, timezone
@@ -25,19 +27,44 @@ from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
 from langgraph.prebuilt import ToolNode
 
+from context_manager import (
+    summarize_and_window,
+    truncate_tool_output,
+)
+
+logger = logging.getLogger(__name__)
+
 load_dotenv()
 
 # ---------------------------------------------------------------------------
 # 1. Agent State
 # ---------------------------------------------------------------------------
 
+class ReplaceMessages(list):
+    """Sentinel wrapper: tells the reducer to *replace* instead of append."""
+    pass
+
+
+def _messages_reducer(
+    existing: list[BaseMessage], update: list[BaseMessage] | ReplaceMessages
+) -> list[BaseMessage]:
+    """Custom reducer that supports both append and full replace.
+
+    - Normal node output (plain list) → appended to existing.
+    - ReplaceMessages wrapper → existing is replaced entirely.
+    """
+    if isinstance(update, ReplaceMessages):
+        return list(update)
+    return existing + update
+
+
 class AgentState(TypedDict):
     """Typed state for the LangGraph reasoning engine.
 
     - messages: The conversation history (LangChain message format).
-                Uses `operator.add` so new messages are *appended*.
+                Uses a custom reducer that supports both append and replace.
     """
-    messages: Annotated[list[BaseMessage], operator.add]
+    messages: Annotated[list[BaseMessage], _messages_reducer]
 
 
 # ---------------------------------------------------------------------------
@@ -131,8 +158,58 @@ def should_use_tools(state: AgentState) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 5. Build the Compiled Graph
+# 5. Context Window Node (Observation Masking)
 # ---------------------------------------------------------------------------
+
+def _tool_executor_with_truncation(tool_node: ToolNode):
+    """Wrap the ToolNode to truncate verbose tool outputs."""
+
+    async def wrapper(state: AgentState) -> dict:
+        result = await tool_node.ainvoke(state)
+        # result is a dict with "messages" key
+        messages = result.get("messages", [])
+        truncated_messages = []
+        for msg in messages:
+            if isinstance(msg, ToolMessage) and isinstance(msg.content, str):
+                original_len = len(msg.content)
+                truncated_content = truncate_tool_output(msg.content)
+                if len(truncated_content) < original_len:
+                    logger.info(
+                        f"Truncated tool '{msg.name}' output: "
+                        f"{original_len} → {len(truncated_content)} chars"
+                    )
+                msg = ToolMessage(
+                    content=truncated_content,
+                    tool_call_id=msg.tool_call_id,
+                    name=msg.name,
+                )
+            truncated_messages.append(msg)
+        return {"messages": truncated_messages}
+
+    return wrapper
+
+
+def context_window(state: AgentState) -> dict:
+    """Graph node: apply Summarize-and-Forget windowing to message history.
+
+    Fires after tool_executor and before the next reasoner invocation.
+    If the conversation is within the token budget, this is a no-op.
+    """
+    messages = state["messages"]
+    compressed = summarize_and_window(messages)
+
+    if len(compressed) < len(messages):
+        # Wrap in ReplaceMessages so the custom reducer replaces the list
+        return {"messages": ReplaceMessages(compressed)}
+
+    # No compression needed — return empty to keep state as-is
+    return {"messages": []}
+
+
+# ---------------------------------------------------------------------------
+# 6. Build the Compiled Graph
+# ---------------------------------------------------------------------------
+
 
 def build_agent_graph(external_tools: list | None = None):
     """Construct and compile the LangGraph StateGraph.
@@ -142,17 +219,18 @@ def build_agent_graph(external_tools: list | None = None):
                         servers. These are merged with built-in tools.
 
     Graph topology:
-        reasoner ──(has tool_calls?)──▶ tool_executor ──▶ reasoner
+        reasoner ──(has tool_calls?)──▶ tool_executor ──▶ context_window ──▶ reasoner
                  └─(no tool_calls)───▶ END
     """
     all_tools = BUILTIN_TOOLS + (external_tools or [])
-    tool_node = ToolNode(all_tools)
+    raw_tool_node = ToolNode(all_tools)
 
     graph = StateGraph(AgentState)
 
     # Add nodes
     graph.add_node("reasoner", _make_reasoner(all_tools))
-    graph.add_node("tool_executor", tool_node)
+    graph.add_node("tool_executor", _tool_executor_with_truncation(raw_tool_node))
+    graph.add_node("context_window", context_window)
 
     # Set entry point
     graph.set_entry_point("reasoner")
@@ -160,8 +238,9 @@ def build_agent_graph(external_tools: list | None = None):
     # Conditional edge from reasoner
     graph.add_conditional_edges("reasoner", should_use_tools)
 
-    # After tool execution, always loop back to reasoner
-    graph.add_edge("tool_executor", "reasoner")
+    # After tool execution → context window → back to reasoner
+    graph.add_edge("tool_executor", "context_window")
+    graph.add_edge("context_window", "reasoner")
 
     return graph.compile()
 
