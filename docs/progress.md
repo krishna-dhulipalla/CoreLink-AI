@@ -80,3 +80,10 @@ _(When the chat limit is reached, older context is summarized here.)_
 - **Actions Taken:** Implemented the reflective feedback loop in `agent.py`. Added `reflection_count` to `AgentState`, a `REFLECTION_PROMPT` constant, a `reflector` graph node that critiques the draft answer via a separate LLM call (no tools), and a `should_revise` conditional edge that routes to `reasoner` (REVISE) or `END` (PASS). Updated `should_use_tools` to route to `reflector` instead of `END`. Updated `run_agent` to extract the final answer excluding reflection messages. Capped at `MAX_REFLECTIONS=2` to prevent infinite loops. All 3 A2A conformance tests pass.
 - **Blockers:** None.
 - **Handoff Notes:** The full Plan-Act-Learn loop is now complete. Graph: `reasoner → tool_executor → context_window → reasoner → reflector → (PASS→END / REVISE→reasoner)`. Config: `MAX_REFLECTIONS=2`. Next priorities: (1) Multi-turn conversation support, (2) Stress testing with complex multi-step tasks, (3) Competition-specific benchmark evaluation.
+
+### Chat 9: Multi-Turn Conversation Support
+
+- **Role:** Coder
+- **Actions Taken:** Implemented multi-turn conversation support. Created `src/conversation_store.py` — an in-memory dict keyed by A2A `context_id` with TTL-based auto-cleanup (default 1 hour). Updated `run_agent()` in `agent.py` to accept an optional `history` parameter and return a 3-tuple `(answer, steps, updated_history)`. Rewrote `executor.py` to retrieve prior conversation history from the store before each invocation and save the updated history back after completion. Single-turn requests (no `context_id`) are unaffected. All 3 A2A conformance tests pass.
+- **Blockers:** None.
+- **Handoff Notes:** The agent now maintains conversational context across follow-up messages sharing the same `context_id`. Config: `CONVERSATION_TTL_SECONDS=3600`. The conversation store is in-memory (resets on restart). Next priorities: (1) Stress testing with complex multi-step tasks, (2) Competition-specific benchmark evaluation, (3) Persistent conversation store (e.g., SQLite) if needed for production.

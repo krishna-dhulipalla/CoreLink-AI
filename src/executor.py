@@ -30,6 +30,7 @@ from a2a.utils import (
 )
 
 from agent import build_agent_graph, run_agent
+from conversation_store import ConversationStore
 from mcp_client import load_mcp_tools_from_env
 
 logger = logging.getLogger(__name__)
@@ -46,9 +47,7 @@ class Executor(AgentExecutor):
     """A2A executor that delegates reasoning to the LangGraph agent."""
 
     def __init__(self):
-        # Load MCP tools from a synchronous constructor. `asyncio.run()` is the
-        # most reliable option here as long as we are not already inside a
-        # running event loop.
+        # Load MCP tools from a synchronous constructor.
         try:
             asyncio.get_running_loop()
             self._mcp_tools = []
@@ -67,6 +66,7 @@ class Executor(AgentExecutor):
             )
 
         self.graph = build_agent_graph(external_tools=self._mcp_tools)
+        self.conversations = ConversationStore()
 
     async def execute(
         self, context: RequestContext, event_queue: EventQueue
@@ -97,13 +97,28 @@ class Executor(AgentExecutor):
         # ── Run LangGraph agent ───────────────────────────────────────
         try:
             input_text = get_message_text(msg)
+            context_id = task.context_id
+
+            # Retrieve prior conversation history for multi-turn support
+            history = self.conversations.get(context_id) if context_id else []
+            if history:
+                logger.info(
+                    f"Resuming conversation {context_id} with "
+                    f"{len(history)} prior messages"
+                )
 
             await updater.update_status(
                 TaskState.working,
                 new_agent_text_message("Planning approach..."),
             )
 
-            final_answer, steps = await run_agent(self.graph, input_text)
+            final_answer, steps, updated_history = await run_agent(
+                self.graph, input_text, history=history
+            )
+
+            # Persist updated conversation history
+            if context_id:
+                self.conversations.save(context_id, updated_history)
 
             # Stream step-level status updates for transparency
             for step in steps:

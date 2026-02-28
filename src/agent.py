@@ -335,16 +335,28 @@ def build_agent_graph(external_tools: list | None = None):
 # 8. Convenience Runner (used by executor.py)
 # ---------------------------------------------------------------------------
 
-async def run_agent(graph, input_text: str) -> tuple[str, list[dict]]:
-    """Run the compiled graph with a user message and return (final_answer, steps).
+async def run_agent(
+    graph,
+    input_text: str,
+    history: list[BaseMessage] | None = None,
+) -> tuple[str, list[dict], list[BaseMessage]]:
+    """Run the compiled graph and return (final_answer, steps, updated_history).
+
+    Args:
+        graph: The compiled LangGraph.
+        input_text: The new user message.
+        history: Optional prior conversation messages for multi-turn support.
 
     Returns:
         final_answer: The text content of the last AIMessage (excluding reflections).
-        steps: A list of dicts describing each node that executed,
-               useful for streaming status updates to the A2A EventQueue.
+        steps: A list of dicts describing each node that executed.
+        updated_history: The full message list after execution, for persistence.
     """
+    messages = list(history) if history else []
+    messages.append(HumanMessage(content=input_text))
+
     initial_state = {
-        "messages": [HumanMessage(content=input_text)],
+        "messages": messages,
         "reflection_count": 0,
     }
     steps = []
@@ -379,10 +391,14 @@ async def run_agent(graph, input_text: str) -> tuple[str, list[dict]]:
             for msg in node_output.get("messages", []):
                 all_messages.append(msg)
 
+    # Build the complete updated history from initial + all new messages
+    updated_history = list(messages)  # starts with the input messages
+    updated_history.extend(all_messages)
+
     # Extract final answer: last AIMessage that is NOT a reflection
     for msg in reversed(all_messages):
         if isinstance(msg, AIMessage) and msg.content:
             if not msg.content.startswith("[Reflection]"):
-                return msg.content, steps
+                return msg.content, steps, updated_history
 
-    return "I was unable to generate a response.", steps
+    return "I was unable to generate a response.", steps, updated_history
