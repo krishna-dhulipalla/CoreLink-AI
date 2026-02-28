@@ -1,62 +1,111 @@
+"""
+A2A ↔ LangGraph Bridge (Executor)
+==================================
+Bridges the A2A protocol with the LangGraph reasoning engine.
+Converts A2A RequestContext into LangGraph input, streams status
+updates back through the A2A EventQueue.
+
+Architecture Reference: docs/A2A_INTERFACE_SPEC.md
+"""
+
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
 from a2a.server.tasks import TaskUpdater
 from a2a.types import (
+    Part,
     Task,
     TaskState,
+    TextPart,
     UnsupportedOperationError,
     InvalidRequestError,
 )
 from a2a.utils.errors import ServerError
 from a2a.utils import (
+    get_message_text,
     new_agent_text_message,
     new_task,
 )
 
-from agent import Agent
+from agent import build_agent_graph, run_agent
 
 
 TERMINAL_STATES = {
     TaskState.completed,
     TaskState.canceled,
     TaskState.failed,
-    TaskState.rejected
+    TaskState.rejected,
 }
 
 
 class Executor(AgentExecutor):
-    def __init__(self):
-        self.agents: dict[str, Agent] = {} # context_id to agent instance
+    """A2A executor that delegates reasoning to the LangGraph agent."""
 
-    async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
+    def __init__(self):
+        self.graph = build_agent_graph()
+
+    async def execute(
+        self, context: RequestContext, event_queue: EventQueue
+    ) -> None:
+        # ── Validate request ──────────────────────────────────────────
         msg = context.message
         if not msg:
-            raise ServerError(error=InvalidRequestError(message="Missing message in request"))
+            raise ServerError(
+                error=InvalidRequestError(message="Missing message in request")
+            )
 
         task = context.current_task
         if task and task.status.state in TERMINAL_STATES:
-            raise ServerError(error=InvalidRequestError(message=f"Task {task.id} already processed (state: {task.status.state})"))
+            raise ServerError(
+                error=InvalidRequestError(
+                    message=f"Task {task.id} already processed (state: {task.status.state})"
+                )
+            )
 
+        # ── Create or reuse task ──────────────────────────────────────
         if not task:
             task = new_task(msg)
             await event_queue.enqueue_event(task)
 
-        context_id = task.context_id
-        agent = self.agents.get(context_id)
-        if not agent:
-            agent = Agent()
-            self.agents[context_id] = agent
-
-        updater = TaskUpdater(event_queue, task.id, context_id)
-
+        updater = TaskUpdater(event_queue, task.id, task.context_id)
         await updater.start_work()
+
+        # ── Run LangGraph agent ───────────────────────────────────────
         try:
-            await agent.run(msg, updater)
-            if not updater._terminal_state_reached:
-                await updater.complete()
+            input_text = get_message_text(msg)
+
+            await updater.update_status(
+                TaskState.working,
+                new_agent_text_message("Planning approach..."),
+            )
+
+            final_answer, steps = await run_agent(self.graph, input_text)
+
+            # Stream step-level status updates for transparency
+            for step in steps:
+                action = step.get("action", step["node"])
+                await updater.update_status(
+                    TaskState.working,
+                    new_agent_text_message(action),
+                )
+
+            # ── Publish final result ──────────────────────────────────
+            await updater.add_artifact(
+                parts=[Part(root=TextPart(text=final_answer))],
+                name="Result",
+            )
+            await updater.complete()
+
         except Exception as e:
             print(f"Task failed with agent error: {e}")
-            await updater.failed(new_agent_text_message(f"Agent error: {e}", context_id=context_id, task_id=task.id))
+            await updater.failed(
+                new_agent_text_message(
+                    f"Agent error: {e}",
+                    context_id=task.context_id,
+                    task_id=task.id,
+                )
+            )
 
-    async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
+    async def cancel(
+        self, context: RequestContext, event_queue: EventQueue
+    ) -> None:
         raise ServerError(error=UnsupportedOperationError())
