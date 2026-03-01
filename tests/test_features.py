@@ -26,6 +26,11 @@ from context_manager import (
     summarize_and_window,
 )
 from conversation_store import ConversationStore
+from agent import (
+    SYSTEM_PROMPT,
+    _build_reflection_context,
+    _with_system_prompt,
+)
 
 
 # ── Truncation Tests ──────────────────────────────────────────────────────
@@ -114,6 +119,66 @@ class TestWindowing:
         ]
         assert len(summary_msgs) == 1
 
+    def test_tool_call_bundle_kept_together(self):
+        """Compression must not orphan ToolMessages from their tool-call AI message."""
+        msgs = [
+            SystemMessage(content="You are a helpful agent."),
+            HumanMessage(content="Do the tool call."),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "echo_magic",
+                        "args": {"text": "hello"},
+                        "id": "call_1",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            ToolMessage(
+                content="MOCK_MCP_OK::hello",
+                tool_call_id="call_1",
+                name="echo_magic",
+            ),
+            AIMessage(content="Done."),
+            HumanMessage(content="Next question."),
+        ]
+
+        result = summarize_and_window(msgs, max_tokens=1, keep_recent=3)
+
+        tool_idx = next(
+            i for i, msg in enumerate(result) if isinstance(msg, ToolMessage)
+        )
+        assert tool_idx > 0
+        assert isinstance(result[tool_idx - 1], AIMessage)
+        assert result[tool_idx - 1].tool_calls
+
+    def test_skips_compression_if_bundle_starts_immediately(self):
+        """If compression can only split a leading tool bundle, leave history unchanged."""
+        msgs = [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "echo_magic",
+                        "args": {"text": "hello"},
+                        "id": "call_1",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            ToolMessage(
+                content="MOCK_MCP_OK::hello",
+                tool_call_id="call_1",
+                name="echo_magic",
+            ),
+            AIMessage(content="Done."),
+            HumanMessage(content="Next question."),
+        ]
+
+        result = summarize_and_window(msgs, max_tokens=1, keep_recent=3)
+        assert result == msgs
+
 
 # ── ConversationStore Tests ──────────────────────────────────────────────
 
@@ -183,3 +248,51 @@ class TestReflectionHygiene:
         ]
         assert len(cleaned) == 2
         assert all(not m.content.startswith("[Reflection]") for m in cleaned)
+
+    def test_reflection_context_excludes_tool_call_messages(self):
+        """Reflection input must not include orphaned tool-call assistant messages."""
+        messages = [
+            HumanMessage(content="Use the tool."),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "echo_magic",
+                        "args": {"text": "hello"},
+                        "id": "call_1",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            ToolMessage(
+                content="MOCK_MCP_OK::hello",
+                tool_call_id="call_1",
+                name="echo_magic",
+            ),
+            AIMessage(content="MOCK_MCP_OK::hello"),
+            AIMessage(content="[Reflection]: PASS: good"),
+        ]
+
+        result = _build_reflection_context(messages)
+
+        assert len(result) == 2
+        assert isinstance(result[0], HumanMessage)
+        assert isinstance(result[1], AIMessage)
+        assert not result[1].tool_calls
+        assert not result[1].content.startswith("[Reflection]")
+
+
+class TestSystemPromptHandling:
+    def test_system_prompt_added_before_summary_message(self):
+        """A summary SystemMessage must not suppress the core agent prompt."""
+        messages = [SystemMessage(content="[CONTEXT SUMMARY]"), HumanMessage(content="Hi")]
+        result = _with_system_prompt(messages)
+
+        assert isinstance(result[0], SystemMessage)
+        assert result[0].content == SYSTEM_PROMPT
+        assert isinstance(result[1], SystemMessage)
+        assert result[1].content == "[CONTEXT SUMMARY]"
+
+    def test_system_prompt_not_duplicated(self):
+        result = _with_system_prompt([SystemMessage(content=SYSTEM_PROMPT)])
+        assert len(result) == 1

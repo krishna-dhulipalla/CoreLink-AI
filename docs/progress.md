@@ -9,7 +9,7 @@ This document is the "brain space" for agents to communicate and leave context. 
 This file operates in a "Chat" structure. Whenever an agent finishes a major unit of work, it will append a new "Chat" block.
 
 - **Maximum Limit:** The `[Recent Chats]` section can only hold a maximum of 20 chats.
-- **Windowing/Summarization:** If you are adding the 11th chat, you MUST remove the oldest chat(s) and concisely summarize their value into the `[Long-Term Memory]` section below. Keep the long-term memory brief but actionable.
+- **Windowing/Summarization:** If you are adding the 21th chat, you MUST remove the oldest chat(s) and concisely summarize their value into the `[Long-Term Memory]` section below. Keep the long-term memory brief but actionable.
 
 ---
 
@@ -101,3 +101,17 @@ _(When the chat limit is reached, older context is summarized here.)_
 - **Actions Taken:** Fixed all four issues from Chat 10 reviewer audit. (1) Switched `run_agent` from `astream` to `ainvoke` — `updated_history` is now extracted from the graph's final reduced state, correctly reflecting any `ReplaceMessages` compressions. (2) Added front-gate pruning: `summarize_and_window()` is applied to input messages _before_ graph entry, so the first reasoner call never exceeds the token budget. (3) `[Reflection]` messages are stripped from `updated_history` before persistence, preventing pollution of future turns. (4) Created `tests/test_features.py` with 14 unit tests covering truncation (3), token counting (3), windowing (4), ConversationStore with TTL (5), and reflection hygiene (2). All 14 unit tests pass. All 3 A2A conformance tests pass.
 - **Blockers:** None.
 - **Handoff Notes:** All four correctness risks are resolved. The agent is now ready for an end-to-end stress test with low `MAX_CONTEXT_TOKENS` (e.g., 500) to force compression. Verify server logs show `Context window exceeded` and `Compression complete`.
+
+### Chat 12: Tool-Call-Safe Windowing Fix
+
+- **Role:** Coder
+- **Actions Taken:** Patched `src/context_manager.py` so message windowing no longer splits an assistant `tool_calls` message from its required following `ToolMessage` entries. Added `_adjust_boundary_for_tool_bundle()` to move the compression boundary left whenever the recent window would start inside a tool-call bundle, preserving protocol-valid adjacency for OpenAI chat completions. Added two unit tests in `tests/test_features.py`: one verifies a tool-call bundle remains intact after compression, and one verifies compression is skipped when the only possible boundary would split a leading tool bundle.
+- **Blockers:** None currently. If stress tests still fail after this change, the next likely issue would be a more complex multi-tool bundle pattern (for example, multiple tool calls in one AI message with several `ToolMessage` responses), but this patch covers the concrete orphaned-tool-message failure seen in the latest logs.
+- **Handoff Notes:** Re-run the same 12-turn stress test with low `MAX_CONTEXT_TOKENS`. The prior 400 error (`tool_calls` not followed by tool messages) should be resolved. Confirm the server now logs `Adjusted context window boundary...` when compression would otherwise cut through a tool-call bundle.
+
+### Chat 13: Reflection Context Safety & System Prompt Preservation
+
+- **Role:** Coder
+- **Actions Taken:** Fixed a remaining stress-test failure in `src/agent.py`. Root cause: the `reflector` LLM call was rebuilding its own message list from `HumanMessage` and `AIMessage` only, which accidentally included assistant messages with `tool_calls` but excluded the required following `ToolMessage` entries, causing OpenAI to reject the request with a 400. Added `_build_reflection_context()` to construct a protocol-safe reflection context that excludes tool-call assistant messages, `ToolMessage`s, and prior `[Reflection]` entries. Also added `_with_system_prompt()` so a summary `SystemMessage` from windowing no longer suppresses the real base `SYSTEM_PROMPT`. Extended `tests/test_features.py` with regression tests for reflection-context filtering and system-prompt preservation.
+- **Blockers:** None currently. The major known protocol-shape errors from stress testing are now covered: tool-call-safe windowing and tool-call-safe reflection input.
+- **Handoff Notes:** Re-run the same 12-turn stress test. The specific 400 error seen after the second OpenAI call should now be resolved. If any issue remains, capture Terminal 2 logs again so the failing stage (reasoner vs reflector) can be identified precisely.

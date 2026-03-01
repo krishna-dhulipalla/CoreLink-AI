@@ -113,6 +113,43 @@ def _format_message_for_summary(msg: BaseMessage) -> str:
         return f"{msg.__class__.__name__}: {content}"
 
 
+def _adjust_boundary_for_tool_bundle(
+    messages: Sequence[BaseMessage],
+    boundary: int,
+    start_idx: int,
+) -> int:
+    """Move the compression boundary left if it would split a tool-call bundle.
+
+    OpenAI chat-completions requires an assistant message with ``tool_calls`` to
+    be followed by the corresponding ``ToolMessage`` entries. If the windowing
+    boundary lands on any ``ToolMessage``, move it left to the originating
+    ``AIMessage`` so the whole bundle stays in the recent working set.
+    """
+    if boundary <= start_idx or boundary >= len(messages):
+        return boundary
+
+    if not isinstance(messages[boundary], ToolMessage):
+        return boundary
+
+    cursor = boundary - 1
+    while cursor >= start_idx and isinstance(messages[cursor], ToolMessage):
+        cursor -= 1
+
+    if (
+        cursor >= start_idx
+        and isinstance(messages[cursor], AIMessage)
+        and messages[cursor].tool_calls
+    ):
+        logger.info(
+            "Adjusted context window boundary: %d -> %d to preserve tool-call bundle",
+            boundary,
+            cursor,
+        )
+        return cursor
+
+    return boundary
+
+
 def summarize_and_window(
     messages: list[BaseMessage],
     max_tokens: int | None = None,
@@ -167,8 +204,22 @@ def summarize_and_window(
         )
         return messages
 
-    middle_msgs = messages[start_idx : -actual_recent]
-    recent_msgs = messages[-actual_recent:]
+    boundary = len(messages) - actual_recent
+    boundary = _adjust_boundary_for_tool_bundle(messages, boundary, start_idx)
+
+    if boundary <= start_idx:
+        logger.warning(
+            "Compression boundary would split the active tool-call bundle. "
+            "Skipping compression for now."
+        )
+        return messages
+
+    middle_msgs = messages[start_idx:boundary]
+    recent_msgs = messages[boundary:]
+
+    if not middle_msgs:
+        logger.warning("No safe middle segment available to summarize.")
+        return messages
 
     # Build summary of middle messages
     summary_lines = [

@@ -132,7 +132,60 @@ Do NOT rewrite the answer. Only provide your verdict."""
 
 
 # ---------------------------------------------------------------------------
-# 4. Graph Nodes
+# 4. Prompt / Reflection Helpers
+# ---------------------------------------------------------------------------
+
+
+def _with_system_prompt(messages: list[BaseMessage]) -> list[BaseMessage]:
+    """Ensure the base system prompt is always the first message.
+
+    A windowing summary may also be represented as a ``SystemMessage``. That
+    should not suppress the agent's real operating instructions.
+    """
+    if (
+        messages
+        and isinstance(messages[0], SystemMessage)
+        and messages[0].content == SYSTEM_PROMPT
+    ):
+        return messages
+    return [SystemMessage(content=SYSTEM_PROMPT)] + messages
+
+
+def _is_reflection_message(msg: BaseMessage) -> bool:
+    return (
+        isinstance(msg, AIMessage)
+        and bool(msg.content)
+        and msg.content.startswith("[Reflection]")
+    )
+
+
+def _build_reflection_context(
+    messages: list[BaseMessage],
+    keep_last: int = 6,
+) -> list[BaseMessage]:
+    """Build a protocol-safe context slice for the reflection LLM call.
+
+    We deliberately exclude:
+    - ``AIMessage`` entries that contain ``tool_calls`` (they require matching
+      ``ToolMessage`` entries in OpenAI chat-completions)
+    - ``ToolMessage`` entries (not needed for the reflection verdict)
+    - internal ``[Reflection]`` messages from previous passes
+    """
+    filtered: list[BaseMessage] = []
+    for msg in messages:
+        if isinstance(msg, HumanMessage):
+            filtered.append(msg)
+        elif isinstance(msg, AIMessage):
+            if msg.tool_calls:
+                continue
+            if _is_reflection_message(msg):
+                continue
+            filtered.append(msg)
+    return filtered[-keep_last:]
+
+
+# ---------------------------------------------------------------------------
+# 5. Graph Nodes
 # ---------------------------------------------------------------------------
 
 def _build_model(tools: list):
@@ -155,10 +208,9 @@ def _make_reasoner(tools: list):
         which the conditional edge will route to the tool_executor node.
         """
         model = _build_model(tools)
-        # Prepend system prompt if this is the first turn
-        messages = state["messages"]
-        if not messages or not isinstance(messages[0], SystemMessage):
-            messages = [SystemMessage(content=SYSTEM_PROMPT)] + messages
+        # Always preserve the real operating instructions, even if the
+        # conversation already starts with a summary SystemMessage.
+        messages = _with_system_prompt(state["messages"])
         response = model.invoke(messages)
         return {"messages": [response]}
 
@@ -174,7 +226,7 @@ def should_use_tools(state: AgentState) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 5. Context Window Node (Observation Masking)
+# 6. Context Window Node (Observation Masking)
 # ---------------------------------------------------------------------------
 
 def _tool_executor_with_truncation(tool_node: ToolNode):
@@ -223,7 +275,7 @@ def context_window(state: AgentState) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 6. Reflective Feedback Node
+# 7. Reflective Feedback Node
 # ---------------------------------------------------------------------------
 
 def reflector(state: AgentState) -> dict:
@@ -243,14 +295,10 @@ def reflector(state: AgentState) -> dict:
         )
         return {"reflection_count": count}
 
-    # Build reflection input: system prompt + conversation + reflection ask
-    reflection_messages = [
-        SystemMessage(content=REFLECTION_PROMPT),
-    ]
-    # Include the last few messages for context (user question + draft answer)
-    for msg in messages:
-        if isinstance(msg, (HumanMessage, AIMessage)):
-            reflection_messages.append(msg)
+    # Build reflection input: system prompt + a protocol-safe conversation slice.
+    # Do not forward tool-call messages here without their matching ToolMessages.
+    reflection_messages = [SystemMessage(content=REFLECTION_PROMPT)]
+    reflection_messages.extend(_build_reflection_context(messages))
 
     llm = ChatOpenAI(
         model="gpt-4o-mini",
@@ -288,7 +336,7 @@ def should_revise(state: AgentState) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 7. Build the Compiled Graph
+# 8. Build the Compiled Graph
 # ---------------------------------------------------------------------------
 
 
@@ -332,7 +380,7 @@ def build_agent_graph(external_tools: list | None = None):
 
 
 # ---------------------------------------------------------------------------
-# 8. Convenience Runner (used by executor.py)
+# 9. Convenience Runner (used by executor.py)
 # ---------------------------------------------------------------------------
 
 async def run_agent(
@@ -383,7 +431,7 @@ async def run_agent(
                     "node": "reasoner",
                     "action": f"Calling tools: {', '.join(tool_names)}",
                 })
-            elif msg.content and msg.content.startswith("[Reflection]"):
+            elif _is_reflection_message(msg):
                 steps.append({
                     "node": "reflector",
                     "action": f"Self-review: {msg.content[:80]}",
@@ -404,17 +452,13 @@ async def run_agent(
     # should NOT leak into the conversation store for future turns.
     updated_history = [
         msg for msg in all_messages
-        if not (
-            isinstance(msg, AIMessage)
-            and msg.content
-            and msg.content.startswith("[Reflection]")
-        )
-    ]
+            if not _is_reflection_message(msg)
+        ]
 
     # Extract final answer: last AIMessage that is NOT a reflection
     for msg in reversed(all_messages):
         if isinstance(msg, AIMessage) and msg.content:
-            if not msg.content.startswith("[Reflection]"):
+            if not _is_reflection_message(msg):
                 return msg.content, steps, updated_history
 
     return "I was unable to generate a response.", steps, updated_history
