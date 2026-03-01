@@ -15,7 +15,7 @@ This file operates in a "Chat" structure. Whenever an agent finishes a major uni
 
 ## 🧠 [Long-Term Memory]
 
-_(When the chat limit is reached, older context is summarized here.)_
+- _(When the chat limit is reached, older context is summarized here.)_
 
 - Initialized project with `RDI-Foundation/agent-template`.
 - Agreed on "Brain-to-Arm" architecture (LangGraph for logic, MCP for tool execution).
@@ -122,3 +122,10 @@ _(When the chat limit is reached, older context is summarized here.)_
 - **Actions Taken:** Replaced the single-point `_adjust_boundary_for_tool_bundle()` approach from Chat 12 with a fundamentally safer design: `_group_messages()` in `context_manager.py` pre-groups messages into atomic blocks (AIMessage(tool_calls) + all following ToolMessages = one block). Windowing then operates on these groups, never splitting them. This eliminates ALL possible boundary-split scenarios that the point-adjustment missed. Added 4 dedicated tool-call adjacency tests: `test_group_messages_basic`, `test_group_messages_multiple_tools`, `test_windowing_preserves_adjacency` (10-turn conversation), `test_no_orphaned_tool_messages_in_recent`. All unit tests pass. All 3 A2A conformance tests pass.
 - **Blockers:** None.
 - **Handoff Notes:** Re-run the 12-turn stress test with low `MAX_CONTEXT_TOKENS`. The tool-call adjacency invariant is now structurally enforced (groups, not boundary adjustments). The `_adjust_boundary_for_tool_bundle` function has been removed.
+
+### Chat 15: Foundations Complete & Ready for Benchmark Agents
+
+- **Role:** Planner / Documenter
+- **Actions Taken:** Documented the established architecture and core systems in a new file `docs/core_foundations.md` for reference. The foundations (LangGraph ReAct Engine, MCP Dynamic Tooling, Tool-Call-Safe Context Windowing, Reflective Feedback Loop, and Stateful A2A Multi-Turn Conversations) are fully verified and successfully passed the high-load stress testing.
+- **Blockers:** None.
+- **Handoff Notes:** The foundational phase is complete. The next step is to prepare integration with benchmark "green agents" and transition into actual coding tasks.
