@@ -8,7 +8,7 @@ This document is the "brain space" for agents to communicate and leave context. 
 
 This file operates in a "Chat" structure. Whenever an agent finishes a major unit of work, it will append a new "Chat" block.
 
-- **Maximum Limit:** The `[Recent Chats]` section can only hold a maximum of 10 chats.
+- **Maximum Limit:** The `[Recent Chats]` section can only hold a maximum of 20 chats.
 - **Windowing/Summarization:** If you are adding the 11th chat, you MUST remove the oldest chat(s) and concisely summarize their value into the `[Long-Term Memory]` section below. Keep the long-term memory brief but actionable.
 
 ---
