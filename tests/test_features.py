@@ -24,6 +24,7 @@ from context_manager import (
     count_tokens,
     truncate_tool_output,
     summarize_and_window,
+    _group_messages,
 )
 from conversation_store import ConversationStore
 from agent import (
@@ -177,7 +178,107 @@ class TestWindowing:
         ]
 
         result = summarize_and_window(msgs, max_tokens=1, keep_recent=3)
+        # Should skip compression because not enough groups to split
         assert result == msgs
+
+
+# ── Tool-Call Adjacency Tests ─────────────────────────────────────────────
+
+
+class TestToolCallAdjacency:
+    """Verify that windowing NEVER separates AIMessage(tool_calls) from ToolMessage."""
+
+    def _tool_pair(self, call_id: str, tool_name: str = "echo_magic"):
+        """Create a matched AIMessage(tool_calls) + ToolMessage pair."""
+        ai = AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": tool_name,
+                    "args": {"text": "hello"},
+                    "id": call_id,
+                    "type": "tool_call",
+                }
+            ],
+        )
+        tool = ToolMessage(
+            content=f"result for {call_id}",
+            tool_call_id=call_id,
+            name=tool_name,
+        )
+        return ai, tool
+
+    def test_group_messages_basic(self):
+        """AIMessage(tool_calls) + ToolMessage should form one group."""
+        ai, tool = self._tool_pair("c1")
+        msgs = [HumanMessage(content="hi"), ai, tool, AIMessage(content="done")]
+        groups = _group_messages(msgs)
+        assert len(groups) == 3  # [Human], [AI+Tool], [AI]
+        assert len(groups[1]) == 2  # the tool pair
+        assert groups[1][0] is ai
+        assert groups[1][1] is tool
+
+    def test_group_messages_multiple_tools(self):
+        """AIMessage with multiple tool_calls groups all following ToolMessages."""
+        ai = AIMessage(
+            content="",
+            tool_calls=[
+                {"name": "a", "args": {}, "id": "c1", "type": "tool_call"},
+                {"name": "b", "args": {}, "id": "c2", "type": "tool_call"},
+            ],
+        )
+        t1 = ToolMessage(content="r1", tool_call_id="c1", name="a")
+        t2 = ToolMessage(content="r2", tool_call_id="c2", name="b")
+        groups = _group_messages([ai, t1, t2])
+        assert len(groups) == 1
+        assert len(groups[0]) == 3
+
+    def test_windowing_preserves_adjacency(self):
+        """After windowing with tool groups, every ToolMessage must follow its AI."""
+        # Build a long conversation with alternating tool-call turns
+        msgs = [SystemMessage(content="sys")]
+        for i in range(10):
+            msgs.append(HumanMessage(content=f"Q{i}: " + "x" * 200))
+            ai, tool = self._tool_pair(f"call_{i}")
+            msgs.append(ai)
+            msgs.append(tool)
+            msgs.append(AIMessage(content=f"A{i}: " + "y" * 200))
+
+        result = summarize_and_window(msgs, max_tokens=500, keep_recent=4)
+        assert len(result) < len(msgs)
+
+        # Verify the invariant: every ToolMessage must be preceded by its AIMessage
+        for idx, msg in enumerate(result):
+            if isinstance(msg, ToolMessage):
+                prev = result[idx - 1]
+                assert isinstance(prev, AIMessage) or isinstance(prev, ToolMessage), (
+                    f"ToolMessage at index {idx} is not preceded by AIMessage or ToolMessage"
+                )
+
+    def test_no_orphaned_tool_messages_in_recent(self):
+        """The recent set must not start with orphaned ToolMessages."""
+        msgs = [SystemMessage(content="sys")]
+        for i in range(8):
+            msgs.append(HumanMessage(content=f"Q{i}: " + "x" * 300))
+            ai, tool = self._tool_pair(f"call_{i}")
+            msgs.append(ai)
+            msgs.append(tool)
+            msgs.append(AIMessage(content=f"A{i}"))
+
+        result = summarize_and_window(msgs, max_tokens=200, keep_recent=3)
+
+        # Find where the summary ends and recent starts
+        summary_end = 0
+        for i, msg in enumerate(result):
+            if isinstance(msg, SystemMessage):
+                summary_end = i
+
+        # First non-system message should NOT be an orphaned ToolMessage
+        if summary_end + 1 < len(result):
+            first_after_summary = result[summary_end + 1]
+            assert not isinstance(first_after_summary, ToolMessage), (
+                "Recent set starts with an orphaned ToolMessage"
+            )
 
 
 # ── ConversationStore Tests ──────────────────────────────────────────────

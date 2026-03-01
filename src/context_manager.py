@@ -9,6 +9,10 @@ Two mechanisms:
 2. Message Windowing — compresses older messages into a summary when token
    count exceeds the budget.
 
+IMPORTANT: Windowing is **tool-call safe**. Messages are grouped into atomic
+blocks so that an AIMessage(tool_calls=...) is never separated from its
+following ToolMessage(s). This prevents OpenAI 400 errors.
+
 Configuration via .env:
     MAX_CONTEXT_TOKENS=80000
     MAX_TOOL_OUTPUT_CHARS=4000
@@ -89,12 +93,42 @@ def truncate_tool_output(content: str, max_chars: int | None = None) -> str:
     )
 
 
+# ── Message Grouping (Tool-Call Safety) ───────────────────────────────────
+
+def _group_messages(messages: Sequence[BaseMessage]) -> list[list[BaseMessage]]:
+    """Group messages into atomic blocks that must never be split.
+
+    An AIMessage with tool_calls and its subsequent ToolMessage(s) form
+    a single block. All other messages are individual blocks.
+
+    This ensures we never break the OpenAI invariant:
+    'An assistant message with tool_calls must be followed by tool messages
+    responding to each tool_call_id.'
+    """
+    groups: list[list[BaseMessage]] = []
+    i = 0
+    while i < len(messages):
+        msg = messages[i]
+        if isinstance(msg, AIMessage) and msg.tool_calls:
+            # Start an atomic block: AIMessage + all following ToolMessages
+            block = [msg]
+            j = i + 1
+            while j < len(messages) and isinstance(messages[j], ToolMessage):
+                block.append(messages[j])
+                j += 1
+            groups.append(block)
+            i = j
+        else:
+            groups.append([msg])
+            i += 1
+    return groups
+
+
 # ── Message Windowing (Summarize-and-Forget) ──────────────────────────────
 
 def _format_message_for_summary(msg: BaseMessage) -> str:
     """Format a single message into a concise summary line."""
     content = msg.content if isinstance(msg.content, str) else str(msg.content)
-    # Truncate individual messages in the summary to keep it tight
     if len(content) > 200:
         content = content[:200] + "..."
 
@@ -113,66 +147,23 @@ def _format_message_for_summary(msg: BaseMessage) -> str:
         return f"{msg.__class__.__name__}: {content}"
 
 
-def _adjust_boundary_for_tool_bundle(
-    messages: Sequence[BaseMessage],
-    boundary: int,
-    start_idx: int,
-) -> int:
-    """Move the compression boundary left if it would split a tool-call bundle.
-
-    OpenAI chat-completions requires an assistant message with ``tool_calls`` to
-    be followed by the corresponding ``ToolMessage`` entries. If the windowing
-    boundary lands on any ``ToolMessage``, move it left to the originating
-    ``AIMessage`` so the whole bundle stays in the recent working set.
-    """
-    if boundary <= start_idx or boundary >= len(messages):
-        return boundary
-
-    if not isinstance(messages[boundary], ToolMessage):
-        return boundary
-
-    cursor = boundary - 1
-    while cursor >= start_idx and isinstance(messages[cursor], ToolMessage):
-        cursor -= 1
-
-    if (
-        cursor >= start_idx
-        and isinstance(messages[cursor], AIMessage)
-        and messages[cursor].tool_calls
-    ):
-        logger.info(
-            "Adjusted context window boundary: %d -> %d to preserve tool-call bundle",
-            boundary,
-            cursor,
-        )
-        return cursor
-
-    return boundary
-
-
 def summarize_and_window(
     messages: list[BaseMessage],
     max_tokens: int | None = None,
     keep_recent: int | None = None,
 ) -> list[BaseMessage]:
-    """Apply the Summarize-and-Forget windowing strategy.
+    """Apply the Summarize-and-Forget windowing strategy (tool-call safe).
 
-    If the total token count of `messages` exceeds `max_tokens`:
+    Messages are first grouped into atomic blocks so that an AIMessage with
+    tool_calls is never separated from its ToolMessage responses.
+
+    If the total token count exceeds ``max_tokens``:
     1. Keep the SystemMessage at index 0 (if present).
-    2. Keep the last `keep_recent` messages (the active working set).
+    2. Keep the last N *groups* (not individual messages) as the working set.
     3. Summarize everything in between into a single SystemMessage.
     4. Return the compressed list.
 
     If under budget, returns the original list unchanged.
-
-    Args:
-        messages: The full conversation history.
-        max_tokens: Token budget. Defaults to MAX_CONTEXT_TOKENS.
-        keep_recent: Number of recent messages to always preserve.
-                     Defaults to CONTEXT_KEEP_RECENT.
-
-    Returns:
-        The (possibly compressed) message list.
     """
     budget = max_tokens or MAX_CONTEXT_TOKENS
     recent_count = keep_recent or CONTEXT_KEEP_RECENT
@@ -186,36 +177,30 @@ def summarize_and_window(
         f"Compressing {len(messages)} messages..."
     )
 
-    # Separate system prompt, middle, and recent
+    # Separate system prompt
     has_system = isinstance(messages[0], SystemMessage) if messages else False
     system_msg = messages[0] if has_system else None
-    start_idx = 1 if has_system else 0
+    body = messages[1:] if has_system else messages[:]
 
-    # Ensure we don't try to keep more recent messages than we have
-    available = len(messages) - start_idx
-    actual_recent = min(recent_count, available)
+    # Group into atomic blocks (tool-call safe)
+    groups = _group_messages(body)
 
-    if actual_recent >= available:
-        # Not enough messages to summarize — return as-is
+    if len(groups) <= recent_count:
         logger.warning(
-            "Not enough messages to summarize (only %d non-system messages). "
+            "Not enough message groups to summarize (%d groups, need > %d). "
             "Skipping compression.",
-            available,
+            len(groups),
+            recent_count,
         )
         return messages
 
-    boundary = len(messages) - actual_recent
-    boundary = _adjust_boundary_for_tool_bundle(messages, boundary, start_idx)
+    # Split: middle groups (to summarize) and recent groups (to keep)
+    middle_groups = groups[:-recent_count]
+    recent_groups = groups[-recent_count:]
 
-    if boundary <= start_idx:
-        logger.warning(
-            "Compression boundary would split the active tool-call bundle. "
-            "Skipping compression for now."
-        )
-        return messages
-
-    middle_msgs = messages[start_idx:boundary]
-    recent_msgs = messages[boundary:]
+    # Flatten each section
+    middle_msgs = [msg for group in middle_groups for msg in group]
+    recent_msgs = [msg for group in recent_groups for msg in group]
 
     if not middle_msgs:
         logger.warning("No safe middle segment available to summarize.")
