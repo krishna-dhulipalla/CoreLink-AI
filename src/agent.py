@@ -95,7 +95,37 @@ def get_current_time() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-BUILTIN_TOOLS = [calculator, get_current_time]
+@tool
+def internet_search(query: str) -> str:
+    """Search the internet for current events, facts, or specific data.
+    Provides highly relevant snippets from multiple websites.
+    """
+    try:
+        from tavily import TavilyClient
+        import os
+        
+        api_key = os.getenv("TAVILY_API_KEY")
+        if not api_key:
+            return "Error: TAVILY_API_KEY is not set in the environment. Cannot perform search."
+            
+        client = TavilyClient(api_key=api_key)
+        response = client.search(query=query, search_depth="basic", max_results=3)
+        
+        formatted = []
+        for r in response.get("results", []):
+            formatted.append(f"Title: {r['title']}\nSnippet: {r['content']}\nURL: {r['url']}")
+            
+        if not formatted:
+            return "No useful results found."
+            
+        return "\n\n---\n\n".join(formatted)
+    except ImportError:
+        return "Error: tavily-python package is not installed."
+    except Exception as e:
+        return f"Search failed: {e}"
+
+
+BUILTIN_TOOLS = [calculator, get_current_time, internet_search]
 
 # Reflective feedback loop configuration
 MAX_REFLECTIONS = int(os.getenv("MAX_REFLECTIONS", "2"))

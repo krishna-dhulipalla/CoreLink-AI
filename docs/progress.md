@@ -129,3 +129,10 @@ This file operates in a "Chat" structure. Whenever an agent finishes a major uni
 - **Actions Taken:** Documented the established architecture and core systems in a new file `docs/core_foundations.md` for reference. The foundations (LangGraph ReAct Engine, MCP Dynamic Tooling, Tool-Call-Safe Context Windowing, Reflective Feedback Loop, and Stateful A2A Multi-Turn Conversations) are fully verified and successfully passed the high-load stress testing.
 - **Blockers:** None.
 - **Handoff Notes:** The foundational phase is complete. The next step is to prepare integration with benchmark "green agents" and transition into actual coding tasks.
+
+### Chat 16: Adding Web Search Capability
+
+- **Role:** Coder
+- **Actions Taken:** Added a built-in `internet_search` tool using `tavily-python` after `duckduckgo-search` proved unreliable due to aggressive rate-limiting. This provides the agent with external knowledge to answer facts-based synthetic questions from the benchmark agent (e.g. finding AAPL's EBITDA). The user provided their `TAVILY_API_KEY` in `.env`. The tool was successfully verified with a test query.
+- **Blockers:** None.
+- **Handoff Notes:** The agent now has reliable internet access. You can now re-run the benchmark evaluation (`eval_output1.json` failures should now pass or score significantly higher on factual accuracy).
