@@ -136,3 +136,10 @@ This file operates in a "Chat" structure. Whenever an agent finishes a major uni
 - **Actions Taken:** Added a built-in `internet_search` tool using `tavily-python` after `duckduckgo-search` proved unreliable due to aggressive rate-limiting. This provides the agent with external knowledge to answer facts-based synthetic questions from the benchmark agent (e.g. finding AAPL's EBITDA). The user provided their `TAVILY_API_KEY` in `.env`. The tool was successfully verified with a test query.
 - **Blockers:** None.
 - **Handoff Notes:** The agent now has reliable internet access. You can now re-run the benchmark evaluation (`eval_output1.json` failures should now pass or score significantly higher on factual accuracy).
+
+### Chat 17: Agent Decision-Making Overhaul & Observability
+
+- **Role:** Coder
+- **Actions Taken:** (1) Rewrote `SYSTEM_PROMPT` to instruct the agent to compute math/finance answers DIRECTLY instead of searching for them — gpt-4o-mini can do Black-Scholes in its head. (2) Upgraded the `calculator` tool from a restrictive character-whitelist to a safe `math`-namespace evaluator supporting `sqrt()`, `exp()`, `log()`, `erf()`, `pi`, `e`, `**`, etc. — eliminates "disallowed characters" error loops. (3) Added step-level logging to every graph node (`reasoner`, `tool_executor`, `context_window`) so each step prints which tool was called and its result. (4) LangSmith integration is active via env vars (`LANGCHAIN_TRACING_V2`, `LANGCHAIN_API_KEY`, `LANGCHAIN_PROJECT`). (5) Added `recursion_limit=25` with graceful `GraphRecursionError` catch to prevent runaway loops.
+- **Blockers:** None.
+- **Handoff Notes:** Restart the server and re-run the 3 options-trading benchmark tasks. Check LangSmith dashboard for full trace visualization. The console will also print step-by-step logs showing exactly which tools are called and why.

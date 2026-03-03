@@ -75,15 +75,22 @@ class AgentState(TypedDict):
 
 @tool
 def calculator(expression: str) -> str:
-    """Evaluate a mathematical expression and return the result.
-    Use standard Python math syntax, e.g. '2 + 2' or '(3 ** 2) + 1'.
+    """Evaluate a math expression. Supports full Python math syntax including:
+    sqrt(), exp(), log(), pi, e, **, abs(), pow(), erf(), erfc(), etc.
+    Examples: 'sqrt(2)', 'exp(-0.5 * 1.2**2)', '175 * 0.25 * sqrt(30/365)'
     """
+    import math
+    safe_ns = {"__builtins__": {}}
+    # Expose common math functions directly (no 'math.' prefix needed)
+    for fn_name in [
+        "sqrt", "exp", "log", "log2", "log10", "pi", "e",
+        "sin", "cos", "tan", "ceil", "floor", "factorial",
+        "pow", "erf", "erfc", "inf",
+    ]:
+        safe_ns[fn_name] = getattr(math, fn_name)
+    safe_ns["abs"] = abs
     try:
-        # Only allow safe math expressions
-        allowed = set("0123456789+-*/.() ")
-        if not all(c in allowed for c in expression):
-            return f"Error: Expression contains disallowed characters. Only digits and +-*/.() are permitted."
-        result = eval(expression)  # noqa: S307 – restricted character set
+        result = eval(expression, safe_ns)  # noqa: S307 – restricted namespace
         return str(result)
     except Exception as e:
         return f"Error evaluating expression: {e}"
@@ -138,16 +145,17 @@ MAX_REFLECTIONS = int(os.getenv("MAX_REFLECTIONS", "2"))
 SYSTEM_PROMPT = """You are CoreLink AI – a generalist reasoning agent competing in the AgentX-AgentBeats Competition.
 
 Your operating loop is Plan → Act → Learn:
-1. **Plan**: Break the task into clear steps. Identify which tools you need.
-2. **Act**: Execute one step at a time using the available tools.
-3. **Learn**: Review the tool output. If the result is wrong or incomplete, revise your plan and try again.
+1. **Plan**: Analyze the task. Decide whether you can answer directly or need tools.
+2. **Act**: If tools are needed, use them precisely. Otherwise, answer from your own knowledge.
+3. **Learn**: Review any tool output. If insufficient, try once more then provide your best answer.
 
 Rules:
-- Always think step-by-step before acting.
-- Use tools when they can provide a precise answer (math, time, external data).
-- If no tool is needed, answer directly from your knowledge.
-- Be concise and accurate in your final response.
-- If you cannot find the answer after 3-4 tool attempts, STOP and provide your best partial answer or explain what is missing. Do NOT loop indefinitely.
+- For math, finance, or analytical tasks (e.g. Black-Scholes, Greeks, NPV), compute the answer DIRECTLY in your response. You have strong math capabilities — use them.
+- Only use the calculator tool for precise arithmetic you want to double-check.
+- Only use internet_search when you need real-time data or facts you genuinely don't know.
+- Do NOT search the internet for formulas or calculations you can do yourself.
+- Be concise and accurate. Provide numeric results with clear working.
+- If you cannot solve the task after 2-3 tool attempts, STOP and give your best partial answer. Do NOT loop.
 """
 
 REFLECTION_PROMPT = """You are a quality reviewer. Examine the assistant's draft answer below and check for:
@@ -230,20 +238,28 @@ def _build_model(tools: list):
     return llm.bind_tools(tools)
 
 
+# Step counter for logging (reset per run_agent call)
+_step_counter = 0
+
+
 def _make_reasoner(tools: list):
     """Factory: returns a reasoner node that uses the given tool list."""
 
     def reasoner(state: AgentState) -> dict:
-        """The 'Brain' node – calls the LLM with the current conversation.
-
-        If the LLM decides to use a tool, the response will contain tool_calls,
-        which the conditional edge will route to the tool_executor node.
-        """
+        """The 'Brain' node – calls the LLM with the current conversation."""
+        global _step_counter
+        _step_counter += 1
         model = _build_model(tools)
-        # Always preserve the real operating instructions, even if the
-        # conversation already starts with a summary SystemMessage.
         messages = _with_system_prompt(state["messages"])
         response = model.invoke(messages)
+
+        # ── Step logging ──
+        if isinstance(response, AIMessage) and response.tool_calls:
+            tool_names = [tc["name"] for tc in response.tool_calls]
+            logger.info(f"[Step {_step_counter}] reasoner → tool_call: {', '.join(tool_names)}")
+        else:
+            preview = (response.content or "")[:100]
+            logger.info(f"[Step {_step_counter}] reasoner → final answer: {preview}...")
         return {"messages": [response]}
 
     return reasoner
@@ -265,8 +281,9 @@ def _tool_executor_with_truncation(tool_node: ToolNode):
     """Wrap the ToolNode to truncate verbose tool outputs."""
 
     async def wrapper(state: AgentState) -> dict:
+        global _step_counter
+        _step_counter += 1
         result = await tool_node.ainvoke(state)
-        # result is a dict with "messages" key
         messages = result.get("messages", [])
         truncated_messages = []
         for msg in messages:
@@ -278,6 +295,9 @@ def _tool_executor_with_truncation(tool_node: ToolNode):
                         f"Truncated tool '{msg.name}' output: "
                         f"{original_len} → {len(truncated_content)} chars"
                     )
+                # ── Step logging ──
+                preview = truncated_content[:120].replace('\n', ' ')
+                logger.info(f"[Step {_step_counter}] tool_executor → {msg.name}: {preview}...")
                 msg = ToolMessage(
                     content=truncated_content,
                     tool_call_id=msg.tool_call_id,
@@ -290,19 +310,17 @@ def _tool_executor_with_truncation(tool_node: ToolNode):
 
 
 def context_window(state: AgentState) -> dict:
-    """Graph node: apply Summarize-and-Forget windowing to message history.
-
-    Fires after tool_executor and before the next reasoner invocation.
-    If the conversation is within the token budget, this is a no-op.
-    """
+    """Graph node: apply Summarize-and-Forget windowing to message history."""
+    global _step_counter
+    _step_counter += 1
     messages = state["messages"]
     compressed = summarize_and_window(messages)
 
     if len(compressed) < len(messages):
-        # Wrap in ReplaceMessages so the custom reducer replaces the list
+        logger.info(f"[Step {_step_counter}] context_window → compressed {len(messages)} → {len(compressed)} msgs")
         return {"messages": ReplaceMessages(compressed)}
 
-    # No compression needed — return empty to keep state as-is
+    logger.info(f"[Step {_step_counter}] context_window → no compression needed")
     return {"messages": []}
 
 
@@ -435,6 +453,10 @@ async def run_agent(
     """
     messages = list(history) if history else []
     messages.append(HumanMessage(content=input_text))
+
+    # Reset step counter for this run
+    global _step_counter
+    _step_counter = 0
 
     # ── Fix #2: Front-gate pruning ────────────────────────────────────
     # Apply context windowing BEFORE graph entry so the first reasoner
