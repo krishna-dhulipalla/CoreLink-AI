@@ -24,6 +24,7 @@ from langchain_core.messages import (
 )
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
+from langgraph.errors import GraphRecursionError
 from langgraph.graph import END, StateGraph
 from langgraph.prebuilt import ToolNode
 
@@ -31,6 +32,7 @@ from context_manager import (
     summarize_and_window,
     truncate_tool_output,
 )
+from finance_tools import FINANCE_TOOLS
 
 logger = logging.getLogger(__name__)
 
@@ -64,9 +66,13 @@ class AgentState(TypedDict):
     - messages: The conversation history (LangChain message format).
                 Uses a custom reducer that supports both append and replace.
     - reflection_count: Number of reflection-revision cycles completed.
+    - tool_fail_count: Consecutive tool failures. Triggers forced fallback at threshold.
+    - last_tool_signature: Hash of (tool_name + args) to detect duplicate calls.
     """
     messages: Annotated[list[BaseMessage], _messages_reducer]
     reflection_count: int
+    tool_fail_count: int
+    last_tool_signature: str
 
 
 # ---------------------------------------------------------------------------
@@ -75,13 +81,23 @@ class AgentState(TypedDict):
 
 @tool
 def calculator(expression: str) -> str:
-    """Evaluate a math expression. Supports full Python math syntax including:
-    sqrt(), exp(), log(), pi, e, **, abs(), pow(), erf(), erfc(), etc.
-    Examples: 'sqrt(2)', 'exp(-0.5 * 1.2**2)', '175 * 0.25 * sqrt(30/365)'
+    """Evaluate a SINGLE math expression. Supports: sqrt(), exp(), log(), pi, e, **, abs(), erf().
+    IMPORTANT: ONE expression only — no imports, assignments, def, or multiple lines.
+    Good: 'exp(-0.5 * 1.2**2)'  Bad: 'import math; math.exp(...)'
+    For Black-Scholes or Greeks, use the dedicated black_scholes_price or option_greeks tools instead.
     """
     import math
+    # Reject multi-statement code that can never work in eval()
+    forbidden = ["import ", "def ", "class ", "print(", "\n", "for ", "while "]
+    for token in forbidden:
+        if token in expression:
+            return (
+                "Error: calculator accepts a SINGLE math expression only — "
+                "no imports, assignments, function definitions, or multiple lines. "
+                f"Detected forbidden token: {repr(token)}. "
+                "Use black_scholes_price or option_greeks for finance calculations."
+            )
     safe_ns = {"__builtins__": {}}
-    # Expose common math functions directly (no 'math.' prefix needed)
     for fn_name in [
         "sqrt", "exp", "log", "log2", "log10", "pi", "e",
         "sin", "cos", "tan", "ceil", "floor", "factorial",
@@ -132,7 +148,7 @@ def internet_search(query: str) -> str:
         return f"Search failed: {e}"
 
 
-BUILTIN_TOOLS = [calculator, get_current_time, internet_search]
+BUILTIN_TOOLS = [calculator, get_current_time, internet_search] + FINANCE_TOOLS
 
 # Reflective feedback loop configuration
 MAX_REFLECTIONS = int(os.getenv("MAX_REFLECTIONS", "2"))
@@ -145,17 +161,22 @@ MAX_REFLECTIONS = int(os.getenv("MAX_REFLECTIONS", "2"))
 SYSTEM_PROMPT = """You are CoreLink AI – a generalist reasoning agent competing in the AgentX-AgentBeats Competition.
 
 Your operating loop is Plan → Act → Learn:
-1. **Plan**: Analyze the task. Decide whether you can answer directly or need tools.
-2. **Act**: If tools are needed, use them precisely. Otherwise, answer from your own knowledge.
-3. **Learn**: Review any tool output. If insufficient, try once more then provide your best answer.
+1. **Plan**: Identify the task type. Choose the right tool.
+2. **Act**: Call the tool with correct inputs. Read the output carefully.
+3. **Learn**: If the tool output answers the question, formulate your final answer. If not, try a different approach — NOT the same call again.
 
-Rules:
-- For math, finance, or analytical tasks (e.g. Black-Scholes, Greeks, NPV), compute the answer DIRECTLY in your response. You have strong math capabilities — use them.
-- Only use the calculator tool for precise arithmetic you want to double-check.
-- Only use internet_search when you need real-time data or facts you genuinely don't know.
-- Do NOT search the internet for formulas or calculations you can do yourself.
-- Be concise and accurate. Provide numeric results with clear working.
-- If you cannot solve the task after 2-3 tool attempts, STOP and give your best partial answer. Do NOT loop.
+Tool Selection Rules:
+- For options pricing (Black-Scholes call/put price): use `black_scholes_price(S, K, T_days, r, sigma)`.
+- For option sensitivity (Delta, Gamma, Theta, Vega, Rho): use `option_greeks(S, K, T_days, r, sigma)`.
+- For comparing market vs theoretical price: use `mispricing_analysis(market_price, S, K, T_days, r, sigma)`.
+- For simple arithmetic: use `calculator` with a SINGLE expression like `sqrt(2)` or `exp(-0.5 * 0.3**2)`.
+- For real-time facts or market data: use `internet_search`.
+- For general knowledge you already know: answer directly without calling any tool.
+
+Critical Rules:
+- If a tool returns an error, read the error message carefully. Do NOT call the same tool with the same arguments again.
+- After a tool error, either fix your input or use a different tool or answer directly.
+- Be concise, provide the final numeric answer clearly.
 """
 
 REFLECTION_PROMPT = """You are a quality reviewer. Examine the assistant's draft answer below and check for:
@@ -265,8 +286,24 @@ def _make_reasoner(tools: list):
     return reasoner
 
 
+MAX_TOOL_FAILURES = 2  # consecutive failures before forcing fallback
+
+
 def should_use_tools(state: AgentState) -> str:
-    """Conditional edge: route to tool_executor or reflector."""
+    """Conditional edge: route to tool_executor or reflector.
+
+    Before allowing another tool call, check if the agent is stuck in a
+    repeated-failure loop. If tool_fail_count >= MAX_TOOL_FAILURES, force
+    the agent to the reflector so it must produce a final answer.
+    """
+    # Failure gate: prevent repeated identical failed tool calls
+    if state.get("tool_fail_count", 0) >= MAX_TOOL_FAILURES:
+        logger.warning(
+            f"[FailureGate] Tool failure limit ({MAX_TOOL_FAILURES}) reached. "
+            "Forcing agent to produce final answer."
+        )
+        return "reflector"
+
     last_message = state["messages"][-1]
     if isinstance(last_message, AIMessage) and last_message.tool_calls:
         return "tool_executor"
@@ -277,8 +314,22 @@ def should_use_tools(state: AgentState) -> str:
 # 6. Context Window Node (Observation Masking)
 # ---------------------------------------------------------------------------
 
+def _make_tool_signature(state: AgentState) -> str:
+    """Build a string signature from the last AIMessage's tool calls (name + args).
+    Used to detect duplicate identical tool calls.
+    """
+    for msg in reversed(state["messages"]):
+        if isinstance(msg, AIMessage) and msg.tool_calls:
+            parts = []
+            for tc in msg.tool_calls:
+                args_str = str(sorted(tc.get("args", {}).items()))
+                parts.append(f"{tc['name']}:{args_str}")
+            return "|".join(parts)
+    return ""
+
+
 def _tool_executor_with_truncation(tool_node: ToolNode):
-    """Wrap the ToolNode to truncate verbose tool outputs."""
+    """Wrap the ToolNode to truncate verbose tool outputs and track failures."""
 
     async def wrapper(state: AgentState) -> dict:
         global _step_counter
@@ -286,6 +337,14 @@ def _tool_executor_with_truncation(tool_node: ToolNode):
         result = await tool_node.ainvoke(state)
         messages = result.get("messages", [])
         truncated_messages = []
+
+        # Compute signature of the call we just made (before results)
+        call_signature = _make_tool_signature(state)
+        previous_signature = state.get("last_tool_signature", "")
+
+        any_error = False
+        is_duplicate = (call_signature == previous_signature and call_signature != "")
+
         for msg in messages:
             if isinstance(msg, ToolMessage) and isinstance(msg.content, str):
                 original_len = len(msg.content)
@@ -295,16 +354,38 @@ def _tool_executor_with_truncation(tool_node: ToolNode):
                         f"Truncated tool '{msg.name}' output: "
                         f"{original_len} → {len(truncated_content)} chars"
                     )
-                # ── Step logging ──
-                preview = truncated_content[:120].replace('\n', ' ')
-                logger.info(f"[Step {_step_counter}] tool_executor → {msg.name}: {preview}...")
+                # Detect error output from tool
+                if truncated_content.startswith("Error"):
+                    any_error = True
+                    logger.warning(
+                        f"[Step {_step_counter}] tool_executor → {msg.name} ERROR: "
+                        f"{truncated_content[:120]}"
+                    )
+                    # Augment the error message to guide the model
+                    if is_duplicate:
+                        truncated_content += (
+                            "\n\n[SYSTEM NOTE: You have called this tool with the same arguments before and it failed. "
+                            "Do NOT repeat this call. Use a different tool or answer directly.]"
+                        )
+                else:
+                    preview = truncated_content[:120].replace('\n', ' ')
+                    logger.info(f"[Step {_step_counter}] tool_executor → {msg.name}: {preview}...")
                 msg = ToolMessage(
                     content=truncated_content,
                     tool_call_id=msg.tool_call_id,
                     name=msg.name,
                 )
             truncated_messages.append(msg)
-        return {"messages": truncated_messages}
+
+        # Update failure tracking state
+        current_fail_count = state.get("tool_fail_count", 0)
+        new_fail_count = (current_fail_count + 1) if (any_error or is_duplicate) else 0
+
+        return {
+            "messages": truncated_messages,
+            "tool_fail_count": new_fail_count,
+            "last_tool_signature": call_signature,
+        }
 
     return wrapper
 
@@ -467,6 +548,8 @@ async def run_agent(
     initial_state = {
         "messages": messages,
         "reflection_count": 0,
+        "tool_fail_count": 0,
+        "last_tool_signature": "",
     }
 
     # ── Fix #1: Use ainvoke for correct post-windowing state ──────────
@@ -482,16 +565,21 @@ async def run_agent(
             initial_state,
             config={"recursion_limit": 25},
         )
-    except Exception as e:
-        # Catch GraphRecursionError (or any unexpected error) gracefully.
-        # Return the best answer we have from the current state.
-        logger.warning(f"Graph execution stopped: {e}")
+    except GraphRecursionError as e:
+        # Recursion limit hit — extract the best partial answer from input state
+        logger.warning(f"[Safety] Recursion limit hit: {e}")
+        # Try to find the last non-reflection AI response so far
+        partial_answer = None
+        for msg in reversed(initial_state["messages"]):
+            if isinstance(msg, AIMessage) and msg.content and not _is_reflection_message(msg) and not msg.tool_calls:
+                partial_answer = msg.content
+                break
         return (
-            "I reached my processing limit for this task. "
-            "Here is my best partial answer based on what I found so far.",
-            [{"node": "safety", "action": f"Stopped: {e}"}],
-            list(initial_state.get("messages", [])),
+            partial_answer or "I was unable to complete this task within the step limit.",
+            [{"node": "safety", "action": "Recursion limit reached"}],
+            initial_state["messages"],
         )
+    # All other exceptions propagate loudly — do not mask real bugs
 
     # Build step list from the final state (lightweight summary)
     steps = []
