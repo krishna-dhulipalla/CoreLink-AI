@@ -29,7 +29,7 @@ def _bs_d1d2(S: float, K: float, T: float, r: float, sigma: float):
 
 @tool
 def black_scholes_price(S: float, K: float, T_days: int, r: float, sigma: float, option_type: str = "call") -> str:
-    """Calculate the theoretical Black-Scholes price for a European option.
+    """Calculate the theoretical Black-Scholes price for a European option, including Greeks and risk analysis.
 
     Args:
         S: Current underlying asset price (e.g. 175.0)
@@ -40,7 +40,7 @@ def black_scholes_price(S: float, K: float, T_days: int, r: float, sigma: float,
         option_type: 'call' or 'put' (default: 'call')
 
     Returns:
-        Formatted string with theoretical price, d1, d2, and put price via put-call parity.
+        Formatted string with theoretical price, put-call parity, Greeks, and risk metrics.
     """
     try:
         T = T_days / 365.0
@@ -50,22 +50,52 @@ def black_scholes_price(S: float, K: float, T_days: int, r: float, sigma: float,
             return "Error: S, K, and sigma must all be positive."
 
         d1, d2 = _bs_d1d2(S, K, T, r, sigma)
+        sqrt_T = math.sqrt(T)
+        e_rT = math.exp(-r * T)
 
-        call_price = S * _norm_cdf(d1) - K * math.exp(-r * T) * _norm_cdf(d2)
-        put_price = K * math.exp(-r * T) * _norm_cdf(-d2) - S * _norm_cdf(-d1)
+        call_price = S * _norm_cdf(d1) - K * e_rT * _norm_cdf(d2)
+        put_price  = K * e_rT * _norm_cdf(-d2) - S * _norm_cdf(-d1)
+        price = call_price if option_type.lower() == "call" else put_price
 
-        if option_type.lower() == "put":
-            price = put_price
-        else:
-            price = call_price
+        # Greeks
+        call_delta = _norm_cdf(d1)
+        put_delta  = call_delta - 1.0
+        gamma      = _norm_pdf(d1) / (S * sigma * sqrt_T)
+        call_theta = (-S * _norm_pdf(d1) * sigma / (2.0 * sqrt_T)
+                      - r * K * e_rT * _norm_cdf(d2)) / 365.0
+        put_theta  = (-S * _norm_pdf(d1) * sigma / (2.0 * sqrt_T)
+                      + r * K * e_rT * _norm_cdf(-d2)) / 365.0
+        vega       = S * _norm_pdf(d1) * sqrt_T / 100.0
+        call_rho   = K * T * e_rT * _norm_cdf(d2) / 100.0
+        put_rho    = -K * T * e_rT * _norm_cdf(-d2) / 100.0
+
+        # Risk metrics
+        call_breakeven = K + call_price
+        put_breakeven  = K - put_price
+
+        is_call = option_type.lower() == "call"
+        delta   = call_delta if is_call else put_delta
+        theta   = call_theta if is_call else put_theta
+        rho     = call_rho   if is_call else put_rho
+        breakeven = call_breakeven if is_call else put_breakeven
+        max_loss  = price  # premium paid
+        max_gain  = "Unlimited" if is_call else f"${K - max_loss:.2f} (if stock goes to 0)"
 
         return (
-            f"Black-Scholes Results:\n"
-            f"  d1 = {d1:.4f}\n"
-            f"  d2 = {d2:.4f}\n"
-            f"  Call Price = ${call_price:.2f}\n"
-            f"  Put Price  = ${put_price:.2f}\n"
-            f"  Requested ({option_type}) = ${price:.2f}"
+            f"Black-Scholes Results ({option_type.upper()}):\n"
+            f"  d1 = {d1:.4f}  |  d2 = {d2:.4f}\n"
+            f"  Call Price = ${call_price:.2f}  |  Put Price (put-call parity) = ${put_price:.2f}\n"
+            f"  {option_type.upper()} Fair Value = ${price:.2f}\n\n"
+            f"  Option Greeks (for {option_type.upper()}):\n"
+            f"    Delta  = {delta:.4f}  — price change per $1 move in underlying\n"
+            f"    Gamma  = {gamma:.4f}  — rate of Delta change\n"
+            f"    Theta  = {theta:.4f}  (per day) — daily time decay\n"
+            f"    Vega   = {vega:.4f}  — price change per 1% vol move\n"
+            f"    Rho    = {rho:.4f}  — price change per 1% rate move\n\n"
+            f"  Risk Analysis:\n"
+            f"    Premium (Max Loss) = ${max_loss:.2f}\n"
+            f"    Breakeven at Expiry = ${breakeven:.2f}\n"
+            f"    Max Gain = {max_gain}"
         )
     except Exception as e:
         return f"Error computing Black-Scholes: {e}"
@@ -142,7 +172,7 @@ def option_greeks(S: float, K: float, T_days: int, r: float, sigma: float) -> st
 
 @tool
 def mispricing_analysis(market_price: float, S: float, K: float, T_days: int, r: float, sigma: float, option_type: str = "call") -> str:
-    """Compare a market option price to its Black-Scholes theoretical value.
+    """Compare a market option price to its Black-Scholes theoretical value, including Greeks and risk metrics.
 
     Args:
         market_price: Observed market price of the option
@@ -154,25 +184,33 @@ def mispricing_analysis(market_price: float, S: float, K: float, T_days: int, r:
         option_type: 'call' or 'put'
 
     Returns:
-        Assessment of whether the option is fairly priced, overpriced, or underpriced.
+        Assessment of whether the option is fairly priced, overpriced, or underpriced, with Greeks and risk info.
     """
     try:
         T = T_days / 365.0
         d1, d2 = _bs_d1d2(S, K, T, r, sigma)
+        sqrt_T = math.sqrt(T)
+        e_rT = math.exp(-r * T)
 
-        call_price = S * _norm_cdf(d1) - K * math.exp(-r * T) * _norm_cdf(d2)
-        put_price = K * math.exp(-r * T) * _norm_cdf(-d2) - S * _norm_cdf(-d1)
-
+        call_price = S * _norm_cdf(d1) - K * e_rT * _norm_cdf(d2)
+        put_price  = K * e_rT * _norm_cdf(-d2) - S * _norm_cdf(-d1)
         theoretical = call_price if option_type.lower() == "call" else put_price
-        discrepancy = market_price - theoretical
-        discrepancy_pct = (discrepancy / theoretical) * 100.0
 
-        if abs(discrepancy_pct) < 2.0:
-            assessment = "FAIRLY PRICED"
-        elif discrepancy_pct > 0:
-            assessment = "OVERPRICED"
-        else:
-            assessment = "UNDERPRICED"
+        discrepancy     = market_price - theoretical
+        discrepancy_pct = (discrepancy / theoretical) * 100.0
+        assessment = "FAIRLY PRICED" if abs(discrepancy_pct) < 2.0 else ("OVERPRICED" if discrepancy_pct > 0 else "UNDERPRICED")
+
+        # Greeks
+        is_call    = option_type.lower() == "call"
+        delta      = _norm_cdf(d1) if is_call else _norm_cdf(d1) - 1.0
+        gamma      = _norm_pdf(d1) / (S * sigma * sqrt_T)
+        theta_raw  = -S * _norm_pdf(d1) * sigma / (2.0 * sqrt_T)
+        theta      = (theta_raw - r * K * e_rT * _norm_cdf(d2)) / 365.0 if is_call \
+                     else (theta_raw + r * K * e_rT * _norm_cdf(-d2)) / 365.0
+        vega       = S * _norm_pdf(d1) * sqrt_T / 100.0
+
+        # Risk metrics on theoretical price
+        breakeven = (K + theoretical) if is_call else (K - theoretical)
 
         return (
             f"Mispricing Analysis ({option_type.upper()}):\n"
@@ -180,7 +218,14 @@ def mispricing_analysis(market_price: float, S: float, K: float, T_days: int, r:
             f"  Market Price                = ${market_price:.2f}\n"
             f"  Discrepancy                 = ${discrepancy:+.2f} ({discrepancy_pct:+.1f}%)\n"
             f"  Assessment: {assessment}\n"
-            f"  (d1={d1:.4f}, d2={d2:.4f})"
+            f"  (d1={d1:.4f}, d2={d2:.4f})\n\n"
+            f"  Option Greeks:\n"
+            f"    Delta = {delta:.4f}  |  Gamma = {gamma:.4f}\n"
+            f"    Theta = {theta:.4f} per day  |  Vega = {vega:.4f} per 1% vol\n\n"
+            f"  Risk Analysis:\n"
+            f"    Breakeven at Expiry      = ${breakeven:.2f}\n"
+            f"    Max Loss (buyer)         = ${market_price:.2f} (premium paid)\n"
+            f"    Max Gain (buyer)         = {'Unlimited' if is_call else f'${K - market_price:.2f}'}"
         )
     except Exception as e:
         return f"Error in mispricing analysis: {e}"

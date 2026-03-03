@@ -177,6 +177,9 @@ Critical Rules:
 - If a tool returns an error, read the error message carefully. Do NOT call the same tool with the same arguments again.
 - After a tool error, either fix your input or use a different tool or answer directly.
 - Be concise, provide the final numeric answer clearly.
+
+MANDATORY for ANY options question (pricing, mispricing, or analysis):
+- Your final answer MUST include: (1) the computed price or assessment, (2) ALL Greeks (Delta, Gamma, Theta, Vega), and (3) Risk Analysis (breakeven price, max loss, max gain). The finance tools already compute all of this — include it all in your response.
 """
 
 REFLECTION_PROMPT = """You are a quality reviewer. Examine the assistant's draft answer below and check for:
