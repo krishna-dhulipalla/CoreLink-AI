@@ -147,6 +147,7 @@ Rules:
 - Use tools when they can provide a precise answer (math, time, external data).
 - If no tool is needed, answer directly from your knowledge.
 - Be concise and accurate in your final response.
+- If you cannot find the answer after 3-4 tool attempts, STOP and provide your best partial answer or explain what is missing. Do NOT loop indefinitely.
 """
 
 REFLECTION_PROMPT = """You are a quality reviewer. Examine the assistant's draft answer below and check for:
@@ -223,6 +224,7 @@ def _build_model(tools: list):
     llm = ChatOpenAI(
         model="gpt-4o-mini",
         temperature=0,
+        max_tokens=1000,
         api_key=os.getenv("OPENAI_API_KEY"),
     )
     return llm.bind_tools(tools)
@@ -333,6 +335,7 @@ def reflector(state: AgentState) -> dict:
     llm = ChatOpenAI(
         model="gpt-4o-mini",
         temperature=0,
+        max_tokens=500,
         api_key=os.getenv("OPENAI_API_KEY"),
     )
     verdict = llm.invoke(reflection_messages)
@@ -448,7 +451,25 @@ async def run_agent(
     # ainvoke returns the final accumulated state after the graph completes.
     # This state has been through the custom _messages_reducer, so it
     # correctly reflects any ReplaceMessages compressions from context_window.
-    final_state = await graph.ainvoke(initial_state)
+    #
+    # ── Safety: recursion_limit prevents runaway tool loops ────────────
+    # LangGraph counts each node invocation as one step. With limit=25,
+    # the agent can make roughly 7-8 tool calls before being stopped.
+    try:
+        final_state = await graph.ainvoke(
+            initial_state,
+            config={"recursion_limit": 25},
+        )
+    except Exception as e:
+        # Catch GraphRecursionError (or any unexpected error) gracefully.
+        # Return the best answer we have from the current state.
+        logger.warning(f"Graph execution stopped: {e}")
+        return (
+            "I reached my processing limit for this task. "
+            "Here is my best partial answer based on what I found so far.",
+            [{"node": "safety", "action": f"Stopped: {e}"}],
+            list(initial_state.get("messages", [])),
+        )
 
     # Build step list from the final state (lightweight summary)
     steps = []
