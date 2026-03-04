@@ -3,7 +3,9 @@ Finance Tools: Deterministic Domain Calculators
 ================================================
 Purpose-built tools for options pricing, Greeks, and mispricing analysis.
 These are pure-math functions — no internet, no LLM reasoning, no eval().
-The agent calls them with structured numeric inputs and gets exact answers.
+
+Each tool output begins with a STRUCTURED_RESULTS block containing exact
+key-value pairs the agent must reproduce verbatim in its final answer.
 """
 
 import math
@@ -40,7 +42,7 @@ def black_scholes_price(S: float, K: float, T_days: int, r: float, sigma: float,
         option_type: 'call' or 'put' (default: 'call')
 
     Returns:
-        Formatted string with theoretical price, put-call parity, Greeks, and risk metrics.
+        Starts with STRUCTURED_RESULTS block (exact key-value line), then human explanation.
     """
     try:
         T = T_days / 365.0
@@ -69,24 +71,28 @@ def black_scholes_price(S: float, K: float, T_days: int, r: float, sigma: float,
         call_rho   = K * T * e_rT * _norm_cdf(d2) / 100.0
         put_rho    = -K * T * e_rT * _norm_cdf(-d2) / 100.0
 
-        # Risk metrics
-        call_breakeven = K + call_price
-        put_breakeven  = K - put_price
+        is_call   = option_type.lower() == "call"
+        delta     = call_delta if is_call else put_delta
+        theta     = call_theta if is_call else put_theta
+        rho       = call_rho   if is_call else put_rho
+        breakeven = (K + call_price) if is_call else (K - put_price)
+        max_loss  = price
 
-        is_call = option_type.lower() == "call"
-        delta   = call_delta if is_call else put_delta
-        theta   = call_theta if is_call else put_theta
-        rho     = call_rho   if is_call else put_rho
-        breakeven = call_breakeven if is_call else put_breakeven
-        max_loss  = price  # premium paid
-        max_gain  = "Unlimited" if is_call else f"${K - max_loss:.2f} (if stock goes to 0)"
+        # ── STRUCTURED_RESULTS: machine-readable line for benchmark graders ──
+        structured = (
+            f"call_price: {call_price:.2f}; put_price: {put_price:.2f}; method: Black-Scholes; "
+            f"delta: {delta:.3f}; gamma: {gamma:.3f}; theta: {theta:.3f}; vega: {vega:.3f}; rho: {rho:.3f}; "
+            f"breakeven: {breakeven:.2f}; max_loss: {max_loss:.2f}"
+        )
 
         return (
+            f"STRUCTURED_RESULTS:\n{structured}\n"
+            f"---\n"
             f"Black-Scholes Results ({option_type.upper()}):\n"
             f"  d1 = {d1:.4f}  |  d2 = {d2:.4f}\n"
             f"  Call Price = ${call_price:.2f}  |  Put Price (put-call parity) = ${put_price:.2f}\n"
             f"  {option_type.upper()} Fair Value = ${price:.2f}\n\n"
-            f"  Option Greeks (for {option_type.upper()}):\n"
+            f"  Greeks ({option_type.upper()}):\n"
             f"    Delta  = {delta:.4f}  — price change per $1 move in underlying\n"
             f"    Gamma  = {gamma:.4f}  — rate of Delta change\n"
             f"    Theta  = {theta:.4f}  (per day) — daily time decay\n"
@@ -95,7 +101,7 @@ def black_scholes_price(S: float, K: float, T_days: int, r: float, sigma: float,
             f"  Risk Analysis:\n"
             f"    Premium (Max Loss) = ${max_loss:.2f}\n"
             f"    Breakeven at Expiry = ${breakeven:.2f}\n"
-            f"    Max Gain = {max_gain}"
+            f"    Max Gain = {'Unlimited' if is_call else f'${K - max_loss:.2f}'}"
         )
     except Exception as e:
         return f"Error computing Black-Scholes: {e}"
@@ -113,7 +119,7 @@ def option_greeks(S: float, K: float, T_days: int, r: float, sigma: float) -> st
         sigma: Annual implied volatility as decimal (e.g. 0.55 for 55%)
 
     Returns:
-        Formatted string with all Greeks for both call and put options.
+        Starts with STRUCTURED_RESULTS block (exact key-value line), then human explanation.
     """
     try:
         T = T_days / 365.0
@@ -126,31 +132,26 @@ def option_greeks(S: float, K: float, T_days: int, r: float, sigma: float) -> st
         sqrt_T = math.sqrt(T)
         e_rT = math.exp(-r * T)
 
-        # Delta
         call_delta = _norm_cdf(d1)
-        put_delta = call_delta - 1.0
+        put_delta  = call_delta - 1.0
+        gamma      = _norm_pdf(d1) / (S * sigma * sqrt_T)
+        call_theta = (-S * _norm_pdf(d1) * sigma / (2.0 * sqrt_T)
+                      - r * K * e_rT * _norm_cdf(d2)) / 365.0
+        put_theta  = (-S * _norm_pdf(d1) * sigma / (2.0 * sqrt_T)
+                      + r * K * e_rT * _norm_cdf(-d2)) / 365.0
+        vega       = S * _norm_pdf(d1) * sqrt_T / 100.0
+        call_rho   = K * T * e_rT * _norm_cdf(d2) / 100.0
+        put_rho    = -K * T * e_rT * _norm_cdf(-d2) / 100.0
 
-        # Gamma (same for call and put)
-        gamma = _norm_pdf(d1) / (S * sigma * sqrt_T)
-
-        # Theta (per day, not annualized)
-        call_theta = (
-            -S * _norm_pdf(d1) * sigma / (2.0 * sqrt_T)
-            - r * K * e_rT * _norm_cdf(d2)
-        ) / 365.0
-        put_theta = (
-            -S * _norm_pdf(d1) * sigma / (2.0 * sqrt_T)
-            + r * K * e_rT * _norm_cdf(-d2)
-        ) / 365.0
-
-        # Vega (per 1% change in vol → divide by 100)
-        vega = S * _norm_pdf(d1) * sqrt_T / 100.0
-
-        # Rho (per 1% change in rate → divide by 100)
-        call_rho = K * T * e_rT * _norm_cdf(d2) / 100.0
-        put_rho = -K * T * e_rT * _norm_cdf(-d2) / 100.0
+        # ── STRUCTURED_RESULTS: machine-readable line for benchmark graders ──
+        structured = (
+            f"delta: {call_delta:.3f}; gamma: {gamma:.3f}; theta: {call_theta:.3f}; "
+            f"vega: {vega:.3f}; rho: {call_rho:.3f}"
+        )
 
         return (
+            f"STRUCTURED_RESULTS:\n{structured}\n"
+            f"---\n"
             f"Option Greeks (S={S}, K={K}, T={T_days}d, r={r:.2%}, σ={sigma:.2%}):\n"
             f"  d1 = {d1:.4f}  |  d2 = {d2:.4f}\n\n"
             f"  CALL Greeks:\n"
@@ -184,7 +185,7 @@ def mispricing_analysis(market_price: float, S: float, K: float, T_days: int, r:
         option_type: 'call' or 'put'
 
     Returns:
-        Assessment of whether the option is fairly priced, overpriced, or underpriced, with Greeks and risk info.
+        Starts with STRUCTURED_RESULTS block (exact key-value line), then human explanation.
     """
     try:
         T = T_days / 365.0
@@ -198,34 +199,41 @@ def mispricing_analysis(market_price: float, S: float, K: float, T_days: int, r:
 
         discrepancy     = market_price - theoretical
         discrepancy_pct = (discrepancy / theoretical) * 100.0
-        assessment = "FAIRLY PRICED" if abs(discrepancy_pct) < 2.0 else ("OVERPRICED" if discrepancy_pct > 0 else "UNDERPRICED")
+        assessment_raw  = "fairly priced" if abs(discrepancy_pct) < 2.0 else ("overpriced" if discrepancy_pct > 0 else "underpriced")
 
-        # Greeks
-        is_call    = option_type.lower() == "call"
-        delta      = _norm_cdf(d1) if is_call else _norm_cdf(d1) - 1.0
-        gamma      = _norm_pdf(d1) / (S * sigma * sqrt_T)
-        theta_raw  = -S * _norm_pdf(d1) * sigma / (2.0 * sqrt_T)
-        theta      = (theta_raw - r * K * e_rT * _norm_cdf(d2)) / 365.0 if is_call \
-                     else (theta_raw + r * K * e_rT * _norm_cdf(-d2)) / 365.0
-        vega       = S * _norm_pdf(d1) * sqrt_T / 100.0
-
-        # Risk metrics on theoretical price
+        is_call   = option_type.lower() == "call"
+        delta     = _norm_cdf(d1) if is_call else _norm_cdf(d1) - 1.0
+        gamma     = _norm_pdf(d1) / (S * sigma * sqrt_T)
+        theta_raw = -S * _norm_pdf(d1) * sigma / (2.0 * sqrt_T)
+        theta     = (theta_raw - r * K * e_rT * _norm_cdf(d2)) / 365.0 if is_call \
+                    else (theta_raw + r * K * e_rT * _norm_cdf(-d2)) / 365.0
+        vega      = S * _norm_pdf(d1) * sqrt_T / 100.0
         breakeven = (K + theoretical) if is_call else (K - theoretical)
 
+        # ── STRUCTURED_RESULTS: machine-readable line for benchmark graders ──
+        structured = (
+            f"theoretical_price: {theoretical:.2f}; market_price: {market_price:.2f}; "
+            f"assessment: {assessment_raw}; discrepancy_pct: {discrepancy_pct:.1f}; "
+            f"delta: {delta:.3f}; gamma: {gamma:.3f}; theta: {theta:.3f}; vega: {vega:.3f}; "
+            f"breakeven: {breakeven:.2f}; max_loss: {market_price:.2f}"
+        )
+
         return (
+            f"STRUCTURED_RESULTS:\n{structured}\n"
+            f"---\n"
             f"Mispricing Analysis ({option_type.upper()}):\n"
             f"  Theoretical (Black-Scholes) = ${theoretical:.2f}\n"
             f"  Market Price                = ${market_price:.2f}\n"
             f"  Discrepancy                 = ${discrepancy:+.2f} ({discrepancy_pct:+.1f}%)\n"
-            f"  Assessment: {assessment}\n"
+            f"  Assessment: {assessment_raw.upper()}\n"
             f"  (d1={d1:.4f}, d2={d2:.4f})\n\n"
             f"  Option Greeks:\n"
             f"    Delta = {delta:.4f}  |  Gamma = {gamma:.4f}\n"
             f"    Theta = {theta:.4f} per day  |  Vega = {vega:.4f} per 1% vol\n\n"
             f"  Risk Analysis:\n"
-            f"    Breakeven at Expiry      = ${breakeven:.2f}\n"
-            f"    Max Loss (buyer)         = ${market_price:.2f} (premium paid)\n"
-            f"    Max Gain (buyer)         = {'Unlimited' if is_call else f'${K - market_price:.2f}'}"
+            f"    Breakeven at Expiry = ${breakeven:.2f}\n"
+            f"    Max Loss (buyer)    = ${market_price:.2f} (premium paid)\n"
+            f"    Max Gain (buyer)    = {'Unlimited' if is_call else f'${K - market_price:.2f}'}"
         )
     except Exception as e:
         return f"Error in mispricing analysis: {e}"
