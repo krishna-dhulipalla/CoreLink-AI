@@ -32,7 +32,7 @@ from context_manager import (
     summarize_and_window,
     truncate_tool_output,
 )
-from finance_tools import FINANCE_TOOLS
+from tools import CALCULATOR_TOOL, SEARCH_TOOL
 
 logger = logging.getLogger(__name__)
 
@@ -80,75 +80,15 @@ class AgentState(TypedDict):
 # ---------------------------------------------------------------------------
 
 @tool
-def calculator(expression: str) -> str:
-    """Evaluate a SINGLE math expression. Supports: sqrt(), exp(), log(), pi, e, **, abs(), erf().
-    IMPORTANT: ONE expression only — no imports, assignments, def, or multiple lines.
-    Good: 'exp(-0.5 * 1.2**2)'  Bad: 'import math; math.exp(...)'
-    For Black-Scholes or Greeks, use the dedicated black_scholes_price or option_greeks tools instead.
-    """
-    import math
-    # Reject multi-statement code that can never work in eval()
-    forbidden = ["import ", "def ", "class ", "print(", "\n", "for ", "while "]
-    for token in forbidden:
-        if token in expression:
-            return (
-                "Error: calculator accepts a SINGLE math expression only — "
-                "no imports, assignments, function definitions, or multiple lines. "
-                f"Detected forbidden token: {repr(token)}. "
-                "Use black_scholes_price or option_greeks for finance calculations."
-            )
-    safe_ns = {"__builtins__": {}}
-    for fn_name in [
-        "sqrt", "exp", "log", "log2", "log10", "pi", "e",
-        "sin", "cos", "tan", "ceil", "floor", "factorial",
-        "pow", "erf", "erfc", "inf",
-    ]:
-        safe_ns[fn_name] = getattr(math, fn_name)
-    safe_ns["abs"] = abs
-    try:
-        result = eval(expression, safe_ns)  # noqa: S307 – restricted namespace
-        return str(result)
-    except Exception as e:
-        return f"Error evaluating expression: {e}"
-
-
-@tool
 def get_current_time() -> str:
     """Return the current UTC date and time in ISO-8601 format."""
     return datetime.now(timezone.utc).isoformat()
 
 
-@tool
-def internet_search(query: str) -> str:
-    """Search the internet for current events, facts, or specific data.
-    Provides highly relevant snippets from multiple websites.
-    """
-    try:
-        from tavily import TavilyClient
-        import os
-        
-        api_key = os.getenv("TAVILY_API_KEY")
-        if not api_key:
-            return "Error: TAVILY_API_KEY is not set in the environment. Cannot perform search."
-            
-        client = TavilyClient(api_key=api_key)
-        response = client.search(query=query, search_depth="basic", max_results=3)
-        
-        formatted = []
-        for r in response.get("results", []):
-            formatted.append(f"Title: {r['title']}\nSnippet: {r['content']}\nURL: {r['url']}")
-            
-        if not formatted:
-            return "No useful results found."
-            
-        return "\n\n---\n\n".join(formatted)
-    except ImportError:
-        return "Error: tavily-python package is not installed."
-    except Exception as e:
-        return f"Search failed: {e}"
+def _get_agent_tools() -> list[Any]:
+    """Return the set of tools available to the core reasoning agent."""
+    return [CALCULATOR_TOOL, SEARCH_TOOL, get_current_time]
 
-
-BUILTIN_TOOLS = [calculator, get_current_time, internet_search] + FINANCE_TOOLS
 
 # Reflective feedback loop configuration
 MAX_REFLECTIONS = int(os.getenv("MAX_REFLECTIONS", "2"))
@@ -158,30 +98,22 @@ MAX_REFLECTIONS = int(os.getenv("MAX_REFLECTIONS", "2"))
 # 3. System Prompt
 # ---------------------------------------------------------------------------
 
-SYSTEM_PROMPT = """You are CoreLink AI – a generalist reasoning agent competing in the AgentX-AgentBeats Competition.
+SYSTEM_PROMPT = """You are a general-purpose reasoning engine designed to solve complex multi-step tasks.
+You operate in a Plan -> Act -> Learn loop.
 
-Your operating loop is Plan → Act → Learn:
-1. **Plan**: Identify the task type. Choose the right tool.
-2. **Act**: Call the tool with correct inputs. Read the output carefully.
-3. **Learn**: If the tool output answers the question, formulate your final answer. If not, try a different approach — NOT the same call again.
+Your core workflow:
+1. **Plan**: Analyze the user's request. Determine what steps are needed and what tools to use.
+2. **Act**: Execute the plan using the tools available to you.
+3. **Learn**: If the tool output answers the question, formulate your final answer. If not, try a different approach.
 
-Tool Selection Rules:
-- For options pricing (no market price given, just compute fair value): use `black_scholes_price(S, K, T_days, r, sigma)`.
-- For mispricing / valuation questions — use `mispricing_analysis(market_price, S, K, T_days, r, sigma)` when ANY of these are true:
-    - A market/observed option price is explicitly given in the question
-    - The question asks whether an option is "fairly priced", "overpriced", or "underpriced"
-    - The question asks to "calculate the theoretical value" and compare it to a given price
-    - The question mentions a price at which the option "is priced at" or "is trading at"
-  NEVER use black_scholes_price for these — use mispricing_analysis.
-- For option sensitivity (Delta, Gamma, Theta, Vega, Rho): use `option_greeks(S, K, T_days, r, sigma)`.
-- For simple arithmetic: use `calculator` with a SINGLE expression like `sqrt(2)` or `exp(-0.5 * 0.3**2)`.
-- For real-time facts or market data: use `internet_search`.
-- For general knowledge you already know: answer directly without calling any tool.
-
-Critical Rules:
+Tool Usage Rules:
+- You have access to a set of domain-specific tools provided by the environment.
+- Read their descriptions carefully to understand their purpose, expected inputs, and outputs.
+- Choose the most appropriate tool for the task based strictly on its description.
+- For simple arithmetic, use the `calculator` tool with a SINGLE expression.
+- For real-time facts or external data, use `internet_search`.
 - If a tool returns an error, read the error message carefully. Do NOT call the same tool with the same arguments again.
-- After a tool error, either fix your input or use a different tool or answer directly.
-- Be concise, provide the final numeric answer clearly.
+- After a tool error, either fix your input or use a different tool.
 
 Answer Composition Rule:
 - When a tool output begins with "STRUCTURED_RESULTS:", copy that STRUCTURED_RESULTS line VERBATIM at the top of your final answer — do NOT rephrase, round, or omit any fields from it. Then add your explanation below.
