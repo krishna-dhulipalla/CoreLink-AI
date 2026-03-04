@@ -175,8 +175,16 @@ def option_greeks(S: float, K: float, T_days: int, r: float, sigma: float) -> st
 def mispricing_analysis(market_price: float, S: float, K: float, T_days: int, r: float, sigma: float, option_type: str = "call") -> str:
     """Compare a market option price to its Black-Scholes theoretical value, including Greeks and risk metrics.
 
+    USE THIS TOOL WHEN:
+    - The question asks if an option is 'fairly priced', 'overpriced', or 'underpriced'
+    - A market/observed price is given AND you need the theoretical (Black-Scholes) value
+    - The question asks to 'calculate the theoretical value and explain the discrepancy'
+    - Keywords: 'is this option priced at', 'overpriced', 'underpriced', 'fairly priced', 'discrepancy'
+
+    DO NOT use black_scholes_price for these questions — use this tool instead.
+
     Args:
-        market_price: Observed market price of the option
+        market_price: Observed market price of the option (e.g. 18.50)
         S: Current underlying asset price
         K: Strike price
         T_days: Days to expiration

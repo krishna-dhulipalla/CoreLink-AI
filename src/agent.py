@@ -166,9 +166,14 @@ Your operating loop is Plan → Act → Learn:
 3. **Learn**: If the tool output answers the question, formulate your final answer. If not, try a different approach — NOT the same call again.
 
 Tool Selection Rules:
-- For options pricing (Black-Scholes call/put price): use `black_scholes_price(S, K, T_days, r, sigma)`.
+- For options pricing (no market price given, just compute fair value): use `black_scholes_price(S, K, T_days, r, sigma)`.
+- For mispricing / valuation questions — use `mispricing_analysis(market_price, S, K, T_days, r, sigma)` when ANY of these are true:
+    - A market/observed option price is explicitly given in the question
+    - The question asks whether an option is "fairly priced", "overpriced", or "underpriced"
+    - The question asks to "calculate the theoretical value" and compare it to a given price
+    - The question mentions a price at which the option "is priced at" or "is trading at"
+  NEVER use black_scholes_price for these — use mispricing_analysis.
 - For option sensitivity (Delta, Gamma, Theta, Vega, Rho): use `option_greeks(S, K, T_days, r, sigma)`.
-- For comparing market vs theoretical price: use `mispricing_analysis(market_price, S, K, T_days, r, sigma)`.
 - For simple arithmetic: use `calculator` with a SINGLE expression like `sqrt(2)` or `exp(-0.5 * 0.3**2)`.
 - For real-time facts or market data: use `internet_search`.
 - For general knowledge you already know: answer directly without calling any tool.
