@@ -17,18 +17,24 @@ Based on the methodologies from _Agentic Reasoning for Large Language Models_ (a
 
 ## 2. Foundational Reasoning (Tool-Use Optimization)
 
-The agent operates in a benchmark-agnostic AAA (Agent-to-Agent) paradigm. Tools are not hard-coded; they are discovered at runtime via MCP:
+The agent operates in a domain-agnostic paradigm. Tools are **never hardcoded** — they are discovered at runtime via MCP:
 
-- **Tool Discovery**: On initialization with a Green Agent, the Purple Agent queries the MCP server for available tools.
-- **Prompt Construction**: Tool definitions are injected into the context dynamically using efficient documentation formats.
-- **Action Routing**: LangGraph routes specific sub-tasks to tool-execution nodes, processing the tool calls and passing the results back to the reasoning nodes.
+- **Tool Discovery**: On initialization, the Purple Agent connects to all configured MCP servers via `MultiServerMCPClient` and dynamically registers their tools into the LangGraph state. New domains require only a `.env` change.
+- **Multi-Server Architecture**: Domain-specific logic lives in **separate, independent MCP servers**. Current finance servers:
+  - `finance` — Black-Scholes pricing, Greeks, mispricing analysis
+  - `options_chain` — Options chains, IV surfaces, multi-leg strategy analysis
+  - `trading_sim` — Paper trading engine (portfolio management, simulated execution)
+  - `risk_metrics` — VaR, Sharpe/Sortino/Calmar ratios, portfolio Greeks, stress testing
+- **Prompt Construction**: Tool definitions are injected into the context dynamically from the tool's `description` field — the system prompt contains no domain-specific routing rules.
+- **Action Routing**: LangGraph routes sub-tasks to tool-execution nodes, processing the tool calls and passing the results back to the reasoning nodes.
 
 ## 3. Self-Evolving Reasoning (Feedback Loops)
 
 To maximize accuracy, the agent implements a robust feedback loop:
 
 - **Reflective Feedback**: Before submitting a final answer, the agent critiques its own intermediate reasoning for logical errors. If validation fails, it generates revised steps.
-- **Validator-Driven Feedback**: If the Green Agent or an environment simulator provides a failure signal, the agent repeatedly re-evaluates and submits independent attempts (acting as an implicit loop in LangGraph).
+- **Tool-Failure Recovery**: Explicit failure state (`tool_fail_count`, `last_tool_signature`) in `AgentState` prevents the agent from re-calling the same failing tool. After 2 consecutive failures, the graph routes to the reflector to force a strategy change.
+- **Validator-Driven Feedback**: If the environment provides a failure signal, the agent repeatedly re-evaluates and submits independent attempts.
 
 ## 4. Memory Management & Observation Masking (Windowing)
 
@@ -40,4 +46,5 @@ Long A2A tasks can quickly exhaust the LLM's context window. To save tokens and 
 - **Summarize-and-Forget**:
   - LangGraph's short-term memory (message list) is periodically compressed.
   - Older "thought-tool-observation" steps are summarized into a condensed "learned facts" node, and the raw messages are removed from the active context window.
-- **Dynamic Graph Pruning**: Limiting the active communication graph and history to the immediate sub-task context.
+  - Group-based windowing (`_group_messages()`) ensures `tool_calls` + `ToolMessage` pairs are never split by compression boundaries.
+- **Structured Outputs**: Finance tools emit a `STRUCTURED_RESULTS:` prefix block with exact key-value pairs that the agent is instructed to copy verbatim — preventing LLM paraphrasing from corrupting graded numeric fields.
