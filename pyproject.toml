@@ -15,6 +15,9 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "tavily-python>=0.5.0",
     "mcp>=1.26.0",
+    "openpyxl>=3.1.5",
+    "pypdf>=6.7.5",
+    "python-docx>=1.2.0",
 ]
 
 [project.optional-dependencies]
