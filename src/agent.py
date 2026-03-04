@@ -12,7 +12,7 @@ import logging
 import os
 import operator
 from datetime import datetime, timezone
-from typing import Annotated, TypedDict
+from typing import Annotated, Any, TypedDict
 
 from dotenv import load_dotenv
 from langchain_core.messages import (
@@ -88,6 +88,10 @@ def get_current_time() -> str:
 def _get_agent_tools() -> list[Any]:
     """Return the set of tools available to the core reasoning agent."""
     return [CALCULATOR_TOOL, SEARCH_TOOL, get_current_time]
+
+
+# Built-in tools always merged into every agent graph
+BUILTIN_TOOLS = _get_agent_tools()
 
 
 # Reflective feedback loop configuration
