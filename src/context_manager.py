@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 MAX_CONTEXT_TOKENS = int(os.getenv("MAX_CONTEXT_TOKENS", "80000"))
 MAX_TOOL_OUTPUT_CHARS = int(os.getenv("MAX_TOOL_OUTPUT_CHARS", "4000"))
 CONTEXT_KEEP_RECENT = int(os.getenv("CONTEXT_KEEP_RECENT", "6"))
-MODEL_ENCODING = os.getenv("TIKTOKEN_MODEL", "gpt-4o-mini")
+MODEL_ENCODING = os.getenv("TIKTOKEN_MODEL", "gpt-oss-20b")
 
 
 # ── Token Counting ────────────────────────────────────────────────────────

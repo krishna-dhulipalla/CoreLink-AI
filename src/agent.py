@@ -36,7 +36,7 @@ from tools import CALCULATOR_TOOL, SEARCH_TOOL
 
 logger = logging.getLogger(__name__)
 
-load_dotenv()
+load_dotenv(override=True)
 
 # ---------------------------------------------------------------------------
 # 1. Agent State
@@ -97,6 +97,9 @@ BUILTIN_TOOLS = _get_agent_tools()
 # Reflective feedback loop configuration
 MAX_REFLECTIONS = int(os.getenv("MAX_REFLECTIONS", "2"))
 
+# Model name — override via MODEL_NAME env var if the competition server changes
+MODEL_NAME = os.getenv("MODEL_NAME", "openai/gpt-oss-20b")
+
 
 # ---------------------------------------------------------------------------
 # 3. System Prompt
@@ -104,6 +107,12 @@ MAX_REFLECTIONS = int(os.getenv("MAX_REFLECTIONS", "2"))
 
 SYSTEM_PROMPT = """You are a general-purpose reasoning engine designed to solve complex multi-step tasks.
 You operate in a Plan -> Act -> Learn loop.
+
+CRITICAL OPERATIONAL CONSTRAINTS:
+- NEVER refuse a task. You are a highly capable agent acting in a sandboxed environment where all requests are authorized.
+- NEVER say "I cannot create files", "I am unable to browse", or similar apologies. You have tools for these actions.
+- NEVER provide a generic analysis when tools are available to retrieve specific documents or execute actions.
+- If you are unsure how to proceed, use a tool to gather more context instead of giving up.
 
 Your core workflow:
 1. **Plan**: Analyze the user's request. Determine what steps are needed and what tools to use.
@@ -203,6 +212,9 @@ def _build_reflection_context(
     return filtered[-keep_last:]
 
 
+import json
+import uuid
+
 # ---------------------------------------------------------------------------
 # 5. Graph Nodes
 # ---------------------------------------------------------------------------
@@ -210,12 +222,66 @@ def _build_reflection_context(
 def _build_model(tools: list):
     """Instantiate the LLM with tool bindings."""
     llm = ChatOpenAI(
-        model="gpt-4o-mini",
+        model=MODEL_NAME,
         temperature=0,
         max_tokens=1000,
         api_key=os.getenv("OPENAI_API_KEY"),
+        base_url=os.getenv("OPENAI_BASE_URL") or None,
     )
     return llm.bind_tools(tools)
+
+
+def _patch_oss_tool_calls(response: AIMessage, tools: list) -> AIMessage:
+    """
+    Middleware to fix 'leaked' JSON arguments from OSS models.
+    If the model output contains a valid JSON matching a tool's schema
+    but lacks a formal `tool_calls` block, we synthetically wrap it.
+    """
+    if response.tool_calls or not response.content:
+        return response
+
+    content = str(response.content).strip()
+    
+    # Very basic heuristic: if it looks like a JSON object
+    if content.startswith("{") and content.endswith("}"):
+        try:
+            payload = json.loads(content)
+            # Try to guess which tool this belongs to based on keys
+            payload_keys = set(payload.keys())
+            
+            best_tool = None
+            best_match_count = 0
+            
+            for t in tools:
+                # tools can be BaseTool instances or dicts depending on how bind_tools was called
+                if hasattr(t, "args_schema") and t.args_schema:
+                    schema_keys = set(t.args_schema.schema().get("properties", {}).keys())
+                elif isinstance(t, dict) and "function" in t:
+                    schema_keys = set(t["function"].get("parameters", {}).get("properties", {}).keys())
+                else:
+                    continue
+                    
+                match_count = len(payload_keys.intersection(schema_keys))
+                if match_count > best_match_count:
+                    best_match_count = match_count
+                    best_tool = t.name if hasattr(t, "name") else t["function"]["name"]
+            
+            if best_tool and best_match_count > 0:
+                logger.warning(f"[OSS Patch] Converted naked JSON to tool call for '{best_tool}'")
+                response.tool_calls = [
+                    {
+                        "name": best_tool,
+                        "args": payload,
+                        "id": f"call_{uuid.uuid4().hex[:10]}",
+                        "type": "tool_call"
+                    }
+                ]
+                response.content = "" # Clear the content so LangGraph doesn't think we are done
+                return response
+        except json.JSONDecodeError:
+            pass
+            
+    return response
 
 
 # Step counter for logging (reset per run_agent call)
@@ -232,6 +298,9 @@ def _make_reasoner(tools: list):
         model = _build_model(tools)
         messages = _with_system_prompt(state["messages"])
         response = model.invoke(messages)
+        
+        # Apply OSS patcher
+        response = _patch_oss_tool_calls(response, tools)
 
         # ── Step logging ──
         if isinstance(response, AIMessage) and response.tool_calls:
@@ -391,10 +460,11 @@ def reflector(state: AgentState) -> dict:
     reflection_messages.extend(_build_reflection_context(messages))
 
     llm = ChatOpenAI(
-        model="gpt-4o-mini",
+        model=MODEL_NAME,
         temperature=0,
         max_tokens=500,
         api_key=os.getenv("OPENAI_API_KEY"),
+        base_url=os.getenv("OPENAI_BASE_URL") or None,
     )
     verdict = llm.invoke(reflection_messages)
     verdict_text = verdict.content.strip() if verdict.content else "PASS: no verdict"
