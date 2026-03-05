@@ -39,6 +39,9 @@ def _sniff_format(url: str, content_type: str) -> str:
         (".docx", "word"), (".doc", "word"),
         (".csv", "csv"), (".json", "json"),
         (".png", "image"), (".jpg", "image"), (".jpeg", "image"),
+        (".wav", "audio"), (".mp3", "audio"),
+        (".mp4", "video"), (".avi", "video"),
+        (".zip", "archive"), (".tar.gz", "archive"), (".rar", "archive"),
         (".txt", "text"), (".md", "text"),
     ]:
         if url_lower.endswith(ext):
@@ -50,6 +53,9 @@ def _sniff_format(url: str, content_type: str) -> str:
     if "csv" in ct:                    return "csv"
     if "json" in ct:                   return "json"
     if "image" in ct:                  return "image"
+    if "audio" in ct:                  return "audio"
+    if "video" in ct:                  return "video"
+    if "zip" in ct or "tar" in ct:     return "archive"
     return "text"
 
 
@@ -208,6 +214,21 @@ def fetch_reference_file(
                 + "[IMAGE FILE DETECTED]\n"
                 + "This tool cannot extract pixel data from images. "
                 + "If the image contains a chart or table, ask the evaluator to provide data in CSV/JSON format instead."
+            )
+
+        elif fmt in ["audio", "video"]:
+            return (
+                header
+                + f"[{fmt.upper()} FILE DETECTED]\n"
+                + f"This tool cannot extract audio/video streams. "
+                + "If the task requires processing media files natively, an external specialized tool must be provided."
+            )
+
+        elif fmt == "archive":
+            return (
+                header
+                + "[ARCHIVE FILE DETECTED]\n"
+                + "This tool cannot extract or traverse zip/tar archives directly. "
             )
 
         else:  # text / markdown / fallback

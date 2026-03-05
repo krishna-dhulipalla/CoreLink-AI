@@ -255,7 +255,10 @@ def _patch_oss_tool_calls(response: AIMessage, tools: list) -> AIMessage:
             for t in tools:
                 # tools can be BaseTool instances or dicts depending on how bind_tools was called
                 if hasattr(t, "args_schema") and t.args_schema:
-                    schema_keys = set(t.args_schema.schema().get("properties", {}).keys())
+                    if isinstance(t.args_schema, dict):
+                        schema_keys = set(t.args_schema.get("properties", {}).keys())
+                    else:
+                        schema_keys = set(t.args_schema.schema().get("properties", {}).keys())
                 elif isinstance(t, dict) and "function" in t:
                     schema_keys = set(t["function"].get("parameters", {}).get("properties", {}).keys())
                 else:
