@@ -56,6 +56,9 @@ async def run_agent(
         # Sprint 1.5: MaAS-lite fields
         "selected_layers": [],
         "format_required": False,
+        "policy_confidence": 0.0,
+        "estimated_steps": 0,
+        "early_exit_allowed": False,
         "architecture_trace": [],
         "cost_tracker": tracker,
     }
@@ -75,6 +78,7 @@ async def run_agent(
 
         # Log cost even on recursion failure
         cost_summary = tracker.summary()
+        cost_summary["architecture_trace"] = tracker.architecture_trace()
         logger.info(f"[CostTracker] (recursion limit) {cost_summary}")
 
         return (
@@ -117,6 +121,10 @@ async def run_agent(
     cost_summary = tracker.summary()
     cost_summary["selected_layers"] = final_state.get("selected_layers", [])
     cost_summary["format_required"] = final_state.get("format_required", False)
+    cost_summary["policy_confidence"] = final_state.get("policy_confidence", 0.0)
+    cost_summary["estimated_steps"] = final_state.get("estimated_steps", 0)
+    cost_summary["early_exit_allowed"] = final_state.get("early_exit_allowed", False)
+    cost_summary["architecture_trace"] = tracker.architecture_trace()
     steps.append({"node": "cost_summary", **cost_summary})
 
     logger.info(f"[CostTracker] {cost_summary}")

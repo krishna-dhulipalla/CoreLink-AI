@@ -44,17 +44,20 @@ def should_use_tools(state: AgentState) -> str:
     repeated-failure loop. If tool_fail_count >= MAX_TOOL_FAILURES, force
     the agent to the reflector so it must produce a final answer.
     """
+    selected_layers = state.get("selected_layers", [])
+    wants_reflection = not selected_layers or "reflection_review" in selected_layers
+
     if state.get("tool_fail_count", 0) >= MAX_TOOL_FAILURES:
         logger.warning(
             f"[FailureGate] Tool failure limit ({MAX_TOOL_FAILURES}) reached. "
             "Forcing agent to produce final answer."
         )
-        return "reflector"
+        return "reflector" if wants_reflection else "format_normalizer"
 
     last_message = state["messages"][-1]
     if isinstance(last_message, AIMessage) and last_message.tool_calls:
         return "tool_executor"
-    return "reflector"
+    return "reflector" if wants_reflection else "format_normalizer"
 
 
 # ---------------------------------------------------------------------------

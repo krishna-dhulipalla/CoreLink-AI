@@ -14,6 +14,7 @@ from langchain_openai import ChatOpenAI
 from agent.state import AgentState
 from agent.cost import CostTracker
 from agent.prompts import REFLECTION_PROMPT, MAX_REFLECTIONS, MODEL_NAME
+from context_manager import count_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +89,8 @@ def reflector(state: AgentState) -> dict:
     if tracker:
         tracker.record(
             operator="reflection_review",
+            tokens_in=count_tokens(reflection_messages),
+            tokens_out=count_tokens([verdict]),
             latency_ms=latency,
             success=True,
         )

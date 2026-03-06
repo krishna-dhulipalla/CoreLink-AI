@@ -6,15 +6,21 @@ cost tracking, and conditional format normalization.
 All tests mock the LLM — no live API calls required.
 """
 
-import pytest
+import os
+import sys
 from unittest.mock import patch, MagicMock
 
+import pytest
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+
+# Ensure src/ is importable
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from agent.operators import Operator, OPERATOR_REGISTRY, validate_layers, DEFAULT_PLANS
 from agent.cost import CostTracker, OperatorTrace
 from agent.prompts import RouteDecision, DIRECT_RESPONDER_PROMPT, SYSTEM_PROMPT
 from agent.nodes.coordinator import coordinator, route_task, direct_responder, format_normalizer
+from agent.nodes.tool_executor import should_use_tools
 
 
 # ── Operator Registry Tests ──────────────────────────────────────────────────
@@ -184,6 +190,24 @@ class TestRoutingPolicy:
         state = {}
         assert route_task(state) == "reasoner"
 
+    def test_tool_edge_skips_reflector_when_not_selected(self):
+        """If the plan omits reflection_review, reasoner exits to format_normalizer."""
+        state = {
+            "selected_layers": ["react_reason"],
+            "tool_fail_count": 0,
+            "messages": [AIMessage(content="Final draft answer")],
+        }
+        assert should_use_tools(state) == "format_normalizer"
+
+    def test_tool_failure_gate_uses_reflector_when_selected(self):
+        """Failure gate should still route through reflector when reflection is in plan."""
+        state = {
+            "selected_layers": ["react_reason", "reflection_review"],
+            "tool_fail_count": 2,
+            "messages": [AIMessage(content="Still reasoning")],
+        }
+        assert should_use_tools(state) == "reflector"
+
 
 # ── Format Normalizer Conditional Tests ──────────────────────────────────────
 
@@ -211,6 +235,34 @@ class TestFormatNormalizerConditional:
         }
         result = format_normalizer(state)
         assert result["messages"] == []
+
+
+class TestCoordinatorMetadata:
+
+    @patch("agent.nodes.coordinator.ChatOpenAI")
+    def test_coordinator_preserves_policy_metadata(self, mock_chat_openai):
+        """Coordinator should pass through confidence and step-budget hints."""
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = RouteDecision(
+            layers=["react_reason", "reflection_review"],
+            confidence=0.82,
+            needs_formatting=True,
+            estimated_steps=6,
+            early_exit_allowed=False,
+        )
+        mock_chat_openai.return_value.with_structured_output.return_value = mock_llm
+
+        state = {
+            "messages": [HumanMessage(content="Analyze this and return JSON")],
+            "cost_tracker": CostTracker(),
+        }
+        result = coordinator(state)
+
+        assert result["selected_layers"] == ["react_reason", "reflection_review"]
+        assert result["format_required"] is True
+        assert result["policy_confidence"] == 0.82
+        assert result["estimated_steps"] == 6
+        assert result["early_exit_allowed"] is False
 
 
 # ── Direct Responder Prompt Tests ────────────────────────────────────────────

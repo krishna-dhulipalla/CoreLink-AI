@@ -39,6 +39,9 @@ class AgentState(TypedDict):
     MaAS-lite fields (Sprint 1.5):
         selected_layers: Operator names chosen by the coordinator.
         format_required: Whether the format_normalizer should fire.
+        policy_confidence: Coordinator confidence for the selected plan.
+        estimated_steps: Coordinator estimate of reasoning depth.
+        early_exit_allowed: Whether the selected plan can stop early.
         architecture_trace: Serialized OperatorTrace entries for cost tracking.
         cost_tracker: Live CostTracker instance (not persisted).
     """
@@ -49,5 +52,8 @@ class AgentState(TypedDict):
     # Sprint 1.5: MaAS-lite policy & cost fields
     selected_layers: list[str]
     format_required: bool
+    policy_confidence: float
+    estimated_steps: int
+    early_exit_allowed: bool
     architecture_trace: list[dict]
     cost_tracker: Any  # agent.cost.CostTracker (Any avoids circular import)

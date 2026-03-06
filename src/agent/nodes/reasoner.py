@@ -16,6 +16,7 @@ from langchain_openai import ChatOpenAI
 from agent.state import AgentState
 from agent.cost import CostTracker
 from agent.prompts import SYSTEM_PROMPT, MODEL_NAME
+from context_manager import count_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +113,18 @@ def patch_oss_tool_calls(response: AIMessage, tools: list) -> AIMessage:
     return response
 
 
+def _estimate_response_tokens(response: AIMessage) -> int:
+    """Approximate token usage for an LLM response, including tool-call payloads."""
+    parts = []
+    if response.content:
+        parts.append(str(response.content))
+    if response.tool_calls:
+        parts.append(json.dumps(response.tool_calls))
+    if not parts:
+        return 0
+    return count_tokens([AIMessage(content="\n".join(parts))])
+
+
 # ---------------------------------------------------------------------------
 # Prompt Helper
 # ---------------------------------------------------------------------------
@@ -158,6 +171,8 @@ def make_reasoner(tools: list):
         if tracker:
             tracker.record(
                 operator="react_reason",
+                tokens_in=count_tokens(messages),
+                tokens_out=_estimate_response_tokens(response),
                 latency_ms=latency,
                 success=True,
             )

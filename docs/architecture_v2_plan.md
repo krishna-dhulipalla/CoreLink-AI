@@ -56,4 +56,12 @@ We successfully built Phase 1 into the [src/agent.py](file:///c:/Users/vamsi/One
 ~~2. Create dedicated **Execution Paths** (e.g., `fast_compute` vs `heavy_research`).~~
 ~~3. Add the **Format Normalization Pass** at the end of the graph to guarantee benchmark strictness.~~
 
-**Ready for Sprint 2 (Phase 2: PRIME Triads)**. We will proceed to build localized Executor and Verifier pairs to replace the monolithic reasoning loop for `heavy_research` tasks.
+## Sprint 1.5: MaAS-Lite Runtime Foundations - **[COMPLETED]**
+
+1. ~~Operator Abstraction (`agent/operators.py`): 6 operators with metadata.~~
+2. ~~Layered Policy: `RouteDecision` emits `layers`, `confidence`, `needs_formatting`.~~
+3. ~~Cost Tracker (`agent/cost.py`): Per-node token/cost/latency accounting.~~
+4. ~~Conditional Format Normalizer: Skips LLM when `needs_formatting=False`.~~
+5. ~~24 New Tests: Operator registry, cost tracker, routing, prompt safety.~~
+
+**Ready for Sprint 2 (Phase 2: PRIME Triads)**.

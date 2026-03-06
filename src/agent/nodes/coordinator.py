@@ -8,6 +8,7 @@ Also contains the direct_responder and format_normalizer nodes.
 import logging
 import os
 import time
+import json
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
@@ -23,6 +24,7 @@ from agent.prompts import (
     RouteDecision,
 )
 from agent.nodes.reasoner import _increment_step
+from context_manager import count_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -63,10 +65,14 @@ def coordinator(state: AgentState) -> dict:
             layers = verdict.get("layers", ["react_reason", "reflection_review"])
             needs_fmt = verdict.get("needs_formatting", False)
             confidence = verdict.get("confidence", 0.5)
+            estimated_steps = verdict.get("estimated_steps", 3)
+            early_exit_allowed = verdict.get("early_exit_allowed", True)
         else:
             layers = verdict.layers
             needs_fmt = verdict.needs_formatting
             confidence = verdict.confidence
+            estimated_steps = verdict.estimated_steps
+            early_exit_allowed = verdict.early_exit_allowed
 
         success = True
     except Exception as e:
@@ -75,6 +81,8 @@ def coordinator(state: AgentState) -> dict:
         layers = DEFAULT_PLANS["heavy_research"]
         needs_fmt = False
         confidence = 0.0
+        estimated_steps = 3
+        early_exit_allowed = False
         success = False
 
     # Validate layers against operator registry
@@ -82,10 +90,17 @@ def coordinator(state: AgentState) -> dict:
 
     # Record cost
     if tracker:
+        verdict_payload = {
+            "layers": layers,
+            "needs_formatting": needs_fmt,
+            "confidence": confidence,
+            "estimated_steps": estimated_steps,
+            "early_exit_allowed": early_exit_allowed,
+        }
         tracker.record(
             operator="coordinator",
-            tokens_in=0,   # TODO: extract from response metadata when available
-            tokens_out=0,
+            tokens_in=count_tokens(messages),
+            tokens_out=count_tokens([HumanMessage(content=json.dumps(verdict_payload))]),
             latency_ms=latency,
             success=success,
         )
@@ -98,6 +113,9 @@ def coordinator(state: AgentState) -> dict:
     return {
         "selected_layers": layers,
         "format_required": needs_fmt,
+        "policy_confidence": confidence,
+        "estimated_steps": estimated_steps,
+        "early_exit_allowed": early_exit_allowed,
     }
 
 
@@ -142,6 +160,8 @@ def direct_responder(state: AgentState) -> dict:
     if tracker:
         tracker.record(
             operator="direct_answer",
+            tokens_in=count_tokens(messages),
+            tokens_out=count_tokens([response]),
             latency_ms=latency,
             success=True,
         )
@@ -190,6 +210,8 @@ def format_normalizer(state: AgentState) -> dict:
     if tracker:
         tracker.record(
             operator="format_normalize",
+            tokens_in=count_tokens([HumanMessage(content=prompt)]),
+            tokens_out=count_tokens([response]),
             latency_ms=latency,
             success=True,
         )
