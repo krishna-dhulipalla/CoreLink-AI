@@ -27,11 +27,9 @@ from context_manager import (
     _group_messages,
 )
 from conversation_store import ConversationStore
-from agent import (
-    SYSTEM_PROMPT,
-    _build_reflection_context,
-    _with_system_prompt,
-)
+from agent.prompts import SYSTEM_PROMPT
+from agent.nodes.reflector import _build_reflection_context
+from agent.nodes.reasoner import with_system_prompt as _with_system_prompt
 
 
 # ── Truncation Tests ──────────────────────────────────────────────────────

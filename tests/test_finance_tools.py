@@ -7,7 +7,7 @@ outputs to prevent regression when the tools are modified.
 """
 
 import pytest
-from finance_tools import black_scholes_price, option_greeks, mispricing_analysis
+from mcp_servers.finance.server import black_scholes_price, option_greeks, mispricing_analysis
 
 
 # ---------------------------------------------------------------------------
