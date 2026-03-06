@@ -60,7 +60,14 @@ class RouteDecision(BaseModel):
     )
 
 
-# ---------------------------------------------------------------------------
+class VerdictDecision(BaseModel):
+    """Structured step-level verification output."""
+    verdict: Literal["PASS", "REVISE", "BACKTRACK"] = Field(
+        description="The outcome of evaluating the previous step."
+    )
+    reasoning: str = Field(
+        description="Machine-readable rationale explaining the verdict. What specifically is wrong if REVISE or BACKTRACK?"
+    )# ---------------------------------------------------------------------------
 # System Prompts
 # ---------------------------------------------------------------------------
 
@@ -155,3 +162,19 @@ Your only job is to ensure the final output complies EXACTLY with any explicitly
 If the user requested a specific JSON structure (e.g., {"answer": ...}) or XML tags, output ONLY that structure without ANY conversational filler, markdown backticks, or prefix text.
 If no specific format was requested, just return the text as-is.
 Do NOT attempt to change the reasoning or facts, just reformat the provided text."""
+
+
+VERIFIER_PROMPT = """You are the PRIME Verifier Agent. Your job is to strictly evaluate the Executor's most recent action or reasoning step against the task constraints.
+
+Rules for Verification:
+- Evaluate the step independently, but consider the full context.
+- Is the proposed tool call valid and logical? Does it repeat an earlier mistake?
+- Is the intermediate reasoning factually sound?
+- If the Executor emitted a final answer, is it complete and addressing the prompt?
+
+Instructions for Verdict:
+- PASS: The step is valid. The tool call is logical, or the reasoning is sound.
+- REVISE: The step contains a minor error, syntax mistake, or missing detail that the Executor can fix if pointed out.
+- BACKTRACK: The Executor is trapped in a hallucination, repeating a failed tool call, or following a fundamentally wrong approach. The state should be reverted to the last verified checkpoint.
+
+Respond with a strictly JSON formatted output containing 'verdict' and 'reasoning' fields."""

@@ -129,16 +129,18 @@ async def run_agent(
 
     logger.info(f"[CostTracker] {cost_summary}")
 
-    # Strip reflection messages from persisted history
-    updated_history = [
-        msg for msg in all_messages
-            if not _is_reflection_message(msg)
-        ]
+    def _is_internal_node_message(m: BaseMessage) -> bool:
+        return _is_reflection_message(m) or getattr(m, "additional_kwargs", {}).get("is_warning", False)
 
-    # Extract final answer: last AIMessage that is NOT a reflection
+    # Strip reflection and warning messages from persisted history
+    updated_history = [
+        msg for msg in all_messages if not _is_internal_node_message(msg)
+    ]
+
+    # Extract final answer: last AIMessage that is NOT internal
     for msg in reversed(all_messages):
         if isinstance(msg, AIMessage) and msg.content:
-            if not _is_reflection_message(msg):
+            if not _is_internal_node_message(msg):
                 return msg.content, steps, updated_history
 
     return "I was unable to generate a response.", steps, updated_history

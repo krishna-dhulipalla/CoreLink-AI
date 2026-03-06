@@ -199,14 +199,14 @@ class TestRoutingPolicy:
         }
         assert should_use_tools(state) == "format_normalizer"
 
-    def test_tool_failure_gate_uses_reflector_when_selected(self):
-        """Failure gate should still route through reflector when reflection is in plan."""
+    def test_tool_failure_gate_uses_verifier_when_selected(self):
+        """Failure gate should still route through verifier when verification is in plan."""
         state = {
-            "selected_layers": ["react_reason", "reflection_review"],
+            "selected_layers": ["react_reason", "verifier_check"],
             "tool_fail_count": 2,
             "messages": [AIMessage(content="Still reasoning")],
         }
-        assert should_use_tools(state) == "reflector"
+        assert should_use_tools(state) == "verifier"
 
 
 # ── Format Normalizer Conditional Tests ──────────────────────────────────────

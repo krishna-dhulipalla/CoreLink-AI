@@ -23,11 +23,12 @@ Instead of forcing every task through a heavy ReAct loop, we will implement a li
 
 _Theme: Rigorous Algorithmic Reasoning & Feedback Loops_
 
-For complex tasks routed by the Coordinator, we will replace the standard `reasoner -> tool_executor` loop with a localized **PRIME Triad**:
+For complex tasks routed by the Coordinator, we will replace the standard `reasoner -> tool_executor -> reflector` loop with a localized **PRIME Triad** where the Verifier is the step-level gatekeeper.
 
-1. **Executor Agent**: Focuses strictly on constructive reasoning and selecting actions (e.g., writing the Black-Scholes formula or querying a specific SEC filing).
-2. **Verifier Agent**: A separate LLM node that strictly evaluates the Executor's state against constraints (e.g., "Did the option price match the retrieved strike?") and provides immediate, dense feedback.
-3. **Backtracking Mechanism**: If the Verifier repeatedly rejects the Executor's work, the Coordinator orchestrates a "backtrack", reverting the state to the last known good step instead of blindly looping into a `RecursionError`.
+1. **Executor Agent**: Focuses strictly on constructive reasoning and selecting actions (tool calls).
+2. **Verifier Agent**: A separate LLM node that evaluates the Executor's _every step_ (not just the final answer) against constraints. It emits a structured verdict: `PASS`, `REVISE`, or `BACKTRACK`, along with machine-readable reasons.
+3. **Checkpoint Stack & Backtracking**: We will maintain a real checkpoint stack of verified states. If the Verifier issues a `BACKTRACK`, the state reverts to the last verified step instead of trapping the LLM in a failed "try again" loop.
+   _(Note: To maintain a lean competition runtime, we are excluding PRIME's heavy RL/GRPO search features for now)._
 
 ## Phase 3: AgentNet-Inspired Task Memory (RAG)
 

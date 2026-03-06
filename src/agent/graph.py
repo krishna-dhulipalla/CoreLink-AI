@@ -71,10 +71,12 @@ def build_agent_graph(external_tools: list | None = None):
     graph.add_node("direct_responder", direct_responder)
     graph.add_node("format_normalizer", format_normalizer)
 
+    from agent.nodes.verifier import verifier, verify_routing
     graph.add_node("reasoner", make_reasoner(all_tools))
     graph.add_node("tool_executor", make_tool_executor(raw_tool_node))
     graph.add_node("context_window", context_window)
-    graph.add_node("reflector", reflector)
+    graph.add_node("reflector", reflector) # Keep for older plans
+    graph.add_node("verifier", verifier)
 
     # 1. Entry Point
     graph.set_entry_point("coordinator")
@@ -85,12 +87,18 @@ def build_agent_graph(external_tools: list | None = None):
     # 3. Direct responders go to format normalizer (which may skip)
     graph.add_edge("direct_responder", "format_normalizer")
 
-    # 4. Heavy research (ReAct loop)
+    # 4. Executor-Verifier Triad
+    # reasoner emits tool calls or final answer
     graph.add_conditional_edges("reasoner", should_use_tools)
+    
+    # tools execute, context trims, then we verify the step
     graph.add_edge("tool_executor", "context_window")
-    graph.add_edge("context_window", "reasoner")
+    graph.add_edge("context_window", "verifier")
 
-    # 5. Reflection decides to loop or format
+    # Verifier decides if PASS, REVISE, or BACKTRACK
+    graph.add_conditional_edges("verifier", verify_routing)
+
+    # 5. Reflection decides to loop or format (Legacy/Alternative operator)
     graph.add_conditional_edges("reflector", should_revise)
 
     # 6. Formatting is always the terminal node (but may no-op)

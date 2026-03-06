@@ -76,6 +76,14 @@ OPERATOR_REGISTRY: dict[str, Operator] = {
         failure_policy="abort",
         node_name="format_normalizer",
     ),
+    "verifier_check": Operator(
+        name="verifier_check",
+        description="Strict step-level verification emitting PASS, REVISE, or BACKTRACK.",
+        cost_class="moderate",
+        requires_tools=False,
+        failure_policy="abort",
+        node_name="verifier",
+    ),
 }
 
 

@@ -56,4 +56,5 @@ class AgentState(TypedDict):
     estimated_steps: int
     early_exit_allowed: bool
     architecture_trace: list[dict]
-    cost_tracker: Any  # agent.cost.CostTracker (Any avoids circular import)
+    # Sprint 2: PRIME Triads & Backtracking
+    checkpoint_stack: list[dict]
