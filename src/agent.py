@@ -73,6 +73,7 @@ class AgentState(TypedDict):
     reflection_count: int
     tool_fail_count: int
     last_tool_signature: str
+    route: str  # Coordinator's decision: "direct", "heavy_research"
 
 
 # ---------------------------------------------------------------------------
@@ -158,6 +159,22 @@ REVISE: <specific issue that must be fixed>
 
 Do NOT rewrite the answer. Only provide your verdict."""
 
+COORDINATOR_PROMPT = """You are the MaAS Coordinator Agent. Your job is to classify the user's task to determine the most cost-efficient execution path.
+
+Look at the user's latest request and the conversation history.
+Does the task require:
+1. Complex multi-step reasoning, external data fetching, or advanced calculations? -> Route to "heavy_research"
+2. A simple direct answer, basic factual response, or simple conversational reply that requires NO tools? -> Route to "direct"
+
+Respond strictly with a JSON object containing a "route" key. Example: {"route": "heavy_research"}"""
+
+FORMAT_NORMALIZATION_PROMPT = """You are the strict Format Normalizer Agent. 
+Your only job is to ensure the final output complies EXACTLY with any explicitly requested JSON or XML formatting.
+If the user requested a specific JSON structure (e.g., {"answer": ...}) or XML tags, output ONLY that structure without ANY conversational filler, markdown backticks, or prefix text.
+If no specific format was requested, just return the text as-is.
+Do NOT attempt to change the reasoning or facts, just reformat the provided text."""
+
+
 
 # ---------------------------------------------------------------------------
 # 4. Prompt / Reflection Helpers
@@ -214,6 +231,14 @@ def _build_reflection_context(
 
 import json
 import uuid
+from pydantic import BaseModel, Field
+
+class RouteDecision(BaseModel):
+    """Schema for the Coordinator's routing decision."""
+    route: str = Field(
+        description="Must be 'direct' for simple questions or 'heavy_research' for tasks needing tools.", 
+        # Ideally we'd use Literal['direct', 'heavy_research'] but str with descriptions is safer for older pydantic
+    )
 
 # ---------------------------------------------------------------------------
 # 5. Graph Nodes
@@ -481,12 +506,12 @@ def reflector(state: AgentState) -> dict:
 
 
 def should_revise(state: AgentState) -> str:
-    """Conditional edge after reflector: REVISE loops back, PASS goes to END."""
+    """Conditional edge after reflector: REVISE loops back, PASS goes to format_normalizer."""
     count = state.get("reflection_count", 0)
 
-    # If we hit the limit, go to END regardless
+    # If we hit the limit, go to format_normalizer regardless
     if count >= MAX_REFLECTIONS:
-        return END
+        return "format_normalizer"
 
     # Check the last message for the reflection verdict
     last_msg = state["messages"][-1]
@@ -496,25 +521,133 @@ def should_revise(state: AgentState) -> str:
             logger.info("Reflector requested revision → looping back to reasoner")
             return "reasoner"
 
-    return END
+    return "format_normalizer"
 
 
 # ---------------------------------------------------------------------------
-# 8. Build the Compiled Graph
+# 8. MaAS Coordinator & Format Normalizer Nodes
 # ---------------------------------------------------------------------------
+
+def coordinator(state: AgentState) -> dict:
+    """Graph node: MaAS-inspired router. Classifies the query and sets the route."""
+    global _step_counter
+    _step_counter += 1
+    
+    # Coordinator is cheap, doesn't need external tools.
+    llm = ChatOpenAI(
+        model=MODEL_NAME,
+        temperature=0,
+        max_tokens=200,
+        api_key=os.getenv("OPENAI_API_KEY"),
+        base_url=os.getenv("OPENAI_BASE_URL") or None,
+    ).with_structured_output(RouteDecision)
+    
+    messages = [SystemMessage(content=COORDINATOR_PROMPT)] + state["messages"]
+    
+    try:
+        verdict = llm.invoke(messages)
+        # Handle dict or BaseModel based on LangChain version behavior
+        if isinstance(verdict, dict):
+            route = verdict.get("route", "heavy_research")
+        else:
+            route = verdict.route
+    except Exception as e:
+        logger.warning(f"Coordinator routing failed: {e}. Defaulting to heavy_research.")
+        route = "heavy_research"
+        
+    logger.info(f"[Step {_step_counter}] coordinator → selected route: {route}")
+    return {"route": route}
+
+
+def route_task(state: AgentState) -> str:
+    """Conditional edge out of the coordinator."""
+    route = state.get("route", "heavy_research")
+    if route == "direct":
+        return "direct_responder"
+    return "reasoner"
+
+
+def direct_responder(state: AgentState) -> dict:
+    """Graph node: Fast execution path for simple queries without tools."""
+    global _step_counter
+    _step_counter += 1
+    
+    llm = ChatOpenAI(
+        model=MODEL_NAME,
+        temperature=0,
+        api_key=os.getenv("OPENAI_API_KEY"),
+        base_url=os.getenv("OPENAI_BASE_URL") or None,
+    )
+    
+    messages = _with_system_prompt(state["messages"])
+    response = llm.invoke(messages)
+    
+    logger.info(f"[Step {_step_counter}] direct_responder → fast answer generated.")
+    return {"messages": [response]}
+
+
+def format_normalizer(state: AgentState) -> dict:
+    """Graph node: The final pass guaranteeing JSON/XML shape matching."""
+    global _step_counter
+    _step_counter += 1
+    
+    # Get the last AI message as the source text
+    source_text = ""
+    for msg in reversed(state["messages"]):
+        if isinstance(msg, AIMessage) and msg.content and not _is_reflection_message(msg):
+            source_text = msg.content
+            break
+            
+    if not source_text:
+        return {"messages": []}
+
+    llm = ChatOpenAI(
+        model=MODEL_NAME,
+        temperature=0,
+        api_key=os.getenv("OPENAI_API_KEY"),
+        base_url=os.getenv("OPENAI_BASE_URL") or None,
+    )
+    
+    prompt = FORMAT_NORMALIZATION_PROMPT + f"\n\nSource Text to Format:\n{source_text}"
+    response = llm.invoke([HumanMessage(content=prompt)])
+    
+    # We strip any markdown wrapping the LLM might have naively added
+    final_output = response.content.strip()
+    if final_output.startswith("```json"):
+        final_output = final_output[7:-3].strip()
+    elif final_output.startswith("```xml"):
+        final_output = final_output[6:-3].strip()
+    elif final_output.startswith("```"):
+        final_output = final_output[3:-3].strip()
+
+    logger.info(f"[Step {_step_counter}] format_normalizer → applied formatting check.")
+    
+    # We append the fully formatted message to the state
+    return {"messages": [AIMessage(content=final_output)]}
+
+# ---------------------------------------------------------------------------
+# 9. Build the Compiled Graph
+# ---------------------------------------------------------------------------
+
 
 
 def build_agent_graph(external_tools: list | None = None):
-    """Construct and compile the LangGraph StateGraph.
+    """Construct and compile the LangGraph StateGraph (Multi-Agent Architecture).
 
     Args:
-        external_tools: Optional list of LangChain tools loaded from MCP
-                        servers. These are merged with built-in tools.
+        external_tools: Optional list of LangChain tools loaded from MCP.
 
     Graph topology:
-        reasoner ──(has tool_calls?)──▶ tool_executor ──▶ context_window ──▶ reasoner
-                 └─(no tool_calls)───▶ reflector ──(PASS)──▶ END
-                                                    └─(REVISE)─▶ reasoner
+        coordinator ──(direct)───────────────▶ direct_responder ──▶ format_normalizer ──▶ END
+             │
+             └─(heavy_research)─▶ reasoner ──(tools?)──▶ tool_executor ──▶ context_window ──▶ reasoner
+                                     │
+                                     └─(no tools)───▶ reflector ──(PASS)──▶ format_normalizer ──▶ END
+                                                                   │
+                                                               (REVISE)
+                                                                   │
+                                                                   ▼
+                                                                reasoner
     """
     all_tools = BUILTIN_TOOLS + (external_tools or [])
     raw_tool_node = ToolNode(all_tools)
@@ -522,23 +655,34 @@ def build_agent_graph(external_tools: list | None = None):
     graph = StateGraph(AgentState)
 
     # Add nodes
+    graph.add_node("coordinator", coordinator)
+    graph.add_node("direct_responder", direct_responder)
+    graph.add_node("format_normalizer", format_normalizer)
+    
     graph.add_node("reasoner", _make_reasoner(all_tools))
     graph.add_node("tool_executor", _tool_executor_with_truncation(raw_tool_node))
     graph.add_node("context_window", context_window)
     graph.add_node("reflector", reflector)
 
-    # Set entry point
-    graph.set_entry_point("reasoner")
+    # 1. Entry Point
+    graph.set_entry_point("coordinator")
 
-    # Conditional edge from reasoner
+    # 2. Routing from Coordinator
+    graph.add_conditional_edges("coordinator", route_task)
+
+    # 3. Direct responders go straight to formatting
+    graph.add_edge("direct_responder", "format_normalizer")
+
+    # 4. Heavy research (ReAct loop)
     graph.add_conditional_edges("reasoner", should_use_tools)
-
-    # After tool execution → context window → back to reasoner
     graph.add_edge("tool_executor", "context_window")
     graph.add_edge("context_window", "reasoner")
 
-    # Reflector decision: PASS → END, REVISE → reasoner
+    # 5. Reflection decides to loop or format
     graph.add_conditional_edges("reflector", should_revise)
+
+    # 6. Formatting is always the final step
+    graph.add_edge("format_normalizer", END)
 
     return graph.compile()
 
