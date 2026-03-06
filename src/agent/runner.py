@@ -10,6 +10,8 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMe
 from langgraph.errors import GraphRecursionError
 
 from agent.state import AgentState
+from agent.cost import CostTracker
+from agent.prompts import MODEL_NAME
 from agent.nodes.reasoner import reset_step_counter
 from agent.nodes.reflector import _is_reflection_message
 from context_manager import summarize_and_window
@@ -31,7 +33,7 @@ async def run_agent(
 
     Returns:
         final_answer: The text content of the last AIMessage (excluding reflections).
-        steps: A list of dicts describing each node that executed.
+        steps: A list of dicts describing each node that executed, plus a cost_summary.
         updated_history: The cleaned message list after execution, for persistence.
     """
     messages = list(history) if history else []
@@ -39,6 +41,9 @@ async def run_agent(
 
     # Reset step counter for this run
     reset_step_counter()
+
+    # Initialize cost tracker
+    tracker = CostTracker(model_name=MODEL_NAME)
 
     # Front-gate pruning: apply context windowing BEFORE graph entry
     messages = summarize_and_window(messages)
@@ -48,7 +53,11 @@ async def run_agent(
         "reflection_count": 0,
         "tool_fail_count": 0,
         "last_tool_signature": "",
-        "route": "",
+        # Sprint 1.5: MaAS-lite fields
+        "selected_layers": [],
+        "format_required": False,
+        "architecture_trace": [],
+        "cost_tracker": tracker,
     }
 
     try:
@@ -63,9 +72,17 @@ async def run_agent(
             if isinstance(msg, AIMessage) and msg.content and not _is_reflection_message(msg) and not msg.tool_calls:
                 partial_answer = msg.content
                 break
+
+        # Log cost even on recursion failure
+        cost_summary = tracker.summary()
+        logger.info(f"[CostTracker] (recursion limit) {cost_summary}")
+
         return (
             partial_answer or "I was unable to complete this task within the step limit.",
-            [{"node": "safety", "action": "Recursion limit reached"}],
+            [
+                {"node": "safety", "action": "Recursion limit reached"},
+                {"node": "cost_summary", **cost_summary},
+            ],
             initial_state["messages"],
         )
 
@@ -95,6 +112,14 @@ async def run_agent(
                 "node": "tool_executor",
                 "action": f"Tool result: {msg.name}",
             })
+
+    # Log cost summary
+    cost_summary = tracker.summary()
+    cost_summary["selected_layers"] = final_state.get("selected_layers", [])
+    cost_summary["format_required"] = final_state.get("format_required", False)
+    steps.append({"node": "cost_summary", **cost_summary})
+
+    logger.info(f"[CostTracker] {cost_summary}")
 
     # Strip reflection messages from persisted history
     updated_history = [

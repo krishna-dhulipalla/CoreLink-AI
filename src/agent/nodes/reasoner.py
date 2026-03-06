@@ -7,12 +7,14 @@ Calls the LLM with tool bindings, applies the OSS tool-call patcher.
 import json
 import logging
 import os
+import time
 import uuid
 
 from langchain_core.messages import AIMessage, BaseMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
 from agent.state import AgentState
+from agent.cost import CostTracker
 from agent.prompts import SYSTEM_PROMPT, MODEL_NAME
 
 logger = logging.getLogger(__name__)
@@ -135,9 +137,13 @@ def make_reasoner(tools: list):
     def reasoner(state: AgentState) -> dict:
         """The 'Brain' node – calls the LLM with the current conversation."""
         step = _increment_step()
+        tracker: CostTracker = state.get("cost_tracker")
         model = build_model(tools)
         messages = with_system_prompt(state["messages"])
+
+        t0 = time.monotonic()
         response = model.invoke(messages)
+        latency = (time.monotonic() - t0) * 1000
 
         # Apply OSS patcher
         response = patch_oss_tool_calls(response, tools)
@@ -148,6 +154,14 @@ def make_reasoner(tools: list):
         else:
             preview = (response.content or "")[:100]
             logger.info(f"[Step {step}] reasoner → final answer: {preview}...")
+
+        if tracker:
+            tracker.record(
+                operator="react_reason",
+                latency_ms=latency,
+                success=True,
+            )
+
         return {"messages": [response]}
 
     return reasoner

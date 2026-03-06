@@ -6,6 +6,7 @@ used for structured LLM output.
 """
 
 import os
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -22,9 +23,40 @@ MODEL_NAME = os.getenv("MODEL_NAME", "openai/gpt-oss-20b")
 
 
 class RouteDecision(BaseModel):
-    """Schema for the Coordinator's routing decision."""
-    route: str = Field(
-        description="Must be 'direct' for simple questions or 'heavy_research' for tasks needing tools.",
+    """Structured policy output from the Coordinator.
+
+    Instead of a binary route, the coordinator emits a layered
+    execution plan with confidence and cost-control hints.
+    """
+    layers: list[str] = Field(
+        description=(
+            "Ordered list of operator names to execute. "
+            "Valid operators: direct_answer, react_reason, search_retrieve, "
+            "calculator_exec, reflection_review, format_normalize."
+        ),
+    )
+    confidence: float = Field(
+        default=0.5,
+        description="How confident the controller is in this plan (0.0–1.0).",
+        ge=0.0,
+        le=1.0,
+    )
+    needs_formatting: bool = Field(
+        default=False,
+        description=(
+            "True if the user explicitly requested a specific output format "
+            "(JSON, XML, structured schema). False for free-text answers."
+        ),
+    )
+    estimated_steps: int = Field(
+        default=3,
+        description="Predicted number of LLM reasoning steps needed.",
+        ge=1,
+        le=20,
+    )
+    early_exit_allowed: bool = Field(
+        default=True,
+        description="Whether the graph can exit before all layers complete.",
     )
 
 
@@ -74,6 +106,15 @@ Answer Composition Rule:
 - When a tool output begins with "STRUCTURED_RESULTS:", copy that STRUCTURED_RESULTS line VERBATIM at the top of your final answer — do NOT rephrase, round, or omit any fields from it. Then add your explanation below.
 """
 
+
+DIRECT_RESPONDER_PROMPT = """You are a helpful, accurate assistant.
+Answer the user's question directly and concisely.
+You do NOT have access to any tools, files, or external services.
+Do NOT mention tools, file fetching, or internet search.
+If you don't know, say so honestly.
+Keep your response focused and factual."""
+
+
 REFLECTION_PROMPT = """You are a quality reviewer. Examine the assistant's draft answer below and check for:
 1. **Completeness** – Does it fully address the original question?
 2. **Correctness** – Are all facts, calculations, and logic correct?
@@ -85,14 +126,29 @@ REVISE: <specific issue that must be fixed>
 
 Do NOT rewrite the answer. Only provide your verdict."""
 
-COORDINATOR_PROMPT = """You are the MaAS Coordinator Agent. Your job is to classify the user's task to determine the most cost-efficient execution path.
+COORDINATOR_PROMPT = """You are the MaAS Coordinator Agent. Your job is to analyze the user's query and select the most cost-efficient execution plan.
 
-Look at the user's latest request and the conversation history.
-Does the task require:
-1. Complex multi-step reasoning, external data fetching, or advanced calculations? -> Route to "heavy_research"
-2. A simple direct answer, basic factual response, or simple conversational reply that requires NO tools? -> Route to "direct"
+Available operators (choose from these ONLY):
+- "direct_answer": For simple factual/conversational queries. Cheap, no tools.
+- "react_reason": Full reasoning loop with tool access. For multi-step tasks.
+- "reflection_review": Self-critique pass to verify answer quality.
+- "format_normalize": Strict JSON/XML formatting. Use ONLY when user explicitly requests a structured output format.
 
-Respond strictly with a JSON object containing a "route" key. Example: {"route": "heavy_research"}"""
+Rules:
+1. Simple greetings, factual Q&A, definitions → layers: ["direct_answer"]
+2. Tasks needing tools (search, file fetch, calculation) → layers: ["react_reason", "reflection_review"]
+3. If user explicitly asks for JSON/XML output → set needs_formatting: true and add "format_normalize" to layers
+4. Set confidence high (>0.8) when the intent is obvious, low (<0.5) when ambiguous
+5. Set early_exit_allowed: true for simple tasks, false for complex multi-step tasks
+
+Respond with a JSON object matching this schema:
+{
+  "layers": ["operator1", "operator2"],
+  "confidence": 0.9,
+  "needs_formatting": false,
+  "estimated_steps": 1,
+  "early_exit_allowed": true
+}"""
 
 FORMAT_NORMALIZATION_PROMPT = """You are the strict Format Normalizer Agent. 
 Your only job is to ensure the final output complies EXACTLY with any explicitly requested JSON or XML formatting.

@@ -10,6 +10,7 @@ from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.prebuilt import ToolNode
 
 from agent.state import AgentState
+from agent.cost import CostTracker
 from agent.nodes.reasoner import _increment_step
 from context_manager import truncate_tool_output
 
@@ -65,6 +66,8 @@ def make_tool_executor(tool_node: ToolNode):
 
     async def tool_executor(state: AgentState) -> dict:
         step = _increment_step()
+        tracker: CostTracker = state.get("cost_tracker")
+
         result = await tool_node.ainvoke(state)
         messages = result.get("messages", [])
         truncated_messages = []
@@ -103,6 +106,11 @@ def make_tool_executor(tool_node: ToolNode):
                     tool_call_id=msg.tool_call_id,
                     name=msg.name,
                 )
+
+                # Record MCP call in cost tracker
+                if tracker:
+                    tracker.record_mcp_call()
+
             truncated_messages.append(msg)
 
         current_fail_count = state.get("tool_fail_count", 0)

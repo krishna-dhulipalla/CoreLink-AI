@@ -6,11 +6,13 @@ Evaluates the agent's draft answer and either passes or requests revision.
 
 import logging
 import os
+import time
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
 from agent.state import AgentState
+from agent.cost import CostTracker
 from agent.prompts import REFLECTION_PROMPT, MAX_REFLECTIONS, MODEL_NAME
 
 logger = logging.getLogger(__name__)
@@ -57,6 +59,7 @@ def reflector(state: AgentState) -> dict:
     """Graph node: critique the draft answer before submission."""
     messages = state["messages"]
     count = state.get("reflection_count", 0)
+    tracker: CostTracker = state.get("cost_tracker")
 
     if count >= MAX_REFLECTIONS:
         logger.info(
@@ -75,8 +78,19 @@ def reflector(state: AgentState) -> dict:
         api_key=os.getenv("OPENAI_API_KEY"),
         base_url=os.getenv("OPENAI_BASE_URL") or None,
     )
+
+    t0 = time.monotonic()
     verdict = llm.invoke(reflection_messages)
+    latency = (time.monotonic() - t0) * 1000
+
     verdict_text = verdict.content.strip() if verdict.content else "PASS: no verdict"
+
+    if tracker:
+        tracker.record(
+            operator="reflection_review",
+            latency_ms=latency,
+            success=True,
+        )
 
     logger.info(f"Reflection #{count + 1}: {verdict_text}")
 

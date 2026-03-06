@@ -1,24 +1,28 @@
 """
-Coordinator Node: MaAS-Inspired Dynamic Router
-================================================
-Classifies queries into execution paths (direct vs heavy_research).
+Coordinator Node: MaAS-Lite Layered Policy Router
+===================================================
+Analyzes queries and produces a layered execution plan.
+Also contains the direct_responder and format_normalizer nodes.
 """
 
 import logging
 import os
+import time
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
 from agent.state import AgentState
+from agent.cost import CostTracker
+from agent.operators import validate_layers, DEFAULT_PLANS
 from agent.prompts import (
     COORDINATOR_PROMPT,
+    DIRECT_RESPONDER_PROMPT,
     FORMAT_NORMALIZATION_PROMPT,
     MODEL_NAME,
     RouteDecision,
-    SYSTEM_PROMPT,
 )
-from agent.nodes.reasoner import _increment_step, with_system_prompt
+from agent.nodes.reasoner import _increment_step
 
 logger = logging.getLogger(__name__)
 
@@ -36,48 +40,88 @@ def _is_reflection_message(msg) -> bool:
 # ---------------------------------------------------------------------------
 
 def coordinator(state: AgentState) -> dict:
-    """Graph node: MaAS-inspired router. Classifies the query and sets the route."""
+    """Graph node: MaAS-lite controller. Produces a layered execution plan."""
     step = _increment_step()
+    tracker: CostTracker = state.get("cost_tracker")
 
     llm = ChatOpenAI(
         model=MODEL_NAME,
         temperature=0,
-        max_tokens=200,
+        max_tokens=300,
         api_key=os.getenv("OPENAI_API_KEY"),
         base_url=os.getenv("OPENAI_BASE_URL") or None,
     ).with_structured_output(RouteDecision)
 
     messages = [SystemMessage(content=COORDINATOR_PROMPT)] + state["messages"]
 
+    t0 = time.monotonic()
     try:
         verdict = llm.invoke(messages)
-        if isinstance(verdict, dict):
-            route = verdict.get("route", "heavy_research")
-        else:
-            route = verdict.route
-    except Exception as e:
-        logger.warning(f"Coordinator routing failed: {e}. Defaulting to heavy_research.")
-        route = "heavy_research"
+        latency = (time.monotonic() - t0) * 1000
 
-    logger.info(f"[Step {step}] coordinator → selected route: {route}")
-    return {"route": route}
+        if isinstance(verdict, dict):
+            layers = verdict.get("layers", ["react_reason", "reflection_review"])
+            needs_fmt = verdict.get("needs_formatting", False)
+            confidence = verdict.get("confidence", 0.5)
+        else:
+            layers = verdict.layers
+            needs_fmt = verdict.needs_formatting
+            confidence = verdict.confidence
+
+        success = True
+    except Exception as e:
+        latency = (time.monotonic() - t0) * 1000
+        logger.warning(f"Coordinator routing failed: {e}. Using default heavy_research plan.")
+        layers = DEFAULT_PLANS["heavy_research"]
+        needs_fmt = False
+        confidence = 0.0
+        success = False
+
+    # Validate layers against operator registry
+    layers = validate_layers(layers)
+
+    # Record cost
+    if tracker:
+        tracker.record(
+            operator="coordinator",
+            tokens_in=0,   # TODO: extract from response metadata when available
+            tokens_out=0,
+            latency_ms=latency,
+            success=success,
+        )
+
+    logger.info(
+        f"[Step {step}] coordinator → layers={layers}, "
+        f"confidence={confidence:.2f}, needs_formatting={needs_fmt}"
+    )
+
+    return {
+        "selected_layers": layers,
+        "format_required": needs_fmt,
+    }
 
 
 def route_task(state: AgentState) -> str:
-    """Conditional edge out of the coordinator."""
-    route = state.get("route", "heavy_research")
-    if route == "direct":
+    """Conditional edge: choose first execution node based on selected layers."""
+    layers = state.get("selected_layers", [])
+
+    if not layers:
+        return "reasoner"
+
+    first_layer = layers[0]
+    if first_layer == "direct_answer":
         return "direct_responder"
     return "reasoner"
 
 
 # ---------------------------------------------------------------------------
-# Direct Responder (fast path)
+# Direct Responder (fast path — no tools, lean prompt)
 # ---------------------------------------------------------------------------
 
 def direct_responder(state: AgentState) -> dict:
-    """Graph node: Fast execution path for simple queries without tools."""
+    """Graph node: Fast execution path for simple queries. No tool bindings."""
     step = _increment_step()
+    tracker: CostTracker = state.get("cost_tracker")
 
     llm = ChatOpenAI(
         model=MODEL_NAME,
@@ -86,21 +130,41 @@ def direct_responder(state: AgentState) -> dict:
         base_url=os.getenv("OPENAI_BASE_URL") or None,
     )
 
-    messages = with_system_prompt(state["messages"])
+    # Use the lean prompt that does NOT mention tools
+    messages = [SystemMessage(content=DIRECT_RESPONDER_PROMPT)] + [
+        m for m in state["messages"] if not isinstance(m, SystemMessage)
+    ]
+
+    t0 = time.monotonic()
     response = llm.invoke(messages)
+    latency = (time.monotonic() - t0) * 1000
+
+    if tracker:
+        tracker.record(
+            operator="direct_answer",
+            latency_ms=latency,
+            success=True,
+        )
 
     logger.info(f"[Step {step}] direct_responder → fast answer generated.")
     return {"messages": [response]}
 
 
 # ---------------------------------------------------------------------------
-# Format Normalizer (final gate)
+# Format Normalizer (conditional — skips when not needed)
 # ---------------------------------------------------------------------------
 
 def format_normalizer(state: AgentState) -> dict:
-    """Graph node: The final pass guaranteeing JSON/XML shape matching."""
+    """Graph node: Strict JSON/XML formatting. Skips LLM call when not required."""
     step = _increment_step()
+    tracker: CostTracker = state.get("cost_tracker")
 
+    # CONDITIONAL: skip if coordinator said no formatting needed
+    if not state.get("format_required", False):
+        logger.info(f"[Step {step}] format_normalizer → SKIPPED (format_required=False)")
+        return {"messages": []}
+
+    # Find the last real AI answer
     source_text = ""
     for msg in reversed(state["messages"]):
         if isinstance(msg, AIMessage) and msg.content and not _is_reflection_message(msg):
@@ -118,7 +182,17 @@ def format_normalizer(state: AgentState) -> dict:
     )
 
     prompt = FORMAT_NORMALIZATION_PROMPT + f"\n\nSource Text to Format:\n{source_text}"
+
+    t0 = time.monotonic()
     response = llm.invoke([HumanMessage(content=prompt)])
+    latency = (time.monotonic() - t0) * 1000
+
+    if tracker:
+        tracker.record(
+            operator="format_normalize",
+            latency_ms=latency,
+            success=True,
+        )
 
     final_output = response.content.strip()
     if final_output.startswith("```json"):

@@ -45,22 +45,21 @@ BUILTIN_TOOLS: list[Any] = [CALCULATOR_TOOL, SEARCH_TOOL, get_current_time]
 # ---------------------------------------------------------------------------
 
 def build_agent_graph(external_tools: list | None = None):
-    """Construct and compile the LangGraph StateGraph (Multi-Agent Architecture).
+    """Construct and compile the LangGraph StateGraph (MaAS-Lite Architecture).
 
     Args:
         external_tools: Optional list of LangChain tools loaded from MCP.
 
-    Graph topology:
-        coordinator ──(direct)───────────────▶ direct_responder ──▶ format_normalizer ──▶ END
+    Graph topology (Sprint 1.5):
+        coordinator ──(direct_answer)────▶ direct_responder ──▶ format_normalizer* ──▶ END
              │
-             └─(heavy_research)─▶ reasoner ──(tools?)──▶ tool_executor ──▶ context_window ──▶ reasoner
+             └─(react_reason)──▶ reasoner ──(tools?)──▶ tool_executor ──▶ context_window ──▶ reasoner
                                      │
-                                     └─(no tools)───▶ reflector ──(PASS)──▶ format_normalizer ──▶ END
+                                     └─(no tools)───▶ reflector ──(PASS)──▶ format_normalizer* ──▶ END
                                                                    │
-                                                               (REVISE)
-                                                                   │
-                                                                   ▼
-                                                                reasoner
+                                                               (REVISE) ──▶ reasoner
+
+        * format_normalizer is CONDITIONAL: skips LLM call when format_required=False
     """
     all_tools = BUILTIN_TOOLS + (external_tools or [])
     raw_tool_node = ToolNode(all_tools)
@@ -80,10 +79,10 @@ def build_agent_graph(external_tools: list | None = None):
     # 1. Entry Point
     graph.set_entry_point("coordinator")
 
-    # 2. Routing from Coordinator
+    # 2. Routing from Coordinator (layered policy → first operator)
     graph.add_conditional_edges("coordinator", route_task)
 
-    # 3. Direct responders go straight to formatting
+    # 3. Direct responders go to format normalizer (which may skip)
     graph.add_edge("direct_responder", "format_normalizer")
 
     # 4. Heavy research (ReAct loop)
@@ -94,7 +93,7 @@ def build_agent_graph(external_tools: list | None = None):
     # 5. Reflection decides to loop or format
     graph.add_conditional_edges("reflector", should_revise)
 
-    # 6. Formatting is always the final step
+    # 6. Formatting is always the terminal node (but may no-op)
     graph.add_edge("format_normalizer", END)
 
     return graph.compile()
