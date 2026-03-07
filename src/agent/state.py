@@ -58,3 +58,6 @@ class AgentState(TypedDict):
     architecture_trace: list[dict]
     # Sprint 2: PRIME Triads & Backtracking
     checkpoint_stack: list[dict]
+    # Sprint 3: Execution Memory
+    cost_tracker: Any  # CostTracker instance (not persisted)
+    memory_store: Any  # MemoryStore instance (not persisted)

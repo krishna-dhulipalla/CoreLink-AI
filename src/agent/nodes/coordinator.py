@@ -54,7 +54,24 @@ def coordinator(state: AgentState) -> dict:
         base_url=os.getenv("OPENAI_BASE_URL") or None,
     ).with_structured_output(RouteDecision)
 
-    messages = [SystemMessage(content=COORDINATOR_PROMPT)] + state["messages"]
+    # Sprint 3: Retrieve compact route hints from memory
+    memory_store = state.get("memory_store")
+    memory_hint_block = ""
+    if memory_store:
+        task_text = ""
+        for m in reversed(state["messages"]):
+            if hasattr(m, "content") and m.content:
+                task_text = m.content
+                break
+        if task_text:
+            hints = memory_store.retrieve_router_hints(task_text)
+            if hints:
+                memory_hint_block = (
+                    "\n\nPAST ROUTING MEMORY (use as guidance, not gospel):\n"
+                    + "\n".join(f"- {h}" for h in hints)
+                )
+
+    messages = [SystemMessage(content=COORDINATOR_PROMPT + memory_hint_block)] + state["messages"]
 
     t0 = time.monotonic()
     try:
@@ -62,7 +79,7 @@ def coordinator(state: AgentState) -> dict:
         latency = (time.monotonic() - t0) * 1000
 
         if isinstance(verdict, dict):
-            layers = verdict.get("layers", ["react_reason", "reflection_review"])
+            layers = verdict.get("layers", ["react_reason", "verifier_check"])
             needs_fmt = verdict.get("needs_formatting", False)
             confidence = verdict.get("confidence", 0.5)
             estimated_steps = verdict.get("estimated_steps", 3)

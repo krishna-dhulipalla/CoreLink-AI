@@ -30,14 +30,16 @@ For complex tasks routed by the Coordinator, we will replace the standard `reaso
 3. **Checkpoint Stack & Backtracking**: We will maintain a real checkpoint stack of verified states. If the Verifier issues a `BACKTRACK`, the state reverts to the last verified step instead of trapping the LLM in a failed "try again" loop.
    _(Note: To maintain a lean competition runtime, we are excluding PRIME's heavy RL/GRPO search features for now)._
 
-## Phase 3: AgentNet-Inspired Task Memory (RAG)
+## Phase 3: AgentNet-Inspired Execution Memory & Repair Reuse
 
-_Theme: Self-Evolving Expertise_
+_Theme: Local Fragments & Learned Recovery_
 
-As the agent successfully completes benchmark tasks, we want it to learn.
+Instead of generic trajectory RAG, memory is role-specific to the Coordinator, Executor, and Verifier loop established in Sprint 2.
 
-- **Trajectory Storage**: Successful tool sequences and strategies are stored in a local vector database or JSON registry. _(Note: Storage limits and token-cost for retrieval will be carefully analyzed before full deployment)._
-- **RAG Pre-Warming**: When the Coordinator receives a new, similar task, it retrieves past successful trajectories and injects them into the Executor's prompt as few-shot examples.
+- **Coordinator Memory**: Stores compact records (task summary, operator layers, cost, success). Used before planning.
+- **Executor Memory**: Stores local execution fragments (partial context, tool chosen, args, quality). Retrieves top-k compact structured hints instead of raw dumps.
+- **Verifier/Repair Memory**: Stores failure patterns, verdicts, and repair strategies (revise vs backtrack success). Enables learned recovery.
+- **Strict Admission & Bounded Storage**: Only verified successful fragments or high-signal backtrack/revise recoveries are stored. Begins with SQLite or JSON.
 
 ## Phase 4: AgentPrune & AgentTaxo Guardrails
 

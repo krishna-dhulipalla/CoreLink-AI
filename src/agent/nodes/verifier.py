@@ -81,6 +81,23 @@ def verifier(state: AgentState) -> dict:
         verdict.reasoning[:120],
     )
 
+    # Sprint 3: Retrieve repair hints from verifier memory
+    repair_hint_block = ""
+    memory_store = state.get("memory_store")
+    if memory_store and verdict.verdict in ("REVISE", "BACKTRACK"):
+        task_text = ""
+        for m in state["messages"]:
+            if isinstance(m, HumanMessage) and m.content:
+                task_text = m.content
+                break
+        if task_text:
+            repair_hints = memory_store.retrieve_verifier_hints(task_text)
+            if repair_hints:
+                repair_hint_block = (
+                    "\n\nPAST REPAIR MEMORY:\n"
+                    + "\n".join(f"- {h}" for h in repair_hints)
+                )
+
     stack = list(state.get("checkpoint_stack", []))
 
     if verdict.verdict == "PASS":
@@ -91,7 +108,7 @@ def verifier(state: AgentState) -> dict:
 
     if verdict.verdict == "REVISE":
         warning_msg = SystemMessage(
-            content=f"VERIFIER REVISION REQUIRED:\n{verdict.reasoning}",
+            content=f"VERIFIER REVISION REQUIRED:\n{verdict.reasoning}{repair_hint_block}",
             additional_kwargs={"is_warning": True},
         )
         return {"messages": [warning_msg]}
@@ -104,7 +121,7 @@ def verifier(state: AgentState) -> dict:
         return {"messages": [warning_msg]}
 
     warning_msg = SystemMessage(
-        content=f"{BACKTRACK_WARNING}\n\nReason for backtrack: {verdict.reasoning}",
+        content=f"{BACKTRACK_WARNING}\n\nReason for backtrack: {verdict.reasoning}{repair_hint_block}",
         additional_kwargs={"is_warning": True},
     )
     restored_messages = _last_verified_messages(stack) + [warning_msg]

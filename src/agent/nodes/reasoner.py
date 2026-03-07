@@ -10,7 +10,7 @@ import os
 import time
 import uuid
 
-from langchain_core.messages import AIMessage, BaseMessage, SystemMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
 from agent.state import AgentState
@@ -153,6 +153,24 @@ def make_reasoner(tools: list):
         tracker: CostTracker = state.get("cost_tracker")
         model = build_model(tools)
         messages = with_system_prompt(state["messages"])
+
+        # Sprint 3: Retrieve compact executor hints from memory
+        memory_store = state.get("memory_store")
+        if memory_store:
+            task_text = ""
+            for m in state["messages"]:
+                if isinstance(m, HumanMessage) and m.content:
+                    task_text = m.content
+                    break
+            if task_text:
+                hints = memory_store.retrieve_executor_hints(task_text)
+                if hints:
+                    hint_block = (
+                        "TOOL-SELECTION MEMORY (compact hints from past runs):\n"
+                        + "\n".join(f"- {h}" for h in hints)
+                    )
+                    # Insert as second message (after system prompt, before history)
+                    messages = messages[:1] + [SystemMessage(content=hint_block)] + messages[1:]
 
         t0 = time.monotonic()
         response = model.invoke(messages)

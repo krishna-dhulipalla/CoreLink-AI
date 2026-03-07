@@ -14,9 +14,22 @@ from agent.cost import CostTracker
 from agent.prompts import MODEL_NAME
 from agent.nodes.reasoner import reset_step_counter
 from agent.nodes.reflector import _is_reflection_message
+from agent.memory.store import MemoryStore
+from agent.memory.schema import RouterMemory, _task_signature
 from context_manager import summarize_and_window
 
 logger = logging.getLogger(__name__)
+
+# Module-level singleton so the store persists across runs
+_memory_store: MemoryStore | None = None
+
+
+def _get_memory_store() -> MemoryStore:
+    """Lazy-init a single MemoryStore for agent lifetime."""
+    global _memory_store
+    if _memory_store is None:
+        _memory_store = MemoryStore()
+    return _memory_store
 
 
 async def run_agent(
@@ -62,6 +75,8 @@ async def run_agent(
         "architecture_trace": [],
         "checkpoint_stack": [],
         "cost_tracker": tracker,
+        # Sprint 3: Execution Memory
+        "memory_store": _get_memory_store(),
     }
 
     try:
@@ -129,6 +144,22 @@ async def run_agent(
     steps.append({"node": "cost_summary", **cost_summary})
 
     logger.info(f"[CostTracker] {cost_summary}")
+
+    # Sprint 3: Store RouterMemory post-run
+    try:
+        mem_store = _get_memory_store()
+        task_summary = input_text[:120] if input_text else ""
+        router_rec = RouterMemory(
+            task_signature=_task_signature(input_text),
+            task_summary=task_summary,
+            selected_layers=final_state.get("selected_layers", []),
+            success=True,
+            cost_usd=tracker.total_cost(),
+            latency_ms=tracker.wall_clock_ms,
+        )
+        mem_store.store_router(router_rec)
+    except Exception as mem_err:
+        logger.warning(f"[Memory] Failed to store router memory: {mem_err}")
 
     def _is_internal_node_message(m: BaseMessage) -> bool:
         return _is_reflection_message(m) or getattr(m, "additional_kwargs", {}).get("is_warning", False)
