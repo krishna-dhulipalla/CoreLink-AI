@@ -60,6 +60,7 @@ async def run_agent(
         "estimated_steps": 0,
         "early_exit_allowed": False,
         "architecture_trace": [],
+        "checkpoint_stack": [],
         "cost_tracker": tracker,
     }
 

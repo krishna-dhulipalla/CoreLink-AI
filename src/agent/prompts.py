@@ -1,6 +1,6 @@
 """
 Prompts & Schemas
-==================
+=================
 All system prompts for the multi-agent graph, plus Pydantic schemas
 used for structured LLM output.
 """
@@ -17,27 +17,24 @@ from pydantic import BaseModel, Field
 MAX_REFLECTIONS = int(os.getenv("MAX_REFLECTIONS", "2"))
 MODEL_NAME = os.getenv("MODEL_NAME", "openai/gpt-oss-20b")
 
+
 # ---------------------------------------------------------------------------
 # Pydantic Schemas
 # ---------------------------------------------------------------------------
 
-
 class RouteDecision(BaseModel):
-    """Structured policy output from the Coordinator.
+    """Structured policy output from the Coordinator."""
 
-    Instead of a binary route, the coordinator emits a layered
-    execution plan with confidence and cost-control hints.
-    """
     layers: list[str] = Field(
         description=(
             "Ordered list of operator names to execute. "
             "Valid operators: direct_answer, react_reason, search_retrieve, "
-            "calculator_exec, reflection_review, format_normalize."
+            "calculator_exec, verifier_check, reflection_review, format_normalize."
         ),
     )
     confidence: float = Field(
         default=0.5,
-        description="How confident the controller is in this plan (0.0–1.0).",
+        description="How confident the controller is in this plan (0.0-1.0).",
         ge=0.0,
         le=1.0,
     )
@@ -62,12 +59,19 @@ class RouteDecision(BaseModel):
 
 class VerdictDecision(BaseModel):
     """Structured step-level verification output."""
+
     verdict: Literal["PASS", "REVISE", "BACKTRACK"] = Field(
         description="The outcome of evaluating the previous step."
     )
     reasoning: str = Field(
-        description="Machine-readable rationale explaining the verdict. What specifically is wrong if REVISE or BACKTRACK?"
-    )# ---------------------------------------------------------------------------
+        description=(
+            "Machine-readable rationale explaining the verdict. "
+            "What specifically is wrong if REVISE or BACKTRACK?"
+        )
+    )
+
+
+# ---------------------------------------------------------------------------
 # System Prompts
 # ---------------------------------------------------------------------------
 
@@ -104,13 +108,13 @@ REFERENCE FILE HANDLING:
 
 CRYPTO-OUTPUT DISCIPLINE:
 - For cryptocurrency values, always use 8 decimal places (e.g., 0.00123456 BTC, not 0.001 BTC).
-- Never round or truncate crypto prices — precision is critical for grading.
-- Use correct currency symbols/tickers: BTC, ETH, SOL, USDT — never "coins" or generic terms.
+- Never round or truncate crypto prices - precision is critical for grading.
+- Use correct currency symbols/tickers: BTC, ETH, SOL, USDT - never "coins" or generic terms.
 - When computing crypto P&L, provide: entry price, exit price, position size, gross P&L, fees, net P&L.
 - Express percentages to 2 decimal places (e.g., 12.34%, not 12% or 12.3%).
 
 Answer Composition Rule:
-- When a tool output begins with "STRUCTURED_RESULTS:", copy that STRUCTURED_RESULTS line VERBATIM at the top of your final answer — do NOT rephrase, round, or omit any fields from it. Then add your explanation below.
+- When a tool output begins with "STRUCTURED_RESULTS:", copy that STRUCTURED_RESULTS line VERBATIM at the top of your final answer - do NOT rephrase, round, or omit any fields from it. Then add your explanation below.
 """
 
 
@@ -123,9 +127,9 @@ Keep your response focused and factual."""
 
 
 REFLECTION_PROMPT = """You are a quality reviewer. Examine the assistant's draft answer below and check for:
-1. **Completeness** – Does it fully address the original question?
-2. **Correctness** – Are all facts, calculations, and logic correct?
-3. **Clarity** – Is the answer clear and well-structured?
+1. **Completeness** - Does it fully address the original question?
+2. **Correctness** - Are all facts, calculations, and logic correct?
+3. **Clarity** - Is the answer clear and well-structured?
 
 Respond with EXACTLY one line in one of these two formats:
 PASS: <brief justification why the answer is good>
@@ -133,18 +137,20 @@ REVISE: <specific issue that must be fixed>
 
 Do NOT rewrite the answer. Only provide your verdict."""
 
+
 COORDINATOR_PROMPT = """You are the MaAS Coordinator Agent. Your job is to analyze the user's query and select the most cost-efficient execution plan.
 
 Available operators (choose from these ONLY):
 - "direct_answer": For simple factual/conversational queries. Cheap, no tools.
 - "react_reason": Full reasoning loop with tool access. For multi-step tasks.
-- "reflection_review": Self-critique pass to verify answer quality.
+- "verifier_check": Step-level verification gate that can emit PASS, REVISE, or BACKTRACK.
+- "reflection_review": Legacy final-answer self-critique operator. Use only if explicitly needed.
 - "format_normalize": Strict JSON/XML formatting. Use ONLY when user explicitly requests a structured output format.
 
 Rules:
-1. Simple greetings, factual Q&A, definitions → layers: ["direct_answer"]
-2. Tasks needing tools (search, file fetch, calculation) → layers: ["react_reason", "reflection_review"]
-3. If user explicitly asks for JSON/XML output → set needs_formatting: true and add "format_normalize" to layers
+1. Simple greetings, factual Q&A, definitions -> layers: ["direct_answer"]
+2. Tasks needing tools (search, file fetch, calculation) -> layers: ["react_reason", "verifier_check"]
+3. If user explicitly asks for JSON/XML output -> set needs_formatting: true and add "format_normalize" to layers
 4. Set confidence high (>0.8) when the intent is obvious, low (<0.5) when ambiguous
 5. Set early_exit_allowed: true for simple tasks, false for complex multi-step tasks
 
@@ -157,7 +163,8 @@ Respond with a JSON object matching this schema:
   "early_exit_allowed": true
 }"""
 
-FORMAT_NORMALIZATION_PROMPT = """You are the strict Format Normalizer Agent. 
+
+FORMAT_NORMALIZATION_PROMPT = """You are the strict Format Normalizer Agent.
 Your only job is to ensure the final output complies EXACTLY with any explicitly requested JSON or XML formatting.
 If the user requested a specific JSON structure (e.g., {"answer": ...}) or XML tags, output ONLY that structure without ANY conversational filler, markdown backticks, or prefix text.
 If no specific format was requested, just return the text as-is.

@@ -95,12 +95,12 @@ def validate_layers(layers: list[str]) -> list[str]:
     """
     valid = [l for l in layers if l in OPERATOR_REGISTRY]
     if not valid:
-        return ["react_reason", "reflection_review"]
+        return ["react_reason", "verifier_check"]
     return valid
 
 
 # Default execution plans for common routes
 DEFAULT_PLANS = {
     "direct": ["direct_answer"],
-    "heavy_research": ["react_reason", "reflection_review", "format_normalize"],
+    "heavy_research": ["react_reason", "verifier_check", "format_normalize"],
 }

@@ -39,13 +39,13 @@ class TestOperatorRegistry:
 
     def test_validate_layers_valid(self):
         """Valid operator names pass through."""
-        result = validate_layers(["direct_answer", "reflection_review"])
-        assert result == ["direct_answer", "reflection_review"]
+        result = validate_layers(["direct_answer", "verifier_check"])
+        assert result == ["direct_answer", "verifier_check"]
 
     def test_validate_layers_invalid_falls_back(self):
         """Invalid operator names are removed; empty → default plan."""
         result = validate_layers(["nonexistent_op", "made_up"])
-        assert result == ["react_reason", "reflection_review"]
+        assert result == ["react_reason", "verifier_check"]
 
     def test_validate_layers_mixed(self):
         """Mix of valid and invalid keeps only valid ones."""
@@ -177,7 +177,7 @@ class TestRoutingPolicy:
 
     def test_heavy_route_goes_to_reasoner(self):
         """When layers start with 'react_reason', route_task returns 'reasoner'."""
-        state = {"selected_layers": ["react_reason", "reflection_review"]}
+        state = {"selected_layers": ["react_reason", "verifier_check"]}
         assert route_task(state) == "reasoner"
 
     def test_empty_layers_defaults_to_reasoner(self):
@@ -190,8 +190,8 @@ class TestRoutingPolicy:
         state = {}
         assert route_task(state) == "reasoner"
 
-    def test_tool_edge_skips_reflector_when_not_selected(self):
-        """If the plan omits reflection_review, reasoner exits to format_normalizer."""
+    def test_tool_edge_skips_verifier_when_not_selected(self):
+        """If the plan omits verifier_check, reasoner exits to format_normalizer."""
         state = {
             "selected_layers": ["react_reason"],
             "tool_fail_count": 0,
@@ -244,7 +244,7 @@ class TestCoordinatorMetadata:
         """Coordinator should pass through confidence and step-budget hints."""
         mock_llm = MagicMock()
         mock_llm.invoke.return_value = RouteDecision(
-            layers=["react_reason", "reflection_review"],
+            layers=["react_reason", "verifier_check"],
             confidence=0.82,
             needs_formatting=True,
             estimated_steps=6,
@@ -258,7 +258,7 @@ class TestCoordinatorMetadata:
         }
         result = coordinator(state)
 
-        assert result["selected_layers"] == ["react_reason", "reflection_review"]
+        assert result["selected_layers"] == ["react_reason", "verifier_check"]
         assert result["format_required"] is True
         assert result["policy_confidence"] == 0.82
         assert result["estimated_steps"] == 6
