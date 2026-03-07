@@ -15,7 +15,7 @@ from mcp.server.fastmcp import FastMCP
 
 def build_server(host: str, port: int) -> FastMCP:
     server = FastMCP(
-        name="Project Pulse Mock MCP",
+        name="CoreLink AI Mock MCP",
         instructions=(
             "A local test MCP server that exposes simple deterministic tools "
             "for verifying tool discovery and invocation."
