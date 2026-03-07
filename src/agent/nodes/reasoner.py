@@ -140,6 +140,13 @@ def with_system_prompt(messages: list[BaseMessage]) -> list[BaseMessage]:
     return [SystemMessage(content=SYSTEM_PROMPT)] + messages
 
 
+def _latest_human_text(messages: list[BaseMessage]) -> str:
+    for msg in reversed(messages):
+        if isinstance(msg, HumanMessage) and msg.content:
+            return msg.content
+    return ""
+
+
 # ---------------------------------------------------------------------------
 # Reasoner Node Factory
 # ---------------------------------------------------------------------------
@@ -157,11 +164,7 @@ def make_reasoner(tools: list):
         # Sprint 3: Retrieve compact executor hints from memory
         memory_store = state.get("memory_store")
         if memory_store:
-            task_text = ""
-            for m in state["messages"]:
-                if isinstance(m, HumanMessage) and m.content:
-                    task_text = m.content
-                    break
+            task_text = _latest_human_text(state["messages"])
             if task_text:
                 hints = memory_store.retrieve_executor_hints(task_text)
                 if hints:

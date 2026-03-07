@@ -199,6 +199,23 @@ class TestStorageRetrieval:
         assert len(hints) == 1
         assert "black_scholes_price" in hints[0]
 
+    def test_executor_retrieves_acceptable_failure_hints(self, store):
+        task = "Calculate AAPL call price"
+        rec = ExecutorMemory(
+            task_signature=_task_signature(task),
+            partial_context_summary="Fallback calculator attempt",
+            tool_used="calculator",
+            arguments_pattern="sqrt(2)",
+            outcome_quality="acceptable",
+            success=False,
+        )
+        store.store_executor(rec)
+
+        hints = store.retrieve_executor_hints(task)
+        assert len(hints) == 1
+        assert "calculator" in hints[0]
+        assert "acceptable" in hints[0]
+
     def test_verifier_round_trip(self, store):
         task = "Calculate AAPL call price"
         rec = VerifierMemory(

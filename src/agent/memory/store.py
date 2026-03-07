@@ -254,7 +254,8 @@ class MemoryStore:
         conn = self._get_conn()
         rows = conn.execute(
             "SELECT partial_context_summary, tool_used, arguments_pattern, outcome_quality "
-            "FROM executor_memory WHERE task_sig = ? AND success = 1 "
+            "FROM executor_memory WHERE task_sig = ? "
+            "AND (success = 1 OR outcome_quality = 'acceptable') "
             "ORDER BY timestamp DESC LIMIT ?",
             (sig, top_k),
         ).fetchall()

@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from agent.state import AgentState, ReplaceMessages
 from agent.nodes.verifier import verifier, verify_routing, BACKTRACK_WARNING
+from agent.memory.store import MemoryStore
 from agent.prompts import VerdictDecision
 
 class TestVerifierNode:
@@ -64,6 +65,32 @@ class TestVerifierNode:
         assert "checkpoint_stack" not in result
 
     @patch("agent.nodes.verifier.ChatOpenAI")
+    def test_verifier_uses_latest_user_turn_for_repair_lookup(self, mock_chat_openai):
+        """Repair lookup should use the current turn, not the oldest human message."""
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = VerdictDecision(verdict="REVISE", reasoning="Fix it")
+        mock_chat_openai.return_value.with_structured_output.return_value = mock_llm
+
+        memory_store = MagicMock()
+        memory_store.retrieve_verifier_hints.return_value = []
+
+        state = {
+            "selected_layers": ["verifier_check"],
+            "messages": [
+                HumanMessage(content="old task"),
+                AIMessage(content="old answer"),
+                HumanMessage(content="current task"),
+                AIMessage(content="current draft"),
+            ],
+            "checkpoint_stack": [],
+            "memory_store": memory_store,
+        }
+
+        verifier(state)
+
+        memory_store.retrieve_verifier_hints.assert_called_once_with("current task")
+
+    @patch("agent.nodes.verifier.ChatOpenAI")
     def test_verifier_backtrack_with_stack(self, mock_chat_openai):
         """BACKTRACK reverts to the top of the checkpoint stack and appends a warning."""
         mock_llm = MagicMock()
@@ -93,6 +120,79 @@ class TestVerifierNode:
         assert isinstance(msgs[1], SystemMessage)
         assert getattr(msgs[1], "additional_kwargs", {}).get("is_warning") is True
         assert "BACKTRACK WARNING" in msgs[1].content or "BACKTRACK" in msgs[1].content
+
+    @patch("agent.nodes.verifier.ChatOpenAI")
+    def test_verifier_pass_stores_executor_memory_for_tool_step(self, mock_chat_openai, tmp_path):
+        """A passing tool step should populate live executor memory."""
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = VerdictDecision(verdict="PASS", reasoning="Tool step valid")
+        mock_chat_openai.return_value.with_structured_output.return_value = mock_llm
+
+        store = MemoryStore(db_path=str(tmp_path / "agent_memory.db"))
+        state = {
+            "selected_layers": ["verifier_check"],
+            "messages": [
+                HumanMessage(content="older task"),
+                HumanMessage(content="current task"),
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "black_scholes_price",
+                            "args": {"spot": 175, "strike": 180},
+                            "id": "call_1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                ToolMessage(content="call_price: 3.22", tool_call_id="call_1", name="black_scholes_price"),
+            ],
+            "checkpoint_stack": [],
+            "memory_store": store,
+            "pending_verifier_feedback": None,
+        }
+
+        result = verifier(state)
+
+        assert result["pending_verifier_feedback"] is None
+        assert store.stats()["executor_memory"] == 1
+        hints = store.retrieve_executor_hints("current task")
+        assert len(hints) == 1
+        assert "black_scholes_price" in hints[0]
+
+    @patch("agent.nodes.verifier.ChatOpenAI")
+    def test_verifier_pass_stores_successful_repair_memory(self, mock_chat_openai, tmp_path):
+        """A later PASS should convert pending verifier feedback into verifier memory."""
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = VerdictDecision(verdict="PASS", reasoning="Recovered")
+        mock_chat_openai.return_value.with_structured_output.return_value = mock_llm
+
+        store = MemoryStore(db_path=str(tmp_path / "agent_memory.db"))
+        state = {
+            "selected_layers": ["verifier_check"],
+            "messages": [
+                HumanMessage(content="current task"),
+                SystemMessage(
+                    content="VERIFIER REVISION REQUIRED:\nMissing field",
+                    additional_kwargs={"is_warning": True},
+                ),
+                AIMessage(content="Revised answer with the required field"),
+            ],
+            "checkpoint_stack": [],
+            "memory_store": store,
+            "pending_verifier_feedback": {
+                "verdict": "REVISE",
+                "reasoning": "Missing required field",
+            },
+        }
+
+        result = verifier(state)
+
+        assert result["pending_verifier_feedback"] is None
+        assert store.stats()["verifier_memory"] == 1
+        hints = store.retrieve_verifier_hints("current task")
+        assert len(hints) == 1
+        assert "Missing required field" in hints[0]
 
     def test_verify_routing_warning(self):
         """If the last message is a warning, route back to reasoner."""
