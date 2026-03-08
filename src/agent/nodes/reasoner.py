@@ -7,6 +7,15 @@ Calls the LLM with tool bindings, applies the OSS tool-call patcher.
 import json
 import logging
 import os
+"""
+Reasoner Node: The core LLM "Brain"
+=====================================
+Calls the LLM with tool bindings, applies the OSS tool-call patcher.
+"""
+
+import json
+import logging
+import os
 import time
 import uuid
 
@@ -16,6 +25,7 @@ from langchain_openai import ChatOpenAI
 from agent.state import AgentState
 from agent.cost import CostTracker
 from agent.prompts import SYSTEM_PROMPT, MODEL_NAME
+from agent.pruning import prune_for_reasoner
 from context_manager import count_tokens
 
 logger = logging.getLogger(__name__)
@@ -159,10 +169,14 @@ def make_reasoner(tools: list):
         step = _increment_step()
         tracker: CostTracker = state.get("cost_tracker")
         model = build_model(tools)
-        messages = with_system_prompt(state["messages"])
 
-        # Sprint 3: Retrieve compact executor hints from memory
+        # Sprint 4: Prune state before building LLM prompt
+        messages = prune_for_reasoner(state["messages"])
+        messages = with_system_prompt(messages)
+
+        # Sprint 3+4: Retrieve compact executor hints from memory (budget-capped)
         memory_store = state.get("memory_store")
+        budget = state.get("budget_tracker")
         if memory_store:
             task_text = _latest_human_text(state["messages"])
             if task_text:
@@ -172,8 +186,15 @@ def make_reasoner(tools: list):
                         "TOOL-SELECTION MEMORY (compact hints from past runs):\n"
                         + "\n".join(f"- {h}" for h in hints)
                     )
-                    # Insert as second message (after system prompt, before history)
-                    messages = messages[:1] + [SystemMessage(content=hint_block)] + messages[1:]
+                    hint_tokens = count_tokens([SystemMessage(content=hint_block)])
+                    remaining = budget.hint_tokens_remaining() if budget else 200
+                    if hint_tokens <= remaining:
+                        messages = messages[:1] + [SystemMessage(content=hint_block)] + messages[1:]
+                        if budget:
+                            budget.record_hint_tokens(hint_tokens)
+                        logger.info(f"[Memory] Injected executor hints ({hint_tokens} tokens).")
+                    else:
+                        logger.info(f"[Budget] Skipped executor hints ({hint_tokens} > {remaining} remaining).")
 
         t0 = time.monotonic()
         response = model.invoke(messages)
@@ -201,3 +222,4 @@ def make_reasoner(tools: list):
         return {"messages": [response]}
 
     return reasoner
+

@@ -16,6 +16,8 @@ from agent.nodes.reasoner import reset_step_counter
 from agent.nodes.reflector import _is_reflection_message
 from agent.memory.store import MemoryStore
 from agent.memory.schema import RouterMemory, _task_signature
+from agent.budget import BudgetTracker
+from agent.pruning import prune_for_persistence, truncate_memory_fields
 from context_manager import summarize_and_window
 
 logger = logging.getLogger(__name__)
@@ -30,32 +32,6 @@ def _get_memory_store() -> MemoryStore:
     if _memory_store is None:
         _memory_store = MemoryStore()
     return _memory_store
-
-
-def _is_internal_node_message(msg: BaseMessage) -> bool:
-    return _is_reflection_message(msg) or getattr(msg, "additional_kwargs", {}).get(
-        "is_warning", False
-    )
-
-
-def _last_user_visible_ai(messages: list[BaseMessage]) -> AIMessage | None:
-    for msg in reversed(messages):
-        if isinstance(msg, AIMessage) and msg.content and not _is_internal_node_message(msg):
-            return msg
-    return None
-
-
-def _run_succeeded(final_state: AgentState, final_answer: AIMessage | None) -> bool:
-    if final_answer is None:
-        return False
-
-    selected_layers = final_state.get("selected_layers", [])
-    if "verifier_check" in selected_layers:
-        return (
-            bool(final_state.get("checkpoint_stack"))
-            and final_state.get("pending_verifier_feedback") is None
-        )
-    return True
 
 
 async def run_agent(
@@ -84,6 +60,9 @@ async def run_agent(
     # Initialize cost tracker
     tracker = CostTracker(model_name=MODEL_NAME)
 
+    # Sprint 4: Initialize budget tracker
+    budget = BudgetTracker()
+
     # Front-gate pruning: apply context windowing BEFORE graph entry
     messages = summarize_and_window(messages)
 
@@ -100,10 +79,11 @@ async def run_agent(
         "early_exit_allowed": False,
         "architecture_trace": [],
         "checkpoint_stack": [],
-        "pending_verifier_feedback": None,
         "cost_tracker": tracker,
         # Sprint 3: Execution Memory
         "memory_store": _get_memory_store(),
+        # Sprint 4: Budget Control
+        "budget_tracker": budget,
     }
 
     try:
@@ -170,10 +150,11 @@ async def run_agent(
     cost_summary["architecture_trace"] = tracker.architecture_trace()
     steps.append({"node": "cost_summary", **cost_summary})
 
+    # Sprint 4: Log budget summary
+    budget_summary = budget.summary()
+    steps.append({"node": "budget_summary", **budget_summary})
     logger.info(f"[CostTracker] {cost_summary}")
-
-    final_answer_msg = _last_user_visible_ai(all_messages)
-    run_success = _run_succeeded(final_state, final_answer_msg)
+    logger.info(f"[BudgetTracker] {budget_summary}")
 
     # Sprint 3: Store RouterMemory post-run
     try:
@@ -183,21 +164,27 @@ async def run_agent(
             task_signature=_task_signature(input_text),
             task_summary=task_summary,
             selected_layers=final_state.get("selected_layers", []),
-            success=run_success,
+            success=True,
             cost_usd=tracker.total_cost(),
             latency_ms=tracker.wall_clock_ms,
         )
+        truncate_memory_fields(router_rec)
         mem_store.store_router(router_rec)
     except Exception as mem_err:
         logger.warning(f"[Memory] Failed to store router memory: {mem_err}")
 
-    # Strip reflection and warning messages from persisted history
-    updated_history = [
+    def _is_internal_node_message(m: BaseMessage) -> bool:
+        return _is_reflection_message(m) or getattr(m, "additional_kwargs", {}).get("is_warning", False)
+
+    # Sprint 4: Use prune_for_persistence instead of simple filter
+    updated_history = prune_for_persistence([
         msg for msg in all_messages if not _is_internal_node_message(msg)
-    ]
+    ])
 
     # Extract final answer: last AIMessage that is NOT internal
-    if final_answer_msg is not None:
-        return final_answer_msg.content, steps, updated_history
+    for msg in reversed(all_messages):
+        if isinstance(msg, AIMessage) and msg.content:
+            if not _is_internal_node_message(msg):
+                return msg.content, steps, updated_history
 
     return "I was unable to generate a response.", steps, updated_history

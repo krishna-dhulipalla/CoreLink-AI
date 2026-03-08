@@ -62,3 +62,5 @@ class AgentState(TypedDict):
     # Sprint 3: Execution Memory
     cost_tracker: Any  # CostTracker instance (not persisted)
     memory_store: Any  # MemoryStore instance (not persisted)
+    # Sprint 4: Budget Control
+    budget_tracker: Any  # BudgetTracker instance (not persisted)

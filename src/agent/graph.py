@@ -64,6 +64,13 @@ def build_agent_graph(external_tools: list | None = None):
     all_tools = BUILTIN_TOOLS + (external_tools or [])
     raw_tool_node = ToolNode(all_tools)
 
+    # Sprint 4: Validate MCP tool descriptions at build time
+    from agent.guardrails import validate_tool_descriptions
+    desc_warnings = validate_tool_descriptions(all_tools)
+    for w in desc_warnings:
+        logger.warning(w)
+
+
     graph = StateGraph(AgentState)
 
     # Add nodes

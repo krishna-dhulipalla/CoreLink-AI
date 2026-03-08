@@ -12,6 +12,7 @@ from langgraph.prebuilt import ToolNode
 from agent.state import AgentState
 from agent.cost import CostTracker
 from agent.nodes.reasoner import _increment_step
+from agent.guardrails import sanitize_tool_output, tag_external_content
 from context_manager import truncate_tool_output
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,12 @@ def should_use_tools(state: AgentState) -> str:
     # In Sprint 2, verifier_check replaces reflection_review in the loop
     wants_verification = not selected_layers or "verifier_check" in selected_layers
 
+    # Sprint 4: Budget check — force format exit if tool-call cap exhausted
+    budget = state.get("budget_tracker")
+    if budget and budget.tool_calls_exhausted():
+        budget.log_budget_exit("tool_calls", f"Reached {budget.tool_calls}/{budget.tool_calls}. Forcing final answer.")
+        return "format_normalizer"
+
     if state.get("tool_fail_count", 0) >= MAX_TOOL_FAILURES:
         logger.warning(
             f"[FailureGate] Tool failure limit ({MAX_TOOL_FAILURES}) reached. "
@@ -75,6 +82,11 @@ def make_tool_executor(tool_node: ToolNode):
         result = await tool_node.ainvoke(state)
         messages = result.get("messages", [])
         truncated_messages = []
+
+        # Sprint 4: Record tool call in budget tracker
+        budget = state.get("budget_tracker")
+        if budget:
+            budget.record_tool_call()
 
         call_signature = _make_tool_signature(state)
         previous_signature = state.get("last_tool_signature", "")
@@ -110,6 +122,23 @@ def make_tool_executor(tool_node: ToolNode):
                     tool_call_id=msg.tool_call_id,
                     name=msg.name,
                 )
+
+                # Sprint 4: Guardrail — sanitize tool output for prompt injection
+                content_str = str(msg.content)
+                cleaned, was_sanitized = sanitize_tool_output(content_str)
+                if was_sanitized:
+                    msg = ToolMessage(
+                        content=cleaned,
+                        tool_call_id=msg.tool_call_id,
+                        name=msg.name,
+                    )
+                # Sprint 4: Tag external file content
+                elif msg.name and "file" in msg.name.lower():
+                    msg = ToolMessage(
+                        content=tag_external_content(str(msg.content)),
+                        tool_call_id=msg.tool_call_id,
+                        name=msg.name,
+                    )
 
                 # Record MCP call in cost tracker
                 if tracker:

@@ -17,6 +17,7 @@ from agent.cost import CostTracker
 from agent.memory.schema import ExecutorMemory, VerifierMemory, _task_signature
 from agent.prompts import MODEL_NAME, VERIFIER_PROMPT, VerdictDecision
 from agent.state import AgentState, ReplaceMessages
+from agent.pruning import truncate_memory_fields
 from context_manager import count_tokens
 
 logger = logging.getLogger(__name__)
@@ -104,6 +105,7 @@ def _store_executor_memory(
         outcome_quality=outcome_quality,
         success=success,
     )
+    truncate_memory_fields(rec)
     memory_store.store_executor(rec)
 
 
@@ -135,6 +137,7 @@ def _store_verifier_memory_on_repair_success(
         repair_action=_repair_action_summary(state["messages"]),
         repair_worked=True,
     )
+    truncate_memory_fields(rec)
     memory_store.store_verifier(rec)
 
 
@@ -183,17 +186,25 @@ def verifier(state: AgentState) -> dict:
 
     task_text = _latest_human_text(state["messages"])
 
-    # Sprint 3: Retrieve repair hints from verifier memory
+    # Sprint 3+4: Retrieve repair hints from verifier memory (budget-capped)
     repair_hint_block = ""
     memory_store = state.get("memory_store")
+    budget = state.get("budget_tracker")
     if memory_store and verdict.verdict in ("REVISE", "BACKTRACK"):
         if task_text:
             repair_hints = memory_store.retrieve_verifier_hints(task_text)
             if repair_hints:
-                repair_hint_block = (
-                    "\n\nPAST REPAIR MEMORY:\n"
-                    + "\n".join(f"- {h}" for h in repair_hints)
-                )
+                from langchain_core.messages import SystemMessage as _SM
+                hint_text = "\n".join(f"- {h}" for h in repair_hints)
+                hint_tokens = count_tokens([_SM(content=hint_text)])
+                remaining = budget.hint_tokens_remaining() if budget else 200
+                if hint_tokens <= remaining:
+                    repair_hint_block = "\n\nPAST REPAIR MEMORY:\n" + hint_text
+                    if budget:
+                        budget.record_hint_tokens(hint_tokens)
+                    logger.info(f"[Memory] Injected verifier repair hints ({hint_tokens} tokens).")
+                else:
+                    logger.info(f"[Budget] Skipped verifier hints ({hint_tokens} > {remaining} remaining).")
 
     stack = list(state.get("checkpoint_stack", []))
 
@@ -216,6 +227,14 @@ def verifier(state: AgentState) -> dict:
         }
 
     if verdict.verdict == "REVISE":
+        # Sprint 4: Cycle cap
+        if budget:
+            budget.record_revise()
+            if budget.revise_exhausted():
+                budget.log_budget_exit("revise", f"Revise cycle cap reached ({budget.revise_cycles}). Accepting current answer.")
+                serialized_messages = messages_to_dict(state["messages"])
+                stack.append({"messages": serialized_messages})
+                return {"checkpoint_stack": stack, "pending_verifier_feedback": None}
         warning_msg = SystemMessage(
             content=f"VERIFIER REVISION REQUIRED:\n{verdict.reasoning}{repair_hint_block}",
             additional_kwargs={"is_warning": True},
@@ -240,6 +259,13 @@ def verifier(state: AgentState) -> dict:
                 "reasoning": verdict.reasoning,
             },
         }
+
+    # Sprint 4: Backtrack cycle cap
+    if budget:
+        budget.record_backtrack()
+        if budget.backtrack_exhausted():
+            budget.log_budget_exit("backtrack", f"Backtrack cycle cap reached ({budget.backtrack_cycles}). Accepting current answer.")
+            return {"checkpoint_stack": stack, "pending_verifier_feedback": None}
 
     warning_msg = SystemMessage(
         content=f"{BACKTRACK_WARNING}\n\nReason for backtrack: {verdict.reasoning}{repair_hint_block}",

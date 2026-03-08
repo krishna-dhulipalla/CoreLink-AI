@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 
 MAX_RECORDS_PER_TABLE = int(os.getenv("MEMORY_MAX_RECORDS", "500"))
 TOP_K = int(os.getenv("MEMORY_TOP_K", "3"))
+DEDUP_WINDOW_SECONDS = int(os.getenv("MEMORY_DEDUP_WINDOW", "3600"))  # Sprint 4
 DEFAULT_DB_PATH = os.getenv(
     "MEMORY_DB_PATH",
     str(Path(__file__).resolve().parent.parent.parent / "data" / "agent_memory.db"),
@@ -144,6 +145,23 @@ class MemoryStore:
                 (overflow,),
             )
 
+    # Sprint 4: Near-duplicate suppression
+    def _is_near_duplicate(
+        self, table: str, task_sig: str, extra_col: str, extra_val: str,
+    ) -> bool:
+        """Check if a very similar record was stored recently."""
+        import time as _time
+        cutoff = _time.time() - DEDUP_WINDOW_SECONDS
+        conn = self._get_conn()
+        row = conn.execute(
+            f"SELECT 1 FROM {table} WHERE task_sig = ? AND {extra_col} = ? "
+            f"AND timestamp > ? LIMIT 1",
+            (task_sig, extra_val, cutoff),
+        ).fetchone()
+        if row:
+            logger.info(f"[Memory] Dedup: skipped near-duplicate in {table} (sig={task_sig[:8]}, {extra_col}={extra_val[:40]}).")
+        return row is not None
+
     def store_router(self, rec: RouterMemory) -> bool:
         """Store a router memory record if it passes admission. Returns True if stored."""
         if not self._admit_router(rec):
@@ -173,6 +191,9 @@ class MemoryStore:
         if not self._admit_executor(rec):
             logger.debug("ExecutorMemory rejected by admission policy.")
             return False
+        # Sprint 4: dedup
+        if self._is_near_duplicate("executor_memory", rec.task_signature, "tool_used", rec.tool_used):
+            return False
         conn = self._get_conn()
         self._evict_oldest("executor_memory")
         conn.execute(
@@ -196,6 +217,9 @@ class MemoryStore:
         """Store a verifier memory record if it passes admission."""
         if not self._admit_verifier(rec):
             logger.debug("VerifierMemory rejected by admission policy.")
+            return False
+        # Sprint 4: dedup
+        if self._is_near_duplicate("verifier_memory", rec.task_signature, "failure_pattern", rec.failure_pattern[:60]):
             return False
         conn = self._get_conn()
         self._evict_oldest("verifier_memory")
@@ -303,3 +327,20 @@ class MemoryStore:
             "executor_memory": conn.execute("SELECT COUNT(*) FROM executor_memory").fetchone()[0],
             "verifier_memory": conn.execute("SELECT COUNT(*) FROM verifier_memory").fetchone()[0],
         }
+
+    # Sprint 4: Compaction
+    def compact_router_memory(self) -> int:
+        """Per task_sig, keep only the lowest-cost successful record. Returns removed count."""
+        conn = self._get_conn()
+        removed = conn.execute(
+            "DELETE FROM router_memory WHERE id NOT IN ("
+            "  SELECT id FROM ("
+            "    SELECT id, ROW_NUMBER() OVER (PARTITION BY task_sig ORDER BY cost_usd ASC) AS rn"
+            "    FROM router_memory WHERE success = 1"
+            "  ) WHERE rn = 1"
+            ") AND success = 1"
+        ).rowcount
+        conn.commit()
+        if removed:
+            logger.info(f"[Memory] Compacted router_memory: removed {removed} duplicate records.")
+        return removed

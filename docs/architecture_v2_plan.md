@@ -41,14 +41,44 @@ Instead of generic trajectory RAG, memory is role-specific to the Coordinator, E
 - **Verifier/Repair Memory**: Stores failure patterns, verdicts, and repair strategies (revise vs backtrack success). Enables learned recovery.
 - **Strict Admission & Bounded Storage**: Only verified successful fragments or high-signal backtrack/revise recoveries are stored. Begins with SQLite or JSON.
 
-## Phase 4: AgentPrune & AgentTaxo Guardrails
+## Phase 4: Runtime Guardrails, Pruning, and Budget Control
 
-_Theme: Communication Efficiency & Robustness_
+_Theme: Hardening the Runtime for Reliability & Efficiency_
 
-Multi-agent systems suffer from a severe "communication tax" (passing the entire conversation history back and forth between agents).
+This sprint tightens the existing Coordinator → Executor → Verifier → Memory architecture rather than adding new agent capabilities. Inspired by AgentPrune's spatial-temporal message pruning and adversarial isolation, MaAS's cost-constrained early exits, and PRIME's state stack compaction.
 
-- **State Pruning**: We will implement pruning filters. When the Verifier sends feedback to the Executor, it _only_ sends the critique, not the generic system prompt or extraneous context.
-- **Security Guardrails**: The Coordinator will run lightweight checks to detect adversarial prompt injections (common in complex evaluation datasets) before passing the task to specialized sub-agents.
+### 4A — State Pruning at Node Boundaries
+
+- **Coordinator → Executor**: Strip internal system warnings, stale tool results, and memory hint blocks before the Reasoner receives the conversation. Only pass the HumanMessage, the system prompt, and the latest verified context window.
+- **Verifier → Executor (on REVISE/BACKTRACK)**: The warning message includes only the verdict reasoning and repair hints, never the full message history or the raw checkpoint payload.
+- **Persisted History**: `runner.py` already strips reflection/warning messages. Extend to also strip injected memory hint SystemMessages and expired tool-result ToolMessages to keep multi-turn history lean.
+- **Memory Records**: Before writing `ExecutorMemory`/`VerifierMemory`, truncate `arguments_pattern` and `failure_pattern` fields to a configurable max length to prevent bloat.
+
+### 4B — Memory Hygiene & Deduplication
+
+- **Near-duplicate suppression**: Before storing a new memory record, check if a record with the same `task_signature` + `tool_used` (executor) or `failure_pattern` prefix (verifier) already exists. Skip the write if the existing record is recent enough (configurable staleness window).
+- **Compaction pass**: On store init (or periodically), merge near-identical router records by keeping only the best-cost successful run per task_signature.
+- **Multi-turn noise filter**: Do not store executor/verifier memory for trivial runs (e.g., direct_answer path, runs under 2 steps).
+
+### 4C — Per-Run Budget Enforcement
+
+- **Max tool calls**: Enforce a hard cap (`MAX_TOOL_CALLS`, default 15) in `tool_executor`. After the cap, force the reasoner to produce a final answer without tools.
+- **Max verifier cycles**: Enforce `MAX_REVISE_CYCLES` (default 3) and `MAX_BACKTRACK_CYCLES` (default 2). After exhaustion, accept the best available answer and log a budget-exit event.
+- **Memory hint token budget**: Cap the total injected hint tokens per node to `MAX_HINT_TOKENS` (default 200). Truncate or skip hints if they exceed the budget.
+- **Budget-exit visibility**: All budget exhaustion events appear in the `steps` list returned by `run_agent` with a clear `budget_exit` node type.
+
+### 4D — Guardrails Before Tool Use
+
+- **Content sanitization**: After tool execution returns, scan the raw output for prompt-injection signatures (e.g., `IGNORE PREVIOUS INSTRUCTIONS`, `<system>`, role reassignment patterns). If detected, replace the content with a sanitized summary and log the event.
+- **Tool-description hijacking**: Before the Reasoner's LLM call, validate that dynamically loaded MCP tool descriptions haven't been tampered with (length cap, no instruction-like content).
+- **Untrusted-content tagging**: ToolMessage content from external file fetches is wrapped with `[EXTERNAL CONTENT START]` / `[EXTERNAL CONTENT END]` markers so the LLM treats it as data, not instruction.
+
+### 4E — Observability & Logging
+
+- **Structured pruning log**: Log why each pruning action happened (e.g., "stripped 3 stale tool results from coordinator→executor handoff").
+- **Memory injection log**: Log which hints were injected or skipped per node, with reason (e.g., "coordinator: 2 router hints injected" or "executor: hints skipped, no match").
+- **Budget log**: Log when a budget cap is hit and what action was taken.
+- **Guardrail log**: Log when content sanitization fires, including the pattern matched and the original content length.
 
 ---
 
