@@ -2,15 +2,57 @@
 
 General-purpose A2A reasoning engine built on LangGraph and MCP. The core runtime is domain-agnostic; domain capability comes from MCP servers discovered at startup.
 
-## Current Architecture
+## Architecture
 
-- `Coordinator`: chooses a lightweight execution plan such as `direct_answer` or `react_reason -> verifier_check`.
-- `Executor`: tool-enabled reasoning loop for multi-step tasks.
-- `Verifier`: step-level gatekeeper that returns `PASS`, `REVISE`, or `BACKTRACK`.
-- `Format Normalizer`: final formatting pass when the request explicitly needs JSON or XML.
-- `Execution Memory`: compact router, executor, and verifier hints stored in SQLite and reused on later runs.
-- `Context Windowing`: trims long histories while preserving tool-call adjacency.
-- `Multi-turn Support`: conversation history is reused through A2A `context_id`.
+```mermaid
+flowchart TD
+    A2A["A2A Request"] --> CO["Coordinator"]
+
+    CO -->|"direct_answer"| DR["Direct Responder"]
+    CO -->|"react_reason + verifier_check"| RE["Reasoner"]
+
+    RE -->|"tool calls"| TE["Tool Executor"]
+    RE -->|"final answer"| VE["Verifier"]
+
+    TE --> CW["Context Window"]
+    CW --> VE
+
+    VE -->|"PASS"| FN["Format Normalizer"]
+    VE -->|"REVISE"| RE
+    VE -->|"BACKTRACK"| RE
+
+    DR --> FN
+    FN --> RES["A2A Response"]
+
+    subgraph Runtime Controls
+        PR["Pruning"] -.-> RE
+        BT["Budget Tracker"] -.-> TE
+        BT -.-> VE
+        GR["Guardrails"] -.-> TE
+    end
+
+    subgraph Persistence
+        MEM["Execution Memory\n(SQLite)"]
+        MEM -.-> CO
+        MEM -.-> RE
+        MEM -.-> VE
+    end
+```
+
+### Key Components
+
+| Component             | Role                                                                              |
+| --------------------- | --------------------------------------------------------------------------------- |
+| **Coordinator**       | Chooses execution plan (`direct_answer` or `react_reason → verifier_check`)       |
+| **Reasoner**          | Tool-enabled LLM reasoning loop                                                   |
+| **Tool Executor**     | Runs tools, truncates output, applies guardrails                                  |
+| **Verifier**          | Step-level gate: `PASS`, `REVISE`, or `BACKTRACK`                                 |
+| **Context Window**    | Trims long histories while preserving tool-call adjacency                         |
+| **Format Normalizer** | Final formatting pass (JSON/XML if needed)                                        |
+| **Execution Memory**  | SQLite-backed hints for routing, tool selection, and repair strategies            |
+| **Pruning**           | Strips stale tool results and memory hints before LLM calls                       |
+| **Budget Tracker**    | Caps tool calls (15), revise (3), backtrack (2), hint tokens (200)                |
+| **Guardrails**        | Prompt-injection detection, tool-description validation, external-content tagging |
 
 ## Repository Layout
 
@@ -24,10 +66,13 @@ src/
   tools.py                  built-in calculator/search/time tools
   agent/
     graph.py                graph construction
-    runner.py               run wrapper and summaries
+    runner.py               run wrapper and cost/budget summaries
     state.py                shared state schema
     prompts.py              prompts and structured outputs
     cost.py                 token/cost accounting
+    budget.py               per-run budget enforcement
+    pruning.py              state pruning at node boundaries
+    guardrails.py           content sanitization and validation
     operators.py            operator registry and defaults
     memory/                 SQLite-backed execution memory
     nodes/                  coordinator, reasoner, verifier, formatter, context
@@ -43,72 +88,33 @@ docs/
 uv sync
 ```
 
-Create `.env` with the keys and MCP configuration you want to use.
-
-Common variables:
+Create `.env` with your keys:
 
 ```env
 OPENAI_API_KEY=...
-OPENAI_BASE_URL=
 MODEL_NAME=gpt-4o-mini
 TAVILY_API_KEY=
-LANGCHAIN_TRACING_V2=true
-LANGCHAIN_API_KEY=
-LANGCHAIN_PROJECT=project-pulse
 MCP_SERVER_STDIO=
 MCP_SERVER_URLS=
 ```
 
 ## Run
 
-Start the A2A server:
-
 ```bash
 uv run python src/server.py
+uv run python src/server.py --port 9010  # custom port
 ```
-
-Custom port:
-
-```bash
-uv run python src/server.py --port 9010
-```
-
-## MCP Servers
-
-You can run local MCP servers directly when testing:
-
-```bash
-uv run python src/mock_mcp_server.py
-uv run python src/mcp_servers/finance/server.py
-uv run python src/mcp_servers/options_chain/server.py
-uv run python src/mcp_servers/trading_sim/server.py
-uv run python src/mcp_servers/risk_metrics/server.py
-```
-
-If you use stdio MCP servers, list them in `MCP_SERVER_STDIO`. If you use HTTP MCP servers, list them in `MCP_SERVER_URLS`.
 
 ## Tests
 
-Targeted examples:
-
 ```bash
-uv run pytest tests/test_agent.py -v
-uv run pytest tests/test_features.py -v
-uv run pytest tests/test_coordinator.py -v
-uv run pytest tests/test_verifier.py -v
-uv run pytest tests/test_memory.py -v
-uv run pytest tests/test_end_to_end_verifier.py -v
-```
-
-Run the full suite:
-
-```bash
-uv run pytest tests -v
+uv run pytest tests -v        # full suite
+uv run pytest tests -v -x     # stop on first failure
 ```
 
 ## Notes
 
 - Built-in tools and MCP tools are both available to the runtime.
-- The verifier/backtrack loop is the default heavy-research path.
-- Execution memory currently uses compact exact-match task signatures in SQLite.
-- LangSmith tracing is optional; if outbound network access is blocked, local tests still run.
+- Budget caps are env-configurable (`MAX_TOOL_CALLS`, `MAX_REVISE_CYCLES`, `MAX_BACKTRACK_CYCLES`, `MAX_HINT_TOKENS`).
+- Execution memory uses compact exact-match task signatures in SQLite with near-duplicate suppression.
+- Multi-turn conversation history is reused through A2A `context_id`.
