@@ -4,10 +4,9 @@ State Pruning (Sprint 4A)
 Functions to strip low-signal messages before they reach nodes or storage.
 
 Design:
-- prune_for_reasoner: strips internal warnings, stale old tool results,
-  and memory-hint SystemMessages before the Reasoner LLM call.
-- prune_for_persistence: strips everything prune_for_reasoner strips,
-  plus memory-hint SystemMessages from the persisted conversation history.
+- prune_for_reasoner: strips internal warnings, stale old tool-call bundles
+  (AIMessage+ToolMessage pairs), and memory-hint SystemMessages.
+- prune_for_persistence: strips warnings and memory hints from persisted history.
 - truncate_memory_fields: caps long string fields before memory writes.
 
 Inspired by AgentPrune spatial-temporal message pruning.
@@ -18,7 +17,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from langchain_core.messages import BaseMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, ToolMessage
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +25,7 @@ logger = logging.getLogger(__name__)
 # Configuration
 # ---------------------------------------------------------------------------
 
-# Keep at most this many tool-result messages in reasoner context
+# Keep at most this many tool-call bundles in reasoner context
 MAX_TOOL_RESULTS_IN_CONTEXT = 6
 
 # Max characters for memory record string fields
@@ -61,23 +60,49 @@ def prune_for_reasoner(messages: list[BaseMessage]) -> list[BaseMessage]:
     """Strip low-signal messages before the Reasoner LLM call.
 
     Removes:
-    1. Internal verifier warnings (they were already consumed by the previous loop).
+    1. Internal verifier warnings (is_warning=True).
     2. Old memory-hint SystemMessages (fresh ones are re-injected each call).
-    3. Stale tool results beyond the most recent MAX_TOOL_RESULTS_IN_CONTEXT.
+    3. Stale tool-call bundles (AIMessage with tool_calls + their paired
+       ToolMessages) beyond the most recent MAX_TOOL_RESULTS_IN_CONTEXT,
+       keeping the pairs intact to avoid orphaning tool_calls.
     """
     # Phase 1: remove warnings and old hints
-    cleaned = [m for m in messages if not _is_memory_hint(m)]
+    cleaned = [
+        m for m in messages
+        if not _is_memory_hint(m) and not _is_internal_warning(m)
+    ]
 
-    # Phase 2: keep only the most recent tool results
-    tool_indices = [i for i, m in enumerate(cleaned) if isinstance(m, ToolMessage)]
-    pruned_count = 0
-    if len(tool_indices) > MAX_TOOL_RESULTS_IN_CONTEXT:
-        stale = set(tool_indices[:-MAX_TOOL_RESULTS_IN_CONTEXT])
-        pruned_count = len(stale)
-        cleaned = [m for i, m in enumerate(cleaned) if i not in stale]
+    # Phase 2: identify tool-call bundles and prune old ones as complete pairs.
+    # A "bundle" is an AIMessage with tool_calls followed by its ToolMessages.
+    # We find all bundles, keep the most recent MAX_TOOL_RESULTS_IN_CONTEXT,
+    # and remove the rest (both the AIMessage and its ToolMessages).
+    bundle_starts: list[int] = []
+    for i, m in enumerate(cleaned):
+        if isinstance(m, AIMessage) and m.tool_calls:
+            bundle_starts.append(i)
 
-    if pruned_count:
-        logger.info(f"[Prune] Stripped {pruned_count} stale tool results from reasoner context.")
+    if len(bundle_starts) > MAX_TOOL_RESULTS_IN_CONTEXT:
+        stale_starts = bundle_starts[:-MAX_TOOL_RESULTS_IN_CONTEXT]
+        # Collect the tool_call_ids from stale AIMessages
+        stale_call_ids: set[str] = set()
+        stale_indices: set[int] = set()
+        for idx in stale_starts:
+            stale_indices.add(idx)
+            ai_msg = cleaned[idx]
+            for tc in ai_msg.tool_calls:
+                stale_call_ids.add(tc.get("id", ""))
+
+        # Also mark the paired ToolMessages for removal
+        for i, m in enumerate(cleaned):
+            if isinstance(m, ToolMessage) and getattr(m, "tool_call_id", "") in stale_call_ids:
+                stale_indices.add(i)
+
+        pruned_count = len(stale_indices)
+        cleaned = [m for i, m in enumerate(cleaned) if i not in stale_indices]
+        logger.info(
+            f"[Prune] Stripped {pruned_count} messages "
+            f"({len(stale_starts)} stale tool-call bundles) from reasoner context."
+        )
 
     return cleaned
 
@@ -88,7 +113,6 @@ def prune_for_persistence(messages: list[BaseMessage]) -> list[BaseMessage]:
     Removes:
     1. Internal verifier warnings (is_warning=True).
     2. Memory hint SystemMessages.
-    3. Reflection messages (handled separately by runner already).
     """
     result = []
     for m in messages:

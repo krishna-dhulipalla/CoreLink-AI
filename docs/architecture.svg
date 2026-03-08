@@ -1,0 +1,128 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 500" width="100%" height="100%" fill="#ffffff">
+  <style>
+    .bg { fill: #f8fafc; rx: 8; stroke: #e2e8f0; stroke-width: 1; }
+    .box { fill: #ffffff; stroke: #cbd5e1; stroke-width: 1.5; rx: 6; }
+    .box-alt { fill: #f1f5f9; stroke: #94a3b8; stroke-width: 1.5; rx: 6; stroke-dasharray: 4; }
+    .text-title { font-family: -apple-system, sans-serif; font-size: 14px; font-weight: 600; fill: #334155; text-anchor: middle; }
+    .text-sm { font-family: -apple-system, sans-serif; font-size: 11px; font-weight: 500; fill: #64748b; text-anchor: middle; }
+    .line { stroke: #94a3b8; stroke-width: 1.5; fill: none; }
+    .line-dash { stroke: #cbd5e1; stroke-width: 1.5; fill: none; stroke-dasharray: 4; }
+    .marker { fill: #94a3b8; }
+  </style>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" class="marker" />
+    </marker>
+    <marker id="arrow-dash" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#cbd5e1" />
+    </marker>
+  </defs>
+
+  <!-- Backgrounds -->
+  <rect x="170" y="180" width="460" height="220" class="bg" />
+  <text x="400" y="195" class="text-sm">Runtime Controls &amp; Core Nodes</text>
+
+  <rect x="650" y="20" width="140" height="460" class="bg" />
+  <text x="720" y="40" class="text-sm">Persistence</text>
+
+  <!-- Nodes -->
+  <rect x="330" y="30" width="140" height="40" class="box" />
+  <text x="400" y="55" class="text-title">A2A Request</text>
+
+  <rect x="330" y="110" width="140" height="40" class="box" />
+  <text x="400" y="135" class="text-title">Coordinator</text>
+
+  <rect x="80" y="200" width="140" height="40" class="box" />
+  <text x="150" y="225" class="text-title">Direct Responder</text>
+
+  <rect x="330" y="220" width="140" height="40" class="box" />
+  <text x="400" y="245" class="text-title">Reasoner</text>
+
+  <rect x="230" y="320" width="120" height="40" class="box" />
+  <text x="290" y="345" class="text-title">Tool Executor</text>
+
+  <rect x="450" y="320" width="120" height="40" class="box" />
+  <text x="510" y="345" class="text-title">Verifier</text>
+
+  <!-- Format Normalizer pushed down properly -->
+  <rect x="330" y="440" width="140" height="40" class="box" />
+  <text x="400" y="465" class="text-title">Format Normalizer</text>
+
+  <!-- Side Nodes -->
+  <rect x="340" y="370" width="120" height="30" class="box-alt" />
+  <text x="400" y="389" class="text-sm">Context Window</text>
+
+  <rect x="660" y="60" width="120" height="40" class="box-alt" />
+  <text x="720" y="85" class="text-sm">SQLite Memory</text>
+
+  <!-- Control nodes -->
+  <rect x="200" y="260" width="90" height="24" class="box-alt" />
+  <text x="245" y="276" class="text-sm">Guardrails</text>
+
+  <rect x="520" y="260" width="90" height="24" class="box-alt" />
+  <text x="565" y="276" class="text-sm">Pruning</text>
+
+  <rect x="500" y="200" width="90" height="24" class="box-alt" />
+  <text x="545" y="216" class="text-sm">Budget Tracker</text>
+
+
+  <!-- Connecting Lines -->
+  <!-- A2A to Coordinator -->
+  <line x1="400" y1="70" x2="400" y2="108" class="line" marker-end="url(#arrow)" />
+  
+  <!-- Coordinator to Direct Responder -->
+  <path d="M 330 130 C 150 130 150 160 150 198" class="line" marker-end="url(#arrow)" />
+  <text x="210" y="120" class="text-sm">direct_answer</text>
+
+  <!-- Coordinator to Reasoner -->
+  <line x1="400" y1="150" x2="400" y2="218" class="line" marker-end="url(#arrow)" />
+  <text x="450" y="180" class="text-sm">react_reason</text>
+
+  <!-- Direct Responder to Format Normalizer -->
+  <!-- Direct goes from 150x240 to 330x460 (format norm) -->
+  <path d="M 150 240 C 150 460 328 460 328 460" class="line" marker-end="url(#arrow)" />
+
+  <!-- Reasoner split -->
+  <!-- Reasoner(400,260) to Tool Executor(290, 320) -->
+  <line x1="380" y1="260" x2="310" y2="318" class="line" marker-end="url(#arrow)" />
+  <text x="320" y="285" class="text-sm">tool calls</text>
+
+  <!-- Reasoner(400,260) to Verifier(510, 320) -->
+  <line x1="420" y1="260" x2="490" y2="318" class="line" marker-end="url(#arrow)" />
+  <text x="480" y="285" class="text-sm">final answer</text>
+
+  <!-- Executor to Verifier loops -->
+  <!-- Tool Exec to Context Window -->
+  <line x1="290" y1="360" x2="338" y2="385" class="line-dash" marker-end="url(#arrow-dash)" />
+  
+  <!-- Context Window to Verifier -->
+  <line x1="460" y1="385" x2="510" y2="362" class="line-dash" marker-end="url(#arrow-dash)" />
+
+  <!-- Verifier back to Reasoner -->
+  <path d="M 510 320 C 510 240 472 240 472 240" class="line" marker-end="url(#arrow)" />
+  <text x="560" y="260" class="text-sm">REVISE /</text>
+  <text x="560" y="272" class="text-sm">BACKTRACK</text>
+
+  <!-- Verifier to Format Normalizer -->
+  <line x1="510" y1="360" x2="420" y2="438" class="line" marker-end="url(#arrow)" />
+  <text x="495" y="405" class="text-sm">PASS</text>
+  
+  <!-- Format Normalizer Out -->
+  <line x1="400" y1="480" x2="400" y2="500" class="line" marker-end="url(#arrow)" />
+  
+  <!-- SQLite Memory links to Coordinator, Reasoner, Verifier -->
+  <path d="M 660 80 C 470 80 470 110 470 110" class="line-dash" marker-end="url(#arrow-dash)" />
+  <path d="M 660 70 C 580 70 580 230 470 230" class="line-dash" marker-end="url(#arrow-dash)" />
+  <path d="M 660 90 C 700 350 570 350 570 350" class="line-dash" marker-end="url(#arrow-dash)" />
+  
+  <!-- Control Lines -->
+  <!-- Guardrails to TE -->
+  <line x1="290" y1="272" x2="290" y2="318" class="line-dash" marker-end="url(#arrow-dash)" />
+  <!-- Pruning to Reasoner -->
+  <line x1="520" y1="272" x2="471" y2="255" class="line-dash" marker-end="url(#arrow-dash)" />
+  <!-- Budget to TE -->
+  <path d="M 500 212 C 480 212 480 300 250 300" class="line-dash" marker-end="url(#arrow-dash)" />
+  <!-- Budget to Verifier -->
+  <path d="M 590 212 C 600 212 600 330 572 330" class="line-dash" marker-end="url(#arrow-dash)" />
+
+</svg>

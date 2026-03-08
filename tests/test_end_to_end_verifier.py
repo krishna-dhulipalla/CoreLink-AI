@@ -30,19 +30,24 @@ def anyio_backend():
     return "asyncio"
 
 
-def mock_llm_reasoner(messages):
-    warnings = [
-        msg for msg in messages if getattr(msg, "additional_kwargs", {}).get("is_warning", False)
-    ]
-    tool_results = [msg for msg in messages if isinstance(msg, ToolMessage)]
+# Use a call counter since prune_for_reasoner strips warnings before the LLM call
+_reasoner_call_count = 0
 
-    if not warnings and not tool_results:
+
+def mock_llm_reasoner(messages):
+    global _reasoner_call_count
+    _reasoner_call_count += 1
+
+    if _reasoner_call_count == 1:
+        # First call: emit a tool call
         return AIMessage(
             content="",
             tool_calls=[{"name": "get_current_time", "args": {}, "id": "tc1", "type": "tool_call"}],
         )
-    if not warnings and tool_results:
+    if _reasoner_call_count == 2:
+        # Second call (after tool result): hallucinated answer
         return AIMessage(content="Final hallucinated answer", tool_calls=[])
+    # Third call (after backtrack): correct answer
     return AIMessage(content="Actually, here is the verified correct answer.", tool_calls=[])
 
 
@@ -62,6 +67,10 @@ def mock_llm_verifier(messages):
 
 
 class TestEndToEndVerifier:
+    def setup_method(self):
+        global _reasoner_call_count
+        _reasoner_call_count = 0
+
     @pytest.mark.anyio
     @patch("agent.nodes.reasoner.ChatOpenAI")
     @patch("agent.nodes.verifier.ChatOpenAI")
@@ -92,6 +101,9 @@ class TestEndToEndVerifier:
             "architecture_trace": [],
             "checkpoint_stack": [],
             "cost_tracker": None,
+            "budget_tracker": None,
+            "memory_store": None,
+            "pending_verifier_feedback": None,
         }
 
         final_state = await graph.ainvoke(initial_state)

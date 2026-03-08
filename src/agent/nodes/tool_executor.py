@@ -49,11 +49,11 @@ def should_use_tools(state: AgentState) -> str:
     # In Sprint 2, verifier_check replaces reflection_review in the loop
     wants_verification = not selected_layers or "verifier_check" in selected_layers
 
-    # Sprint 4: Budget check — force format exit if tool-call cap exhausted
+    # Sprint 4: Budget check — force through verifier for a clean exit
     budget = state.get("budget_tracker")
     if budget and budget.tool_calls_exhausted():
-        budget.log_budget_exit("tool_calls", f"Reached {budget.tool_calls}/{budget.tool_calls}. Forcing final answer.")
-        return "format_normalizer"
+        budget.log_budget_exit("tool_calls", f"Reached {budget.tool_calls} tool calls. Forcing verifier exit.")
+        return "verifier" if wants_verification else "format_normalizer"
 
     if state.get("tool_fail_count", 0) >= MAX_TOOL_FAILURES:
         logger.warning(
@@ -96,8 +96,25 @@ def make_tool_executor(tool_node: ToolNode):
 
         for msg in messages:
             if isinstance(msg, ToolMessage) and isinstance(msg.content, str):
-                original_len = len(msg.content)
-                truncated_content = truncate_tool_output(msg.content)
+                original_content = msg.content
+                original_len = len(original_content)
+
+                # Sprint 4 Fix: Guardrail scan on ORIGINAL content BEFORE truncation
+                cleaned, was_sanitized = sanitize_tool_output(original_content)
+                if was_sanitized:
+                    msg = ToolMessage(
+                        content=cleaned,
+                        tool_call_id=msg.tool_call_id,
+                        name=msg.name,
+                    )
+                    truncated_messages.append(msg)
+                    any_error = True  # treat sanitized content as error
+                    if tracker:
+                        tracker.record_mcp_call()
+                    continue
+
+                # Truncate after guardrail scan
+                truncated_content = truncate_tool_output(original_content)
                 if len(truncated_content) < original_len:
                     logger.info(
                         f"Truncated tool '{msg.name}' output: "
@@ -123,17 +140,8 @@ def make_tool_executor(tool_node: ToolNode):
                     name=msg.name,
                 )
 
-                # Sprint 4: Guardrail — sanitize tool output for prompt injection
-                content_str = str(msg.content)
-                cleaned, was_sanitized = sanitize_tool_output(content_str)
-                if was_sanitized:
-                    msg = ToolMessage(
-                        content=cleaned,
-                        tool_call_id=msg.tool_call_id,
-                        name=msg.name,
-                    )
                 # Sprint 4: Tag external file content
-                elif msg.name and "file" in msg.name.lower():
+                if msg.name and "file" in msg.name.lower():
                     msg = ToolMessage(
                         content=tag_external_content(str(msg.content)),
                         tool_call_id=msg.tool_call_id,

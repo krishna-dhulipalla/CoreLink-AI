@@ -147,19 +147,28 @@ class MemoryStore:
 
     # Sprint 4: Near-duplicate suppression
     def _is_near_duplicate(
-        self, table: str, task_sig: str, extra_col: str, extra_val: str,
+        self, table: str, task_sig: str,
+        extra_col: str, extra_val: str,
+        extra_col2: str | None = None, extra_val2: str | None = None,
     ) -> bool:
         """Check if a very similar record was stored recently."""
         import time as _time
         cutoff = _time.time() - DEDUP_WINDOW_SECONDS
         conn = self._get_conn()
-        row = conn.execute(
-            f"SELECT 1 FROM {table} WHERE task_sig = ? AND {extra_col} = ? "
-            f"AND timestamp > ? LIMIT 1",
-            (task_sig, extra_val, cutoff),
-        ).fetchone()
+        if extra_col2 and extra_val2:
+            row = conn.execute(
+                f"SELECT 1 FROM {table} WHERE task_sig = ? AND {extra_col} = ? "
+                f"AND {extra_col2} = ? AND timestamp > ? LIMIT 1",
+                (task_sig, extra_val, extra_val2, cutoff),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                f"SELECT 1 FROM {table} WHERE task_sig = ? AND {extra_col} = ? "
+                f"AND timestamp > ? LIMIT 1",
+                (task_sig, extra_val, cutoff),
+            ).fetchone()
         if row:
-            logger.info(f"[Memory] Dedup: skipped near-duplicate in {table} (sig={task_sig[:8]}, {extra_col}={extra_val[:40]}).")
+            logger.info(f"[Memory] Dedup: skipped near-duplicate in {table} (sig={task_sig[:8]}).")
         return row is not None
 
     def store_router(self, rec: RouterMemory) -> bool:
@@ -191,8 +200,12 @@ class MemoryStore:
         if not self._admit_executor(rec):
             logger.debug("ExecutorMemory rejected by admission policy.")
             return False
-        # Sprint 4: dedup
-        if self._is_near_duplicate("executor_memory", rec.task_signature, "tool_used", rec.tool_used):
+        # Sprint 4: dedup — check both tool_used AND arguments_pattern
+        if self._is_near_duplicate(
+            "executor_memory", rec.task_signature,
+            "tool_used", rec.tool_used,
+            "arguments_pattern", rec.arguments_pattern[:60],
+        ):
             return False
         conn = self._get_conn()
         self._evict_oldest("executor_memory")

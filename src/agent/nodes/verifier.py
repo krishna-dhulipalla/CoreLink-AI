@@ -54,6 +54,26 @@ def _last_non_warning_message(messages: list[BaseMessage]) -> BaseMessage | None
     return None
 
 
+def _extract_best_answer(messages: list[BaseMessage]) -> str:
+    """Walk messages backwards to find the best answer text for budget-exit.
+
+    Preference order:
+    1. Last AIMessage with text content and no tool_calls (real answer).
+    2. Last AIMessage with text content (even if it also had tool_calls).
+    3. Fallback string.
+    """
+    best_with_calls = None
+    for msg in reversed(messages):
+        if isinstance(msg, AIMessage) and msg.content and not _is_internal_warning(msg):
+            if not msg.tool_calls:
+                return str(msg.content)
+            if best_with_calls is None:
+                best_with_calls = str(msg.content)
+    if best_with_calls:
+        return best_with_calls
+    return "I was unable to complete this task within the allowed verification budget."
+
+
 def _latest_tool_fragment(messages: list[BaseMessage]) -> tuple[str, str] | None:
     for msg in reversed(messages):
         if isinstance(msg, AIMessage) and msg.tool_calls:
@@ -232,9 +252,17 @@ def verifier(state: AgentState) -> dict:
             budget.record_revise()
             if budget.revise_exhausted():
                 budget.log_budget_exit("revise", f"Revise cycle cap reached ({budget.revise_cycles}). Accepting current answer.")
+                # Extract best answer so far and append as clean AIMessage
+                # so verify_routing sees a valid exit message.
+                answer = _extract_best_answer(state["messages"])
+                answer_msg = AIMessage(content=answer)
                 serialized_messages = messages_to_dict(state["messages"])
                 stack.append({"messages": serialized_messages})
-                return {"checkpoint_stack": stack, "pending_verifier_feedback": None}
+                return {
+                    "messages": [answer_msg],
+                    "checkpoint_stack": stack,
+                    "pending_verifier_feedback": None,
+                }
         warning_msg = SystemMessage(
             content=f"VERIFIER REVISION REQUIRED:\n{verdict.reasoning}{repair_hint_block}",
             additional_kwargs={"is_warning": True},
@@ -265,7 +293,13 @@ def verifier(state: AgentState) -> dict:
         budget.record_backtrack()
         if budget.backtrack_exhausted():
             budget.log_budget_exit("backtrack", f"Backtrack cycle cap reached ({budget.backtrack_cycles}). Accepting current answer.")
-            return {"checkpoint_stack": stack, "pending_verifier_feedback": None}
+            answer = _extract_best_answer(state["messages"])
+            answer_msg = AIMessage(content=answer)
+            return {
+                "messages": [answer_msg],
+                "checkpoint_stack": stack,
+                "pending_verifier_feedback": None,
+            }
 
     warning_msg = SystemMessage(
         content=f"{BACKTRACK_WARNING}\n\nReason for backtrack: {verdict.reasoning}{repair_hint_block}",

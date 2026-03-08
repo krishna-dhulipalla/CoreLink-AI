@@ -4,40 +4,9 @@ General-purpose A2A reasoning engine built on LangGraph and MCP. The core runtim
 
 ## Architecture
 
-```mermaid
-flowchart TD
-    A2A["A2A Request"] --> CO["Coordinator"]
-
-    CO -->|"direct_answer"| DR["Direct Responder"]
-    CO -->|"react_reason + verifier_check"| RE["Reasoner"]
-
-    RE -->|"tool calls"| TE["Tool Executor"]
-    RE -->|"final answer"| VE["Verifier"]
-
-    TE --> CW["Context Window"]
-    CW --> VE
-
-    VE -->|"PASS"| FN["Format Normalizer"]
-    VE -->|"REVISE"| RE
-    VE -->|"BACKTRACK"| RE
-
-    DR --> FN
-    FN --> RES["A2A Response"]
-
-    subgraph Runtime Controls
-        PR["Pruning"] -.-> RE
-        BT["Budget Tracker"] -.-> TE
-        BT -.-> VE
-        GR["Guardrails"] -.-> TE
-    end
-
-    subgraph Persistence
-        MEM["Execution Memory\n(SQLite)"]
-        MEM -.-> CO
-        MEM -.-> RE
-        MEM -.-> VE
-    end
-```
+<p align="center">
+  <img src="docs/architecture.svg" alt="CoreLink AI Architecture Diagram" width="100%">
+</p>
 
 ### Key Components
 

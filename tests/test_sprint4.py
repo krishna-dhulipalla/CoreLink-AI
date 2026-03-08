@@ -56,13 +56,46 @@ class TestPruneForReasoner:
         result = prune_for_reasoner(messages)
         assert len(result) == 2
 
-    def test_limits_tool_results(self):
-        messages = [HumanMessage(content="hello")]
-        for i in range(10):
-            messages.append(ToolMessage(content=f"result {i}", tool_call_id=f"tc_{i}", name="tool"))
+    def test_strips_internal_warnings(self):
+        """Fix 8: prune_for_reasoner must also strip is_warning messages."""
+        messages = [
+            SystemMessage(content="System"),
+            SystemMessage(content="VERIFIER REVISION REQUIRED:\nsome reasoning", additional_kwargs={"is_warning": True}),
+            HumanMessage(content="hello"),
+        ]
         result = prune_for_reasoner(messages)
-        tool_msgs = [m for m in result if isinstance(m, ToolMessage)]
-        assert len(tool_msgs) == MAX_TOOL_RESULTS_IN_CONTEXT
+        assert len(result) == 2
+        assert all(not getattr(m, "additional_kwargs", {}).get("is_warning") for m in result)
+
+    def test_bundle_safe_tool_pruning(self):
+        """Fix 1: pruning removes AIMessage+ToolMessage pairs together, never orphaning tool_calls."""
+        messages = [HumanMessage(content="hello")]
+        # Create 8 tool-call bundles (each: AIMessage with tool_calls + matching ToolMessage)
+        for i in range(8):
+            tc_id = f"tc_{i}"
+            messages.append(AIMessage(content="", tool_calls=[{"id": tc_id, "name": f"tool_{i}", "args": {}}]))
+            messages.append(ToolMessage(content=f"result {i}", tool_call_id=tc_id, name=f"tool_{i}"))
+
+        result = prune_for_reasoner(messages)
+
+        # Verify no orphaned tool_calls: every AIMessage with tool_calls has its paired ToolMessage
+        for j, msg in enumerate(result):
+            if isinstance(msg, AIMessage) and msg.tool_calls:
+                expected_ids = {tc.get("id", "") for tc in msg.tool_calls}
+                # Find the next ToolMessage(s) after this AIMessage
+                following_tool_ids = set()
+                for k in range(j + 1, len(result)):
+                    if isinstance(result[k], ToolMessage):
+                        following_tool_ids.add(result[k].tool_call_id)
+                    elif isinstance(result[k], AIMessage):
+                        break
+                assert expected_ids.issubset(following_tool_ids), (
+                    f"Orphaned tool_calls at index {j}: {expected_ids - following_tool_ids}"
+                )
+
+        # Verify we kept at most MAX bundles
+        ai_with_calls = [m for m in result if isinstance(m, AIMessage) and m.tool_calls]
+        assert len(ai_with_calls) <= MAX_TOOL_RESULTS_IN_CONTEXT
 
     def test_preserves_normal_messages(self):
         messages = [
@@ -246,7 +279,8 @@ class TestMemoryDedup:
     def teardown_method(self):
         self.store.close()
 
-    def test_executor_dedup_blocks_recent_duplicate(self):
+    def test_executor_dedup_blocks_identical_call(self):
+        """Exact same tool + args + task_sig within dedup window → blocked."""
         rec = ExecutorMemory(
             task_signature="sig1",
             partial_context_summary="test",
@@ -256,7 +290,6 @@ class TestMemoryDedup:
             success=True,
         )
         assert self.store.store_executor(rec) is True
-        # Second identical should be blocked by dedup
         rec2 = ExecutorMemory(
             task_signature="sig1",
             partial_context_summary="test",
@@ -286,6 +319,27 @@ class TestMemoryDedup:
         )
         assert self.store.store_executor(rec1) is True
         assert self.store.store_executor(rec2) is True
+
+    def test_executor_allows_different_args_same_tool(self):
+        """Fix 6: same tool but different argument patterns preserved as distinct entries."""
+        rec1 = ExecutorMemory(
+            task_signature="sig1",
+            partial_context_summary="test",
+            tool_used="calculator",
+            arguments_pattern="1+1",
+            outcome_quality="good",
+            success=True,
+        )
+        rec2 = ExecutorMemory(
+            task_signature="sig1",
+            partial_context_summary="test",
+            tool_used="calculator",
+            arguments_pattern="2*3+5",
+            outcome_quality="good",
+            success=True,
+        )
+        assert self.store.store_executor(rec1) is True
+        assert self.store.store_executor(rec2) is True  # Different args → NOT a duplicate
 
     def test_verifier_dedup(self):
         rec = VerifierMemory(

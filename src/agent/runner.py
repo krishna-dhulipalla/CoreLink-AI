@@ -160,11 +160,14 @@ async def run_agent(
     try:
         mem_store = _get_memory_store()
         task_summary = input_text[:120] if input_text else ""
+        # Sprint 4 Fix: derive success from whether a verifier PASS was achieved
+        # (pending_verifier_feedback is None when PASS or direct_answer)
+        run_success = final_state.get("pending_verifier_feedback") is None
         router_rec = RouterMemory(
             task_signature=_task_signature(input_text),
             task_summary=task_summary,
             selected_layers=final_state.get("selected_layers", []),
-            success=True,
+            success=run_success,
             cost_usd=tracker.total_cost(),
             latency_ms=tracker.wall_clock_ms,
         )
