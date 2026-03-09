@@ -1,10 +1,8 @@
-import json
 import logging
 import uuid
 from typing import Optional, Dict
 
 import pandas as pd
-import pdfplumber
 from mcp.server.fastmcp import FastMCP
 
 # Initialize FastMCP Server
@@ -14,6 +12,16 @@ mcp = FastMCP("DocumentAnalytics")
 _TABLES: Dict[str, pd.DataFrame] = {}
 
 logger = logging.getLogger(__name__)
+
+
+def _get_pdfplumber():
+    try:
+        import pdfplumber as pdfplumber_module
+    except ImportError as exc:
+        raise RuntimeError(
+            "pdfplumber is not installed. Run: uv add pdfplumber"
+        ) from exc
+    return pdfplumber_module
 
 
 @mcp.tool()
@@ -29,6 +37,7 @@ def extract_pdf_tables(file_path: str, pages: Optional[list[int]] = None) -> lis
     extracted_metadata = []
     
     try:
+        pdfplumber = _get_pdfplumber()
         with pdfplumber.open(file_path) as pdf:
             # Default to first 10 pages to prevent memory explosion if not specified
             pages_to_process = pages if pages else list(range(1, min(11, len(pdf.pages) + 1)))
@@ -82,6 +91,7 @@ def search_document_pages(file_path: str, query: str) -> list[dict]:
     """
     results = []
     try:
+        pdfplumber = _get_pdfplumber()
         with pdfplumber.open(file_path) as pdf:
             for i, page in enumerate(pdf.pages):
                 text = page.extract_text()
@@ -179,23 +189,25 @@ def sum_column(table_id: str, column_matcher: str) -> dict:
 
     def clean_numeric(val):
         if pd.isna(val):
-            return 0.0
+            return 0.0, False
         val_str = str(val).replace('$', '').replace(',', '').strip()
         # Handle (100) as -100
         if val_str.startswith('(') and val_str.endswith(')'):
             val_str = '-' + val_str[1:-1]
         try:
-            return float(val_str)
+            return float(val_str), False
         except ValueError:
-            return 0.0
+            return 0.0, True
 
-    numeric_series = df[col].apply(clean_numeric)
-    total_sum = numeric_series.sum()
+    parsed = df[col].apply(clean_numeric)
+    total_sum = sum(value for value, _ in parsed)
+    non_numeric_rows = sum(1 for _, failed in parsed if failed)
     
     return {
         "column": col,
         "sum": float(total_sum),
-        "rows_aggregated": len(numeric_series)
+        "rows_aggregated": len(parsed),
+        "non_numeric_rows_skipped": non_numeric_rows,
     }
 
 if __name__ == "__main__":

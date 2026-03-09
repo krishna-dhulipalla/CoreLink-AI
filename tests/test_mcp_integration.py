@@ -6,14 +6,23 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from a2a.client import A2ACardResolver, ClientConfig, ClientFactory
-from a2a.types import Message, Part, Role, TextPart
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
+
+a2a_client = pytest.importorskip("a2a.client")
+a2a_types = pytest.importorskip("a2a.types")
+
+A2ACardResolver = a2a_client.A2ACardResolver
+ClientConfig = a2a_client.ClientConfig
+ClientFactory = a2a_client.ClientFactory
+Message = a2a_types.Message
+Part = a2a_types.Part
+Role = a2a_types.Role
+TextPart = a2a_types.TextPart
 
 from executor import Executor
 from mcp_client import load_mcp_tools_from_env

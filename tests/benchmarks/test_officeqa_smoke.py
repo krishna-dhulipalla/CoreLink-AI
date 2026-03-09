@@ -9,6 +9,8 @@ from langchain_core.tools import tool
 # Ensure src/ is importable
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
+pytest.importorskip("mcp.server.fastmcp")
+
 from agent.graph import build_agent_graph
 from mcp_servers.document_analytics.server import (
     extract_pdf_tables,
@@ -62,8 +64,8 @@ class TestOfficeQASmoke:
     @patch("agent.nodes.reasoner.ChatOpenAI")
     @patch("agent.nodes.verifier.ChatOpenAI")
     @patch("agent.nodes.coordinator.ChatOpenAI")
-    @patch("mcp_servers.document_analytics.server.pdfplumber.open")
-    async def test_officeqa_table_aggregation(self, mock_pdf_open, mock_coord, mock_verif, mock_reas):
+    @patch("mcp_servers.document_analytics.server._get_pdfplumber")
+    async def test_officeqa_table_aggregation(self, mock_get_pdfplumber, mock_coord, mock_verif, mock_reas):
         # 1. Mock the PDF extractor to pretend we found a table
         mock_pdf = MagicMock()
         mock_page = MagicMock()
@@ -72,7 +74,7 @@ class TestOfficeQASmoke:
             [["Category", "Total Debt", "Interest"], ["Public", "50000.0", "10"], ["Inter-gov", "4321.0", "5"]]
         ]
         mock_pdf.pages = [mock_page]
-        mock_pdf_open.return_value.__enter__.return_value = mock_pdf
+        mock_get_pdfplumber.return_value.open.return_value.__enter__.return_value = mock_pdf
         
         # Override the random UUID trick using side_effect or mocking uuid4, or easier: 
         # intercept the result of extract_pdf_tables in the graph? 

@@ -10,6 +10,8 @@ from langchain_core.tools import tool
 # Ensure src/ is importable
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
+pytest.importorskip("mcp.server.fastmcp")
+
 from agent.graph import build_agent_graph
 from mcp_servers.market_data.server import (
     get_price_history,
@@ -59,8 +61,8 @@ class TestTraderBenchSmoke:
     @patch("agent.nodes.reasoner.ChatOpenAI")
     @patch("agent.nodes.verifier.ChatOpenAI")
     @patch("agent.nodes.coordinator.ChatOpenAI")
-    @patch("mcp_servers.market_data.server.yf.Ticker")
-    async def test_traderbench_cagr_calculation(self, mock_ticker, mock_coord, mock_verif, mock_reas):
+    @patch("mcp_servers.market_data.server._get_yfinance")
+    async def test_traderbench_cagr_calculation(self, mock_get_yf, mock_coord, mock_verif, mock_reas):
         # 1. Mock the yfinance Ticker to return synthetic history
         mock_stock = MagicMock()
         # Create a tiny DataFrame that looks like history output
@@ -74,7 +76,7 @@ class TestTraderBenchSmoke:
         }, index=dates)
         
         mock_stock.history.return_value = df
-        mock_ticker.return_value = mock_stock
+        mock_get_yf.return_value = MagicMock(Ticker=MagicMock(return_value=mock_stock))
         
         # 2. Mock Agent Graph Routing
         mock_coord.return_value.with_structured_output.return_value.invoke.return_value = MagicMock(

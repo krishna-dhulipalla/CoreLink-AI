@@ -1,15 +1,22 @@
 import logging
-import json
 from datetime import datetime
-from typing import Optional, Dict
 
-import yfinance as yf
 from mcp.server.fastmcp import FastMCP
 
 # Initialize FastMCP Server
 mcp = FastMCP("MarketData")
 
 logger = logging.getLogger(__name__)
+
+
+def _get_yfinance():
+    try:
+        import yfinance as yf_module
+    except ImportError as exc:
+        raise RuntimeError(
+            "yfinance is not installed. Run: uv add yfinance"
+        ) from exc
+    return yf_module
 
 
 @mcp.tool()
@@ -23,6 +30,7 @@ def get_price_history(ticker: str, period: str = "1mo", interval: str = "1d") ->
         interval: Data interval. Valid intervals: 1m, 2m, 5m, 15m, 30m, 60m, 90m, 1h, 1d, 5d, 1wk, 1mo, 3mo.
     """
     try:
+        yf = _get_yfinance()
         stock = yf.Ticker(ticker)
         df = stock.history(period=period, interval=interval)
         
@@ -35,13 +43,31 @@ def get_price_history(ticker: str, period: str = "1mo", interval: str = "1d") ->
         date_col = df.columns[0]
         df[date_col] = df[date_col].dt.strftime('%Y-%m-%d')
         
+        start_close = float(df["Close"].iloc[0]) if "Close" in df.columns else None
+        end_close = float(df["Close"].iloc[-1]) if "Close" in df.columns else None
+        total_rows = len(df)
+        if total_rows > 100:
+            # Keep both ends of the series so long-period reasoning still sees
+            # the opening and latest observations instead of only the tail.
+            window = pd.concat([df.head(50), df.tail(50)], ignore_index=True)
+            notice = (
+                f"Output truncated from {total_rows} to 100 rows. "
+                "Includes the earliest 50 rows and latest 50 rows."
+            )
+        else:
+            window = df
+            notice = ""
+
         return {
             "ticker": ticker.upper(),
             "period": period,
             "interval": interval,
             "columns": df.columns.tolist(),
-            "data": df.tail(100).to_dict(orient="records"), # limit output to last 100 rows to prevent context explosion
-            "notice": "Output limited to most recent 100 periods." if len(df) > 100 else ""
+            "total_rows": total_rows,
+            "start_close": start_close,
+            "end_close": end_close,
+            "data": window.to_dict(orient="records"),
+            "notice": notice,
         }
     except Exception as e:
         logger.error(f"Error fetching price history for {ticker}: {e}")
@@ -58,6 +84,7 @@ def get_company_fundamentals(ticker: str) -> dict:
         ticker: The stock ticker symbol.
     """
     try:
+        yf = _get_yfinance()
         stock = yf.Ticker(ticker)
         info = stock.info
         
@@ -94,6 +121,7 @@ def get_corporate_actions(ticker: str) -> dict:
         ticker: The stock ticker symbol.
     """
     try:
+        yf = _get_yfinance()
         stock = yf.Ticker(ticker)
         
         dividends = stock.dividends
@@ -130,6 +158,7 @@ def get_yield_curve() -> dict:
     Fetches 13-week, 5-year, 10-year, and 30-year treasury yields.
     """
     try:
+        yf = _get_yfinance()
         # ^IRX (13-week), ^FVX (5-year), ^TNX (10-year), ^TYX (30-year)
         tickers = {
             "3_Month": "^IRX",
@@ -165,6 +194,7 @@ def get_returns(ticker: str, period: str = "1y") -> dict:
         period: Time period (e.g., '1mo', '3mo', '6mo', '1y', '5y')
     """
     try:
+        yf = _get_yfinance()
         stock = yf.Ticker(ticker)
         # Fetch the start and end of the period
         df = stock.history(period=period, interval="1d")
