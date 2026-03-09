@@ -1,5 +1,6 @@
 import os
 import sys
+import ast
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
@@ -39,15 +40,26 @@ def mock_llm_reasoner_traderbench(messages):
             tool_calls=[{"name": "get_price_history", "args": {"ticker": "AAPL", "period": "5y", "interval": "1wk"}, "id": "tcb1", "type": "tool_call"}],
         )
     if _tb_reasoner_count == 2:
-        # Assume it saw prices and now calculates 5yr CAGR 
-        # (Start price 100 -> End price 200)
+        tool_msg = next(m for m in reversed(messages) if isinstance(m, ToolMessage))
+        payload = ast.literal_eval(tool_msg.content)
         return AIMessage(
             content="",
-            tool_calls=[{"name": "cagr", "args": {"beginning_value": 100.0, "ending_value": 200.0, "years": 5}, "id": "tcb2", "type": "tool_call"}],
+            tool_calls=[{
+                "name": "cagr",
+                "args": {
+                    "beginning_value": payload["start_close"],
+                    "ending_value": payload["end_close"],
+                    "years": 5,
+                },
+                "id": "tcb2",
+                "type": "tool_call",
+            }],
         )
-    # Give the final answer
+    tool_msg = next(m for m in reversed(messages) if isinstance(m, ToolMessage))
+    payload = ast.literal_eval(tool_msg.content)
+    cagr_pct = payload["cagr_percent"]
     return AIMessage(
-        content="The 5-year CAGR for AAPL is 14.8698%.",
+        content=f"The 5-year CAGR for AAPL is {cagr_pct}%.",
         tool_calls=[]
     )
 

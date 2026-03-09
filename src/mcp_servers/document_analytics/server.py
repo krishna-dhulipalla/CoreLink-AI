@@ -1,6 +1,7 @@
 import logging
+import time
 import uuid
-from typing import Optional, Dict
+from typing import Optional, Dict, Any
 
 import pandas as pd
 from mcp.server.fastmcp import FastMCP
@@ -10,6 +11,8 @@ mcp = FastMCP("DocumentAnalytics")
 
 # In-memory storage for extracted tables across tool calls
 _TABLES: Dict[str, pd.DataFrame] = {}
+_TABLE_META: Dict[str, dict[str, Any]] = {}
+MAX_STORED_TABLES = 200
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +25,33 @@ def _get_pdfplumber():
             "pdfplumber is not installed. Run: uv add pdfplumber"
         ) from exc
     return pdfplumber_module
+
+
+def _store_table(df: pd.DataFrame, provenance: dict[str, Any]) -> str:
+    """Register a table with bounded in-memory retention."""
+    doc_hint = str(provenance.get("file", "doc")).split("\\")[-1].split("/")[-1]
+    doc_hint = "".join(ch for ch in doc_hint.lower() if ch.isalnum())[:12] or "doc"
+    table_id = f"table_{doc_hint}_{uuid.uuid4().hex[:8]}"
+    _TABLES[table_id] = df
+    _TABLE_META[table_id] = {
+        "created_at": time.time(),
+        "provenance": provenance,
+    }
+
+    if len(_TABLES) > MAX_STORED_TABLES:
+        oldest_id = min(
+            _TABLE_META,
+            key=lambda key: _TABLE_META[key]["created_at"],
+        )
+        _TABLES.pop(oldest_id, None)
+        _TABLE_META.pop(oldest_id, None)
+        logger.info("[DocumentAnalytics] Evicted oldest table %s", oldest_id)
+
+    return table_id
+
+
+def _table_lookup(table_id: str) -> pd.DataFrame | None:
+    return _TABLES.get(table_id)
 
 
 @mcp.tool()
@@ -63,14 +93,14 @@ def extract_pdf_tables(file_path: str, pages: Optional[list[int]] = None) -> lis
                     # Clean up the dataframe
                     df = df.dropna(how='all')
                     
-                    table_id = f"table_{uuid.uuid4().hex[:8]}"
-                    _TABLES[table_id] = df
+                    provenance = {"file": file_path, "page": page_num, "table_index_on_page": idx}
+                    table_id = _store_table(df, provenance)
                     
                     extracted_metadata.append({
                         "table_id": table_id,
                         "rows": len(df),
                         "columns": header,
-                        "provenance": {"file": file_path, "page": page_num, "table_index_on_page": idx}
+                        "provenance": provenance,
                     })
                     
         return extracted_metadata
@@ -121,14 +151,15 @@ def get_table_rows(table_id: str, limit: int = 5) -> dict:
         table_id: The ID of the table returned by extract_pdf_tables.
         limit: Number of rows to return (default 5).
     """
-    if table_id not in _TABLES:
+    df = _table_lookup(table_id)
+    if df is None:
         return {"error": f"Table ID {table_id} not found. Must extract first."}
-        
-    df = _TABLES[table_id]
+
     return {
         "columns": df.columns.tolist(),
         "rows": df.head(limit).to_dict(orient="records"),
         "total_rows": len(df),
+        "provenance": _TABLE_META.get(table_id, {}).get("provenance"),
         "note": f"Showing first {limit} rows."
     }
 
@@ -144,10 +175,9 @@ def filter_rows(table_id: str, column_matcher: str, value_matcher: str) -> dict:
         column_matcher: Substring to match the column name.
         value_matcher: Substring to match within the cells of that column.
     """
-    if table_id not in _TABLES:
+    df = _table_lookup(table_id)
+    if df is None:
         return {"error": f"Table ID {table_id} not found."}
-        
-    df = _TABLES[table_id]
     
     # Find active column
     col = next((c for c in df.columns if column_matcher.lower() in str(c).lower()), None)
@@ -156,14 +186,25 @@ def filter_rows(table_id: str, column_matcher: str, value_matcher: str) -> dict:
         
     filtered_df = df[df[col].astype(str).str.contains(value_matcher, case=False, na=False)]
     
-    new_table_id = f"table_{uuid.uuid4().hex[:8]}"
-    _TABLES[new_table_id] = filtered_df
+    source_provenance = _TABLE_META.get(table_id, {}).get("provenance", {})
+    new_table_id = _store_table(
+        filtered_df,
+        {
+            **source_provenance,
+            "derived_from": table_id,
+            "filter": {
+                "column_matcher": column_matcher,
+                "value_matcher": value_matcher,
+            },
+        },
+    )
     
     return {
         "new_table_id": new_table_id,
         "matched_column": col,
         "rows": filtered_df.head(5).to_dict(orient="records"),
         "total_matches": len(filtered_df),
+        "provenance": _TABLE_META.get(new_table_id, {}).get("provenance"),
         "note": "Use this new_table_id for chained operations."
     }
 
@@ -178,10 +219,9 @@ def sum_column(table_id: str, column_matcher: str) -> dict:
         table_id: The ID of the table returned by extract_pdf_tables.
         column_matcher: Substring to match the column name you want to sum.
     """
-    if table_id not in _TABLES:
+    df = _table_lookup(table_id)
+    if df is None:
         return {"error": f"Table ID {table_id} not found."}
-        
-    df = _TABLES[table_id]
     
     col = next((c for c in df.columns if column_matcher.lower() in str(c).lower()), None)
     if not col:
@@ -208,6 +248,7 @@ def sum_column(table_id: str, column_matcher: str) -> dict:
         "sum": float(total_sum),
         "rows_aggregated": len(parsed),
         "non_numeric_rows_skipped": non_numeric_rows,
+        "provenance": _TABLE_META.get(table_id, {}).get("provenance"),
     }
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 import os
 import sys
+import ast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -41,15 +42,25 @@ def mock_llm_reasoner_officeqa(messages):
             tool_calls=[{"name": "extract_pdf_tables", "args": {"file_path": "dummy_treasury.pdf", "pages": [1]}, "id": "tc1", "type": "tool_call"}],
         )
     if _reasoner_call_count == 2:
-        # Assume it sees the table_id returned and loops back to sum the specific column
-        # In a real run, it gets the table_id from the ToolMessage
+        tool_msg = next(m for m in reversed(messages) if isinstance(m, ToolMessage))
+        payload = ast.literal_eval(tool_msg.content)
+        table_id = payload[0]["table_id"]
         return AIMessage(
             content="",
-            tool_calls=[{"name": "sum_column", "args": {"table_id": "table_11223344", "column_matcher": "Total Debt"}, "id": "tc2", "type": "tool_call"}],
+            tool_calls=[{
+                "name": "sum_column",
+                "args": {"table_id": table_id, "column_matcher": "Total Debt"},
+                "id": "tc2",
+                "type": "tool_call",
+            }],
         )
-    # Third call: give the final answer
+    tool_msg = next(m for m in reversed(messages) if isinstance(m, ToolMessage))
+    payload = ast.literal_eval(tool_msg.content)
     return AIMessage(
-        content="Based on the Treasury Bulletin table matching 'Total Debt', the exact aggregated value is 54321.0.",
+        content=(
+            "Based on the Treasury Bulletin table matching 'Total Debt', "
+            f"the exact aggregated value is {payload['sum']}."
+        ),
         tool_calls=[]
     )
 
