@@ -11,7 +11,7 @@ from langgraph.errors import GraphRecursionError
 
 from agent.state import AgentState
 from agent.cost import CostTracker
-from agent.prompts import MODEL_NAME
+from agent.model_config import primary_runtime_model
 from agent.nodes.reasoner import reset_step_counter
 from agent.nodes.reflector import _is_reflection_message
 from agent.memory.store import MemoryStore
@@ -58,7 +58,7 @@ async def run_agent(
     reset_step_counter()
 
     # Initialize cost tracker
-    tracker = CostTracker(model_name=MODEL_NAME)
+    tracker = CostTracker(model_name=primary_runtime_model())
 
     # Sprint 4: Initialize budget tracker
     budget = BudgetTracker()

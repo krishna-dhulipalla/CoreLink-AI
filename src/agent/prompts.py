@@ -10,12 +10,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
-
 MAX_REFLECTIONS = int(os.getenv("MAX_REFLECTIONS", "2"))
-MODEL_NAME = os.getenv("MODEL_NAME", "openai/gpt-oss-20b")
 
 
 # ---------------------------------------------------------------------------

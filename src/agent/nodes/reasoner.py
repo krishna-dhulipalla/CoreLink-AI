@@ -6,26 +6,17 @@ Calls the LLM with tool bindings, applies the OSS tool-call patcher.
 
 import json
 import logging
-import os
-"""
-Reasoner Node: The core LLM "Brain"
-=====================================
-Calls the LLM with tool bindings, applies the OSS tool-call patcher.
-"""
-
-import json
-import logging
-import os
 import time
 import uuid
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
-from agent.state import AgentState
 from agent.cost import CostTracker
-from agent.prompts import SYSTEM_PROMPT, MODEL_NAME
+from agent.model_config import get_client_kwargs, get_model_name
 from agent.pruning import prune_for_reasoner
+from agent.prompts import SYSTEM_PROMPT
+from agent.state import AgentState
 from context_manager import count_tokens
 
 logger = logging.getLogger(__name__)
@@ -57,11 +48,10 @@ def _increment_step() -> int:
 def build_model(tools: list):
     """Instantiate the LLM with tool bindings."""
     llm = ChatOpenAI(
-        model=MODEL_NAME,
+        model=get_model_name("executor"),
+        **get_client_kwargs("executor"),
         temperature=0,
         max_tokens=1000,
-        api_key=os.getenv("OPENAI_API_KEY"),
-        base_url=os.getenv("OPENAI_BASE_URL") or None,
     )
     return llm.bind_tools(tools)
 
@@ -168,6 +158,7 @@ def make_reasoner(tools: list):
         """The 'Brain' node – calls the LLM with the current conversation."""
         step = _increment_step()
         tracker: CostTracker = state.get("cost_tracker")
+        model_name = get_model_name("executor")
         model = build_model(tools)
 
         # Sprint 4: Prune state before building LLM prompt
@@ -213,6 +204,7 @@ def make_reasoner(tools: list):
         if tracker:
             tracker.record(
                 operator="react_reason",
+                model_name=model_name,
                 tokens_in=count_tokens(messages),
                 tokens_out=_estimate_response_tokens(response),
                 latency_ms=latency,

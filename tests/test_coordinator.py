@@ -119,6 +119,7 @@ class TestCostTracker:
         assert "total_tokens" in s
         assert "total_cost_usd" in s
         assert "wall_clock_ms" in s
+        assert "models_used" in s
         assert "operators_used" in s
         assert "any_failure" in s
 
@@ -129,6 +130,7 @@ class TestCostTracker:
         trace = tracker.architecture_trace()
         assert len(trace) == 1
         assert trace[0]["operator"] == "coordinator"
+        assert "model_name" in trace[0]
         assert isinstance(trace[0]["tokens_in"], int)
 
     def test_failure_tracking(self):

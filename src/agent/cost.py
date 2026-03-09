@@ -17,6 +17,8 @@ logger = logging.getLogger(__name__)
 
 MODEL_COST_TABLE: dict[str, dict[str, float]] = {
     # model_name -> {"input": $/1K tok, "output": $/1K tok}
+    "gpt-4.1-mini":         {"input": 0.0004,  "output": 0.0016},
+    "gpt-4.1":              {"input": 0.002,   "output": 0.008},
     "gpt-4o-mini":          {"input": 0.00015, "output": 0.0006},
     "gpt-4o":               {"input": 0.0025,  "output": 0.01},
     "openai/gpt-oss-20b":   {"input": 0.0,     "output": 0.0},   # free competition endpoint
@@ -38,6 +40,7 @@ def _get_cost_rates(model_name: str) -> dict[str, float]:
 class OperatorTrace:
     """Record of a single operator invocation."""
     operator: str
+    model_name: str
     tokens_in: int
     tokens_out: int
     latency_ms: float
@@ -47,6 +50,7 @@ class OperatorTrace:
     def to_dict(self) -> dict:
         return {
             "operator": self.operator,
+            "model_name": self.model_name,
             "tokens_in": self.tokens_in,
             "tokens_out": self.tokens_out,
             "latency_ms": round(self.latency_ms, 1),
@@ -72,18 +76,21 @@ class CostTracker:
     def record(
         self,
         operator: str,
+        model_name: str | None = None,
         tokens_in: int = 0,
         tokens_out: int = 0,
         latency_ms: float = 0.0,
         success: bool = True,
     ) -> OperatorTrace:
         """Record an operator invocation and return its trace."""
-        rates = _get_cost_rates(self.model_name)
+        effective_model = model_name or self.model_name
+        rates = _get_cost_rates(effective_model)
         cost = (tokens_in / 1000.0) * rates["input"] + \
                (tokens_out / 1000.0) * rates["output"]
 
         trace = OperatorTrace(
             operator=operator,
+            model_name=effective_model,
             tokens_in=tokens_in,
             tokens_out=tokens_out,
             latency_ms=latency_ms,
@@ -117,6 +124,7 @@ class CostTracker:
             "total_tokens": self.total_tokens,
             "total_cost_usd": round(self.total_cost(), 6),
             "wall_clock_ms": round(self.wall_clock_ms, 1),
+            "models_used": sorted({t.model_name for t in self.traces}),
             "operators_used": [t.operator for t in self.traces],
             "any_failure": any(not t.success for t in self.traces),
         }

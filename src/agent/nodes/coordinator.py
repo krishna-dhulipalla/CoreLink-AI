@@ -6,7 +6,6 @@ Also contains the direct_responder and format_normalizer nodes.
 """
 
 import logging
-import os
 import time
 import json
 
@@ -15,12 +14,12 @@ from langchain_openai import ChatOpenAI
 
 from agent.state import AgentState
 from agent.cost import CostTracker
+from agent.model_config import get_client_kwargs, get_model_name
 from agent.operators import validate_layers, DEFAULT_PLANS
 from agent.prompts import (
     COORDINATOR_PROMPT,
     DIRECT_RESPONDER_PROMPT,
     FORMAT_NORMALIZATION_PROMPT,
-    MODEL_NAME,
     RouteDecision,
 )
 from agent.nodes.reasoner import _increment_step
@@ -46,12 +45,12 @@ def coordinator(state: AgentState) -> dict:
     step = _increment_step()
     tracker: CostTracker = state.get("cost_tracker")
 
+    model_name = get_model_name("coordinator")
     llm = ChatOpenAI(
-        model=MODEL_NAME,
+        model=model_name,
+        **get_client_kwargs("coordinator"),
         temperature=0,
         max_tokens=300,
-        api_key=os.getenv("OPENAI_API_KEY"),
-        base_url=os.getenv("OPENAI_BASE_URL") or None,
     ).with_structured_output(RouteDecision)
 
     # Sprint 3: Retrieve compact route hints from memory
@@ -116,6 +115,7 @@ def coordinator(state: AgentState) -> dict:
         }
         tracker.record(
             operator="coordinator",
+            model_name=model_name,
             tokens_in=count_tokens(messages),
             tokens_out=count_tokens([HumanMessage(content=json.dumps(verdict_payload))]),
             latency_ms=latency,
@@ -158,11 +158,11 @@ def direct_responder(state: AgentState) -> dict:
     step = _increment_step()
     tracker: CostTracker = state.get("cost_tracker")
 
+    model_name = get_model_name("direct")
     llm = ChatOpenAI(
-        model=MODEL_NAME,
+        model=model_name,
+        **get_client_kwargs("direct"),
         temperature=0,
-        api_key=os.getenv("OPENAI_API_KEY"),
-        base_url=os.getenv("OPENAI_BASE_URL") or None,
     )
 
     # Use the lean prompt that does NOT mention tools
@@ -177,6 +177,7 @@ def direct_responder(state: AgentState) -> dict:
     if tracker:
         tracker.record(
             operator="direct_answer",
+            model_name=model_name,
             tokens_in=count_tokens(messages),
             tokens_out=count_tokens([response]),
             latency_ms=latency,
@@ -211,11 +212,11 @@ def format_normalizer(state: AgentState) -> dict:
     if not source_text:
         return {"messages": []}
 
+    model_name = get_model_name("formatter")
     llm = ChatOpenAI(
-        model=MODEL_NAME,
+        model=model_name,
+        **get_client_kwargs("formatter"),
         temperature=0,
-        api_key=os.getenv("OPENAI_API_KEY"),
-        base_url=os.getenv("OPENAI_BASE_URL") or None,
     )
 
     prompt = FORMAT_NORMALIZATION_PROMPT + f"\n\nSource Text to Format:\n{source_text}"
@@ -227,6 +228,7 @@ def format_normalizer(state: AgentState) -> dict:
     if tracker:
         tracker.record(
             operator="format_normalize",
+            model_name=model_name,
             tokens_in=count_tokens([HumanMessage(content=prompt)]),
             tokens_out=count_tokens([response]),
             latency_ms=latency,

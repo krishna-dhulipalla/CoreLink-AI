@@ -5,7 +5,6 @@ Evaluates the agent's draft answer and either passes or requests revision.
 """
 
 import logging
-import os
 import time
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
@@ -13,7 +12,8 @@ from langchain_openai import ChatOpenAI
 
 from agent.state import AgentState
 from agent.cost import CostTracker
-from agent.prompts import REFLECTION_PROMPT, MAX_REFLECTIONS, MODEL_NAME
+from agent.model_config import get_client_kwargs, get_model_name
+from agent.prompts import REFLECTION_PROMPT, MAX_REFLECTIONS
 from context_manager import count_tokens
 
 logger = logging.getLogger(__name__)
@@ -72,12 +72,12 @@ def reflector(state: AgentState) -> dict:
     reflection_messages = [SystemMessage(content=REFLECTION_PROMPT)]
     reflection_messages.extend(_build_reflection_context(messages))
 
+    model_name = get_model_name("reflector")
     llm = ChatOpenAI(
-        model=MODEL_NAME,
+        model=model_name,
+        **get_client_kwargs("reflector"),
         temperature=0,
         max_tokens=500,
-        api_key=os.getenv("OPENAI_API_KEY"),
-        base_url=os.getenv("OPENAI_BASE_URL") or None,
     )
 
     t0 = time.monotonic()
@@ -89,6 +89,7 @@ def reflector(state: AgentState) -> dict:
     if tracker:
         tracker.record(
             operator="reflection_review",
+            model_name=model_name,
             tokens_in=count_tokens(reflection_messages),
             tokens_out=count_tokens([verdict]),
             latency_ms=latency,

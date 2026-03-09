@@ -62,9 +62,32 @@ Create `.env` with your keys:
 ```env
 OPENAI_API_KEY=...
 MODEL_NAME=gpt-4o-mini
+MODEL_PROFILE=custom
 TAVILY_API_KEY=
 MCP_SERVER_STDIO=
 MCP_SERVER_URLS=
+```
+
+Model selection is role-based. You can keep one default model or override specific roles:
+
+```env
+# Presets: custom, oss_debug, cheap, balanced, score_max
+MODEL_PROFILE=balanced
+
+# Global fallback used when a role-specific model is not set
+MODEL_NAME=openai/gpt-oss-20b
+
+# Optional role overrides
+COORDINATOR_MODEL=gpt-4.1-mini
+DIRECT_MODEL=gpt-4o-mini
+EXECUTOR_MODEL=gpt-4.1
+VERIFIER_MODEL=gpt-4.1-mini
+FORMATTER_MODEL=gpt-4o-mini
+REFLECTOR_MODEL=gpt-4o-mini
+
+# Optional role-specific OpenAI-compatible endpoints
+# EXECUTOR_OPENAI_BASE_URL=http://localhost:1234/v1
+# EXECUTOR_OPENAI_API_KEY=dummy
 ```
 
 ## Run
@@ -87,3 +110,4 @@ uv run pytest tests -v -x     # stop on first failure
 - Budget caps are env-configurable (`MAX_TOOL_CALLS`, `MAX_REVISE_CYCLES`, `MAX_BACKTRACK_CYCLES`, `MAX_HINT_TOKENS`).
 - Execution memory uses compact exact-match task signatures in SQLite with near-duplicate suppression.
 - Multi-turn conversation history is reused through A2A `context_id`.
+- Run summaries now include `models_used`, so mixed-model runs are visible in the trace.

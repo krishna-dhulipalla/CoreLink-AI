@@ -14,8 +14,9 @@ from langchain_core.messages import messages_from_dict, messages_to_dict
 from langchain_openai import ChatOpenAI
 
 from agent.cost import CostTracker
+from agent.model_config import get_client_kwargs, get_model_name
 from agent.memory.schema import ExecutorMemory, VerifierMemory, _task_signature
-from agent.prompts import MODEL_NAME, VERIFIER_PROMPT, VerdictDecision
+from agent.prompts import VERIFIER_PROMPT, VerdictDecision
 from agent.state import AgentState, ReplaceMessages
 from agent.pruning import truncate_memory_fields
 from context_manager import count_tokens
@@ -168,8 +169,10 @@ def verifier(state: AgentState) -> dict:
         return {}
 
     tracker: CostTracker | None = state.get("cost_tracker")
+    model_name = get_model_name("verifier")
     llm = ChatOpenAI(
-        model=MODEL_NAME,
+        model=model_name,
+        **get_client_kwargs("verifier"),
         temperature=0.0,
     ).with_structured_output(VerdictDecision)
 
@@ -192,6 +195,7 @@ def verifier(state: AgentState) -> dict:
     if tracker:
         tracker.record(
             operator="verifier_check",
+            model_name=model_name,
             tokens_in=count_tokens(prompt_messages),
             tokens_out=count_tokens([AIMessage(content=verdict.model_dump_json())]),
             latency_ms=latency,
