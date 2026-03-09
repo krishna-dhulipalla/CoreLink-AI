@@ -1,4 +1,5 @@
 import logging
+import os
 import time
 import uuid
 from typing import Optional, Dict, Any
@@ -12,7 +13,8 @@ mcp = FastMCP("DocumentAnalytics")
 # In-memory storage for extracted tables across tool calls
 _TABLES: Dict[str, pd.DataFrame] = {}
 _TABLE_META: Dict[str, dict[str, Any]] = {}
-MAX_STORED_TABLES = 200
+MAX_STORED_TABLES = int(os.getenv("DOC_ANALYTICS_MAX_TABLES", "200"))
+MAX_TABLE_AGE_SECONDS = int(os.getenv("DOC_ANALYTICS_TABLE_TTL", "1800"))
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +31,7 @@ def _get_pdfplumber():
 
 def _store_table(df: pd.DataFrame, provenance: dict[str, Any]) -> str:
     """Register a table with bounded in-memory retention."""
+    _prune_stale_tables()
     doc_hint = str(provenance.get("file", "doc")).split("\\")[-1].split("/")[-1]
     doc_hint = "".join(ch for ch in doc_hint.lower() if ch.isalnum())[:12] or "doc"
     table_id = f"table_{doc_hint}_{uuid.uuid4().hex[:8]}"
@@ -50,8 +53,38 @@ def _store_table(df: pd.DataFrame, provenance: dict[str, Any]) -> str:
     return table_id
 
 
+def _prune_stale_tables() -> int:
+    """Drop expired cached tables so long benchmark runs do not leak memory."""
+    if MAX_TABLE_AGE_SECONDS <= 0:
+        return 0
+
+    cutoff = time.time() - MAX_TABLE_AGE_SECONDS
+    expired_ids = [
+        table_id
+        for table_id, meta in _TABLE_META.items()
+        if meta.get("created_at", 0.0) < cutoff
+    ]
+    for table_id in expired_ids:
+        _TABLES.pop(table_id, None)
+        _TABLE_META.pop(table_id, None)
+    if expired_ids:
+        logger.info("[DocumentAnalytics] Pruned %s expired cached tables", len(expired_ids))
+    return len(expired_ids)
+
+
 def _table_lookup(table_id: str) -> pd.DataFrame | None:
+    _prune_stale_tables()
     return _TABLES.get(table_id)
+
+
+def _table_error(table_id: str) -> dict[str, str]:
+    return {"error": f"Table ID {table_id} not found or expired from cache. Re-extract the table."}
+
+
+def _clear_table_cache() -> None:
+    """Test/helper hook to fully reset the in-memory document cache."""
+    _TABLES.clear()
+    _TABLE_META.clear()
 
 
 @mcp.tool()
@@ -153,7 +186,7 @@ def get_table_rows(table_id: str, limit: int = 5) -> dict:
     """
     df = _table_lookup(table_id)
     if df is None:
-        return {"error": f"Table ID {table_id} not found. Must extract first."}
+        return _table_error(table_id)
 
     return {
         "columns": df.columns.tolist(),
@@ -177,7 +210,7 @@ def filter_rows(table_id: str, column_matcher: str, value_matcher: str) -> dict:
     """
     df = _table_lookup(table_id)
     if df is None:
-        return {"error": f"Table ID {table_id} not found."}
+        return _table_error(table_id)
     
     # Find active column
     col = next((c for c in df.columns if column_matcher.lower() in str(c).lower()), None)
@@ -221,7 +254,7 @@ def sum_column(table_id: str, column_matcher: str) -> dict:
     """
     df = _table_lookup(table_id)
     if df is None:
-        return {"error": f"Table ID {table_id} not found."}
+        return _table_error(table_id)
     
     col = next((c for c in df.columns if column_matcher.lower() in str(c).lower()), None)
     if not col:

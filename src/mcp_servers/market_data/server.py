@@ -1,12 +1,47 @@
 import logging
 from datetime import datetime
 
+import pandas as pd
 from mcp.server.fastmcp import FastMCP
 
 # Initialize FastMCP Server
 mcp = FastMCP("MarketData")
 
 logger = logging.getLogger(__name__)
+
+
+def _to_python_scalar(value):
+    """Convert pandas/numpy scalars to plain Python JSON-safe values."""
+    if value is None:
+        return None
+    if hasattr(value, "item"):
+        try:
+            return value.item()
+        except Exception:
+            pass
+    return value
+
+
+def _format_date_column(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize the leading date/datetime column to YYYY-MM-DD strings."""
+    if df.empty:
+        return df
+
+    date_col = df.columns[0]
+    series = df[date_col]
+    if hasattr(series, "dt"):
+        try:
+            df[date_col] = series.dt.strftime("%Y-%m-%d")
+            return df
+        except Exception:
+            pass
+
+    parsed = pd.to_datetime(series, errors="coerce")
+    if parsed.notna().any():
+        df[date_col] = parsed.dt.strftime("%Y-%m-%d").fillna(series.astype(str))
+    else:
+        df[date_col] = series.astype(str)
+    return df
 
 
 def _get_yfinance():
@@ -39,9 +74,7 @@ def get_price_history(ticker: str, period: str = "1mo", interval: str = "1d") ->
             
         # Reset index to make Dates a column and convert timestamps to strings
         df.reset_index(inplace=True)
-        # Handle both standard 'Date' and datetimes column
-        date_col = df.columns[0]
-        df[date_col] = df[date_col].dt.strftime('%Y-%m-%d')
+        df = _format_date_column(df)
         
         start_close = float(df["Close"].iloc[0]) if "Close" in df.columns else None
         end_close = float(df["Close"].iloc[-1]) if "Close" in df.columns else None
@@ -63,7 +96,7 @@ def get_price_history(ticker: str, period: str = "1mo", interval: str = "1d") ->
             "period": period,
             "interval": interval,
             "columns": df.columns.tolist(),
-            "total_rows": total_rows,
+            "total_rows": int(total_rows),
             "start_close": start_close,
             "end_close": end_close,
             "data": window.to_dict(orient="records"),
@@ -101,7 +134,11 @@ def get_company_fundamentals(ticker: str) -> dict:
             "dividendYield", "payoutRatio", "beta", "trailingEps", "forwardEps"
         ]
         
-        fundamentals = {k: info.get(k) for k in essential_keys if k in info}
+        fundamentals = {
+            k: _to_python_scalar(info.get(k))
+            for k in essential_keys
+            if k in info
+        }
         
         return {
             "ticker": ticker.upper(),
@@ -173,7 +210,7 @@ def get_yield_curve() -> dict:
             history = stock.history(period="1d")
             if not history.empty:
                 # The yield is usually the Close price for these indices
-                yields[maturity] = history['Close'].iloc[-1]
+                yields[maturity] = float(_to_python_scalar(history["Close"].iloc[-1]))
                 
         return {
             "date": datetime.now().strftime("%Y-%m-%d"),

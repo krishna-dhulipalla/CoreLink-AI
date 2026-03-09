@@ -18,7 +18,7 @@ from mcp_servers.document_analytics.server import (
     search_document_pages,
     sum_column,
     get_table_rows,
-    _TABLES
+    _clear_table_cache,
 )
 
 
@@ -69,7 +69,7 @@ class TestOfficeQASmoke:
     def setup_method(self):
         global _reasoner_call_count
         _reasoner_call_count = 0
-        _TABLES.clear()
+        _clear_table_cache()
 
     @pytest.mark.anyio
     @patch("agent.nodes.reasoner.ChatOpenAI")
