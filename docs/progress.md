@@ -385,3 +385,19 @@ This file operates in a "Chat" structure. Whenever an agent finishes a major uni
   7. Verified the corrected slice with focused runs: `pytest tests/test_mcp_integration.py tests/benchmarks/test_traderbench_smoke.py tests/benchmarks/test_officeqa_smoke.py tests/test_memory.py tests/test_verifier.py tests/test_coordinator.py tests/test_end_to_end_verifier.py -q` -> 58 passed, 3 skipped.
 - **Blockers:** Live end-to-end MCP benchmark proof is still pending in an environment where the full MCP/A2A dependency stack is installed. The benchmark smoke tests now fail gracefully when those packages are absent, but skipped tests are not runtime proof.
 - **Handoff Notes:** Benchmark readiness is materially stronger: the new MCP servers are safer to import, the document-table cache is bounded, and the smoke tests now exercise real tool-output chaining instead of fixed downstream constants. The next meaningful step is to run the skipped MCP/benchmark tests in the fully provisioned environment and then capture actual TraderBench / OfficeQA baseline results.
+
+### Chat 38: Model Routing Config & Structured-Output Compatibility Fix
+
+- **Role:** Coder / Reviewer
+- **Actions Taken:**
+  1. Added `src/agent/model_config.py` to centralize role-based model selection for coordinator, direct responder, executor, verifier, formatter, and reflector. Introduced profile-based routing (`custom`, `oss_debug`, `cheap`, `balanced`, `score_max`) plus per-role overrides via environment variables.
+  2. Rewired `src/agent/nodes/coordinator.py`, `src/agent/nodes/reasoner.py`, `src/agent/nodes/verifier.py`, and `src/agent/nodes/reflector.py` to resolve model name and OpenAI-compatible endpoint settings from the shared config layer instead of using a single hardcoded `MODEL_NAME`.
+  3. Updated `src/agent/cost.py` and `src/agent/runner.py` so run traces now capture the actual `model_name` used per operator and expose `models_used` in summaries, making mixed-model benchmark runs auditable.
+  4. Added `.env.example` with the real runtime knobs: role-specific model variables, optional role-specific API/base URL overrides, MCP discovery settings, budget caps, memory settings, and document cache limits.
+  5. Fixed an environment-precedence bug by ensuring `.env` does not overwrite explicit shell-provided variables during model config initialization.
+  6. Patched structured-output behavior for OpenAI-compatible local backends: coordinator and verifier now automatically fall back from native `with_structured_output(...)` to prompt-and-parse JSON when using localhost/vLLM-style endpoints, or when `STRUCTURED_OUTPUT_MODE=local_json` is set.
+  7. Added `tests/test_model_config.py` and updated coordinator/cost tests to cover role overrides, profile resolution, client kwargs, and trace metadata. Verified the model-config slice with:
+     - `pytest tests/test_model_config.py tests/test_coordinator.py tests/test_verifier.py tests/test_end_to_end_verifier.py -q` -> 40 passed
+     - `pytest tests/test_sprint4.py tests/benchmarks/test_traderbench_smoke.py tests/benchmarks/test_officeqa_smoke.py -q` -> 28 passed, 2 skipped
+- **Blockers:** Full live benchmark rerun after the structured-output compatibility fix was not executed in this patch pass. The repo-side fix is in place, but actual benchmark recovery still depends on restarting the agent with the updated environment (`STRUCTURED_OUTPUT_MODE=local_json` for vLLM-style backends).
+- **Handoff Notes:** Model/backend switching is now a config problem, not a code-edit problem. For local OpenAI-compatible servers that reject request chat templates, the correct repo-side fix is `STRUCTURED_OUTPUT_MODE=local_json` instead of enabling server-wide trust flags by default.

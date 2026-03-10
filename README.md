@@ -73,6 +73,7 @@ Model selection is role-based. You can keep one default model or override specif
 ```env
 # Presets: custom, oss_debug, cheap, balanced, score_max
 MODEL_PROFILE=balanced
+STRUCTURED_OUTPUT_MODE=auto
 
 # Global fallback used when a role-specific model is not set
 MODEL_NAME=openai/gpt-oss-20b
@@ -89,6 +90,14 @@ REFLECTOR_MODEL=gpt-4o-mini
 # EXECUTOR_OPENAI_BASE_URL=http://localhost:1234/v1
 # EXECUTOR_OPENAI_API_KEY=dummy
 ```
+
+If you are using a local OpenAI-compatible backend such as vLLM and you see errors like `chat template is passed with request ... untrusted chat template`, set:
+
+```env
+STRUCTURED_OUTPUT_MODE=local_json
+```
+
+That forces the Coordinator and Verifier to use prompt-and-parse JSON instead of provider-native structured output.
 
 ## Run
 
