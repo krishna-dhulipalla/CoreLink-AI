@@ -8,13 +8,19 @@ to the last verified checkpoint and a warning is injected for the Executor.
 
 import logging
 import time
+import json
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.messages import messages_from_dict, messages_to_dict
 from langchain_openai import ChatOpenAI
 
 from agent.cost import CostTracker
-from agent.model_config import get_client_kwargs, get_model_name
+from agent.model_config import (
+    _extract_json_payload,
+    _structured_output_mode,
+    get_client_kwargs,
+    get_model_name,
+)
 from agent.memory.schema import ExecutorMemory, VerifierMemory, _task_signature
 from agent.prompts import VERIFIER_PROMPT, VerdictDecision
 from agent.state import AgentState, ReplaceMessages
@@ -174,14 +180,27 @@ def verifier(state: AgentState) -> dict:
         model=model_name,
         **get_client_kwargs("verifier"),
         temperature=0.0,
-    ).with_structured_output(VerdictDecision)
+    )
 
     history = [m for m in state["messages"] if not _is_internal_warning(m)]
     prompt_messages = [SystemMessage(content=VERIFIER_PROMPT)] + history
 
     t0 = time.monotonic()
     try:
-        verdict: VerdictDecision = llm.invoke(prompt_messages)
+        if _structured_output_mode("verifier") == "native":
+            verdict: VerdictDecision = llm.with_structured_output(VerdictDecision).invoke(prompt_messages)
+        else:
+            schema_prompt = SystemMessage(
+                content=(
+                    "Return ONLY valid JSON matching this schema. "
+                    "Do not include markdown fences or extra commentary.\n"
+                    f"JSON_SCHEMA={json.dumps(VerdictDecision.model_json_schema(), ensure_ascii=True)}"
+                )
+            )
+            raw_response = llm.invoke([schema_prompt] + prompt_messages)
+            verdict = VerdictDecision.model_validate_json(
+                _extract_json_payload(str(raw_response.content or ""))
+            )
         success = True
     except Exception as exc:
         logger.warning("Verifier LLM failed: %s. Defaulting to PASS.", exc)

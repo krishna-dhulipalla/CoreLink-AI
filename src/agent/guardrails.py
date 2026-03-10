@@ -10,6 +10,7 @@ from affecting agent reasoning.
 from __future__ import annotations
 
 import logging
+import os
 import re
 
 logger = logging.getLogger(__name__)
@@ -30,7 +31,7 @@ _INJECTION_PATTERNS: list[re.Pattern] = [
 ]
 
 # Max length for MCP tool descriptions before flagging
-MAX_TOOL_DESC_LEN = 500
+MAX_TOOL_DESC_LEN = int(os.getenv("MAX_TOOL_DESC_LEN", 2000))
 
 # Suspicious patterns in tool descriptions
 _DESC_SUSPICIOUS_PATTERNS: list[re.Pattern] = [

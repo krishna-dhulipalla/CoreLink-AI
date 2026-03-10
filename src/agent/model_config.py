@@ -8,10 +8,13 @@ and related runtime roles. Supports simple presets plus per-role overrides.
 from __future__ import annotations
 
 import os
+import json
+from urllib.parse import urlparse
 from typing import Any
 
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
+from langchain_core.messages import BaseMessage, SystemMessage
 
 load_dotenv(override=False)
 
@@ -50,28 +53,28 @@ def _profile_models() -> dict[str, dict[str, str]]:
             "reflector": default_model,
         },
         "cheap": {
-            "coordinator": "meta-llama/Meta-Llama-3.1-8B-Instruct",
-            "direct": "meta-llama/Meta-Llama-3.1-8B-Instruct",
-            "executor": "meta-llama/Meta-Llama-3.1-8B-Instruct",
-            "verifier": "meta-llama/Meta-Llama-3.1-8B-Instruct",
-            "formatter": "meta-llama/Meta-Llama-3.1-8B-Instruct",
-            "reflector": "meta-llama/Meta-Llama-3.1-8B-Instruct",
+            "coordinator": "meta-llama/Meta-Llama-3.1-8B-Instruct-fast",
+            "direct": "meta-llama/Meta-Llama-3.1-8B-Instruct-fast",
+            "executor": "meta-llama/Meta-Llama-3.1-8B-Instruct-fast",
+            "verifier": "meta-llama/Meta-Llama-3.1-8B-Instruct-fast",
+            "formatter": "meta-llama/Meta-Llama-3.1-8B-Instruct-fast",
+            "reflector": "meta-llama/Meta-Llama-3.1-8B-Instruct-fast",
         },
         "balanced": {
-            "coordinator": "meta-llama/Meta-Llama-3.1-8B-Instruct",
-            "direct": "meta-llama/Meta-Llama-3.1-8B-Instruct",
-            "executor": "meta-llama/Meta-Llama-3.1-70B-Instruct",
-            "verifier": "meta-llama/Meta-Llama-3.1-70B-Instruct",
-            "formatter": "meta-llama/Meta-Llama-3.1-8B-Instruct",
-            "reflector": "meta-llama/Meta-Llama-3.1-8B-Instruct",
+            "coordinator": "meta-llama/Meta-Llama-3.1-8B-Instruct-fast",
+            "direct": "meta-llama/Meta-Llama-3.1-8B-Instruct-fast",
+            "executor": "meta-llama/Llama-3.3-70B-Instruct-fast",
+            "verifier": "meta-llama/Llama-3.3-70B-Instruct-fast",
+            "formatter": "meta-llama/Meta-Llama-3.1-8B-Instruct-fast",
+            "reflector": "meta-llama/Meta-Llama-3.1-8B-Instruct-fast",
         },
         "score_max": {
-            "coordinator": "meta-llama/Meta-Llama-3.1-70B-Instruct",
-            "direct": "meta-llama/Meta-Llama-3.1-70B-Instruct",
-            "executor": "meta-llama/Meta-Llama-3.1-405B-Instruct",
-            "verifier": "meta-llama/Meta-Llama-3.1-405B-Instruct",
-            "formatter": "meta-llama/Meta-Llama-3.1-70B-Instruct",
-            "reflector": "meta-llama/Meta-Llama-3.1-70B-Instruct",
+            "coordinator": "meta-llama/Llama-3.3-70B-Instruct-fast",
+            "direct": "meta-llama/Llama-3.3-70B-Instruct-fast",
+            "executor": "deepseek-ai/DeepSeek-V3.2",
+            "verifier": "deepseek-ai/DeepSeek-V3.2",
+            "formatter": "meta-llama/Llama-3.3-70B-Instruct-fast",
+            "reflector": "meta-llama/Llama-3.3-70B-Instruct-fast",
         },
     }
 
@@ -121,6 +124,72 @@ def get_client_kwargs(role: str) -> dict[str, Any]:
     if base_url:
         kwargs["base_url"] = base_url
     return kwargs
+
+
+def _extract_json_payload(text: str) -> str:
+    """Extract the outermost JSON object from a model response."""
+    content = text.strip()
+    if content.startswith("```"):
+        lines = content.splitlines()
+        if len(lines) >= 3:
+            content = "\n".join(lines[1:-1]).strip()
+
+    start = content.find("{")
+    end = content.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        raise ValueError("No JSON object found in model response.")
+    return content[start:end + 1]
+
+
+def _structured_output_mode(role: str) -> str:
+    """Choose how structured outputs should be requested for a role."""
+    override = os.getenv("STRUCTURED_OUTPUT_MODE", "auto").strip().lower()
+    if override in {"native", "local_json"}:
+        return override
+
+    base_url = get_client_kwargs(role).get("base_url", "")
+    if not base_url:
+        return "native"
+
+    host = (urlparse(base_url).hostname or "").lower()
+    if host in {"localhost", "127.0.0.1", "0.0.0.0"}:
+        return "local_json"
+    return "native"
+
+
+def invoke_structured_output(
+    role: str,
+    schema: type,
+    messages: list[BaseMessage],
+    **kwargs: Any,
+):
+    """Invoke a model and return a parsed Pydantic object.
+
+    Native structured output is used when supported. For local vLLM-style
+    endpoints, this falls back to explicit JSON prompting plus local parsing.
+    """
+    model_name = get_model_name(role)
+    llm = ChatOpenAI(
+        model=model_name,
+        **get_client_kwargs(role),
+        **kwargs,
+    )
+
+    if _structured_output_mode(role) == "native":
+        parsed = llm.with_structured_output(schema).invoke(messages)
+        return parsed, model_name
+
+    schema_json = json.dumps(schema.model_json_schema(), ensure_ascii=True)
+    json_instruction = (
+        "Return ONLY valid JSON matching this schema. "
+        "Do not include markdown fences or extra commentary.\n"
+        f"JSON_SCHEMA={schema_json}"
+    )
+    fallback_messages = [SystemMessage(content=json_instruction)] + messages
+    response = llm.invoke(fallback_messages)
+    payload = _extract_json_payload(str(response.content or ""))
+    parsed = schema.model_validate_json(payload)
+    return parsed, model_name
 
 
 def build_chat_model(role: str, **kwargs: Any) -> ChatOpenAI:

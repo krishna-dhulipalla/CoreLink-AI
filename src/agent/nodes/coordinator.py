@@ -14,7 +14,12 @@ from langchain_openai import ChatOpenAI
 
 from agent.state import AgentState
 from agent.cost import CostTracker
-from agent.model_config import get_client_kwargs, get_model_name
+from agent.model_config import (
+    _extract_json_payload,
+    _structured_output_mode,
+    get_client_kwargs,
+    get_model_name,
+)
 from agent.operators import validate_layers, DEFAULT_PLANS
 from agent.prompts import (
     COORDINATOR_PROMPT,
@@ -51,7 +56,7 @@ def coordinator(state: AgentState) -> dict:
         **get_client_kwargs("coordinator"),
         temperature=0,
         max_tokens=300,
-    ).with_structured_output(RouteDecision)
+    )
 
     # Sprint 3: Retrieve compact route hints from memory
     memory_store = state.get("memory_store")
@@ -74,7 +79,20 @@ def coordinator(state: AgentState) -> dict:
 
     t0 = time.monotonic()
     try:
-        verdict = llm.invoke(messages)
+        if _structured_output_mode("coordinator") == "native":
+            verdict = llm.with_structured_output(RouteDecision).invoke(messages)
+        else:
+            schema_prompt = SystemMessage(
+                content=(
+                    "Return ONLY valid JSON matching this schema. "
+                    "Do not include markdown fences or extra commentary.\n"
+                    f"JSON_SCHEMA={json.dumps(RouteDecision.model_json_schema(), ensure_ascii=True)}"
+                )
+            )
+            raw_response = llm.invoke([schema_prompt] + messages)
+            verdict = RouteDecision.model_validate_json(
+                _extract_json_payload(str(raw_response.content or ""))
+            )
         latency = (time.monotonic() - t0) * 1000
 
         if isinstance(verdict, dict):
