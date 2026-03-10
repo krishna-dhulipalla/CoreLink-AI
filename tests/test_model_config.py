@@ -39,3 +39,18 @@ class TestModelConfig:
         kwargs = model_config.get_client_kwargs("verifier")
         assert kwargs["api_key"]
         assert kwargs["base_url"] == "https://example.test/v1"
+
+    def test_executor_local_backend_warning(self, monkeypatch):
+        monkeypatch.setenv("EXECUTOR_OPENAI_BASE_URL", "http://127.0.0.1:8000/v1")
+        model_config = _reload_model_config()
+
+        warnings = model_config.startup_compatibility_warnings()
+        assert any("Executor is configured to use a localhost" in warning for warning in warnings)
+
+    def test_localhost_structured_native_warning(self, monkeypatch):
+        monkeypatch.setenv("COORDINATOR_OPENAI_BASE_URL", "http://127.0.0.1:8000/v1")
+        monkeypatch.setenv("STRUCTURED_OUTPUT_MODE", "native")
+        model_config = _reload_model_config()
+
+        warnings = model_config.startup_compatibility_warnings()
+        assert any("Coordinator is using a localhost backend" in warning for warning in warnings)

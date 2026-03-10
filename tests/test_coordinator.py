@@ -23,6 +23,14 @@ from agent.nodes.coordinator import coordinator, route_task, direct_responder, f
 from agent.nodes.tool_executor import should_use_tools
 
 
+@pytest.fixture(autouse=True)
+def _force_native_structured_output(monkeypatch):
+    monkeypatch.setenv("STRUCTURED_OUTPUT_MODE", "native")
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("COORDINATOR_OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("VERIFIER_OPENAI_BASE_URL", raising=False)
+
+
 # ── Operator Registry Tests ──────────────────────────────────────────────────
 
 

@@ -20,6 +20,15 @@ from agent.nodes.verifier import verifier, verify_routing, BACKTRACK_WARNING
 from agent.memory.store import MemoryStore
 from agent.prompts import VerdictDecision
 
+
+@pytest.fixture(autouse=True)
+def _force_native_structured_output(monkeypatch):
+    monkeypatch.setenv("STRUCTURED_OUTPUT_MODE", "native")
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("COORDINATOR_OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("VERIFIER_OPENAI_BASE_URL", raising=False)
+
+
 class TestVerifierNode:
 
     @patch("agent.nodes.verifier.ChatOpenAI")

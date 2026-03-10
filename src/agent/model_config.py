@@ -27,6 +27,8 @@ ROLE_MODEL_ENV: dict[str, str] = {
     "reflector": "REFLECTOR_MODEL",
 }
 
+LOCAL_BACKEND_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0"}
+
 
 def _role_env_prefix(role: str) -> str:
     return role.upper()
@@ -152,9 +154,39 @@ def _structured_output_mode(role: str) -> str:
         return "native"
 
     host = (urlparse(base_url).hostname or "").lower()
-    if host in {"localhost", "127.0.0.1", "0.0.0.0"}:
+    if host in LOCAL_BACKEND_HOSTS:
         return "local_json"
     return "native"
+
+
+def _base_url_host(role: str) -> str:
+    base_url = get_client_kwargs(role).get("base_url", "")
+    return (urlparse(base_url).hostname or "").lower()
+
+
+def startup_compatibility_warnings() -> list[str]:
+    """Return startup warnings for risky local backend configurations."""
+    warnings: list[str] = []
+
+    executor_host = _base_url_host("executor")
+    if executor_host in LOCAL_BACKEND_HOSTS:
+        warnings.append(
+            "Executor is configured to use a localhost OpenAI-compatible backend. "
+            "If this is vLLM, the backend must support tool-calling requests and may need "
+            "--trust-request-chat-template plus the appropriate tool-calling flags. "
+            "If benchmark runs fail, move EXECUTOR_* to a reliable hosted model first."
+        )
+
+    for role in ("coordinator", "verifier"):
+        host = _base_url_host(role)
+        if host in LOCAL_BACKEND_HOSTS and _structured_output_mode(role) != "local_json":
+            warnings.append(
+                f"{role.capitalize()} is using a localhost backend with native structured output. "
+                "Set STRUCTURED_OUTPUT_MODE=local_json unless that backend explicitly supports "
+                "provider-native structured output."
+            )
+
+    return warnings
 
 
 def invoke_structured_output(

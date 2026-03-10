@@ -30,6 +30,7 @@ from a2a.utils import (
 )
 
 from agent import build_agent_graph, run_agent
+from agent.model_config import startup_compatibility_warnings
 from conversation_store import ConversationStore
 from mcp_client import load_mcp_tools_from_env
 
@@ -47,6 +48,9 @@ class Executor(AgentExecutor):
     """A2A executor that delegates reasoning to the LangGraph agent."""
 
     def __init__(self):
+        for warning in startup_compatibility_warnings():
+            logger.warning("[ModelConfig] %s", warning)
+
         # Load MCP tools from a synchronous constructor.
         try:
             asyncio.get_running_loop()
