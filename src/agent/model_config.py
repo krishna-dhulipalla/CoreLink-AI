@@ -50,28 +50,28 @@ def _profile_models() -> dict[str, dict[str, str]]:
             "reflector": default_model,
         },
         "cheap": {
-            "coordinator": "gpt-4o-mini",
-            "direct": "gpt-4o-mini",
-            "executor": default_model,
-            "verifier": "gpt-4o-mini",
-            "formatter": "gpt-4o-mini",
-            "reflector": "gpt-4o-mini",
+            "coordinator": "meta-llama/Meta-Llama-3.1-8B-Instruct",
+            "direct": "meta-llama/Meta-Llama-3.1-8B-Instruct",
+            "executor": "meta-llama/Meta-Llama-3.1-8B-Instruct",
+            "verifier": "meta-llama/Meta-Llama-3.1-8B-Instruct",
+            "formatter": "meta-llama/Meta-Llama-3.1-8B-Instruct",
+            "reflector": "meta-llama/Meta-Llama-3.1-8B-Instruct",
         },
         "balanced": {
-            "coordinator": "gpt-4.1-mini",
-            "direct": "gpt-4o-mini",
-            "executor": "gpt-4o",
-            "verifier": "gpt-4.1-mini",
-            "formatter": "gpt-4o-mini",
-            "reflector": "gpt-4o-mini",
+            "coordinator": "meta-llama/Meta-Llama-3.1-8B-Instruct",
+            "direct": "meta-llama/Meta-Llama-3.1-8B-Instruct",
+            "executor": "meta-llama/Meta-Llama-3.1-70B-Instruct",
+            "verifier": "meta-llama/Meta-Llama-3.1-70B-Instruct",
+            "formatter": "meta-llama/Meta-Llama-3.1-8B-Instruct",
+            "reflector": "meta-llama/Meta-Llama-3.1-8B-Instruct",
         },
         "score_max": {
-            "coordinator": "gpt-4.1-mini",
-            "direct": "gpt-4.1-mini",
-            "executor": "gpt-4.1",
-            "verifier": "gpt-4.1-mini",
-            "formatter": "gpt-4.1-mini",
-            "reflector": "gpt-4.1-mini",
+            "coordinator": "meta-llama/Meta-Llama-3.1-70B-Instruct",
+            "direct": "meta-llama/Meta-Llama-3.1-70B-Instruct",
+            "executor": "meta-llama/Meta-Llama-3.1-405B-Instruct",
+            "verifier": "meta-llama/Meta-Llama-3.1-405B-Instruct",
+            "formatter": "meta-llama/Meta-Llama-3.1-70B-Instruct",
+            "reflector": "meta-llama/Meta-Llama-3.1-70B-Instruct",
         },
     }
 
@@ -94,8 +94,27 @@ def get_model_name(role: str) -> str:
 def get_client_kwargs(role: str) -> dict[str, Any]:
     """Resolve shared or role-specific OpenAI-compatible client settings."""
     prefix = _role_env_prefix(role)
-    api_key = os.getenv(f"{prefix}_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
-    base_url = os.getenv(f"{prefix}_OPENAI_BASE_URL") or os.getenv("OPENAI_BASE_URL")
+    profile = _current_model_profile()
+    is_nebius_profile = profile in ("cheap", "balanced", "score_max")
+
+    api_key = os.getenv(f"{prefix}_OPENAI_API_KEY")
+    base_url = os.getenv(f"{prefix}_OPENAI_BASE_URL")
+
+    if not api_key:
+        if is_nebius_profile and os.getenv("NEBIUS_API_KEY"):
+            api_key = os.getenv("NEBIUS_API_KEY")
+        else:
+            api_key = os.getenv("OPENAI_API_KEY")
+
+    if not base_url:
+        if is_nebius_profile and os.getenv("NEBIUS_BASE_URL"):
+            base_url = os.getenv("NEBIUS_BASE_URL")
+        elif is_nebius_profile:
+            # Fallback to the known Nebius URL if using a Nebius profile but only the key was provided
+            base_url = "https://api.studio.nebius.ai/v1/"
+        else:
+            base_url = os.getenv("OPENAI_BASE_URL")
+
     kwargs: dict[str, Any] = {}
     if api_key:
         kwargs["api_key"] = api_key
