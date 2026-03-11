@@ -445,3 +445,27 @@ This file operates in a "Chat" structure. Whenever an agent finishes a major uni
   8. **Verified**: `pytest tests/test_coordinator.py tests/test_verifier.py tests/test_model_config.py -q` → 41 passed. Syntax-checked `reasoner.py` and `model_config.py` with `py_compile`.
 - **Blockers:** None. The prompt-based tool calling path is functional. Model quality (especially the 8B coordinator) may produce suboptimal routing, but the fallback defaults handle it.
 - **Handoff Notes:** The agent now works end-to-end against Nebius TokenFactory without any server-side configuration changes. To test: set `MODEL_PROFILE=cheap` and restart the server. The entire tool-calling pipeline uses prompt injection + OSS patching instead of native `bind_tools`.
+
+### Chat 41: FAB++ Benchmark Post-Mortem — Model & Prompt Upgrade
+
+- **Role:** Analyst / Coder
+- **Actions Taken:**
+  1. Ran first FAB++ benchmark evaluation (3 tasks): overall score **13.8/100 (Grade F)**. The architecture ran without transport errors, confirming Chat 40 fixes worked. All failures were behavioral/model-quality issues.
+  2. Root-caused three distinct failure modes:
+     - _bizfinbench_: 8B model failed to extract data from prompt-embedded tables and apply formulas. Converged to "unable to find data" despite all data being in the prompt. Verifier loop exhausted budget.
+     - _prbench_: 8B model broke autonomy — exposed internal tools to evaluator and asked "Which tool would you like to use?" instead of acting. Complete role confusion.
+     - _vol_001_: Shallow finance reasoning. Verifier kept rejecting, budget cap forced acceptance of a weak draft.
+  3. Confirmed the `[Budget] revise: Revise cycle cap reached (3)` exits were Sprint 4 budget logic working correctly — the problem was the executor producing non-improving revisions, not the budget system.
+  4. Retired `meta-llama/Meta-Llama-3.1-8B-Instruct-fast` from all thinking roles. Restructured all three Nebius profiles using verified models from `/v1/models`:
+     - _cheap_: `Qwen/Qwen3-32B-fast` for coordinator/executor/verifier (was 8B). 8B only for formatter/reflector.
+     - _balanced_: `Qwen3-32B-fast` for coordinator/verifier, `Llama-3.3-70B-Instruct-fast` for executor.
+     - _score\_max_: `Qwen3-32B-fast` for coordinator, `DeepSeek-V3-0324-fast` for executor, `Llama-70B` for verifier.
+  5. Hardened the executor `SYSTEM_PROMPT` with three benchmark-specific fixes:
+     - Added explicit prohibitions: "NEVER list your available tools", "NEVER ask the user which tool to use"
+     - Added in-context data extraction mandate: "extract values DIRECTLY from the provided text"
+     - Added finance domain depth requirements: "always include Greeks analysis, P&L breakdown, risk metrics"
+  6. User independently upgraded coordinator and verifier fallback prompts (`COORDINATOR_JSON_FALLBACK_PROMPT`, `VERIFIER_JSON_FALLBACK_PROMPT`) with few-shot examples and explicit anti-patterns.
+  7. Verified all 6 Nebius models in the new profiles are accessible with the current API key.
+  8. All 45 tests passed after changes.
+- **Blockers:** None. Need to re-run FAB++ benchmark with `MODEL_PROFILE=cheap` (Qwen3-32B) to establish new baseline.
+- **Handoff Notes:** The bottleneck has shifted from transport/schema issues to model quality and prompt engineering. The 8B model is definitively too weak for any agent role except trivial formatting. Qwen3-32B-fast at ~$0.01/task should be the minimum for architecture testing. Expect meaningful score improvement from the prompt hardening alone, with further gains from the model upgrade.
