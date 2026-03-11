@@ -128,7 +128,7 @@ def truncate_memory_fields(record: Any, max_len: int = MAX_MEMORY_FIELD_LEN) -> 
     """Truncate long string fields on a Pydantic memory record in-place.
 
     Caps: arguments_pattern, failure_pattern, partial_context_summary,
-    repair_action, task_summary.
+    repair_action, task_summary, semantic_text.
     """
     for field_name in (
         "arguments_pattern",
@@ -136,6 +136,7 @@ def truncate_memory_fields(record: Any, max_len: int = MAX_MEMORY_FIELD_LEN) -> 
         "partial_context_summary",
         "repair_action",
         "task_summary",
+        "semantic_text",
     ):
         value = getattr(record, field_name, None)
         if isinstance(value, str) and len(value) > max_len:

@@ -4,7 +4,9 @@ Tests for Sprint 3: Execution Memory & Repair Reuse
 Covers schemas, admission policy, storage, retrieval, and eviction.
 """
 
+import json
 import os
+import sqlite3
 import sys
 import tempfile
 
@@ -17,6 +19,9 @@ from agent.memory.schema import (
     ExecutorMemory,
     RouterMemory,
     VerifierMemory,
+    _infer_failure_family,
+    _infer_task_family,
+    _infer_tool_family,
     _task_signature,
 )
 from agent.memory.store import MemoryStore
@@ -61,6 +66,7 @@ class TestSchemas:
         )
         assert rec.success is True
         assert rec.selected_layers == ["react_reason", "verifier_check"]
+        assert rec.task_family == "generic"
 
     def test_executor_memory_creation(self):
         rec = ExecutorMemory(
@@ -72,6 +78,7 @@ class TestSchemas:
             success=True,
         )
         assert rec.tool_used == "black_scholes_price"
+        assert rec.tool_family == "generic"
 
     def test_verifier_memory_creation(self):
         rec = VerifierMemory(
@@ -83,6 +90,12 @@ class TestSchemas:
         )
         assert rec.verdict == "REVISE"
         assert rec.repair_worked is True
+
+    def test_family_inference_helpers(self):
+        assert _infer_task_family("Calculate TSLA option greeks") == "finance"
+        assert _infer_task_family("Review acquisition compliance liabilities") == "legal"
+        assert _infer_tool_family("black_scholes_price") == "finance"
+        assert _infer_failure_family("Missing required JSON field") == "schema"
 
 
 # ====================================================================
@@ -173,26 +186,40 @@ class TestStorageRetrieval:
         rec = RouterMemory(
             task_signature=_task_signature(task),
             task_summary="AAPL options pricing",
+            semantic_text="task: calculate aapl call price layers: react_reason verifier_check",
+            task_family="finance",
             selected_layers=["react_reason", "verifier_check"],
             success=True,
             cost_usd=0.002,
             latency_ms=1200.0,
+            tags=["react_reason", "verifier_check"],
+            metadata={"policy_confidence": 0.8},
         )
         store.store_router(rec)
         hints = store.retrieve_router_hints(task)
         assert len(hints) == 1
         assert "react_reason" in hints[0]
         assert "AAPL" in hints[0]
+        row = store._get_conn().execute(
+            "SELECT semantic_text, task_family, metadata_json FROM router_memory"
+        ).fetchone()
+        assert row["semantic_text"].startswith("task:")
+        assert row["task_family"] == "finance"
+        assert json.loads(row["metadata_json"])["policy_confidence"] == 0.8
 
     def test_executor_round_trip(self, store):
         task = "Calculate AAPL call price"
         rec = ExecutorMemory(
             task_signature=_task_signature(task),
             partial_context_summary="Pricing AAPL call option",
+            semantic_text="task: calculate aapl call price tool: black_scholes_price",
+            task_family="finance",
             tool_used="black_scholes_price",
+            tool_family="finance",
             arguments_pattern="spot=180, strike=175, rate=0.05",
             outcome_quality="good",
             success=True,
+            metadata={"verdict": "PASS"},
         )
         store.store_executor(rec)
         hints = store.retrieve_executor_hints(task)
@@ -221,9 +248,13 @@ class TestStorageRetrieval:
         rec = VerifierMemory(
             task_signature=_task_signature(task),
             failure_pattern="calculator rejects multiline",
+            semantic_text="task: calculate aapl call price failure: calculator rejects multiline",
+            task_family="finance",
+            failure_family="tool_use",
             verdict="REVISE",
             repair_action="switch to finance tool",
             repair_worked=True,
+            metadata={"pending_reasoning_preview": "calculator rejects multiline"},
         )
         store.store_verifier(rec)
         hints = store.retrieve_verifier_hints(task)
@@ -257,6 +288,57 @@ class TestStorageRetrieval:
         assert stats["router_memory"] == 0
         assert stats["executor_memory"] == 0
         assert stats["verifier_memory"] == 0
+
+    def test_old_schema_db_is_reset_to_new_layout(self, tmp_path):
+        db_path = tmp_path / "old_agent_memory.db"
+        conn = sqlite3.connect(db_path)
+        conn.executescript(
+            """
+            CREATE TABLE router_memory (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_sig TEXT NOT NULL,
+                task_summary TEXT NOT NULL,
+                layers TEXT NOT NULL,
+                success INTEGER NOT NULL,
+                cost_usd REAL DEFAULT 0.0,
+                latency_ms REAL DEFAULT 0.0,
+                timestamp REAL NOT NULL,
+                tags TEXT DEFAULT '[]'
+            );
+            CREATE TABLE executor_memory (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_sig TEXT NOT NULL,
+                partial_context_summary TEXT NOT NULL,
+                tool_used TEXT NOT NULL,
+                arguments_pattern TEXT NOT NULL,
+                outcome_quality TEXT NOT NULL,
+                success INTEGER NOT NULL,
+                timestamp REAL NOT NULL,
+                tags TEXT DEFAULT '[]'
+            );
+            CREATE TABLE verifier_memory (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_sig TEXT NOT NULL,
+                failure_pattern TEXT NOT NULL,
+                verdict TEXT NOT NULL,
+                repair_action TEXT NOT NULL,
+                repair_worked INTEGER NOT NULL,
+                timestamp REAL NOT NULL,
+                tags TEXT DEFAULT '[]'
+            );
+            """
+        )
+        conn.commit()
+        conn.close()
+
+        store = MemoryStore(db_path=str(db_path))
+        columns = {
+            row["name"]
+            for row in store._get_conn().execute("PRAGMA table_info(router_memory)").fetchall()
+        }
+        assert "semantic_text" in columns
+        assert "metadata_json" in columns
+        assert store.stats()["router_memory"] == 0
 
 
 # ====================================================================

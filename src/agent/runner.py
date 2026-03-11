@@ -15,7 +15,12 @@ from agent.model_config import primary_runtime_model
 from agent.nodes.reasoner import reset_step_counter
 from agent.nodes.reflector import _is_reflection_message
 from agent.memory.store import MemoryStore
-from agent.memory.schema import RouterMemory, _task_signature
+from agent.memory.schema import (
+    RouterMemory,
+    _infer_task_family,
+    _normalize_memory_text,
+    _task_signature,
+)
 from agent.budget import BudgetTracker
 from agent.pruning import prune_for_persistence, truncate_memory_fields
 from context_manager import summarize_and_window
@@ -166,10 +171,23 @@ async def run_agent(
         router_rec = RouterMemory(
             task_signature=_task_signature(input_text),
             task_summary=task_summary,
+            semantic_text=_normalize_memory_text(
+                f"task: {input_text}\n"
+                f"layers: {' '.join(final_state.get('selected_layers', []))}\n"
+                f"success: {run_success}"
+            ),
+            task_family=_infer_task_family(input_text),
             selected_layers=final_state.get("selected_layers", []),
             success=run_success,
             cost_usd=tracker.total_cost(),
             latency_ms=tracker.wall_clock_ms,
+            tags=list(final_state.get("selected_layers", [])),
+            metadata={
+                "policy_confidence": final_state.get("policy_confidence", 0.0),
+                "estimated_steps": final_state.get("estimated_steps", 0),
+                "early_exit_allowed": final_state.get("early_exit_allowed", False),
+                "format_required": final_state.get("format_required", False),
+            },
         )
         truncate_memory_fields(router_rec)
         mem_store.store_router(router_rec)

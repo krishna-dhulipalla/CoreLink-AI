@@ -36,6 +36,8 @@ _Theme: Local Fragments & Learned Recovery_
 
 Instead of generic trajectory RAG, memory is role-specific to the Coordinator, Executor, and Verifier loop established in Sprint 2.
 
+For the strict storage-first rollout and deferred semantic retrieval plan, see [docs/semantic_memory_future_plan.md](C:/Users/vamsi/OneDrive/Desktop/Gtihub_repos/Project-Pulse-Generalist-A2A-Reasoning-Engine/docs/semantic_memory_future_plan.md).
+
 - **Coordinator Memory**: Stores compact records (task summary, operator layers, cost, success). Used before planning.
 - **Executor Memory**: Stores local execution fragments (partial context, tool chosen, args, quality). Retrieves top-k compact structured hints instead of raw dumps.
 - **Verifier/Repair Memory**: Stores failure patterns, verdicts, and repair strategies (revise vs backtrack success). Enables learned recovery.

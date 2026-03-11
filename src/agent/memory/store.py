@@ -47,38 +47,49 @@ DEFAULT_DB_PATH = os.getenv(
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS router_memory (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_sig    TEXT NOT NULL,
-    task_summary TEXT NOT NULL,
-    layers      TEXT NOT NULL,
-    success     INTEGER NOT NULL,
-    cost_usd    REAL DEFAULT 0.0,
-    latency_ms  REAL DEFAULT 0.0,
-    timestamp   REAL NOT NULL,
-    tags        TEXT DEFAULT '[]'
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_sig      TEXT NOT NULL,
+    task_summary  TEXT NOT NULL,
+    semantic_text TEXT DEFAULT '',
+    task_family   TEXT DEFAULT 'general',
+    layers        TEXT NOT NULL,
+    success       INTEGER NOT NULL,
+    cost_usd      REAL DEFAULT 0.0,
+    latency_ms    REAL DEFAULT 0.0,
+    timestamp     REAL NOT NULL,
+    tags          TEXT DEFAULT '[]',
+    metadata_json TEXT DEFAULT '{}'
 );
 
 CREATE TABLE IF NOT EXISTS executor_memory (
     id                      INTEGER PRIMARY KEY AUTOINCREMENT,
     task_sig                TEXT NOT NULL,
     partial_context_summary TEXT NOT NULL,
+    semantic_text           TEXT DEFAULT '',
+    task_family             TEXT DEFAULT 'general',
     tool_used               TEXT NOT NULL,
+    tool_family             TEXT DEFAULT 'generic',
     arguments_pattern       TEXT NOT NULL,
     outcome_quality         TEXT NOT NULL,
     success                 INTEGER NOT NULL,
     timestamp               REAL NOT NULL,
-    tags                    TEXT DEFAULT '[]'
+    tags                    TEXT DEFAULT '[]',
+    metadata_json           TEXT DEFAULT '{}'
 );
 
 CREATE TABLE IF NOT EXISTS verifier_memory (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     task_sig        TEXT NOT NULL,
     failure_pattern TEXT NOT NULL,
+    semantic_text   TEXT DEFAULT '',
+    task_family     TEXT DEFAULT 'general',
+    failure_family  TEXT DEFAULT 'generic',
     verdict         TEXT NOT NULL,
     repair_action   TEXT NOT NULL,
     repair_worked   INTEGER NOT NULL,
     timestamp       REAL NOT NULL,
-    tags            TEXT DEFAULT '[]'
+    tags            TEXT DEFAULT '[]',
+    metadata_json   TEXT DEFAULT '{}'
 );
 
 CREATE INDEX IF NOT EXISTS idx_router_sig   ON router_memory(task_sig);
@@ -86,14 +97,61 @@ CREATE INDEX IF NOT EXISTS idx_executor_sig ON executor_memory(task_sig);
 CREATE INDEX IF NOT EXISTS idx_verifier_sig ON verifier_memory(task_sig);
 """
 
+_EXPECTED_COLUMNS = {
+    "router_memory": {
+        "id",
+        "task_sig",
+        "task_summary",
+        "semantic_text",
+        "task_family",
+        "layers",
+        "success",
+        "cost_usd",
+        "latency_ms",
+        "timestamp",
+        "tags",
+        "metadata_json",
+    },
+    "executor_memory": {
+        "id",
+        "task_sig",
+        "partial_context_summary",
+        "semantic_text",
+        "task_family",
+        "tool_used",
+        "tool_family",
+        "arguments_pattern",
+        "outcome_quality",
+        "success",
+        "timestamp",
+        "tags",
+        "metadata_json",
+    },
+    "verifier_memory": {
+        "id",
+        "task_sig",
+        "failure_pattern",
+        "semantic_text",
+        "task_family",
+        "failure_family",
+        "verdict",
+        "repair_action",
+        "repair_worked",
+        "timestamp",
+        "tags",
+        "metadata_json",
+    },
+}
+
 
 class MemoryStore:
     """Thread-safe, bounded SQLite store for agent execution memory."""
 
     def __init__(self, db_path: str | None = None):
         self._db_path = db_path or DEFAULT_DB_PATH
-        Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
         self._local = threading.local()
+        if self._db_path != ":memory:":
+            Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
 
     # ---- connection management (per-thread) ----
@@ -105,6 +163,41 @@ class MemoryStore:
         return self._local.conn
 
     def _init_db(self) -> None:
+        conn = self._get_conn()
+        conn.executescript(_DDL)
+        conn.commit()
+        if not self._schema_matches():
+            logger.warning("[Memory] Resetting memory DB because the stored schema is outdated.")
+            self._reset_schema()
+
+    def _schema_matches(self) -> bool:
+        conn = self._get_conn()
+        for table, expected in _EXPECTED_COLUMNS.items():
+            rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+            columns = {row["name"] for row in rows}
+            if columns != expected:
+                return False
+        return True
+
+    def _reset_schema(self) -> None:
+        if self._db_path == ":memory:":
+            conn = self._get_conn()
+            conn.executescript(
+                """
+                DROP TABLE IF EXISTS router_memory;
+                DROP TABLE IF EXISTS executor_memory;
+                DROP TABLE IF EXISTS verifier_memory;
+                """
+            )
+            conn.executescript(_DDL)
+            conn.commit()
+            return
+
+        db_file = Path(self._db_path)
+        self.close()
+        if db_file.exists():
+            db_file.unlink()
+        self._local = threading.local()
         conn = self._get_conn()
         conn.executescript(_DDL)
         conn.commit()
@@ -179,17 +272,20 @@ class MemoryStore:
         conn = self._get_conn()
         self._evict_oldest("router_memory")
         conn.execute(
-            "INSERT INTO router_memory (task_sig, task_summary, layers, success, cost_usd, latency_ms, timestamp, tags) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO router_memory (task_sig, task_summary, semantic_text, task_family, layers, success, cost_usd, latency_ms, timestamp, tags, metadata_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 rec.task_signature,
                 rec.task_summary,
+                rec.semantic_text,
+                rec.task_family,
                 json.dumps(rec.selected_layers),
                 int(rec.success),
                 rec.cost_usd,
                 rec.latency_ms,
                 rec.timestamp,
                 json.dumps(rec.tags),
+                json.dumps(rec.metadata),
             ),
         )
         conn.commit()
@@ -210,17 +306,21 @@ class MemoryStore:
         conn = self._get_conn()
         self._evict_oldest("executor_memory")
         conn.execute(
-            "INSERT INTO executor_memory (task_sig, partial_context_summary, tool_used, arguments_pattern, outcome_quality, success, timestamp, tags) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO executor_memory (task_sig, partial_context_summary, semantic_text, task_family, tool_used, tool_family, arguments_pattern, outcome_quality, success, timestamp, tags, metadata_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 rec.task_signature,
                 rec.partial_context_summary,
+                rec.semantic_text,
+                rec.task_family,
                 rec.tool_used,
+                rec.tool_family,
                 rec.arguments_pattern,
                 rec.outcome_quality,
                 int(rec.success),
                 rec.timestamp,
                 json.dumps(rec.tags),
+                json.dumps(rec.metadata),
             ),
         )
         conn.commit()
@@ -237,16 +337,20 @@ class MemoryStore:
         conn = self._get_conn()
         self._evict_oldest("verifier_memory")
         conn.execute(
-            "INSERT INTO verifier_memory (task_sig, failure_pattern, verdict, repair_action, repair_worked, timestamp, tags) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO verifier_memory (task_sig, failure_pattern, semantic_text, task_family, failure_family, verdict, repair_action, repair_worked, timestamp, tags, metadata_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 rec.task_signature,
                 rec.failure_pattern,
+                rec.semantic_text,
+                rec.task_family,
+                rec.failure_family,
                 rec.verdict,
                 rec.repair_action,
                 int(rec.repair_worked),
                 rec.timestamp,
                 json.dumps(rec.tags),
+                json.dumps(rec.metadata),
             ),
         )
         conn.commit()

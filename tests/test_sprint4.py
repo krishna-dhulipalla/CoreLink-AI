@@ -19,13 +19,20 @@ from agent.pruning import (
     truncate_memory_fields,
     MAX_TOOL_RESULTS_IN_CONTEXT,
 )
-from agent.budget import BudgetTracker
+from agent.budget import (
+    BudgetTracker,
+    MAX_BACKTRACK_CYCLES,
+    MAX_HINT_TOKENS,
+    MAX_REVISE_CYCLES,
+    MAX_TOOL_CALLS,
+)
 from agent.guardrails import (
     sanitize_tool_output,
     validate_tool_descriptions,
     tag_external_content,
     EXTERNAL_START,
     EXTERNAL_END,
+    MAX_TOOL_DESC_LEN,
 )
 from agent.memory.schema import ExecutorMemory, VerifierMemory, RouterMemory, _task_signature
 from agent.memory.store import MemoryStore
@@ -132,6 +139,7 @@ class TestTruncateMemoryFields:
         rec = ExecutorMemory(
             task_signature="sig",
             partial_context_summary="a" * 200,
+            semantic_text="c" * 200,
             tool_used="tool",
             arguments_pattern="b" * 200,
             outcome_quality="good",
@@ -140,6 +148,7 @@ class TestTruncateMemoryFields:
         truncate_memory_fields(rec, max_len=50)
         assert len(rec.partial_context_summary) == 50
         assert len(rec.arguments_pattern) == 50
+        assert len(rec.semantic_text) == 50
 
     def test_leaves_short_fields(self):
         rec = ExecutorMemory(
@@ -162,28 +171,28 @@ class TestTruncateMemoryFields:
 class TestBudgetTracker:
     def test_tool_call_cap(self):
         bt = BudgetTracker()
-        for _ in range(15):
+        for _ in range(MAX_TOOL_CALLS):
             bt.record_tool_call()
         assert bt.tool_calls_exhausted()
 
     def test_revise_cap(self):
         bt = BudgetTracker()
-        for _ in range(3):
+        for _ in range(MAX_REVISE_CYCLES):
             bt.record_revise()
         assert bt.revise_exhausted()
 
     def test_backtrack_cap(self):
         bt = BudgetTracker()
-        bt.record_backtrack()
-        bt.record_backtrack()
+        for _ in range(MAX_BACKTRACK_CYCLES):
+            bt.record_backtrack()
         assert bt.backtrack_exhausted()
 
     def test_hint_tokens_remaining(self):
         bt = BudgetTracker()
         bt.record_hint_tokens(100)
-        assert bt.hint_tokens_remaining() == 100  # 200 default cap
+        assert bt.hint_tokens_remaining() == max(0, MAX_HINT_TOKENS - 100)
         bt.record_hint_tokens(150)
-        assert bt.hint_tokens_remaining() == 0
+        assert bt.hint_tokens_remaining() == max(0, MAX_HINT_TOKENS - 250)
 
     def test_budget_exit_logging(self):
         bt = BudgetTracker()
@@ -235,7 +244,7 @@ class TestValidateToolDescriptions:
 
         class FakeTool:
             name = "bad_tool"
-            description = "x" * 600
+            description = "x" * (MAX_TOOL_DESC_LEN + 1)
 
         warnings = validate_tool_descriptions([FakeTool()])
         assert any("suspiciously long" in w for w in warnings)

@@ -21,7 +21,15 @@ from agent.model_config import (
     get_client_kwargs,
     get_model_name,
 )
-from agent.memory.schema import ExecutorMemory, VerifierMemory, _task_signature
+from agent.memory.schema import (
+    ExecutorMemory,
+    VerifierMemory,
+    _infer_failure_family,
+    _infer_task_family,
+    _infer_tool_family,
+    _normalize_memory_text,
+    _task_signature,
+)
 from agent.prompts import VERIFIER_JSON_FALLBACK_PROMPT, VERIFIER_PROMPT, VerdictDecision
 from agent.state import AgentState, ReplaceMessages
 from agent.pruning import truncate_memory_fields
@@ -126,10 +134,24 @@ def _store_executor_memory(
     rec = ExecutorMemory(
         task_signature=_task_signature(task_text),
         partial_context_summary=task_text[:120],
+        semantic_text=_normalize_memory_text(
+            f"task: {task_text}\n"
+            f"tool: {tool_used}\n"
+            f"arguments: {arguments_pattern}\n"
+            f"quality: {outcome_quality}"
+        ),
+        task_family=_infer_task_family(task_text),
         tool_used=tool_used,
+        tool_family=_infer_tool_family(tool_used),
         arguments_pattern=arguments_pattern,
         outcome_quality=outcome_quality,
         success=success,
+        tags=[tool_used, outcome_quality],
+        metadata={
+            "verdict": verdict.verdict,
+            "tool_message_name": last_msg.name,
+            "tool_output_preview": str(last_msg.content)[:120],
+        },
     )
     truncate_memory_fields(rec)
     memory_store.store_executor(rec)
@@ -159,9 +181,21 @@ def _store_verifier_memory_on_repair_success(
     rec = VerifierMemory(
         task_signature=_task_signature(task_text),
         failure_pattern=str(pending_feedback.get("reasoning", ""))[:240],
+        semantic_text=_normalize_memory_text(
+            f"task: {task_text}\n"
+            f"failure: {pending_feedback.get('reasoning', '')}\n"
+            f"repair: {_repair_action_summary(state['messages'])}\n"
+            f"verdict: {pending_feedback.get('verdict', 'REVISE')}"
+        ),
+        task_family=_infer_task_family(task_text),
+        failure_family=_infer_failure_family(str(pending_feedback.get("reasoning", ""))),
         verdict=pending_feedback.get("verdict", "REVISE"),
         repair_action=_repair_action_summary(state["messages"]),
         repair_worked=True,
+        tags=[pending_feedback.get("verdict", "REVISE")],
+        metadata={
+            "pending_reasoning_preview": str(pending_feedback.get("reasoning", ""))[:120],
+        },
     )
     truncate_memory_fields(rec)
     memory_store.store_verifier(rec)
