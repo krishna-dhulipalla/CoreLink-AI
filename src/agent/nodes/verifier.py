@@ -22,7 +22,7 @@ from agent.model_config import (
     get_model_name,
 )
 from agent.memory.schema import ExecutorMemory, VerifierMemory, _task_signature
-from agent.prompts import VERIFIER_PROMPT, VerdictDecision
+from agent.prompts import VERIFIER_JSON_FALLBACK_PROMPT, VERIFIER_PROMPT, VerdictDecision
 from agent.state import AgentState, ReplaceMessages
 from agent.pruning import truncate_memory_fields
 from context_manager import count_tokens
@@ -34,7 +34,6 @@ BACKTRACK_WARNING = (
     "or hallucinated. The state has been reverted to the last verified checkpoint. "
     "Do NOT repeat the same mistake. Try a different tool or strategy."
 )
-
 
 def _is_internal_warning(msg: BaseMessage) -> bool:
     return bool(getattr(msg, "additional_kwargs", {}).get("is_warning", False))
@@ -185,19 +184,14 @@ def verifier(state: AgentState) -> dict:
     history = [m for m in state["messages"] if not _is_internal_warning(m)]
     prompt_messages = [SystemMessage(content=VERIFIER_PROMPT)] + history
 
+    invocation_messages = prompt_messages
     t0 = time.monotonic()
     try:
         if _structured_output_mode("verifier") == "native":
             verdict: VerdictDecision = llm.with_structured_output(VerdictDecision).invoke(prompt_messages)
         else:
-            schema_prompt = SystemMessage(
-                content=(
-                    "Return ONLY valid JSON matching this schema. "
-                    "Do not include markdown fences or extra commentary.\n"
-                    f"JSON_SCHEMA={json.dumps(VerdictDecision.model_json_schema(), ensure_ascii=True)}"
-                )
-            )
-            raw_response = llm.invoke([schema_prompt] + prompt_messages)
+            invocation_messages = [SystemMessage(content=VERIFIER_JSON_FALLBACK_PROMPT)] + history
+            raw_response = llm.invoke(invocation_messages)
             verdict = VerdictDecision.model_validate_json(
                 _extract_json_payload(str(raw_response.content or ""))
             )
@@ -215,7 +209,7 @@ def verifier(state: AgentState) -> dict:
         tracker.record(
             operator="verifier_check",
             model_name=model_name,
-            tokens_in=count_tokens(prompt_messages),
+            tokens_in=count_tokens(invocation_messages),
             tokens_out=count_tokens([AIMessage(content=verdict.model_dump_json())]),
             latency_ms=latency,
             success=success,

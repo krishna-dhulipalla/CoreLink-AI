@@ -18,7 +18,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from agent.operators import Operator, OPERATOR_REGISTRY, validate_layers, DEFAULT_PLANS
 from agent.cost import CostTracker, OperatorTrace
-from agent.prompts import RouteDecision, DIRECT_RESPONDER_PROMPT, SYSTEM_PROMPT
+from agent.prompts import (
+    COORDINATOR_JSON_FALLBACK_PROMPT,
+    RouteDecision,
+    DIRECT_RESPONDER_PROMPT,
+    SYSTEM_PROMPT,
+)
 from agent.nodes.coordinator import coordinator, route_task, direct_responder, format_normalizer
 from agent.nodes.tool_executor import should_use_tools
 
@@ -173,6 +178,15 @@ class TestRouteDecision:
         assert d.confidence == 0.5
         assert d.needs_formatting is False
         assert d.early_exit_allowed is True
+
+    def test_schema_fallback_ignores_wrong_answer_key(self):
+        """Small-model junk like {'answer': ...} should still yield a safe default plan."""
+        d = RouteDecision.model_validate({"answer": "not a valid plan"})
+        assert d.layers == ["react_reason", "verifier_check"]
+
+    def test_json_fallback_prompt_bans_answer_key(self):
+        """Fallback prompt should explicitly ban generic answer-shaped JSON."""
+        assert "Do not output keys like answer" in COORDINATOR_JSON_FALLBACK_PROMPT
 
 
 # ── Routing Policy Tests ─────────────────────────────────────────────────────

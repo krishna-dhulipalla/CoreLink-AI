@@ -29,6 +29,10 @@ ROLE_MODEL_ENV: dict[str, str] = {
 
 LOCAL_BACKEND_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0"}
 
+# Nebius token factory and similar hosted vLLM backends that
+# reject request-level chat templates / native tool calling
+_PROMPT_TOOL_HOSTS = {"api.tokenfactory.nebius.com", "api.studio.nebius.ai"}
+
 
 def _role_env_prefix(role: str) -> str:
     return role.upper()
@@ -63,7 +67,7 @@ def _profile_models() -> dict[str, dict[str, str]]:
             "reflector": "meta-llama/Meta-Llama-3.1-8B-Instruct-fast",
         },
         "balanced": {
-            "coordinator": "meta-llama/Meta-Llama-3.1-8B-Instruct-fast",
+            "coordinator": "meta-llama/Llama-3.3-70B-Instruct-fast",
             "direct": "meta-llama/Meta-Llama-3.1-8B-Instruct-fast",
             "executor": "meta-llama/Llama-3.3-70B-Instruct-fast",
             "verifier": "meta-llama/Llama-3.3-70B-Instruct-fast",
@@ -156,6 +160,33 @@ def _structured_output_mode(role: str) -> str:
     host = (urlparse(base_url).hostname or "").lower()
     if host in LOCAL_BACKEND_HOSTS:
         return "local_json"
+    return "native"
+
+
+def _tool_call_mode(role: str) -> str:
+    """Choose how tool calling should work for a role.
+
+    Returns:
+        'native'  – use llm.bind_tools() (OpenAI-native)
+        'prompt'  – inject tool descriptions into the system prompt
+                    and parse tool calls from text output
+    """
+    override = os.getenv("TOOL_CALL_MODE", "auto").strip().lower()
+    if override in {"native", "prompt"}:
+        return override
+
+    # Auto-detect: Nebius profiles always need prompt mode
+    profile = _current_model_profile()
+    if profile in ("cheap", "balanced", "score_max"):
+        return "prompt"
+
+    base_url = get_client_kwargs(role).get("base_url", "")
+    if not base_url:
+        return "native"
+
+    host = (urlparse(base_url).hostname or "").lower()
+    if host in LOCAL_BACKEND_HOSTS or host in _PROMPT_TOOL_HOSTS:
+        return "prompt"
     return "native"
 
 

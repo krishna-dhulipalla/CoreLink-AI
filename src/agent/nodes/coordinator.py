@@ -23,6 +23,7 @@ from agent.model_config import (
 from agent.operators import validate_layers, DEFAULT_PLANS
 from agent.prompts import (
     COORDINATOR_PROMPT,
+    COORDINATOR_JSON_FALLBACK_PROMPT,
     DIRECT_RESPONDER_PROMPT,
     FORMAT_NORMALIZATION_PROMPT,
     RouteDecision,
@@ -77,19 +78,16 @@ def coordinator(state: AgentState) -> dict:
 
     messages = [SystemMessage(content=COORDINATOR_PROMPT + memory_hint_block)] + state["messages"]
 
+    invocation_messages = messages
     t0 = time.monotonic()
     try:
         if _structured_output_mode("coordinator") == "native":
             verdict = llm.with_structured_output(RouteDecision).invoke(messages)
         else:
-            schema_prompt = SystemMessage(
-                content=(
-                    "Return ONLY valid JSON matching this schema. "
-                    "Do not include markdown fences or extra commentary.\n"
-                    f"JSON_SCHEMA={json.dumps(RouteDecision.model_json_schema(), ensure_ascii=True)}"
-                )
-            )
-            raw_response = llm.invoke([schema_prompt] + messages)
+            invocation_messages = [
+                SystemMessage(content=COORDINATOR_JSON_FALLBACK_PROMPT + memory_hint_block)
+            ] + [m for m in state["messages"] if not isinstance(m, SystemMessage)]
+            raw_response = llm.invoke(invocation_messages)
             verdict = RouteDecision.model_validate_json(
                 _extract_json_payload(str(raw_response.content or ""))
             )
@@ -134,14 +132,14 @@ def coordinator(state: AgentState) -> dict:
         tracker.record(
             operator="coordinator",
             model_name=model_name,
-            tokens_in=count_tokens(messages),
+            tokens_in=count_tokens(invocation_messages),
             tokens_out=count_tokens([HumanMessage(content=json.dumps(verdict_payload))]),
             latency_ms=latency,
             success=success,
         )
 
     logger.info(
-        f"[Step {step}] coordinator → layers={layers}, "
+        f"[Step {step}] coordinator -> layers={layers}, "
         f"confidence={confidence:.2f}, needs_formatting={needs_fmt}"
     )
 
@@ -168,7 +166,7 @@ def route_task(state: AgentState) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Direct Responder (fast path — no tools, lean prompt)
+# Direct Responder (fast path -- no tools, lean prompt)
 # ---------------------------------------------------------------------------
 
 def direct_responder(state: AgentState) -> dict:
@@ -202,12 +200,12 @@ def direct_responder(state: AgentState) -> dict:
             success=True,
         )
 
-    logger.info(f"[Step {step}] direct_responder → fast answer generated.")
+    logger.info(f"[Step {step}] direct_responder -> fast answer generated.")
     return {"messages": [response]}
 
 
 # ---------------------------------------------------------------------------
-# Format Normalizer (conditional — skips when not needed)
+# Format Normalizer (conditional -- skips when not needed)
 # ---------------------------------------------------------------------------
 
 def format_normalizer(state: AgentState) -> dict:
@@ -217,7 +215,7 @@ def format_normalizer(state: AgentState) -> dict:
 
     # CONDITIONAL: skip if coordinator said no formatting needed
     if not state.get("format_required", False):
-        logger.info(f"[Step {step}] format_normalizer → SKIPPED (format_required=False)")
+        logger.info(f"[Step {step}] format_normalizer -> SKIPPED (format_required=False)")
         return {"messages": []}
 
     # Find the last real AI answer
@@ -261,5 +259,5 @@ def format_normalizer(state: AgentState) -> dict:
     elif final_output.startswith("```"):
         final_output = final_output[3:-3].strip()
 
-    logger.info(f"[Step {step}] format_normalizer → applied formatting check.")
+    logger.info(f"[Step {step}] format_normalizer -> applied formatting check.")
     return {"messages": [AIMessage(content=final_output)]}

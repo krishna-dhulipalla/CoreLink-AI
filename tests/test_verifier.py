@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from agent.state import AgentState, ReplaceMessages
 from agent.nodes.verifier import verifier, verify_routing, BACKTRACK_WARNING
 from agent.memory.store import MemoryStore
-from agent.prompts import VerdictDecision
+from agent.prompts import VERIFIER_JSON_FALLBACK_PROMPT, VerdictDecision
 
 
 @pytest.fixture(autouse=True)
@@ -30,6 +30,14 @@ def _force_native_structured_output(monkeypatch):
 
 
 class TestVerifierNode:
+
+    def test_verdict_schema_defaults_to_revise_on_junk_payload(self):
+        """Schema drift like {'answer': ...} should not silently become PASS."""
+        verdict = VerdictDecision.model_validate({"answer": "looks fine"})
+        assert verdict.verdict == "REVISE"
+
+    def test_json_fallback_prompt_bans_answer_key(self):
+        assert "Do not output keys like answer" in VERIFIER_JSON_FALLBACK_PROMPT
 
     @patch("agent.nodes.verifier.ChatOpenAI")
     def test_verifier_pass(self, mock_chat_openai):

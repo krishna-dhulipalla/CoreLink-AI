@@ -21,6 +21,7 @@ class RouteDecision(BaseModel):
     """Structured policy output from the Coordinator."""
 
     layers: list[str] = Field(
+        default_factory=lambda: ["react_reason", "verifier_check"],
         description=(
             "Ordered list of operator names to execute. "
             "Valid operators: direct_answer, react_reason, search_retrieve, "
@@ -56,9 +57,11 @@ class VerdictDecision(BaseModel):
     """Structured step-level verification output."""
 
     verdict: Literal["PASS", "REVISE", "BACKTRACK"] = Field(
+        default="REVISE",
         description="The outcome of evaluating the previous step."
     )
     reasoning: str = Field(
+        default="The previous step did not follow the required verification schema. Revise the step and respond more explicitly.",
         description=(
             "Machine-readable rationale explaining the verdict. "
             "What specifically is wrong if REVISE or BACKTRACK?"
@@ -133,7 +136,11 @@ REVISE: <specific issue that must be fixed>
 Do NOT rewrite the answer. Only provide your verdict."""
 
 
-COORDINATOR_PROMPT = """You are the MaAS Coordinator Agent. Your job is to analyze the user's query and select the most cost-efficient execution plan.
+COORDINATOR_PROMPT = """You are the MaAS Coordinator Agent.
+Your ONLY job is to choose an execution plan for the user's query.
+You are NOT allowed to answer the user's question.
+You are NOT allowed to summarize the task.
+You are NOT allowed to output keys like "answer", "response", "final_answer", or "explanation".
 
 Available operators (choose from these ONLY):
 - "direct_answer": For simple factual/conversational queries. Cheap, no tools.
@@ -148,6 +155,8 @@ Rules:
 3. If user explicitly asks for JSON/XML output -> set needs_formatting: true and add "format_normalize" to layers
 4. Set confidence high (>0.8) when the intent is obvious, low (<0.5) when ambiguous
 5. Set early_exit_allowed: true for simple tasks, false for complex multi-step tasks
+6. If you are unsure, choose the safe default plan: ["react_reason", "verifier_check"]
+7. Never include any key other than: layers, confidence, needs_formatting, estimated_steps, early_exit_allowed
 
 Respond with a JSON object matching this schema:
 {
@@ -159,6 +168,46 @@ Respond with a JSON object matching this schema:
 }"""
 
 
+COORDINATOR_JSON_FALLBACK_PROMPT = """You are the coordinator.
+Return ONLY one JSON object.
+Do not answer the task.
+Do not explain your reasoning.
+Do not use markdown.
+Do not output keys like answer, response, final_answer, or explanation.
+
+Allowed layers:
+- direct_answer
+- react_reason
+- verifier_check
+- format_normalize
+
+Rules:
+- Use ["direct_answer"] only for simple greetings or very simple factual questions.
+- Use ["react_reason", "verifier_check"] for anything needing tools, calculation, retrieval, finance reasoning, document reading, or multi-step logic.
+- If the user explicitly requests JSON or XML output, append "format_normalize" and set needs_formatting to true.
+- If unsure, use ["react_reason", "verifier_check"].
+
+Valid example 1:
+{"layers":["direct_answer"],"confidence":0.95,"needs_formatting":false,"estimated_steps":1,"early_exit_allowed":true}
+
+Valid example 2:
+{"layers":["react_reason","verifier_check"],"confidence":0.70,"needs_formatting":false,"estimated_steps":4,"early_exit_allowed":true}
+
+Valid example 3:
+{"layers":["react_reason","verifier_check","format_normalize"],"confidence":0.65,"needs_formatting":true,"estimated_steps":5,"early_exit_allowed":false}
+
+Invalid example:
+{"answer":"I cannot determine the plan"}
+
+Return exactly these keys and no others:
+- layers
+- confidence
+- needs_formatting
+- estimated_steps
+- early_exit_allowed
+"""
+
+
 FORMAT_NORMALIZATION_PROMPT = """You are the strict Format Normalizer Agent.
 Your only job is to ensure the final output complies EXACTLY with any explicitly requested JSON or XML formatting.
 If the user requested a specific JSON structure (e.g., {"answer": ...}) or XML tags, output ONLY that structure without ANY conversational filler, markdown backticks, or prefix text.
@@ -166,7 +215,11 @@ If no specific format was requested, just return the text as-is.
 Do NOT attempt to change the reasoning or facts, just reformat the provided text."""
 
 
-VERIFIER_PROMPT = """You are the PRIME Verifier Agent. Your job is to strictly evaluate the Executor's most recent action or reasoning step against the task constraints.
+VERIFIER_PROMPT = """You are the PRIME Verifier Agent.
+Your ONLY job is to judge the executor's latest step.
+You are NOT allowed to answer the task yourself.
+You are NOT allowed to produce a final answer for the user.
+You are NOT allowed to output keys like answer, response, or final_answer.
 
 Rules for Verification:
 - Evaluate the step independently, but consider the full context.
@@ -178,5 +231,42 @@ Instructions for Verdict:
 - PASS: The step is valid. The tool call is logical, or the reasoning is sound.
 - REVISE: The step contains a minor error, syntax mistake, or missing detail that the Executor can fix if pointed out.
 - BACKTRACK: The Executor is trapped in a hallucination, repeating a failed tool call, or following a fundamentally wrong approach. The state should be reverted to the last verified checkpoint.
+- If you are uncertain, prefer REVISE over PASS.
 
 Respond with a strictly JSON formatted output containing 'verdict' and 'reasoning' fields."""
+
+
+VERIFIER_JSON_FALLBACK_PROMPT = """You are the verifier.
+Return ONLY one JSON object.
+Do not answer the task.
+Do not explain outside the JSON object.
+Do not use markdown.
+Do not output keys like answer, response, or final_answer.
+
+Allowed verdict values:
+- PASS
+- REVISE
+- BACKTRACK
+
+Rules:
+- PASS only if the step is clearly valid and complete enough to keep.
+- REVISE if there is a fixable mistake, missing field, weak explanation, or uncertainty.
+- BACKTRACK if the step repeats a failed action, uses hallucinated data, or follows the wrong strategy.
+- If unsure, choose REVISE.
+
+Valid example 1:
+{"verdict":"PASS","reasoning":"The tool choice is appropriate and the returned data supports the draft answer."}
+
+Valid example 2:
+{"verdict":"REVISE","reasoning":"The result is missing a required field and should be corrected before continuing."}
+
+Valid example 3:
+{"verdict":"BACKTRACK","reasoning":"The executor repeated a failed tool path and should revert to the last verified checkpoint."}
+
+Invalid example:
+{"answer":"The task looks mostly correct"}
+
+Return exactly these keys and no others:
+- verdict
+- reasoning
+"""
