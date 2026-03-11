@@ -469,3 +469,17 @@ This file operates in a "Chat" structure. Whenever an agent finishes a major uni
   8. All 45 tests passed after changes.
 - **Blockers:** None. Need to re-run FAB++ benchmark with `MODEL_PROFILE=cheap` (Qwen3-32B) to establish new baseline.
 - **Handoff Notes:** The bottleneck has shifted from transport/schema issues to model quality and prompt engineering. The 8B model is definitively too weak for any agent role except trivial formatting. Qwen3-32B-fast at ~$0.01/task should be the minimum for architecture testing. Expect meaningful score improvement from the prompt hardening alone, with further gains from the model upgrade.
+
+### Chat 42: Budget & Verifier Relaxation
+
+- **Role:** Analyst / Coder
+- **Actions Taken:**
+  1. Identified that early exits (`Revise cycle cap reached`) were compounded by overly pedantic verifier prompts that strongly biased the agent to reject steps ("If you are uncertain, prefer REVISE over PASS").
+  2. Increased default budget limitations in `src/agent/budget.py`:
+     - `MAX_REVISE_CYCLES`: 3 -> 8
+     - `MAX_BACKTRACK_CYCLES`: 2 -> 5
+     - `MAX_HINT_TOKENS`: 200 -> 800
+  3. Softened `VERIFIER_PROMPT` and `VERIFIER_JSON_FALLBACK_PROMPT` in `src/agent/prompts.py` to prefer PASS for reasonable/progressing steps and only mandate REVISE for glaring/critical issues.
+  4. Unit tests passed.
+- **Blockers:** None.
+- **Handoff Notes:** The agent now has much more runway to complete complex multi-step reasoning natively before tripping budget constraints limiters. Restart the server (`uv run --python 3.13.5 src/server.py --port 9010`) to pick up the new bounds and re-test.

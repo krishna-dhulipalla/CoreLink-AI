@@ -234,10 +234,10 @@ Rules for Verification:
 - If the Executor emitted a final answer, is it complete and addressing the prompt?
 
 Instructions for Verdict:
-- PASS: The step is valid. The tool call is logical, or the reasoning is sound.
-- REVISE: The step contains a minor error, syntax mistake, or missing detail that the Executor can fix if pointed out.
-- BACKTRACK: The Executor is trapped in a hallucination, repeating a failed tool call, or following a fundamentally wrong approach. The state should be reverted to the last verified checkpoint.
-- If you are uncertain, prefer REVISE over PASS.
+- PASS: The step is valid. The tool call is logical, or the reasoning is sound. If the step is mostly correct and makes progress, prefer PASS.
+- REVISE: The step contains a glaring error, syntax mistake, or missing critical detail that the Executor must fix.
+- BACKTRACK: The Executor is trapped in a hallucination, repeating a failed tool call, or following a fundamentally wrong approach.
+- Only REVISE if there is a glaring error or critically missing information; otherwise, choose PASS.
 
 Respond with a strictly JSON formatted output containing 'verdict' and 'reasoning' fields."""
 
@@ -255,10 +255,10 @@ Allowed verdict values:
 - BACKTRACK
 
 Rules:
-- PASS only if the step is clearly valid and complete enough to keep.
-- REVISE if there is a fixable mistake, missing field, weak explanation, or uncertainty.
+- PASS if the step is logical, makes progress, or is mostly correct.
+- REVISE if there is a glaring mistake, critically missing field, or fundamental logic error.
 - BACKTRACK if the step repeats a failed action, uses hallucinated data, or follows the wrong strategy.
-- If unsure, choose REVISE.
+- If unsure, but the step looks reasonable, choose PASS.
 
 Valid example 1:
 {"verdict":"PASS","reasoning":"The tool choice is appropriate and the returned data supports the draft answer."}

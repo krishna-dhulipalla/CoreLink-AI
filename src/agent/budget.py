@@ -18,10 +18,10 @@ logger = logging.getLogger(__name__)
 # Configurable caps (via environment)
 # ---------------------------------------------------------------------------
 
-MAX_TOOL_CALLS = int(os.getenv("MAX_TOOL_CALLS", "15"))
-MAX_REVISE_CYCLES = int(os.getenv("MAX_REVISE_CYCLES", "3"))
-MAX_BACKTRACK_CYCLES = int(os.getenv("MAX_BACKTRACK_CYCLES", "2"))
-MAX_HINT_TOKENS = int(os.getenv("MAX_HINT_TOKENS", "200"))
+MAX_TOOL_CALLS = int(os.getenv("MAX_TOOL_CALLS", "30"))
+MAX_REVISE_CYCLES = int(os.getenv("MAX_REVISE_CYCLES", "8"))
+MAX_BACKTRACK_CYCLES = int(os.getenv("MAX_BACKTRACK_CYCLES", "5"))
+MAX_HINT_TOKENS = int(os.getenv("MAX_HINT_TOKENS", "800"))
 
 
 class BudgetTracker:
