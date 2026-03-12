@@ -215,6 +215,30 @@ class TestRoutingPolicy:
         state = {}
         assert route_task(state) == "reasoner"
 
+    @patch("agent.nodes.coordinator.ChatOpenAI")
+    def test_coordinator_uses_heuristic_task_type_on_parse_failure(self, mock_chat_openai):
+        """If structured routing fails, the coordinator should still infer a useful task_type."""
+        mock_llm = MagicMock()
+        mock_llm.invoke.side_effect = ValueError("No JSON object found in model response.")
+        mock_chat_openai.return_value.with_structured_output.return_value = mock_llm
+
+        state = {
+            "messages": [
+                HumanMessage(
+                    content=(
+                        "target company we're acquiring has compliance gaps in EU and US, "
+                        "board wants stock consideration for tax reasons, and we need a fast structure"
+                    )
+                )
+            ],
+            "cost_tracker": CostTracker(),
+        }
+
+        result = coordinator(state)
+
+        assert result["task_type"] == "legal"
+        assert result["selected_layers"] == ["react_reason", "verifier_check"]
+
     def test_tool_edge_skips_verifier_when_not_selected(self):
         """If the plan omits verifier_check, reasoner exits to format_normalizer."""
         state = {

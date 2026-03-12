@@ -139,7 +139,12 @@ def _infer_failure_family(text: str) -> str:
         return "repetition"
     if any(token in normalized for token in ("lack of data", "missing data", "unable to find", "not enough data")):
         return "missing_data"
-    if any(token in normalized for token in ("tool", "call", "argument", "calculator", "mcp")):
+    if any(
+        token in normalized for token in (
+            "tool call", "tool_use", "tool use", "bad argument", "invalid argument",
+            "calculator", "mcp", "same tool", "wrong tool",
+        )
+    ):
         return "tool_use"
     return "generic"
 

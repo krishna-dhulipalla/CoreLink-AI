@@ -410,7 +410,12 @@ class MemoryStore:
             )
         return hints
 
-    def retrieve_verifier_hints(self, task_text: str, top_k: int = TOP_K) -> list[str]:
+    def retrieve_verifier_hints(
+        self,
+        task_text: str,
+        top_k: int = TOP_K,
+        failure_family: str | None = None,
+    ) -> list[str]:
         """Return compact repair-strategy hints for the Verifier.
 
         Returns lines like:
@@ -418,12 +423,20 @@ class MemoryStore:
         """
         sig = _task_signature(task_text)
         conn = self._get_conn()
-        rows = conn.execute(
-            "SELECT failure_pattern, verdict, repair_action, repair_worked "
-            "FROM verifier_memory WHERE task_sig = ? "
-            "ORDER BY timestamp DESC LIMIT ?",
-            (sig, top_k),
-        ).fetchall()
+        if failure_family:
+            rows = conn.execute(
+                "SELECT failure_pattern, verdict, repair_action, repair_worked "
+                "FROM verifier_memory WHERE task_sig = ? AND failure_family = ? "
+                "ORDER BY timestamp DESC LIMIT ?",
+                (sig, failure_family, top_k),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT failure_pattern, verdict, repair_action, repair_worked "
+                "FROM verifier_memory WHERE task_sig = ? "
+                "ORDER BY timestamp DESC LIMIT ?",
+                (sig, top_k),
+            ).fetchall()
 
         hints = []
         for r in rows:

@@ -536,3 +536,28 @@ This file operates in a "Chat" structure. Whenever an agent finishes a major uni
   - `src/agent/nodes/reasoner.py` (tool families, domain addenda, filtered prompt)
 - **Blockers:** None.
 - **Handoff Notes:** Restart server and re-run FAB++ benchmark. Expected improvements: corrected sign math for options, fewer wasted tool calls via allowlisting, stronger final answers via domain prompts and verifier completeness gate.
+
+### Chat 46: FAB++ Trace Post-Mortem & Runtime Recovery Fixes
+
+- **Role:** Debugger / Coder
+- **Actions Taken:**
+  1. Reviewed the latest FAB++ 3-task benchmark traces (`langsmith_runs/task2.json`, `langsmith_runs/task3.json`, `langsmith_runs/socre_results.json`) and separated two distinct failure classes:
+     - coordinator structured-output collapse (`No JSON object found in model response`)
+     - leaked/truncated Qwen-style `<think>` output polluting final benchmark answers
+  2. Patched `src/agent/model_config.py` so `_extract_json_payload()` now strips `<think>` tags and extracts the first balanced JSON object instead of failing on weak-model wrappers or extra prose around the schema payload.
+  3. Patched `src/agent/nodes/coordinator.py` to stop falling back blindly to generic heavy-research mode when structured routing fails. Added a heuristic fallback classifier that still infers a useful `task_type` (`quantitative`, `legal`, `options`, `document`, `retrieval`, `general`) plus formatting need and step estimate from the user prompt.
+  4. Patched `src/agent/runner.py` answer extraction to tolerate **unclosed** `<think>` blocks. Final outputs now strip stray `<think>` markup even when the model is truncated at token limit and never emits `</think>`.
+  5. Diagnosed task 2's repeated revise loop as a combination of generic coordinator fallback, stale verifier repair memory, and non-improving drafts. Patched `src/agent/memory/store.py` and `src/agent/nodes/verifier.py` so verifier repair hints are now retrieved only for relevant `failure_family` classes (`schema`, `format`, `hallucination`, `repetition`, `tool_use`) instead of polluting generic "answer incomplete" revisions.
+  6. Tightened `src/agent/memory/schema.py` failure-family inference so broad text like "The answer is incomplete" no longer misclassifies as `tool_use` just because of loose token matching.
+  7. Added stagnation detection in `src/agent/nodes/verifier.py`: after repeated near-identical revise attempts, the verifier now escalates the loop to `BACKTRACK` instead of burning all revise cycles on the same draft. This specifically targets task 2-style legal answer loops.
+  8. Added regression coverage:
+     - `tests/test_model_config.py` for JSON extraction through `<think>` noise
+     - `tests/test_coordinator.py` for heuristic `task_type` fallback on coordinator parse failure
+     - `tests/test_runner_utils.py` for unclosed `<think>` cleanup and orphan tool-call fallback
+     - `tests/test_verifier.py` for skipping irrelevant repair hints and escalating stagnant revise loops
+  9. Verified the patched slice with:
+     - `pytest tests/test_model_config.py tests/test_coordinator.py tests/test_verifier.py tests/test_runner_utils.py tests/test_sprint4.py tests/test_memory.py -q` -> **105 passed**
+     - `python -m py_compile src/agent/model_config.py src/agent/nodes/coordinator.py src/agent/nodes/verifier.py src/agent/memory/store.py src/agent/memory/schema.py src/agent/runner.py tests/test_runner_utils.py` -> **passed**
+- **Blockers:** Full FAB++ rerun was not executed inside this patch pass, so benchmark score impact is still pending live verification.
+- **Sync Notes:** Re-checked after the latest runtime recovery fixes. Chat 46 remains the active reference entry before the next FAB++ rerun and score comparison.
+- **Handoff Notes:** The latest benchmark failures were not just "model weakness" â€” they were also runtime robustness issues. Coordinator specialization should now survive schema failure, raw `<think>` should stop leaking into benchmark outputs, verifier memory is less likely to reinforce bad repair patterns, and repeated revise loops should now backtrack earlier instead of wasting the full budget.

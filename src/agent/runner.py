@@ -38,6 +38,25 @@ _TOOL_CALL_JSON_RE = re.compile(
 )
 
 
+def _extract_think_content(text: str) -> str:
+    """Return the content of a Qwen-style think block, even if it is unclosed."""
+    open_tag = text.find("<think>")
+    if open_tag == -1:
+        return ""
+    start = open_tag + len("<think>")
+    close_tag = text.find("</think>", start)
+    if close_tag == -1:
+        return text[start:].strip()
+    return text[start:close_tag].strip()
+
+
+def _strip_think_markup(text: str) -> str:
+    """Remove think tags while tolerating truncated / unclosed markup."""
+    clean = _THINK_BLOCK_RE.sub("", text)
+    clean = clean.replace("<think>", "").replace("</think>", "")
+    return clean.strip()
+
+
 def _extract_final_answer(text: str) -> str:
     """Extract the actual answer from model output.
 
@@ -49,11 +68,10 @@ def _extract_final_answer(text: str) -> str:
     In case (2), we fall back to the reasoning inside the <think> block.
     """
     # Extract think block content before stripping (used as fallback)
-    think_match = re.search(r"<think>(.*?)</think>", text, re.DOTALL)
-    think_content = think_match.group(1).strip() if think_match else ""
+    think_content = _extract_think_content(text)
 
     # Strip <think>...</think> blocks
-    clean = _THINK_BLOCK_RE.sub("", text).strip()
+    clean = _strip_think_markup(text)
 
     # If what remains is an orphan tool-call JSON, use think content instead
     if clean and _TOOL_CALL_JSON_RE.match(clean):
@@ -62,7 +80,7 @@ def _extract_final_answer(text: str) -> str:
 
     # If stripping left nothing, return original text
     if not clean:
-        return think_content if think_content else text
+        return think_content if think_content else text.replace("<think>", "").replace("</think>", "").strip()
 
     return clean
 

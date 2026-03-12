@@ -9,6 +9,7 @@ to the last verified checkpoint and a warning is injected for the Executor.
 import logging
 import time
 import json
+from difflib import SequenceMatcher
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.messages import messages_from_dict, messages_to_dict
@@ -229,6 +230,30 @@ def _store_verifier_memory_on_repair_success(
     memory_store.store_verifier(rec)
 
 
+def _recent_nonwarning_ai_texts(messages: list[BaseMessage], limit: int = 2) -> list[str]:
+    texts: list[str] = []
+    for msg in reversed(messages):
+        if isinstance(msg, AIMessage) and msg.content and not msg.tool_calls and not _is_internal_warning(msg):
+            texts.append(str(msg.content))
+            if len(texts) >= limit:
+                break
+    return list(reversed(texts))
+
+
+def _is_stagnant_revise_loop(messages: list[BaseMessage]) -> bool:
+    """Detect repeated text-only answer attempts with little material change."""
+    texts = _recent_nonwarning_ai_texts(messages, limit=2)
+    if len(texts) < 2:
+        return False
+    older = _normalize_memory_text(texts[0], max_len=500)
+    newer = _normalize_memory_text(texts[1], max_len=500)
+    if not older or not newer:
+        return False
+    if older == newer:
+        return True
+    return SequenceMatcher(a=older, b=newer).ratio() >= 0.92
+
+
 def _verifier_prompt_for(task_type: str, is_final_answer: bool) -> str:
     """Build verifier prompt, preserving strictness in both native and fallback modes."""
     base_prompt = VERIFIER_PROMPT
@@ -323,9 +348,17 @@ def verifier(state: AgentState) -> dict:
     repair_hint_block = ""
     memory_store = state.get("memory_store")
     budget = state.get("budget_tracker")
-    if memory_store and verdict.verdict in ("REVISE", "BACKTRACK"):
+    current_failure_family = _infer_failure_family(verdict.reasoning)
+    if (
+        memory_store
+        and verdict.verdict in ("REVISE", "BACKTRACK")
+        and current_failure_family in {"schema", "format", "hallucination", "repetition", "tool_use"}
+    ):
         if task_text:
-            repair_hints = memory_store.retrieve_verifier_hints(task_text)
+            repair_hints = memory_store.retrieve_verifier_hints(
+                task_text,
+                failure_family=current_failure_family,
+            )
             if repair_hints:
                 from langchain_core.messages import SystemMessage as _SM
                 hint_text = "\n".join(f"- {h}" for h in repair_hints)
@@ -374,6 +407,18 @@ def verifier(state: AgentState) -> dict:
         # Sprint 4: Cycle cap
         if budget:
             budget.record_revise()
+            if budget.revise_cycles >= 3 and _is_stagnant_revise_loop(state["messages"]):
+                logger.warning(
+                    "[Verifier] Escalating stagnant revise loop to BACKTRACK after %s revise cycles.",
+                    budget.revise_cycles,
+                )
+                verdict = VerdictDecision(
+                    verdict="BACKTRACK",
+                    reasoning=(
+                        "Repeated revise cycles did not materially improve the answer. "
+                        "Revert and use a different strategy. Do not restate the same draft."
+                    ),
+                )
             if budget.revise_exhausted():
                 budget.log_budget_exit("revise", f"Revise cycle cap reached ({budget.revise_cycles}). Accepting current answer.")
                 # Extract best answer so far and append as clean AIMessage
@@ -387,17 +432,18 @@ def verifier(state: AgentState) -> dict:
                     "checkpoint_stack": stack,
                     "pending_verifier_feedback": None,
                 }
-        warning_msg = SystemMessage(
-            content=f"VERIFIER REVISION REQUIRED:\n{verdict.reasoning}{repair_hint_block}",
-            additional_kwargs={"is_warning": True},
-        )
-        return {
-            "messages": [warning_msg],
-            "pending_verifier_feedback": {
-                "verdict": verdict.verdict,
-                "reasoning": verdict.reasoning,
-            },
-        }
+        if verdict.verdict == "REVISE":
+            warning_msg = SystemMessage(
+                content=f"VERIFIER REVISION REQUIRED:\n{verdict.reasoning}{repair_hint_block}",
+                additional_kwargs={"is_warning": True},
+            )
+            return {
+                "messages": [warning_msg],
+                "pending_verifier_feedback": {
+                    "verdict": verdict.verdict,
+                    "reasoning": verdict.reasoning,
+                },
+            }
 
     # Fix 2b: Real BACKTRACK — revert to last HumanMessage if no checkpoint
     if not stack:

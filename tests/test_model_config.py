@@ -54,3 +54,10 @@ class TestModelConfig:
 
         warnings = model_config.startup_compatibility_warnings()
         assert any("Coordinator is using a localhost backend" in warning for warning in warnings)
+
+    def test_extract_json_payload_handles_unclosed_think_prefix(self, monkeypatch):
+        model_config = _reload_model_config()
+        payload = model_config._extract_json_payload(
+            '<think>\nplanning...\n{"layers":["react_reason"],"task_type":"legal"}'
+        )
+        assert '"task_type":"legal"' in payload

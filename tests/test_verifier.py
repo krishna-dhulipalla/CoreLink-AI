@@ -16,6 +16,7 @@ from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, Tool
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from agent.state import AgentState, ReplaceMessages
+from agent.budget import BudgetTracker
 from agent.nodes.verifier import verifier, verify_routing, BACKTRACK_WARNING
 from agent.memory.store import MemoryStore
 from agent.prompts import VERIFIER_JSON_FALLBACK_PROMPT, VerdictDecision
@@ -106,7 +107,10 @@ class TestVerifierNode:
     def test_verifier_uses_latest_user_turn_for_repair_lookup(self, mock_chat_openai):
         """Repair lookup should use the current turn, not the oldest human message."""
         mock_llm = MagicMock()
-        mock_llm.invoke.return_value = VerdictDecision(verdict="REVISE", reasoning="Fix it")
+        mock_llm.invoke.return_value = VerdictDecision(
+            verdict="REVISE",
+            reasoning="The tool call repeats a failed action and should change strategy.",
+        )
         mock_chat_openai.return_value.with_structured_output.return_value = mock_llm
 
         memory_store = MagicMock()
@@ -126,7 +130,37 @@ class TestVerifierNode:
 
         verifier(state)
 
-        memory_store.retrieve_verifier_hints.assert_called_once_with("current task")
+        memory_store.retrieve_verifier_hints.assert_called_once_with(
+            "current task",
+            failure_family="repetition",
+        )
+
+    @patch("agent.nodes.verifier.ChatOpenAI")
+    def test_verifier_skips_generic_repair_hints_for_content_incompleteness(self, mock_chat_openai):
+        """Generic completeness REVISE signals should not inject stale tool-repair memory."""
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = VerdictDecision(
+            verdict="REVISE",
+            reasoning="The answer is directionally correct but critically incomplete.",
+        )
+        mock_chat_openai.return_value.with_structured_output.return_value = mock_llm
+
+        memory_store = MagicMock()
+        memory_store.retrieve_verifier_hints.return_value = ["irrelevant hint"]
+
+        state = {
+            "selected_layers": ["verifier_check"],
+            "messages": [
+                HumanMessage(content="legal task"),
+                AIMessage(content="first incomplete answer"),
+            ],
+            "checkpoint_stack": [],
+            "memory_store": memory_store,
+        }
+
+        verifier(state)
+
+        memory_store.retrieve_verifier_hints.assert_not_called()
 
     @patch("agent.nodes.verifier.ChatOpenAI")
     def test_verifier_backtrack_with_stack(self, mock_chat_openai):
@@ -231,6 +265,36 @@ class TestVerifierNode:
         hints = store.retrieve_verifier_hints("current task")
         assert len(hints) == 1
         assert "Missing required field" in hints[0]
+
+    @patch("agent.nodes.verifier.ChatOpenAI")
+    def test_verifier_escalates_stagnant_revise_loop_to_backtrack(self, mock_chat_openai):
+        """Repeated near-identical revise attempts should stop looping and backtrack."""
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = VerdictDecision(
+            verdict="REVISE",
+            reasoning="The answer remains incomplete.",
+        )
+        mock_chat_openai.return_value.with_structured_output.return_value = mock_llm
+
+        budget = BudgetTracker()
+        budget.revise_cycles = 2
+
+        state = {
+            "selected_layers": ["verifier_check"],
+            "messages": [
+                HumanMessage(content="legal task"),
+                AIMessage(content="Draft structure answer"),
+                SystemMessage(content="VERIFIER REVISION REQUIRED", additional_kwargs={"is_warning": True}),
+                AIMessage(content="Draft structure answer"),
+            ],
+            "checkpoint_stack": [],
+            "budget_tracker": budget,
+        }
+
+        result = verifier(state)
+
+        assert isinstance(result["messages"], ReplaceMessages)
+        assert "Repeated revise cycles" in result["messages"][-1].content
 
     def test_verify_routing_warning(self):
         """If the last message is a warning, route back to reasoner."""

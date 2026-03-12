@@ -44,6 +44,82 @@ def _is_reflection_message(msg) -> bool:
     )
 
 
+def _latest_human_text(messages) -> str:
+    for msg in reversed(messages):
+        if isinstance(msg, HumanMessage) and msg.content:
+            return str(msg.content)
+    return ""
+
+
+def _looks_like_structured_output_request(text: str) -> bool:
+    normalized = text.lower()
+    return any(
+        token in normalized for token in (
+            "output format",
+            "json format",
+            "xml format",
+            '{"answer"',
+            "respond with json",
+            "return json",
+        )
+    )
+
+
+def _heuristic_task_type(task_text: str) -> str:
+    normalized = (task_text or "").lower()
+    if not normalized:
+        return "general"
+    if any(token in normalized for token in ("implied volatility", "greeks", "black-scholes", "option", "straddle", "strangle", "iron condor", "credit spread", "vega", "delta", "theta", "gamma")):
+        return "options"
+    if any(token in normalized for token in ("acquisition", "merger", "compliance", "liability", "indemnification", "contract", "regulatory", "tax reasons", "deal structure", "eu", "us")):
+        return "legal"
+    if any(token in normalized for token in ("reference file", "pdf", "page", "table", "document", "spreadsheet", "csv", "row", "column", "worksheet")):
+        return "document"
+    if any(token in normalized for token in ("latest", "current news", "search the web", "search internet", "source", "citation", "look up")):
+        return "retrieval"
+    if any(token in normalized for token in ("calculate", "formula", "ratio", "annual report", "roe", "roa", "numerical", "financial leverage effect", "inventory turnover", "equity multiplier")):
+        return "quantitative"
+    return "general"
+
+
+def _heuristic_route_decision(task_text: str) -> dict:
+    """Fallback route when structured coordinator output is not recoverable."""
+    normalized = (task_text or "").strip().lower()
+    if normalized in {"hi", "hello", "hey", "thanks", "thank you"}:
+        return {
+            "layers": ["direct_answer"],
+            "needs_formatting": False,
+            "confidence": 0.85,
+            "estimated_steps": 1,
+            "early_exit_allowed": True,
+            "task_type": "general",
+        }
+
+    task_type = _heuristic_task_type(task_text)
+    needs_formatting = _looks_like_structured_output_request(task_text)
+    layers = ["react_reason", "verifier_check"]
+    if needs_formatting:
+        layers.append("format_normalize")
+
+    estimated_steps = {
+        "quantitative": 3,
+        "legal": 4,
+        "options": 4,
+        "document": 4,
+        "retrieval": 4,
+        "general": 3,
+    }.get(task_type, 3)
+
+    return {
+        "layers": layers,
+        "needs_formatting": needs_formatting,
+        "confidence": 0.35,
+        "estimated_steps": estimated_steps,
+        "early_exit_allowed": task_type in {"general", "quantitative"},
+        "task_type": task_type,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Coordinator
 # ---------------------------------------------------------------------------
@@ -113,13 +189,20 @@ def coordinator(state: AgentState) -> dict:
         success = True
     except Exception as e:
         latency = (time.monotonic() - t0) * 1000
-        logger.warning(f"Coordinator routing failed: {e}. Using default heavy_research plan.")
-        layers = DEFAULT_PLANS["heavy_research"]
-        needs_fmt = False
-        confidence = 0.0
-        estimated_steps = 3
-        early_exit_allowed = False
-        task_type = "general"
+        task_text = _latest_human_text(state["messages"])
+        heuristic = _heuristic_route_decision(task_text)
+        logger.warning(
+            "Coordinator routing failed: %s. Using heuristic fallback plan task_type=%s layers=%s.",
+            e,
+            heuristic["task_type"],
+            heuristic["layers"],
+        )
+        layers = heuristic["layers"]
+        needs_fmt = heuristic["needs_formatting"]
+        confidence = heuristic["confidence"]
+        estimated_steps = heuristic["estimated_steps"]
+        early_exit_allowed = heuristic["early_exit_allowed"]
+        task_type = heuristic["task_type"]
         success = False
 
     # Validate layers against operator registry

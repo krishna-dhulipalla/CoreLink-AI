@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import json
+import re
 from urllib.parse import urlparse
 from typing import Any
 
@@ -133,18 +134,48 @@ def get_client_kwargs(role: str) -> dict[str, Any]:
 
 
 def _extract_json_payload(text: str) -> str:
-    """Extract the outermost JSON object from a model response."""
+    """Extract the first balanced JSON object from a model response.
+
+    Handles weak-model artifacts such as markdown fences and stray `<think>`
+    tags before the JSON body.
+    """
     content = text.strip()
     if content.startswith("```"):
         lines = content.splitlines()
         if len(lines) >= 3:
             content = "\n".join(lines[1:-1]).strip()
 
+    # Qwen-style reasoning markup can wrap or prefix the JSON body.
+    content = re.sub(r"</?think>", "", content, flags=re.IGNORECASE).strip()
+
     start = content.find("{")
-    end = content.rfind("}")
-    if start == -1 or end == -1 or end <= start:
+    if start == -1:
         raise ValueError("No JSON object found in model response.")
-    return content[start:end + 1]
+
+    depth = 0
+    in_string = False
+    escape = False
+    for idx in range(start, len(content)):
+        ch = content[idx]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return content[start:idx + 1]
+
+    raise ValueError("No JSON object found in model response.")
 
 
 def _structured_output_mode(role: str) -> str:
