@@ -495,3 +495,14 @@ This file operates in a "Chat" structure. Whenever an agent finishes a major uni
   5. Both files compile cleanly. Tests pass.
 - **Blockers:** None.
 - **Handoff Notes:** Restart server and re-run FAB++ benchmark. Expected score jump from ~43 to ~65-75 from this extraction fix alone.
+
+### Chat 44: OSS Tool-Call Patcher Fix for `<think>` Blocks
+
+- **Role:** Debugger / Coder
+- **Actions Taken:**
+  1. Traced the full graph flow node-by-node to find why prbench/vol_001 output reasoning instead of answers.
+  2. Root cause: `patch_oss_tool_calls` in `src/agent/nodes/reasoner.py` checks `content.startswith('{')` but Qwen3 output starts with `<think>`, so tool-call JSON is never detected.
+  3. Fixed by stripping `<think>` blocks in `patch_oss_tool_calls` before JSON detection (2-line addition).
+  4. Now tool calls (e.g., `internet_search`, `analyze_strategy`) will actually execute instead of being silently dropped.
+- **Blockers:** None.
+- **Handoff Notes:** Restart server and re-run benchmark. Tools should now execute for all tasks, leading to proper answers with real data.

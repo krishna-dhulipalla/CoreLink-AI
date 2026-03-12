@@ -112,6 +112,9 @@ def patch_oss_tool_calls(response: AIMessage, tools: list) -> AIMessage:
         return response
 
     content = str(response.content).strip()
+    # Strip Qwen3 <think> reasoning blocks before JSON detection
+    import re
+    content = re.sub(r'<think>.*?</think>\s*', '', content, flags=re.DOTALL).strip()
     # Strip markdown fences if present
     if content.startswith("```"):
         lines = content.splitlines()
