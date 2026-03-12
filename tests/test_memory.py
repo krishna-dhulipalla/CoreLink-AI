@@ -22,7 +22,9 @@ from agent.memory.schema import (
     _infer_failure_family,
     _infer_task_family,
     _infer_tool_family,
+    _normalize_task_type,
     _task_signature,
+    _task_type_to_family,
 )
 from agent.memory.store import MemoryStore
 
@@ -96,6 +98,14 @@ class TestSchemas:
         assert _infer_task_family("Review acquisition compliance liabilities") == "legal"
         assert _infer_tool_family("black_scholes_price") == "finance"
         assert _infer_failure_family("Missing required JSON field") == "schema"
+
+    def test_runtime_task_type_maps_explicitly_to_memory_family(self):
+        assert _task_type_to_family("options", "META IV strategy") == "finance"
+        assert _task_type_to_family("legal", "acquisition compliance") == "legal"
+        assert _task_type_to_family("document", "extract from pdf table") == "document"
+        assert _task_type_to_family("retrieval", "search recent filing") == "retrieval"
+        assert _task_type_to_family("quantitative", "calculate bond yield") == "finance"
+        assert _normalize_task_type("weird_label") == "general"
 
 
 # ====================================================================

@@ -25,6 +25,7 @@ from agent.prompts import (
     SYSTEM_PROMPT,
 )
 from agent.nodes.coordinator import coordinator, route_task, direct_responder, format_normalizer
+from agent.nodes.reasoner import patch_oss_tool_calls
 from agent.nodes.tool_executor import should_use_tools
 
 
@@ -231,6 +232,20 @@ class TestRoutingPolicy:
             "messages": [AIMessage(content="Still reasoning")],
         }
         assert should_use_tools(state) == "verifier"
+
+    def test_oss_patcher_respects_filtered_tool_surface(self):
+        """Hidden tools should not be revived by the OSS patcher."""
+
+        class _Tool:
+            def __init__(self, name):
+                self.name = name
+
+        response = AIMessage(
+            content='{"name": "internet_search", "arguments": {"query": "latest rule"}}'
+        )
+        patched = patch_oss_tool_calls(response, [_Tool("calculator"), _Tool("fetch_reference_file")])
+        assert not patched.tool_calls
+        assert "internet_search" in patched.content
 
 
 # ── Format Normalizer Conditional Tests ──────────────────────────────────────

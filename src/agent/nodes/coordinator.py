@@ -15,6 +15,7 @@ from langchain_openai import ChatOpenAI
 
 from agent.state import AgentState
 from agent.cost import CostTracker
+from agent.memory.schema import _normalize_task_type
 from agent.model_config import (
     _extract_json_payload,
     _structured_output_mode,
@@ -123,6 +124,7 @@ def coordinator(state: AgentState) -> dict:
 
     # Validate layers against operator registry
     layers = validate_layers(layers)
+    task_type = _normalize_task_type(task_type)
 
     # Record cost
     if tracker:
@@ -132,6 +134,7 @@ def coordinator(state: AgentState) -> dict:
             "confidence": confidence,
             "estimated_steps": estimated_steps,
             "early_exit_allowed": early_exit_allowed,
+            "task_type": task_type,
         }
         tracker.record(
             operator="coordinator",

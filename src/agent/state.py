@@ -60,7 +60,7 @@ class AgentState(TypedDict):
     checkpoint_stack: list[dict]
     pending_verifier_feedback: dict[str, str] | None
     # Sprint 5: Task-family specialization
-    task_type: str  # "quantitative" | "legal" | "options" | "general"
+    task_type: str  # "quantitative" | "legal" | "options" | "document" | "retrieval" | "general"
     # Sprint 3: Execution Memory
     cost_tracker: Any  # CostTracker instance (not persisted)
     memory_store: Any  # MemoryStore instance (not persisted)

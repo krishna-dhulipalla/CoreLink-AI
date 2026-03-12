@@ -11,7 +11,8 @@ from langgraph.prebuilt import ToolNode
 
 from agent.state import AgentState
 from agent.cost import CostTracker
-from agent.nodes.reasoner import _increment_step
+from agent.nodes.reasoner import TOOL_FAMILIES, _increment_step
+from agent.memory.schema import _normalize_task_type
 from agent.guardrails import sanitize_tool_output, tag_external_content
 from context_manager import truncate_tool_output
 
@@ -36,6 +37,13 @@ def _make_tool_signature(state: AgentState) -> str:
                 parts.append(f"{tc['name']}:{args_str}")
             return "|".join(parts)
     return ""
+
+
+def _last_ai_tool_calls(state: AgentState) -> list[dict]:
+    for msg in reversed(state["messages"]):
+        if isinstance(msg, AIMessage) and msg.tool_calls:
+            return list(msg.tool_calls)
+    return []
 
 
 def should_use_tools(state: AgentState) -> str:
@@ -78,6 +86,35 @@ def make_tool_executor(tool_node: ToolNode):
     async def tool_executor(state: AgentState) -> dict:
         step = _increment_step()
         tracker: CostTracker = state.get("cost_tracker")
+        task_type = _normalize_task_type(state.get("task_type", "general"))
+        allowed_tools = TOOL_FAMILIES.get(task_type)
+        attempted_calls = _last_ai_tool_calls(state)
+
+        if allowed_tools is not None:
+            blocked = [tc for tc in attempted_calls if tc.get("name") not in allowed_tools]
+            if blocked:
+                logger.warning(
+                    "[Step %s] Blocked disallowed tool(s) for task_type=%s: %s",
+                    step,
+                    task_type,
+                    ", ".join(tc.get("name", "unknown") for tc in blocked),
+                )
+                blocked_messages = [
+                    ToolMessage(
+                        content=(
+                            f"Error: Tool '{tc.get('name', 'unknown')}' is not allowed for "
+                            f"task_type '{task_type}'. Use a permitted tool or answer directly."
+                        ),
+                        tool_call_id=tc.get("id", ""),
+                        name=tc.get("name", "blocked_tool"),
+                    )
+                    for tc in blocked
+                ]
+                return {
+                    "messages": blocked_messages,
+                    "tool_fail_count": state.get("tool_fail_count", 0) + 1,
+                    "last_tool_signature": _make_tool_signature(state),
+                }
 
         result = await tool_node.ainvoke(state)
         messages = result.get("messages", [])

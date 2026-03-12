@@ -25,10 +25,11 @@ from agent.memory.schema import (
     ExecutorMemory,
     VerifierMemory,
     _infer_failure_family,
-    _infer_task_family,
     _infer_tool_family,
+    _normalize_task_type,
     _normalize_memory_text,
     _task_signature,
+    _task_type_to_family,
 )
 from agent.prompts import VERIFIER_FINAL_ANSWER_ADDENDUM, VERIFIER_JSON_FALLBACK_PROMPT, VERIFIER_PROMPT, VerdictDecision
 from agent.state import AgentState, ReplaceMessages
@@ -42,6 +43,29 @@ BACKTRACK_WARNING = (
     "or hallucinated. The state has been reverted to the last verified checkpoint. "
     "Do NOT repeat the same mistake. Try a different tool or strategy."
 )
+
+_FINAL_ANSWER_CHECKS = {
+    "quantitative": (
+        "- For quantitative tasks: verify the correct values were extracted, the formula was applied correctly, "
+        "and the answer matches the requested format."
+    ),
+    "legal": (
+        "- For legal tasks: verify the answer covers structure options, liability allocation, tax implications, "
+        "regulatory/compliance issues, diligence, and execution next steps when relevant."
+    ),
+    "options": (
+        "- For options tasks: verify the answer covers recommendation, strategy rationale, Greeks, breakevens or "
+        "risk/reward, and practical risk management."
+    ),
+    "document": (
+        "- For document tasks: verify the answer is grounded in file content and includes the key extracted figures "
+        "or findings needed to answer the question."
+    ),
+    "retrieval": (
+        "- For retrieval tasks: verify the answer uses retrieved evidence rather than generic filler and reflects "
+        "the requested external facts or sources."
+    ),
+}
 
 def _is_internal_warning(msg: BaseMessage) -> bool:
     return bool(getattr(msg, "additional_kwargs", {}).get("is_warning", False))
@@ -131,6 +155,7 @@ def _store_executor_memory(
         outcome_quality = "poor"
         success = False
 
+    task_type = _normalize_task_type(state.get("task_type", "general"))
     rec = ExecutorMemory(
         task_signature=_task_signature(task_text),
         partial_context_summary=task_text[:120],
@@ -140,7 +165,7 @@ def _store_executor_memory(
             f"arguments: {arguments_pattern}\n"
             f"quality: {outcome_quality}"
         ),
-        task_family=_infer_task_family(task_text),
+        task_family=_task_type_to_family(task_type, task_text),
         tool_used=tool_used,
         tool_family=_infer_tool_family(tool_used),
         arguments_pattern=arguments_pattern,
@@ -148,6 +173,7 @@ def _store_executor_memory(
         success=success,
         tags=[tool_used, outcome_quality],
         metadata={
+            "task_type": task_type,
             "verdict": verdict.verdict,
             "tool_message_name": last_msg.name,
             "tool_output_preview": str(last_msg.content)[:120],
@@ -178,6 +204,7 @@ def _store_verifier_memory_on_repair_success(
     if not memory_store or not task_text or not pending_feedback:
         return
 
+    task_type = _normalize_task_type(state.get("task_type", "general"))
     rec = VerifierMemory(
         task_signature=_task_signature(task_text),
         failure_pattern=str(pending_feedback.get("reasoning", ""))[:240],
@@ -187,18 +214,40 @@ def _store_verifier_memory_on_repair_success(
             f"repair: {_repair_action_summary(state['messages'])}\n"
             f"verdict: {pending_feedback.get('verdict', 'REVISE')}"
         ),
-        task_family=_infer_task_family(task_text),
+        task_family=_task_type_to_family(task_type, task_text),
         failure_family=_infer_failure_family(str(pending_feedback.get("reasoning", ""))),
         verdict=pending_feedback.get("verdict", "REVISE"),
         repair_action=_repair_action_summary(state["messages"]),
         repair_worked=True,
         tags=[pending_feedback.get("verdict", "REVISE")],
         metadata={
+            "task_type": task_type,
             "pending_reasoning_preview": str(pending_feedback.get("reasoning", ""))[:120],
         },
     )
     truncate_memory_fields(rec)
     memory_store.store_verifier(rec)
+
+
+def _verifier_prompt_for(task_type: str, is_final_answer: bool) -> str:
+    """Build verifier prompt, preserving strictness in both native and fallback modes."""
+    base_prompt = VERIFIER_PROMPT
+    if not is_final_answer:
+        return base_prompt
+    task_specific = _FINAL_ANSWER_CHECKS.get(task_type, "")
+    if task_specific:
+        return base_prompt + VERIFIER_FINAL_ANSWER_ADDENDUM + "\n" + task_specific
+    return base_prompt + VERIFIER_FINAL_ANSWER_ADDENDUM
+
+
+def _verifier_fallback_prompt_for(task_type: str, is_final_answer: bool) -> str:
+    base_prompt = VERIFIER_JSON_FALLBACK_PROMPT
+    if not is_final_answer:
+        return base_prompt
+    task_specific = _FINAL_ANSWER_CHECKS.get(task_type, "")
+    if task_specific:
+        return base_prompt + VERIFIER_FINAL_ANSWER_ADDENDUM + "\n" + task_specific
+    return base_prompt + VERIFIER_FINAL_ANSWER_ADDENDUM
 
 
 def verifier(state: AgentState) -> dict:
@@ -216,6 +265,7 @@ def verifier(state: AgentState) -> dict:
     )
 
     history = [m for m in state["messages"] if not _is_internal_warning(m)]
+    task_type = _normalize_task_type(state.get("task_type", "general"))
 
     # Sprint 5: Detect final answer vs intermediate step
     # Final answer = last real AI message has no tool_calls
@@ -226,9 +276,7 @@ def verifier(state: AgentState) -> dict:
             break
 
     # Use stricter prompt for final answers only
-    base_prompt = VERIFIER_PROMPT
-    if is_final_answer:
-        base_prompt = VERIFIER_PROMPT + VERIFIER_FINAL_ANSWER_ADDENDUM
+    base_prompt = _verifier_prompt_for(task_type, is_final_answer)
 
     prompt_messages = [SystemMessage(content=base_prompt)] + history
 
@@ -238,7 +286,7 @@ def verifier(state: AgentState) -> dict:
         if _structured_output_mode("verifier") == "native":
             verdict: VerdictDecision = llm.with_structured_output(VerdictDecision).invoke(prompt_messages)
         else:
-            invocation_messages = [SystemMessage(content=VERIFIER_JSON_FALLBACK_PROMPT)] + history
+            invocation_messages = [SystemMessage(content=_verifier_fallback_prompt_for(task_type, is_final_answer))] + history
             raw_response = llm.invoke(invocation_messages)
             verdict = VerdictDecision.model_validate_json(
                 _extract_json_payload(str(raw_response.content or ""))
@@ -292,6 +340,7 @@ def verifier(state: AgentState) -> dict:
                     logger.info(f"[Budget] Skipped verifier hints ({hint_tokens} > {remaining} remaining).")
 
     stack = list(state.get("checkpoint_stack", []))
+    seeded_initial_checkpoint = False
 
     # Fix 2a: Create pre-step checkpoint if stack is empty
     # This ensures the very first tool call has a valid rollback point
@@ -299,6 +348,7 @@ def verifier(state: AgentState) -> dict:
         initial_msgs = [m for m in state["messages"] if isinstance(m, HumanMessage)]
         if initial_msgs:
             stack = [{"messages": messages_to_dict(initial_msgs)}]
+            seeded_initial_checkpoint = True
 
     try:
         _store_executor_memory(state, verdict, task_text)
@@ -311,7 +361,9 @@ def verifier(state: AgentState) -> dict:
         except Exception as mem_err:
             logger.warning("[Memory] Failed to store verifier memory: %s", mem_err)
         serialized_messages = messages_to_dict(state["messages"])
-        if not stack or stack[-1]["messages"] != serialized_messages:
+        if seeded_initial_checkpoint and len(stack) == 1:
+            stack = [{"messages": serialized_messages}]
+        elif not stack or stack[-1]["messages"] != serialized_messages:
             stack.append({"messages": serialized_messages})
         return {
             "checkpoint_stack": stack,

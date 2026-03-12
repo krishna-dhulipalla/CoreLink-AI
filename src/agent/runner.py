@@ -18,9 +18,9 @@ from agent.nodes.reflector import _is_reflection_message
 from agent.memory.store import MemoryStore
 from agent.memory.schema import (
     RouterMemory,
-    _infer_task_family,
     _normalize_memory_text,
     _task_signature,
+    _task_type_to_family,
 )
 from agent.budget import BudgetTracker
 from agent.pruning import prune_for_persistence, truncate_memory_fields
@@ -217,13 +217,14 @@ async def run_agent(
                 f"layers: {' '.join(final_state.get('selected_layers', []))}\n"
                 f"success: {run_success}"
             ),
-            task_family=_infer_task_family(input_text),
+            task_family=_task_type_to_family(final_state.get("task_type", "general"), input_text),
             selected_layers=final_state.get("selected_layers", []),
             success=run_success,
             cost_usd=tracker.total_cost(),
             latency_ms=tracker.wall_clock_ms,
             tags=list(final_state.get("selected_layers", [])),
             metadata={
+                "task_type": final_state.get("task_type", "general"),
                 "policy_confidence": final_state.get("policy_confidence", 0.0),
                 "estimated_steps": final_state.get("estimated_steps", 0),
                 "early_exit_allowed": final_state.get("early_exit_allowed", False),

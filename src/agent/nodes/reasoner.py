@@ -13,6 +13,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from langchain_openai import ChatOpenAI
 
 from agent.cost import CostTracker
+from agent.memory.schema import _normalize_task_type
 from agent.model_config import get_client_kwargs, get_model_name, _tool_call_mode
 from agent.pruning import prune_for_reasoner
 from agent.prompts import SYSTEM_PROMPT
@@ -27,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 TOOL_FAMILIES: dict[str, set[str] | None] = {
     "quantitative": {"calculator", "fetch_reference_file", "list_reference_files"},
-    "legal": {"calculator", "internet_search", "fetch_reference_file", "list_reference_files"},
+    "legal": {"calculator", "fetch_reference_file", "list_reference_files"},
     "options": {
         "calculator", "black_scholes_price", "option_greeks", "mispricing_analysis",
         "analyze_strategy", "get_options_chain", "get_iv_surface", "get_expirations",
@@ -35,6 +36,8 @@ TOOL_FAMILIES: dict[str, set[str] | None] = {
         "execute_options_trade", "create_portfolio", "get_positions", "get_pnl_report",
         "calculate_risk_metrics", "calculate_max_drawdown",
     },
+    "document": {"calculator", "fetch_reference_file", "list_reference_files"},
+    "retrieval": {"calculator", "internet_search", "fetch_reference_file", "list_reference_files"},
     "general": None,  # None = all tools
 }
 
@@ -46,14 +49,22 @@ DOMAIN_ADDENDA: dict[str, str] = {
     "legal": (
         "Answer from domain knowledge first. Cover: structure alternatives, "
         "tax treatment, liability isolation, cross-border regulatory issues, "
-        "diligence requirements, and reps/warranties. Do NOT web-search for "
-        "domain knowledge you already have."
+        "diligence requirements, and reps/warranties. Do NOT use internet_search "
+        "for domain knowledge you already have."
     ),
     "options": (
         "Include full Greeks analysis (Delta, Gamma, Theta, Vega) for every leg. "
         "Show P&L breakdown with breakevens. Compare at least 2 strategy alternatives. "
         "Include risk management: max loss, position sizing, hedging. "
         "Verify that sell positions generate credit, buy positions generate debit."
+    ),
+    "document": (
+        "Ground the answer in the provided files or tables. Extract the exact values "
+        "needed from file content before answering. Prefer file tools over web search."
+    ),
+    "retrieval": (
+        "Use search or file tools only when the prompt lacks the needed facts. "
+        "Summarize the retrieved evidence directly instead of listing tools."
     ),
     "general": "",
 }
@@ -140,6 +151,14 @@ def _build_tool_prompt_block(tools: list, task_type: str = "general") -> str:
         lines.append(f"\n  {name}: {desc}")
         lines.append(f"  Parameters:\n{params_block}")
     return "\n".join(lines)
+
+
+def _filter_tools_for_task_type(tools: list, task_type: str = "general") -> list:
+    """Return the runtime tool set allowed for the given task type."""
+    allowed = TOOL_FAMILIES.get(_normalize_task_type(task_type))
+    if allowed is None:
+        return list(tools)
+    return [t for t in tools if getattr(t, "name", "") in allowed]
 
 
 # ---------------------------------------------------------------------------
@@ -281,10 +300,9 @@ def make_reasoner(tools: list):
         step = _increment_step()
         tracker: CostTracker = state.get("cost_tracker")
         model_name = get_model_name("executor")
-        model = build_model(tools)
-
-        # Sprint 5: Get task type for tool filtering and domain addenda
-        task_type = state.get("task_type", "general")
+        task_type = _normalize_task_type(state.get("task_type", "general"))
+        filtered_tools = _filter_tools_for_task_type(tools, task_type)
+        model = build_model(filtered_tools)
 
         # Sprint 4: Prune state before building LLM prompt
         messages = prune_for_reasoner(state["messages"])
@@ -297,7 +315,7 @@ def make_reasoner(tools: list):
 
         # Prompt-mode: inject filtered tool descriptions into system prompt
         if use_prompt_tools:
-            filtered_block = _build_tool_prompt_block(tools, task_type)
+            filtered_block = _build_tool_prompt_block(filtered_tools, task_type)
             if filtered_block:
                 messages = messages[:1] + [SystemMessage(content=filtered_block)] + messages[1:]
 
@@ -328,7 +346,7 @@ def make_reasoner(tools: list):
         latency = (time.monotonic() - t0) * 1000
 
         # Apply OSS patcher
-        response = patch_oss_tool_calls(response, tools)
+        response = patch_oss_tool_calls(response, filtered_tools)
 
         if isinstance(response, AIMessage) and response.tool_calls:
             tool_names = [tc["name"] for tc in response.tool_calls]

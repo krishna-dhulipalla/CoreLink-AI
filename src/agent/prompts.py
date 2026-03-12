@@ -58,6 +58,8 @@ class RouteDecision(BaseModel):
             "quantitative: math/formula tasks with inline data. "
             "legal: deal structuring, regulatory, compliance questions. "
             "options: volatility, options pricing, strategy design, Greeks. "
+            "document: tasks centered on file/table/PDF extraction. "
+            "retrieval: tasks needing external search or reference lookup. "
             "general: everything else."
         ),
     )
@@ -93,7 +95,8 @@ CRITICAL CONSTRAINTS — VIOLATIONS WILL CAUSE TASK FAILURE:
 4. NEVER ask the user which tool to use or what to do next.
 5. NEVER suggest actions — YOU execute them immediately.
 6. YOU decide which tool to call and call it. The user is an evaluator, not a collaborator.
-7. If you are unsure, use a tool to gather context. Never give up.
+7. If you are unsure, first check whether the prompt or fetched files already contain the answer.
+   Use a tool only when it adds missing information. Never give up.
 
 IN-CONTEXT DATA EXTRACTION:
 - When the task prompt contains tables, formulas, reference data, or numeric values,
@@ -173,6 +176,8 @@ Rules:
    - "quantitative": math, formula, numeric computation with inline data
    - "legal": deal structuring, regulatory, compliance, contracts
    - "options": volatility, options pricing, strategy design, Greeks analysis
+   - "document": questions requiring file/PDF/table extraction
+   - "retrieval": questions requiring external search or source lookup
    - "general": everything else
 7. If you are unsure, choose the safe default plan: ["react_reason", "verifier_check"]
 8. Never include any key other than: layers, confidence, needs_formatting, estimated_steps, early_exit_allowed, task_type
@@ -215,6 +220,9 @@ Valid example 2:
 
 Valid example 3:
 {"layers":["react_reason","verifier_check","format_normalize"],"confidence":0.65,"needs_formatting":true,"estimated_steps":5,"early_exit_allowed":false,"task_type":"options"}
+
+Valid example 4:
+{"layers":["react_reason","verifier_check"],"confidence":0.60,"needs_formatting":false,"estimated_steps":4,"early_exit_allowed":false,"task_type":"document"}
 
 Invalid example:
 {"answer":"I cannot determine the plan"}

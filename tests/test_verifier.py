@@ -40,6 +40,27 @@ class TestVerifierNode:
         assert "Do not output keys like answer" in VERIFIER_JSON_FALLBACK_PROMPT
 
     @patch("agent.nodes.verifier.ChatOpenAI")
+    def test_verifier_fallback_keeps_final_answer_strictness(self, mock_chat_openai, monkeypatch):
+        monkeypatch.setenv("STRUCTURED_OUTPUT_MODE", "local_json")
+
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = AIMessage(content='{"verdict":"PASS","reasoning":"Looks complete"}')
+        mock_chat_openai.return_value = mock_llm
+
+        state = {
+            "selected_layers": ["verifier_check"],
+            "messages": [HumanMessage(content="Query"), AIMessage(content="Final answer")],
+            "checkpoint_stack": [],
+            "task_type": "options",
+        }
+
+        verifier(state)
+
+        invocation_messages = mock_llm.invoke.call_args.args[0]
+        assert "FINAL ANSWER MODE" in invocation_messages[0].content
+        assert "options tasks" in invocation_messages[0].content
+
+    @patch("agent.nodes.verifier.ChatOpenAI")
     def test_verifier_pass(self, mock_chat_openai):
         """A PASS verdict adds the current state to the checkpoint stack."""
         mock_llm = MagicMock()

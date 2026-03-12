@@ -32,6 +32,24 @@ def _normalize_memory_text(text: str, max_len: int = 400) -> str:
     return normalized[:max_len]
 
 
+_VALID_TASK_TYPES = {
+    "quantitative",
+    "legal",
+    "options",
+    "document",
+    "retrieval",
+    "general",
+}
+
+
+def _normalize_task_type(task_type: str | None) -> str:
+    """Normalize runtime task type into a supported control label."""
+    normalized = (task_type or "").strip().lower()
+    if normalized in _VALID_TASK_TYPES:
+        return normalized
+    return "general"
+
+
 def _infer_task_family(text: str) -> str:
     """Assign a coarse task family for future filtered retrieval."""
     normalized = _normalize_memory_text(text, max_len=800).lower()
@@ -66,6 +84,27 @@ def _infer_task_family(text: str) -> str:
     ):
         return "retrieval"
     return "general"
+
+
+def _task_type_to_family(task_type: str | None, text: str = "") -> str:
+    """Map runtime task_type to the broader memory task_family taxonomy.
+
+    Runtime task_type is used to steer prompts and tool surface.
+    Memory task_family is a broader offline indexing label for future retrieval.
+    """
+    normalized_type = _normalize_task_type(task_type)
+    if normalized_type == "options":
+        return "finance"
+    if normalized_type == "legal":
+        return "legal"
+    if normalized_type == "document":
+        return "document"
+    if normalized_type == "retrieval":
+        return "retrieval"
+    if normalized_type == "quantitative":
+        inferred = _infer_task_family(text)
+        return inferred if inferred != "general" else "general"
+    return _infer_task_family(text)
 
 
 def _infer_tool_family(tool_name: str) -> str:
