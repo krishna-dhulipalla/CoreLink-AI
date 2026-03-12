@@ -185,7 +185,7 @@ def analyze_strategy(legs: list[dict]) -> str:
                       - r * K * e_rT * _norm_cdf(d2)) / 365.0) * sign
             vega  = S * _norm_pdf(d1) * math.sqrt(T) / 100.0 * sign
 
-            net_premium += sign * price * contracts
+            net_premium += -sign * price * contracts
             total_delta += delta * contracts
             total_gamma += gamma * contracts
             total_theta += theta * contracts

@@ -279,6 +279,13 @@ def verifier(state: AgentState) -> dict:
 
     stack = list(state.get("checkpoint_stack", []))
 
+    # Fix 2a: Create pre-step checkpoint if stack is empty
+    # This ensures the very first tool call has a valid rollback point
+    if not stack:
+        initial_msgs = [m for m in state["messages"] if isinstance(m, HumanMessage)]
+        if initial_msgs:
+            stack = [{"messages": messages_to_dict(initial_msgs)}]
+
     try:
         _store_executor_memory(state, verdict, task_text)
     except Exception as mem_err:
@@ -326,13 +333,28 @@ def verifier(state: AgentState) -> dict:
             },
         }
 
+    # Fix 2b: Real BACKTRACK — revert to last HumanMessage if no checkpoint
     if not stack:
+        # Emergency fallback: should not happen now that we create pre-step checkpoints
+        # but kept as a safety net
+        reverted = []
+        for i, msg in enumerate(state["messages"]):
+            if isinstance(msg, HumanMessage):
+                reverted = state["messages"][:i + 1]
+        if not reverted:
+            reverted = state["messages"][:1]
         warning_msg = SystemMessage(
-            content=f"VERIFIER BACKTRACK (no checkpoints available):\n{verdict.reasoning}",
+            content=(
+                f"BACKTRACK (clean slate): {verdict.reasoning}\n"
+                "The previous tool call was irrelevant. Do NOT repeat it. "
+                "Answer from your domain knowledge or choose a different tool."
+                f"{repair_hint_block}"
+            ),
             additional_kwargs={"is_warning": True},
         )
         return {
-            "messages": [warning_msg],
+            "messages": ReplaceMessages(reverted + [warning_msg]),
+            "checkpoint_stack": [],
             "pending_verifier_feedback": {
                 "verdict": verdict.verdict,
                 "reasoning": verdict.reasoning,

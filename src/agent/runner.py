@@ -124,6 +124,7 @@ async def run_agent(
         "early_exit_allowed": False,
         "architecture_trace": [],
         "checkpoint_stack": [],
+        "task_type": "general",
         "cost_tracker": tracker,
         # Sprint 3: Execution Memory
         "memory_store": _get_memory_store(),

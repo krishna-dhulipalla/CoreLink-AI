@@ -51,6 +51,16 @@ class RouteDecision(BaseModel):
         default=True,
         description="Whether the graph can exit before all layers complete.",
     )
+    task_type: str = Field(
+        default="general",
+        description=(
+            "Task family classification. "
+            "quantitative: math/formula tasks with inline data. "
+            "legal: deal structuring, regulatory, compliance questions. "
+            "options: volatility, options pricing, strategy design, Greeks. "
+            "general: everything else."
+        ),
+    )
 
 
 class VerdictDecision(BaseModel):
@@ -117,8 +127,6 @@ OUTPUT FORMAT DISCIPLINE:
 - When a tool output begins with "STRUCTURED_RESULTS:", copy it VERBATIM at the top of your answer.
 - For cryptocurrency values: 8 decimal places, correct tickers (BTC, ETH, SOL).
 - For percentages: 2 decimal places (e.g., 12.34%).
-- For finance tasks: always include Greeks analysis, P&L breakdown, risk metrics, and strategy rationale.
-  Never give a one-line answer to a finance strategy question.
 """
 
 
@@ -161,8 +169,13 @@ Rules:
 3. If user explicitly asks for JSON/XML output -> set needs_formatting: true and add "format_normalize" to layers
 4. Set confidence high (>0.8) when the intent is obvious, low (<0.5) when ambiguous
 5. Set early_exit_allowed: true for simple tasks, false for complex multi-step tasks
-6. If you are unsure, choose the safe default plan: ["react_reason", "verifier_check"]
-7. Never include any key other than: layers, confidence, needs_formatting, estimated_steps, early_exit_allowed
+6. Set task_type to classify the query:
+   - "quantitative": math, formula, numeric computation with inline data
+   - "legal": deal structuring, regulatory, compliance, contracts
+   - "options": volatility, options pricing, strategy design, Greeks analysis
+   - "general": everything else
+7. If you are unsure, choose the safe default plan: ["react_reason", "verifier_check"]
+8. Never include any key other than: layers, confidence, needs_formatting, estimated_steps, early_exit_allowed, task_type
 
 Respond with a JSON object matching this schema:
 {
@@ -170,7 +183,8 @@ Respond with a JSON object matching this schema:
   "confidence": 0.9,
   "needs_formatting": false,
   "estimated_steps": 1,
-  "early_exit_allowed": true
+  "early_exit_allowed": true,
+  "task_type": "general"
 }"""
 
 
@@ -194,13 +208,13 @@ Rules:
 - If unsure, use ["react_reason", "verifier_check"].
 
 Valid example 1:
-{"layers":["direct_answer"],"confidence":0.95,"needs_formatting":false,"estimated_steps":1,"early_exit_allowed":true}
+{"layers":["direct_answer"],"confidence":0.95,"needs_formatting":false,"estimated_steps":1,"early_exit_allowed":true,"task_type":"general"}
 
 Valid example 2:
-{"layers":["react_reason","verifier_check"],"confidence":0.70,"needs_formatting":false,"estimated_steps":4,"early_exit_allowed":true}
+{"layers":["react_reason","verifier_check"],"confidence":0.70,"needs_formatting":false,"estimated_steps":4,"early_exit_allowed":true,"task_type":"quantitative"}
 
 Valid example 3:
-{"layers":["react_reason","verifier_check","format_normalize"],"confidence":0.65,"needs_formatting":true,"estimated_steps":5,"early_exit_allowed":false}
+{"layers":["react_reason","verifier_check","format_normalize"],"confidence":0.65,"needs_formatting":true,"estimated_steps":5,"early_exit_allowed":false,"task_type":"options"}
 
 Invalid example:
 {"answer":"I cannot determine the plan"}
@@ -211,6 +225,7 @@ Return exactly these keys and no others:
 - needs_formatting
 - estimated_steps
 - early_exit_allowed
+- task_type
 """
 
 

@@ -95,6 +95,17 @@ def make_tool_executor(tool_node: ToolNode):
         is_duplicate = (call_signature == previous_signature and call_signature != "")
 
         for msg in messages:
+            if isinstance(msg, ToolMessage):
+                # Fix 3: Normalize non-string content (rich MCP responses) to str
+                raw = msg.content
+                if isinstance(raw, list):
+                    raw = "\n".join(
+                        item.get("text", str(item)) if isinstance(item, dict) else str(item)
+                        for item in raw
+                    )
+                    msg = ToolMessage(
+                        content=raw, tool_call_id=msg.tool_call_id, name=msg.name,
+                    )
             if isinstance(msg, ToolMessage) and isinstance(msg.content, str):
                 original_content = msg.content
                 original_len = len(original_content)
