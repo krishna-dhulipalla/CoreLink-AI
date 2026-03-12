@@ -30,7 +30,7 @@ from agent.memory.schema import (
     _normalize_memory_text,
     _task_signature,
 )
-from agent.prompts import VERIFIER_JSON_FALLBACK_PROMPT, VERIFIER_PROMPT, VerdictDecision
+from agent.prompts import VERIFIER_FINAL_ANSWER_ADDENDUM, VERIFIER_JSON_FALLBACK_PROMPT, VERIFIER_PROMPT, VerdictDecision
 from agent.state import AgentState, ReplaceMessages
 from agent.pruning import truncate_memory_fields
 from context_manager import count_tokens
@@ -216,7 +216,21 @@ def verifier(state: AgentState) -> dict:
     )
 
     history = [m for m in state["messages"] if not _is_internal_warning(m)]
-    prompt_messages = [SystemMessage(content=VERIFIER_PROMPT)] + history
+
+    # Sprint 5: Detect final answer vs intermediate step
+    # Final answer = last real AI message has no tool_calls
+    is_final_answer = False
+    for msg in reversed(history):
+        if isinstance(msg, AIMessage) and msg.content and not _is_internal_warning(msg):
+            is_final_answer = not bool(msg.tool_calls)
+            break
+
+    # Use stricter prompt for final answers only
+    base_prompt = VERIFIER_PROMPT
+    if is_final_answer:
+        base_prompt = VERIFIER_PROMPT + VERIFIER_FINAL_ANSWER_ADDENDUM
+
+    prompt_messages = [SystemMessage(content=base_prompt)] + history
 
     invocation_messages = prompt_messages
     t0 = time.monotonic()

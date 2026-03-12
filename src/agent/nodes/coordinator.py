@@ -100,12 +100,14 @@ def coordinator(state: AgentState) -> dict:
             confidence = verdict.get("confidence", 0.5)
             estimated_steps = verdict.get("estimated_steps", 3)
             early_exit_allowed = verdict.get("early_exit_allowed", True)
+            task_type = verdict.get("task_type", "general")
         else:
             layers = verdict.layers
             needs_fmt = verdict.needs_formatting
             confidence = verdict.confidence
             estimated_steps = verdict.estimated_steps
             early_exit_allowed = verdict.early_exit_allowed
+            task_type = getattr(verdict, "task_type", "general")
 
         success = True
     except Exception as e:
@@ -116,6 +118,7 @@ def coordinator(state: AgentState) -> dict:
         confidence = 0.0
         estimated_steps = 3
         early_exit_allowed = False
+        task_type = "general"
         success = False
 
     # Validate layers against operator registry
@@ -141,7 +144,7 @@ def coordinator(state: AgentState) -> dict:
 
     logger.info(
         f"[Step {step}] coordinator -> layers={layers}, "
-        f"confidence={confidence:.2f}, needs_formatting={needs_fmt}"
+        f"confidence={confidence:.2f}, needs_formatting={needs_fmt}, task_type={task_type}"
     )
 
     return {
@@ -150,6 +153,7 @@ def coordinator(state: AgentState) -> dict:
         "policy_confidence": confidence,
         "estimated_steps": estimated_steps,
         "early_exit_allowed": early_exit_allowed,
+        "task_type": task_type,
     }
 
 

@@ -21,6 +21,43 @@ from context_manager import count_tokens
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Task-family tool allowlists and domain prompts
+# ---------------------------------------------------------------------------
+
+TOOL_FAMILIES: dict[str, set[str] | None] = {
+    "quantitative": {"calculator", "fetch_reference_file", "list_reference_files"},
+    "legal": {"calculator", "internet_search", "fetch_reference_file", "list_reference_files"},
+    "options": {
+        "calculator", "black_scholes_price", "option_greeks", "mispricing_analysis",
+        "analyze_strategy", "get_options_chain", "get_iv_surface", "get_expirations",
+        "calculate_portfolio_greeks", "calculate_var", "run_stress_test",
+        "execute_options_trade", "create_portfolio", "get_positions", "get_pnl_report",
+        "calculate_risk_metrics", "calculate_max_drawdown",
+    },
+    "general": None,  # None = all tools
+}
+
+DOMAIN_ADDENDA: dict[str, str] = {
+    "quantitative": (
+        "Extract all values from provided tables. Apply formulas step by step. "
+        "Show intermediate calculations. Match the exact output format specified."
+    ),
+    "legal": (
+        "Answer from domain knowledge first. Cover: structure alternatives, "
+        "tax treatment, liability isolation, cross-border regulatory issues, "
+        "diligence requirements, and reps/warranties. Do NOT web-search for "
+        "domain knowledge you already have."
+    ),
+    "options": (
+        "Include full Greeks analysis (Delta, Gamma, Theta, Vega) for every leg. "
+        "Show P&L breakdown with breakevens. Compare at least 2 strategy alternatives. "
+        "Include risk management: max loss, position sizing, hedging. "
+        "Verify that sell positions generate credit, buy positions generate debit."
+    ),
+    "general": "",
+}
+
 # Step counter for logging (reset per run_agent call)
 _step_counter = 0
 
@@ -62,8 +99,16 @@ def build_model(tools: list):
     return llm
 
 
-def _build_tool_prompt_block(tools: list) -> str:
-    """Build a system-prompt block describing available tools for prompt-based calling."""
+def _build_tool_prompt_block(tools: list, task_type: str = "general") -> str:
+    """Build a system-prompt block describing available tools for prompt-based calling.
+
+    Filters tools by task_type allowlist to reduce prompt noise.
+    """
+    # Filter tools by task family allowlist
+    allowed = TOOL_FAMILIES.get(task_type)
+    if allowed is not None:
+        tools = [t for t in tools if getattr(t, "name", "") in allowed]
+
     lines = [
         "You have access to the following tools. To use a tool, respond with ONLY a JSON object "
         "(no markdown fences, no explanation before or after) in this exact format:",
@@ -229,7 +274,7 @@ def make_reasoner(tools: list):
 
     # Pre-compute tool prompt block for prompt-mode calling
     use_prompt_tools = _tool_call_mode("executor") == "prompt"
-    tool_prompt_block = _build_tool_prompt_block(tools) if use_prompt_tools else ""
+    # NOTE: tool_prompt_block is rebuilt per-call now based on task_type
 
     def reasoner(state: AgentState) -> dict:
         """The 'Brain' node -- calls the LLM with the current conversation."""
@@ -238,13 +283,23 @@ def make_reasoner(tools: list):
         model_name = get_model_name("executor")
         model = build_model(tools)
 
+        # Sprint 5: Get task type for tool filtering and domain addenda
+        task_type = state.get("task_type", "general")
+
         # Sprint 4: Prune state before building LLM prompt
         messages = prune_for_reasoner(state["messages"])
         messages = with_system_prompt(messages)
 
-        # Prompt-mode: inject tool descriptions into system prompt
-        if use_prompt_tools and tool_prompt_block:
-            messages = messages[:1] + [SystemMessage(content=tool_prompt_block)] + messages[1:]
+        # Sprint 5: Inject domain-specific addendum based on task type
+        addendum = DOMAIN_ADDENDA.get(task_type, "")
+        if addendum:
+            messages = messages[:1] + [SystemMessage(content=addendum)] + messages[1:]
+
+        # Prompt-mode: inject filtered tool descriptions into system prompt
+        if use_prompt_tools:
+            filtered_block = _build_tool_prompt_block(tools, task_type)
+            if filtered_block:
+                messages = messages[:1] + [SystemMessage(content=filtered_block)] + messages[1:]
 
         # Sprint 3+4: Retrieve compact executor hints from memory (budget-capped)
         memory_store = state.get("memory_store")

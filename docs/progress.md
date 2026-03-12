@@ -506,3 +506,33 @@ This file operates in a "Chat" structure. Whenever an agent finishes a major uni
   4. Now tool calls (e.g., `internet_search`, `analyze_strategy`) will actually execute instead of being silently dropped.
 - **Blockers:** None.
 - **Handoff Notes:** Restart server and re-run benchmark. Tools should now execute for all tasks, leading to proper answers with real data.
+
+### Chat 45: Sprint 5 — Architecture Improvements (67 → 85+ Target)
+
+- **Role:** Architect / Coder
+- **Actions Taken (Phase 1 — Bug Fixes):**
+  1. Fixed options sign bug in `options_chain/server.py:188` — selling options now correctly shows as CREDIT (was DEBIT due to `sign * price` instead of `-sign * price`).
+  2. Fixed broken first-step BACKTRACK in `verifier.py` — added pre-step checkpoint creation from HumanMessages when stack is empty, and real empty-stack BACKTRACK now reverts to last HumanMessage + warning using `ReplaceMessages` instead of appending warning that leaves bad tool output.
+  3. Fixed non-string tool content bypass in `tool_executor.py` — rich MCP list responses are now normalized to str before sanitization/truncation. `mcp_calls` count is now correct.
+- **Actions Taken (Phase 2 — Task-Family Specialization):**
+  4. Added `task_type` field to `AgentState` (`state.py`), initialized in `runner.py`.
+  5. Updated `RouteDecision` schema with `task_type` field (quantitative/legal/options/general).
+  6. Coordinator now classifies and emits `task_type` into state (`coordinator.py`).
+  7. Added `TOOL_FAMILIES` allowlist dict and `DOMAIN_ADDENDA` prompts in `reasoner.py`.
+  8. `_build_tool_prompt_block()` now filters tools by task_type — legal tasks don't see options tools, quantitative tasks don't see `internet_search`.
+  9. Domain addendum injected per task type (e.g., options: "Include Greeks, P&L, 2+ alternatives"; legal: "Answer from knowledge first, cover structure/tax/liability/regulatory").
+  10. Removed finance-specific rules from universal `SYSTEM_PROMPT` (was bloating all tasks).
+- **Actions Taken (Phase 3 — Verifier Completeness):**
+  11. Added `VERIFIER_FINAL_ANSWER_ADDENDUM` prompt — stricter completeness criteria.
+  12. Wired final-answer detection in `verifier.py` — only final answers (AIMessage without tool_calls) get the stricter prompt. Intermediate steps keep current permissiveness.
+- **Files Modified:**
+  - `src/mcp_servers/options_chain/server.py` (sign fix)
+  - `src/agent/nodes/verifier.py` (checkpoint, BACKTRACK, final-answer detection)
+  - `src/agent/nodes/tool_executor.py` (non-string normalization)
+  - `src/agent/state.py` (task_type field)
+  - `src/agent/runner.py` (task_type init)
+  - `src/agent/prompts.py` (RouteDecision, coordinator prompts, domain addenda, verifier addendum)
+  - `src/agent/nodes/coordinator.py` (emit task_type)
+  - `src/agent/nodes/reasoner.py` (tool families, domain addenda, filtered prompt)
+- **Blockers:** None.
+- **Handoff Notes:** Restart server and re-run FAB++ benchmark. Expected improvements: corrected sign math for options, fewer wasted tool calls via allowlisting, stronger final answers via domain prompts and verifier completeness gate.

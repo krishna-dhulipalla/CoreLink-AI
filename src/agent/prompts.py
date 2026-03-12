@@ -291,3 +291,17 @@ Return exactly these keys and no others:
 - verdict
 - reasoning
 """
+
+
+VERIFIER_FINAL_ANSWER_ADDENDUM = """
+
+FINAL ANSWER MODE: You are now evaluating the executor's FINAL answer, not an intermediate step.
+Apply stricter completeness criteria:
+- Does the answer address ALL aspects of the question?
+- For multi-part questions: are all parts covered?
+- For domain-specific tasks: are expected analytical components present?
+  (e.g., risk analysis for options, regulatory considerations for legal)
+- If the answer is directionally correct but critically incomplete, verdict REVISE
+  with specific gaps the executor must fill.
+- Do NOT PASS a shallow answer just because it is coherent.
+"""
