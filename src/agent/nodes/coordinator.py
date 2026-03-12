@@ -8,6 +8,7 @@ Also contains the direct_responder and format_normalizer nodes.
 import logging
 import time
 import json
+import re
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
@@ -252,6 +253,8 @@ def format_normalizer(state: AgentState) -> dict:
         )
 
     final_output = response.content.strip()
+    # Strip Qwen3 <think> blocks if present
+    final_output = re.sub(r"<think>.*?</think>\s*", "", final_output, flags=re.DOTALL).strip()
     if final_output.startswith("```json"):
         final_output = final_output[7:-3].strip()
     elif final_output.startswith("```xml"):

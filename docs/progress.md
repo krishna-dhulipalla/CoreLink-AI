@@ -483,3 +483,15 @@ This file operates in a "Chat" structure. Whenever an agent finishes a major uni
   4. Unit tests passed.
 - **Blockers:** None.
 - **Handoff Notes:** The agent now has much more runway to complete complex multi-step reasoning natively before tripping budget constraints limiters. Restart the server (`uv run --python 3.13.5 src/server.py --port 9010`) to pick up the new bounds and re-test.
+
+### Chat 43: Answer Extraction Fix (Think Block + Orphan Tool Call)
+
+- **Role:** Debugger / Coder
+- **Actions Taken:**
+  1. Diagnosed why the FAB++ evaluator marked correct answers as wrong: Qwen3's `<think>` reasoning blocks were included raw in the final answer, causing the evaluator to extract intermediate values (e.g., ROE=3.0433) instead of the computed answer (0.9274).
+  2. Identified a second issue: prbench and vol_001 outputs were orphan tool-call JSON blobs (the model tried to call a tool but the graph exited), not actual answers.
+  3. Added `_extract_final_answer()` to `src/agent/runner.py` — strips `<think>` blocks, detects orphan tool-call JSON, and falls back to think-block reasoning content.
+  4. Applied the same `<think>` strip in `format_normalizer` in `src/agent/nodes/coordinator.py`.
+  5. Both files compile cleanly. Tests pass.
+- **Blockers:** None.
+- **Handoff Notes:** Restart server and re-run FAB++ benchmark. Expected score jump from ~43 to ~65-75 from this extraction fix alone.

@@ -5,6 +5,7 @@ Used by executor.py to bridge A2A requests into LangGraph runs.
 """
 
 import logging
+import re
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langgraph.errors import GraphRecursionError
@@ -26,6 +27,45 @@ from agent.pruning import prune_for_persistence, truncate_memory_fields
 from context_manager import summarize_and_window
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Answer post-processing (Qwen3 <think> blocks + orphan tool-call fallback)
+# ---------------------------------------------------------------------------
+
+_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
+_TOOL_CALL_JSON_RE = re.compile(
+    r'^\s*\{\s*"name"\s*:\s*"[^"]+"\s*,\s*"arguments"\s*:', re.DOTALL
+)
+
+
+def _extract_final_answer(text: str) -> str:
+    """Extract the actual answer from model output.
+
+    Handles two common issues with Qwen3-style models:
+    1. <think>...</think> reasoning blocks that pollute the output.
+    2. Orphan tool-call JSON when the model tried to call a tool but
+       the graph exited before executing it.
+
+    In case (2), we fall back to the reasoning inside the <think> block.
+    """
+    # Extract think block content before stripping (used as fallback)
+    think_match = re.search(r"<think>(.*?)</think>", text, re.DOTALL)
+    think_content = think_match.group(1).strip() if think_match else ""
+
+    # Strip <think>...</think> blocks
+    clean = _THINK_BLOCK_RE.sub("", text).strip()
+
+    # If what remains is an orphan tool-call JSON, use think content instead
+    if clean and _TOOL_CALL_JSON_RE.match(clean):
+        logger.info("[AnswerExtract] Detected orphan tool-call JSON; using <think> content as answer.")
+        return think_content if think_content else clean
+
+    # If stripping left nothing, return original text
+    if not clean:
+        return think_content if think_content else text
+
+    return clean
+
 
 # Module-level singleton so the store persists across runs
 _memory_store: MemoryStore | None = None
@@ -206,6 +246,6 @@ async def run_agent(
     for msg in reversed(all_messages):
         if isinstance(msg, AIMessage) and msg.content:
             if not _is_internal_node_message(msg):
-                return msg.content, steps, updated_history
+                return _extract_final_answer(msg.content), steps, updated_history
 
     return "I was unable to generate a response.", steps, updated_history
