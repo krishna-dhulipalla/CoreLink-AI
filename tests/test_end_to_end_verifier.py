@@ -30,6 +30,15 @@ def anyio_backend():
     return "asyncio"
 
 
+@pytest.fixture(autouse=True)
+def _force_native_structured_output(monkeypatch):
+    monkeypatch.setenv("STRUCTURED_OUTPUT_MODE", "native")
+    monkeypatch.setenv("TOOL_CALL_MODE", "native")
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("COORDINATOR_OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("VERIFIER_OPENAI_BASE_URL", raising=False)
+
+
 # Use a call counter since prune_for_reasoner strips warnings before the LLM call
 _reasoner_call_count = 0
 

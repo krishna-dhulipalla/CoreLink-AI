@@ -296,6 +296,36 @@ class TestVerifierNode:
         assert isinstance(result["messages"], ReplaceMessages)
         assert "Repeated revise cycles" in result["messages"][-1].content
 
+    @patch("agent.nodes.verifier.ChatOpenAI")
+    def test_revise_budget_exit_does_not_checkpoint_poisoned_state(self, mock_chat_openai):
+        """Budget exits should not save the current failed attempt as a verified checkpoint."""
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = VerdictDecision(
+            verdict="REVISE",
+            reasoning="The executor repeated a malformed tool path.",
+        )
+        mock_chat_openai.return_value.with_structured_output.return_value = mock_llm
+
+        budget = BudgetTracker()
+        budget.revise_cycles = 7
+
+        original_stack = [{"messages": [{"type": "human", "data": {"content": "Base Query"}}]}]
+        state = {
+            "selected_layers": ["verifier_check"],
+            "messages": [
+                HumanMessage(content="Base Query"),
+                AIMessage(content="", tool_calls=[{"name": "create_portfolio", "args": {"name": "internet_search"}, "id": "call_1", "type": "tool_call"}]),
+                ToolMessage(content="Error: malformed payload", tool_call_id="call_1", name="create_portfolio"),
+            ],
+            "checkpoint_stack": list(original_stack),
+            "budget_tracker": budget,
+        }
+
+        result = verifier(state)
+
+        assert len(result["checkpoint_stack"]) == len(original_stack)
+        assert result["checkpoint_stack"] == original_stack
+
     def test_verify_routing_warning(self):
         """If the last message is a warning, route back to reasoner."""
         state = {

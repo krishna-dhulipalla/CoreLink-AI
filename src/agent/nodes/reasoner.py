@@ -41,6 +41,13 @@ TOOL_FAMILIES: dict[str, set[str] | None] = {
     "general": None,  # None = all tools
 }
 
+_TRADING_SIM_TOOLS = {
+    "create_portfolio",
+    "execute_options_trade",
+    "get_positions",
+    "get_pnl_report",
+}
+
 DOMAIN_ADDENDA: dict[str, str] = {
     "quantitative": (
         "Extract all values from provided tables. Apply formulas step by step. "
@@ -68,6 +75,50 @@ DOMAIN_ADDENDA: dict[str, str] = {
     ),
     "general": "",
 }
+
+
+def _looks_like_trade_simulation(task_text: str) -> bool:
+    normalized = (task_text or "").lower()
+    return any(
+        token in normalized
+        for token in (
+            "portfolio",
+            "position",
+            "positions",
+            "paper trade",
+            "paper-trading",
+            "simulate trade",
+            "simulation",
+            "execute trade",
+            "trade execution",
+            "fill price",
+            "slippage",
+            "p&l report",
+            "pnl report",
+            "cash balance",
+            "mark-to-market",
+            "unrealized pnl",
+            "realized pnl",
+        )
+    )
+
+
+def _allowed_tool_names_for_task(task_type: str, task_text: str = "") -> set[str] | None:
+    """Return the effective tool allowlist for the task.
+
+    This is stricter than the coarse family map alone. For example, generic
+    options-strategy questions should not expose paper-trading tools unless the
+    prompt is clearly about portfolio simulation or execution.
+    """
+    normalized_type = _normalize_task_type(task_type)
+    allowed = TOOL_FAMILIES.get(normalized_type)
+    if allowed is None:
+        return None
+
+    effective = set(allowed)
+    if normalized_type == "options" and not _looks_like_trade_simulation(task_text):
+        effective -= _TRADING_SIM_TOOLS
+    return effective
 
 # Step counter for logging (reset per run_agent call)
 _step_counter = 0
@@ -110,13 +161,13 @@ def build_model(tools: list):
     return llm
 
 
-def _build_tool_prompt_block(tools: list, task_type: str = "general") -> str:
+def _build_tool_prompt_block(tools: list, task_type: str = "general", task_text: str = "") -> str:
     """Build a system-prompt block describing available tools for prompt-based calling.
 
     Filters tools by task_type allowlist to reduce prompt noise.
     """
     # Filter tools by task family allowlist
-    allowed = TOOL_FAMILIES.get(task_type)
+    allowed = _allowed_tool_names_for_task(task_type, task_text)
     if allowed is not None:
         tools = [t for t in tools if getattr(t, "name", "") in allowed]
 
@@ -153,9 +204,9 @@ def _build_tool_prompt_block(tools: list, task_type: str = "general") -> str:
     return "\n".join(lines)
 
 
-def _filter_tools_for_task_type(tools: list, task_type: str = "general") -> list:
+def _filter_tools_for_task_type(tools: list, task_type: str = "general", task_text: str = "") -> list:
     """Return the runtime tool set allowed for the given task type."""
-    allowed = TOOL_FAMILIES.get(_normalize_task_type(task_type))
+    allowed = _allowed_tool_names_for_task(task_type, task_text)
     if allowed is None:
         return list(tools)
     return [t for t in tools if getattr(t, "name", "") in allowed]
@@ -210,6 +261,12 @@ def patch_oss_tool_calls(response: AIMessage, tools: list) -> AIMessage:
                     ]
                     response.content = ""
                     return response
+                # Do not silently remap an explicit tool envelope to a different tool.
+                logger.warning(
+                    "[OSS Patch] Ignoring explicit tool envelope for hidden/unknown tool '%s'.",
+                    tool_name,
+                )
+                return response
 
             # Pattern 2: Leaked schema match (original logic)
             payload_keys = set(payload.keys())
@@ -301,7 +358,8 @@ def make_reasoner(tools: list):
         tracker: CostTracker = state.get("cost_tracker")
         model_name = get_model_name("executor")
         task_type = _normalize_task_type(state.get("task_type", "general"))
-        filtered_tools = _filter_tools_for_task_type(tools, task_type)
+        task_text = _latest_human_text(state["messages"])
+        filtered_tools = _filter_tools_for_task_type(tools, task_type, task_text)
         model = build_model(filtered_tools)
 
         # Sprint 4: Prune state before building LLM prompt
@@ -315,7 +373,7 @@ def make_reasoner(tools: list):
 
         # Prompt-mode: inject filtered tool descriptions into system prompt
         if use_prompt_tools:
-            filtered_block = _build_tool_prompt_block(filtered_tools, task_type)
+            filtered_block = _build_tool_prompt_block(filtered_tools, task_type, task_text)
             if filtered_block:
                 messages = messages[:1] + [SystemMessage(content=filtered_block)] + messages[1:]
 

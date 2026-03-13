@@ -24,8 +24,8 @@ from agent.prompts import (
     DIRECT_RESPONDER_PROMPT,
     SYSTEM_PROMPT,
 )
-from agent.nodes.coordinator import coordinator, route_task, direct_responder, format_normalizer
-from agent.nodes.reasoner import patch_oss_tool_calls
+from agent.nodes.coordinator import coordinator, route_task, direct_responder, format_normalizer, _heuristic_task_type
+from agent.nodes.reasoner import patch_oss_tool_calls, _allowed_tool_names_for_task
 from agent.nodes.tool_executor import should_use_tools
 
 
@@ -238,6 +238,24 @@ class TestRoutingPolicy:
 
         assert result["task_type"] == "legal"
         assert result["selected_layers"] == ["react_reason", "verifier_check"]
+
+    def test_options_family_does_not_trigger_on_legal_phrase_structure_options(self):
+        """A legal prompt containing the English word 'options' should not map to options trading."""
+        prompt = "What structure options do we have for an acquisition with compliance liabilities and stock consideration?"
+        assert _heuristic_task_type(prompt) == "legal"
+        allowed = _allowed_tool_names_for_task(
+            "options",
+            prompt,
+        )
+        assert allowed is not None
+        assert "create_portfolio" not in allowed
+
+    def test_generic_options_strategy_prompt_hides_paper_trading_tools(self):
+        prompt = "IV is high versus historical volatility. Recommend an options strategy with Greeks and risk management."
+        allowed = _allowed_tool_names_for_task("options", prompt)
+        assert allowed is not None
+        assert "analyze_strategy" in allowed
+        assert "create_portfolio" not in allowed
 
     def test_tool_edge_skips_verifier_when_not_selected(self):
         """If the plan omits verifier_check, reasoner exits to format_normalizer."""

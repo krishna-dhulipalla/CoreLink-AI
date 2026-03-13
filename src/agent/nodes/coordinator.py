@@ -69,10 +69,10 @@ def _heuristic_task_type(task_text: str) -> str:
     normalized = (task_text or "").lower()
     if not normalized:
         return "general"
-    if any(token in normalized for token in ("implied volatility", "greeks", "black-scholes", "option", "straddle", "strangle", "iron condor", "credit spread", "vega", "delta", "theta", "gamma")):
-        return "options"
     if any(token in normalized for token in ("acquisition", "merger", "compliance", "liability", "indemnification", "contract", "regulatory", "tax reasons", "deal structure", "eu", "us")):
         return "legal"
+    if any(token in normalized for token in ("implied volatility", "historical volatility", "iv percentile", "black-scholes", "greeks", "straddle", "strangle", "iron condor", "credit spread", "vega", "delta", "theta", "gamma", "call option", "put option")):
+        return "options"
     if any(token in normalized for token in ("reference file", "pdf", "page", "table", "document", "spreadsheet", "csv", "row", "column", "worksheet")):
         return "document"
     if any(token in normalized for token in ("latest", "current news", "search the web", "search internet", "source", "citation", "look up")):

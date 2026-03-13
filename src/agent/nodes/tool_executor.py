@@ -5,13 +5,14 @@ Wraps LangGraph's ToolNode with output truncation and failure detection.
 """
 
 import logging
+from typing import Any
 
 from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.prebuilt import ToolNode
 
 from agent.state import AgentState
 from agent.cost import CostTracker
-from agent.nodes.reasoner import TOOL_FAMILIES, _increment_step
+from agent.nodes.reasoner import _allowed_tool_names_for_task, _increment_step
 from agent.memory.schema import _normalize_task_type
 from agent.guardrails import sanitize_tool_output, tag_external_content
 from context_manager import truncate_tool_output
@@ -44,6 +45,72 @@ def _last_ai_tool_calls(state: AgentState) -> list[dict]:
         if isinstance(msg, AIMessage) and msg.tool_calls:
             return list(msg.tool_calls)
     return []
+
+
+def _latest_human_text(state: AgentState) -> str:
+    for msg in reversed(state["messages"]):
+        if getattr(msg, "type", None) == "human" and getattr(msg, "content", None):
+            return str(msg.content)
+    return ""
+
+
+def _tool_registry(tool_node: ToolNode) -> dict[str, Any]:
+    registry = getattr(tool_node, "tools_by_name", None)
+    if isinstance(registry, dict):
+        return registry
+    tools = getattr(tool_node, "tools", []) or []
+    return {
+        getattr(tool, "name", ""): tool
+        for tool in tools
+        if getattr(tool, "name", "")
+    }
+
+
+def _validate_tool_call_payload(tool_name: str, args: Any, tool: Any) -> str | None:
+    if not isinstance(args, dict):
+        return f"Invalid arguments for tool '{tool_name}': expected an object."
+
+    # Catch wrapped tool envelopes like:
+    # create_portfolio({name: 'internet_search', arguments: {...}})
+    if set(args.keys()) == {"name", "arguments"} and isinstance(args.get("arguments"), dict):
+        nested_name = str(args.get("name", "")).strip()
+        if nested_name and nested_name != tool_name:
+            return (
+                f"Malformed tool payload for '{tool_name}': nested tool envelope "
+                f"references '{nested_name}'."
+            )
+
+    args_schema = getattr(tool, "args_schema", None)
+    if not args_schema:
+        return None
+
+    try:
+        if isinstance(args_schema, dict):
+            schema = args_schema
+        else:
+            schema = args_schema.model_json_schema()
+    except Exception:
+        schema = {}
+
+    props = set(schema.get("properties", {}).keys())
+    required = set(schema.get("required", []))
+    provided = set(args.keys())
+
+    if props:
+        unexpected = sorted(provided - props)
+        if unexpected:
+            return f"Unexpected arguments for tool '{tool_name}': {', '.join(unexpected)}."
+        missing = sorted(required - provided)
+        if missing:
+            return f"Missing required arguments for tool '{tool_name}': {', '.join(missing)}."
+
+    if not isinstance(args_schema, dict):
+        try:
+            args_schema.model_validate(args)
+        except Exception as exc:
+            return f"Invalid arguments for tool '{tool_name}': {exc}"
+
+    return None
 
 
 def should_use_tools(state: AgentState) -> str:
@@ -87,34 +154,65 @@ def make_tool_executor(tool_node: ToolNode):
         step = _increment_step()
         tracker: CostTracker = state.get("cost_tracker")
         task_type = _normalize_task_type(state.get("task_type", "general"))
-        allowed_tools = TOOL_FAMILIES.get(task_type)
+        task_text = _latest_human_text(state)
+        allowed_tools = _allowed_tool_names_for_task(task_type, task_text)
         attempted_calls = _last_ai_tool_calls(state)
+        registry = _tool_registry(tool_node)
 
-        if allowed_tools is not None:
-            blocked = [tc for tc in attempted_calls if tc.get("name") not in allowed_tools]
-            if blocked:
-                logger.warning(
-                    "[Step %s] Blocked disallowed tool(s) for task_type=%s: %s",
-                    step,
-                    task_type,
-                    ", ".join(tc.get("name", "unknown") for tc in blocked),
-                )
-                blocked_messages = [
+        blocked_messages: list[ToolMessage] = []
+        malformed_names: list[str] = []
+
+        for tc in attempted_calls:
+            tool_name = tc.get("name", "unknown")
+            if allowed_tools is not None and tool_name not in allowed_tools:
+                malformed_names.append(tool_name)
+                blocked_messages.append(
                     ToolMessage(
                         content=(
-                            f"Error: Tool '{tc.get('name', 'unknown')}' is not allowed for "
+                            f"Error: Tool '{tool_name}' is not allowed for "
                             f"task_type '{task_type}'. Use a permitted tool or answer directly."
                         ),
                         tool_call_id=tc.get("id", ""),
-                        name=tc.get("name", "blocked_tool"),
+                        name=tool_name,
                     )
-                    for tc in blocked
-                ]
-                return {
-                    "messages": blocked_messages,
-                    "tool_fail_count": state.get("tool_fail_count", 0) + 1,
-                    "last_tool_signature": _make_tool_signature(state),
-                }
+                )
+                continue
+
+            tool = registry.get(tool_name)
+            if tool is None:
+                malformed_names.append(tool_name)
+                blocked_messages.append(
+                    ToolMessage(
+                        content=f"Error: Tool '{tool_name}' is not registered in the current runtime.",
+                        tool_call_id=tc.get("id", ""),
+                        name=tool_name,
+                    )
+                )
+                continue
+
+            validation_error = _validate_tool_call_payload(tool_name, tc.get("args", {}), tool)
+            if validation_error:
+                malformed_names.append(tool_name)
+                blocked_messages.append(
+                    ToolMessage(
+                        content=f"Error: {validation_error} Do not repeat this malformed call.",
+                        tool_call_id=tc.get("id", ""),
+                        name=tool_name,
+                    )
+                )
+
+        if blocked_messages:
+            logger.warning(
+                "[Step %s] Blocked malformed/disallowed tool call(s) for task_type=%s: %s",
+                step,
+                task_type,
+                ", ".join(malformed_names) or "unknown",
+            )
+            return {
+                "messages": blocked_messages,
+                "tool_fail_count": state.get("tool_fail_count", 0) + 1,
+                "last_tool_signature": _make_tool_signature(state),
+            }
 
         result = await tool_node.ainvoke(state)
         messages = result.get("messages", [])

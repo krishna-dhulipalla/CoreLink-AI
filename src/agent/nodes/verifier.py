@@ -86,6 +86,18 @@ def _latest_human_text(messages: list[BaseMessage]) -> str:
     return ""
 
 
+def _baseline_checkpoint_messages(messages: list[BaseMessage]) -> list[BaseMessage]:
+    """Return the stable prefix up to the latest human turn.
+
+    This preserves prior multi-turn context while excluding the current executor
+    attempt that we may need to roll back.
+    """
+    for idx in range(len(messages) - 1, -1, -1):
+        if isinstance(messages[idx], HumanMessage):
+            return messages[: idx + 1]
+    return messages[:1]
+
+
 def _last_non_warning_message(messages: list[BaseMessage]) -> BaseMessage | None:
     for msg in reversed(messages):
         if not _is_internal_warning(msg):
@@ -111,6 +123,20 @@ def _extract_best_answer(messages: list[BaseMessage]) -> str:
     if best_with_calls:
         return best_with_calls
     return "I was unable to complete this task within the allowed verification budget."
+
+
+def _extract_best_answer_with_checkpoint_fallback(
+    messages: list[BaseMessage],
+    checkpoint_stack: list[dict],
+) -> str:
+    answer = _extract_best_answer(messages)
+    if answer != "I was unable to complete this task within the allowed verification budget.":
+        return answer
+
+    checkpoint_answer = _extract_best_answer(_last_verified_messages(checkpoint_stack))
+    if checkpoint_answer != "I was unable to complete this task within the allowed verification budget.":
+        return checkpoint_answer
+    return answer
 
 
 def _latest_tool_fragment(messages: list[BaseMessage]) -> tuple[str, str] | None:
@@ -378,7 +404,7 @@ def verifier(state: AgentState) -> dict:
     # Fix 2a: Create pre-step checkpoint if stack is empty
     # This ensures the very first tool call has a valid rollback point
     if not stack:
-        initial_msgs = [m for m in state["messages"] if isinstance(m, HumanMessage)]
+        initial_msgs = _baseline_checkpoint_messages(state["messages"])
         if initial_msgs:
             stack = [{"messages": messages_to_dict(initial_msgs)}]
             seeded_initial_checkpoint = True
@@ -423,10 +449,8 @@ def verifier(state: AgentState) -> dict:
                 budget.log_budget_exit("revise", f"Revise cycle cap reached ({budget.revise_cycles}). Accepting current answer.")
                 # Extract best answer so far and append as clean AIMessage
                 # so verify_routing sees a valid exit message.
-                answer = _extract_best_answer(state["messages"])
+                answer = _extract_best_answer_with_checkpoint_fallback(state["messages"], stack)
                 answer_msg = AIMessage(content=answer)
-                serialized_messages = messages_to_dict(state["messages"])
-                stack.append({"messages": serialized_messages})
                 return {
                     "messages": [answer_msg],
                     "checkpoint_stack": stack,
@@ -478,7 +502,7 @@ def verifier(state: AgentState) -> dict:
         budget.record_backtrack()
         if budget.backtrack_exhausted():
             budget.log_budget_exit("backtrack", f"Backtrack cycle cap reached ({budget.backtrack_cycles}). Accepting current answer.")
-            answer = _extract_best_answer(state["messages"])
+            answer = _extract_best_answer_with_checkpoint_fallback(state["messages"], stack)
             answer_msg = AIMessage(content=answer)
             return {
                 "messages": [answer_msg],
