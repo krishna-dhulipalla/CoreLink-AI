@@ -21,6 +21,25 @@ logger = logging.getLogger(__name__)
 
 MAX_TOOL_FAILURES = 2  # consecutive failures before forcing fallback
 
+_FINANCE_ARG_ALIASES = {
+    "spot": "S",
+    "underlying_price": "S",
+    "stock_price": "S",
+    "current_price": "S",
+    "strike": "K",
+    "strike_price": "K",
+    "days": "T_days",
+    "days_to_expiration": "T_days",
+    "days_to_expiry": "T_days",
+    "expiry_days": "T_days",
+    "rate": "r",
+    "risk_free_rate": "r",
+    "interest_rate": "r",
+    "volatility": "sigma",
+    "implied_volatility": "sigma",
+    "iv": "sigma",
+}
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -113,6 +132,32 @@ def _validate_tool_call_payload(tool_name: str, args: Any, tool: Any) -> str | N
     return None
 
 
+def _normalize_finance_args(payload: Any) -> Any:
+    if isinstance(payload, list):
+        return [_normalize_finance_args(item) for item in payload]
+    if not isinstance(payload, dict):
+        return payload
+
+    normalized: dict[str, Any] = {}
+    for key, value in payload.items():
+        mapped = _FINANCE_ARG_ALIASES.get(str(key), key)
+        normalized[mapped] = _normalize_finance_args(value)
+    return normalized
+
+
+def _normalize_tool_call_args(tool_name: str, args: Any) -> Any:
+    if tool_name in {
+        "black_scholes_price",
+        "option_greeks",
+        "mispricing_analysis",
+        "get_options_chain",
+        "get_iv_surface",
+        "analyze_strategy",
+    }:
+        return _normalize_finance_args(args)
+    return args
+
+
 def should_use_tools(state: AgentState) -> str:
     """Conditional edge: route to tool_executor or reflector.
 
@@ -164,6 +209,8 @@ def make_tool_executor(tool_node: ToolNode):
 
         for tc in attempted_calls:
             tool_name = tc.get("name", "unknown")
+            normalized_args = _normalize_tool_call_args(tool_name, tc.get("args", {}))
+            tc["args"] = normalized_args
             if allowed_tools is not None and tool_name not in allowed_tools:
                 malformed_names.append(tool_name)
                 blocked_messages.append(
@@ -190,7 +237,7 @@ def make_tool_executor(tool_node: ToolNode):
                 )
                 continue
 
-            validation_error = _validate_tool_call_payload(tool_name, tc.get("args", {}), tool)
+            validation_error = _validate_tool_call_payload(tool_name, normalized_args, tool)
             if validation_error:
                 malformed_names.append(tool_name)
                 blocked_messages.append(

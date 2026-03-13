@@ -36,6 +36,18 @@ from context_manager import count_tokens
 logger = logging.getLogger(__name__)
 
 
+def _contains_keyword(text: str, keyword: str) -> bool:
+    """Match short keywords as whole words to avoid substring collisions.
+
+    Example: `us` should not match `using`.
+    """
+    escaped = re.escape(keyword.lower())
+    if re.fullmatch(r"[a-z0-9 ]+", keyword.lower()):
+        pattern = rf"(?<!\w){escaped}(?!\w)"
+        return re.search(pattern, text) is not None
+    return keyword.lower() in text
+
+
 def _is_reflection_message(msg) -> bool:
     return (
         isinstance(msg, AIMessage)
@@ -69,15 +81,15 @@ def _heuristic_task_type(task_text: str) -> str:
     normalized = (task_text or "").lower()
     if not normalized:
         return "general"
-    if any(token in normalized for token in ("acquisition", "merger", "compliance", "liability", "indemnification", "contract", "regulatory", "tax reasons", "deal structure", "eu", "us")):
+    if any(_contains_keyword(normalized, token) for token in ("acquisition", "merger", "compliance", "liability", "indemnification", "contract", "regulatory", "tax reasons", "deal structure", "eu", "us")):
         return "legal"
-    if any(token in normalized for token in ("implied volatility", "historical volatility", "iv percentile", "black-scholes", "greeks", "straddle", "strangle", "iron condor", "credit spread", "vega", "delta", "theta", "gamma", "call option", "put option")):
+    if any(_contains_keyword(normalized, token) for token in ("implied volatility", "historical volatility", "iv percentile", "black-scholes", "greeks", "straddle", "strangle", "iron condor", "credit spread", "vega", "delta", "theta", "gamma", "call option", "put option")):
         return "options"
-    if any(token in normalized for token in ("reference file", "pdf", "page", "table", "document", "spreadsheet", "csv", "row", "column", "worksheet")):
+    if any(_contains_keyword(normalized, token) for token in ("reference file", "pdf", "page", "table", "document", "spreadsheet", "csv", "row", "column", "worksheet")):
         return "document"
-    if any(token in normalized for token in ("latest", "current news", "search the web", "search internet", "source", "citation", "look up")):
+    if any(_contains_keyword(normalized, token) for token in ("latest", "current news", "search the web", "search internet", "source", "citation", "look up")):
         return "retrieval"
-    if any(token in normalized for token in ("calculate", "formula", "ratio", "annual report", "roe", "roa", "numerical", "financial leverage effect", "inventory turnover", "equity multiplier")):
+    if any(_contains_keyword(normalized, token) for token in ("calculate", "formula", "ratio", "annual report", "roe", "roa", "numerical", "financial leverage effect", "inventory turnover", "equity multiplier")):
         return "quantitative"
     return "general"
 
@@ -280,6 +292,10 @@ def direct_responder(state: AgentState) -> dict:
     t0 = time.monotonic()
     response = llm.invoke(messages)
     latency = (time.monotonic() - t0) * 1000
+    if isinstance(response, AIMessage) and response.content:
+        clean = re.sub(r"<think>.*?</think>\s*", "", str(response.content), flags=re.DOTALL).strip()
+        clean = clean.replace("<think>", "").replace("</think>", "").strip()
+        response = AIMessage(content=clean or str(response.content).strip())
 
     if tracker:
         tracker.record(

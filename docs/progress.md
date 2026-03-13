@@ -633,3 +633,31 @@ This file operates in a "Chat" structure. Whenever an agent finishes a major uni
      - `python -m py_compile src/agent/nodes/reasoner.py src/agent/nodes/verifier.py tests/test_reasoner.py tests/test_verifier.py` -> **passed**
 - **Blockers:** Live FAB++ rerun not executed in this verification pass, so benchmark impact is still pending.
 - **Handoff Notes:** Phase 4 is implemented cleanly enough to test live now. The one correction was to avoid paying the higher executor token budget on every task. The next meaningful check is another FAB++ slice to see whether the legal path now finalizes instead of looping and whether the options path gains depth without a cost blow-up.
+
+### Chat 49: Trace-Driven Control Fixes & Benchmark Regression Coverage
+
+- **Role:** Debugger / Coder
+- **Actions Taken:**
+  1. Fixed a core executor/control bug in `src/agent/nodes/reasoner.py`: explicit prompt-mode tool envelopes are now preserved as real `tool_calls` even when the requested tool is hidden or disallowed. This pushes them through `tool_executor` for explicit blocking instead of letting them die as plain-text final answers.
+  2. Tightened executor output budgets in `src/agent/nodes/reasoner.py` by task family:
+     - `legal` -> `1500`
+     - `options` -> `1300`
+     - all others -> `1000`
+     This keeps the legal/options buffer targeted instead of globally inflating cost.
+  3. Added a deterministic verifier guard in `src/agent/nodes/verifier.py` for textual tool attempts:
+     - complete raw tool JSON embedded in prose
+     - truncated tool-envelope prefixes that never became executable tool calls
+     These now trigger `REVISE` or `BACKTRACK` without trusting the verifier LLM to notice them.
+  4. Added an options-specific constrained revise mode in `src/agent/nodes/verifier.py` so repeated options revisions are pushed into a compact answer shape instead of another long `<think>`-heavy draft.
+  5. Updated the old OSS-patcher regression in `tests/test_coordinator.py` to reflect the intended long-term behavior: explicit hidden tool envelopes should be surfaced for downstream validation, not silently ignored.
+  6. Added trace-shaped regressions in `tests/test_verifier.py`:
+     - legal raw `internet_search` envelope -> deterministic backtrack
+     - truncated textual `analyze_strategy` attempt -> deterministic revise with constrained options mode
+  7. Extended `tests/test_reasoner.py` for the new legal/options token-budget mapping.
+  8. Verified with:
+     - `pytest tests/test_reasoner.py tests/test_verifier.py tests/test_coordinator.py tests/test_tool_executor.py tests/test_end_to_end_verifier.py -q` -> **55 passed**
+     - `python -m py_compile src/agent/nodes/reasoner.py src/agent/nodes/verifier.py tests/test_reasoner.py tests/test_verifier.py tests/test_coordinator.py` -> **passed**
+- **Blockers:** Live FAB++ benchmark rerun still pending after these control-path fixes, so the score delta is not yet confirmed.
+- **Handoff Notes:** The current patch set directly targets the two trace-proven failures:
+  - Task 2: hidden/disallowed tool attempts should no longer collapse into a mediocre essay after output extraction.
+  - Task 3: truncated textual tool attempts should no longer be treated as final answers, and options retries should now be more compact and completion-oriented.

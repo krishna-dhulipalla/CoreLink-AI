@@ -9,6 +9,7 @@ to the last verified checkpoint and a warning is injected for the Executor.
 import logging
 import time
 import json
+import re
 from difflib import SequenceMatcher
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
@@ -32,6 +33,7 @@ from agent.memory.schema import (
     _task_signature,
     _task_type_to_family,
 )
+from agent.nodes.reasoner import _allowed_tool_names_for_task
 from agent.prompts import VERIFIER_FINAL_ANSWER_ADDENDUM, VERIFIER_JSON_FALLBACK_PROMPT, VERIFIER_PROMPT, VerdictDecision
 from agent.state import AgentState, ReplaceMessages
 from agent.pruning import truncate_memory_fields
@@ -43,6 +45,12 @@ BACKTRACK_WARNING = (
     "BACKTRACK WARNING: Your previous approach was evaluated as fundamentally flawed "
     "or hallucinated. The state has been reverted to the last verified checkpoint. "
     "Do NOT repeat the same mistake. Try a different tool or strategy."
+)
+
+_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
+_TEXTUAL_TOOL_ATTEMPT_RE = re.compile(
+    r'\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"arguments"\s*:',
+    re.DOTALL,
 )
 
 _FINAL_ANSWER_CHECKS = {
@@ -89,6 +97,22 @@ def _latest_human_text(messages: list[BaseMessage]) -> str:
         if isinstance(msg, HumanMessage) and msg.content:
             return msg.content
     return ""
+
+
+def _strip_think_markup(text: str) -> str:
+    clean = _THINK_BLOCK_RE.sub("", text)
+    clean = clean.replace("<think>", "").replace("</think>", "")
+    return clean.strip()
+
+
+def _textual_tool_attempt_name(msg: BaseMessage | None) -> str | None:
+    if not isinstance(msg, AIMessage) or msg.tool_calls or not msg.content:
+        return None
+    clean = _strip_think_markup(str(msg.content))
+    match = _TEXTUAL_TOOL_ATTEMPT_RE.search(clean)
+    if match:
+        return match.group(1).strip()
+    return None
 
 
 def _baseline_checkpoint_messages(messages: list[BaseMessage]) -> list[BaseMessage]:
@@ -312,16 +336,9 @@ def verifier(state: AgentState) -> dict:
     if "verifier_check" not in selected_layers:
         return {}
 
-    tracker: CostTracker | None = state.get("cost_tracker")
-    model_name = get_model_name("verifier")
-    llm = ChatOpenAI(
-        model=model_name,
-        **get_client_kwargs("verifier"),
-        temperature=0.0,
-    )
-
     history = [m for m in state["messages"] if not _is_internal_warning(m)]
     task_type = _normalize_task_type(state.get("task_type", "general"))
+    task_text = _latest_human_text(state["messages"])
 
     # Sprint 5: Detect final answer vs intermediate step
     # Final answer = last real AI message has no tool_calls
@@ -331,33 +348,72 @@ def verifier(state: AgentState) -> dict:
             is_final_answer = not bool(msg.tool_calls)
             break
 
-    # Use stricter prompt for final answers only
-    base_prompt = _verifier_prompt_for(task_type, is_final_answer)
+    last_msg = _last_non_warning_message(history)
+    textual_tool_attempt = _textual_tool_attempt_name(last_msg)
 
-    prompt_messages = [SystemMessage(content=base_prompt)] + history
+    tracker: CostTracker | None = state.get("cost_tracker")
+    model_name = get_model_name("verifier")
+    used_llm = False
+    invocation_messages: list[BaseMessage] = []
 
-    invocation_messages = prompt_messages
-    t0 = time.monotonic()
-    try:
-        if _structured_output_mode("verifier") == "native":
-            verdict: VerdictDecision = llm.with_structured_output(VerdictDecision).invoke(prompt_messages)
-        else:
-            invocation_messages = [SystemMessage(content=_verifier_fallback_prompt_for(task_type, is_final_answer))] + history
-            raw_response = llm.invoke(invocation_messages)
-            verdict = VerdictDecision.model_validate_json(
-                _extract_json_payload(str(raw_response.content or ""))
-            )
-        success = True
-    except Exception as exc:
-        logger.warning("Verifier LLM failed: %s. Defaulting to PASS.", exc)
+    if textual_tool_attempt:
+        allowed_tools = _allowed_tool_names_for_task(task_type, task_text)
+        disallowed = allowed_tools is not None and textual_tool_attempt not in allowed_tools
         verdict = VerdictDecision(
-            verdict="PASS",
-            reasoning=f"Fallback due to verifier error: {exc}",
+            verdict="BACKTRACK" if disallowed else "REVISE",
+            reasoning=(
+                f"The executor emitted a textual tool attempt for '{textual_tool_attempt}' instead of a valid executed "
+                f"tool call or a proper final answer. "
+                + (
+                    f"This tool is not allowed for task_type '{task_type}'. Revert and choose a permitted strategy."
+                    if disallowed
+                    else "Re-emit either a valid tool call or a complete final answer, but do not include raw tool JSON in text."
+                )
+            ),
         )
+        latency = 0.0
         success = False
-    latency = (time.monotonic() - t0) * 1000
+        logger.warning(
+            "[Verifier] Detected textual tool attempt '%s' for task_type=%s; bypassing verifier LLM.",
+            textual_tool_attempt,
+            task_type,
+        )
+    else:
+        llm = ChatOpenAI(
+            model=model_name,
+            **get_client_kwargs("verifier"),
+            temperature=0.0,
+        )
 
-    if tracker:
+        # Use stricter prompt for final answers only
+        base_prompt = _verifier_prompt_for(task_type, is_final_answer)
+
+        prompt_messages = [SystemMessage(content=base_prompt)] + history
+
+        invocation_messages = prompt_messages
+        t0 = time.monotonic()
+        try:
+            if _structured_output_mode("verifier") == "native":
+                verdict = llm.with_structured_output(VerdictDecision).invoke(prompt_messages)
+            else:
+                invocation_messages = [SystemMessage(content=_verifier_fallback_prompt_for(task_type, is_final_answer))] + history
+                raw_response = llm.invoke(invocation_messages)
+                verdict = VerdictDecision.model_validate_json(
+                    _extract_json_payload(str(raw_response.content or ""))
+                )
+            success = True
+            used_llm = True
+        except Exception as exc:
+            logger.warning("Verifier LLM failed: %s. Defaulting to PASS.", exc)
+            verdict = VerdictDecision(
+                verdict="PASS",
+                reasoning=f"Fallback due to verifier error: {exc}",
+            )
+            success = False
+            used_llm = True
+        latency = (time.monotonic() - t0) * 1000
+
+    if tracker and used_llm:
         tracker.record(
             operator="verifier_check",
             model_name=model_name,
@@ -372,8 +428,6 @@ def verifier(state: AgentState) -> dict:
         verdict.verdict,
         verdict.reasoning[:120],
     )
-
-    task_text = _latest_human_text(state["messages"])
 
     # Sprint 3+4: Retrieve repair hints from verifier memory (budget-capped)
     repair_hint_block = ""
@@ -470,11 +524,24 @@ def verifier(state: AgentState) -> dict:
                 "Each section: 2-4 sentences. No preamble. No internal reasoning. "
                 "Start directly with '1. STRUCTURE OPTIONS'."
             )
+            _OPTIONS_CONSTRAINED_TEMPLATE = (
+                "\n\nCONSTRAINED OPTIONS MODE: Your previous answer was incomplete or malformed. "
+                "Output ONLY these blocks, in order:\n"
+                "1. STRUCTURED_RESULTS JSON\n"
+                "2. PRIMARY STRATEGY\n"
+                "3. ALTERNATIVE STRATEGY\n"
+                "4. RISK MANAGEMENT\n"
+                "Use compact bullet points. No preamble. No internal reasoning. "
+                "If you use a tool, emit ONLY the tool JSON. Do not embed tool JSON inside prose."
+            )
 
             constrained_suffix = ""
             if task_type == "legal" and budget and budget.revise_cycles >= 1:
                 constrained_suffix = _LEGAL_CONSTRAINED_TEMPLATE
                 logger.info("[Verifier] Legal task: injecting constrained answer template after REVISE #%d", budget.revise_cycles)
+            elif task_type == "options" and budget and budget.revise_cycles >= 1:
+                constrained_suffix = _OPTIONS_CONSTRAINED_TEMPLATE
+                logger.info("[Verifier] Options task: injecting constrained answer template after REVISE #%d", budget.revise_cycles)
 
             warning_msg = SystemMessage(
                 content=f"VERIFIER REVISION REQUIRED:\n{verdict.reasoning}{repair_hint_block}{constrained_suffix}",

@@ -153,6 +153,59 @@ class TestVerifierNode:
         assert "CONSTRAINED ANSWER MODE" not in warning.content
 
     @patch("agent.nodes.verifier.ChatOpenAI")
+    def test_verifier_backtracks_on_textual_disallowed_tool_attempt(self, mock_chat_openai):
+        """A blocked tool envelope rendered as plain text should not pass as a final answer."""
+        state = {
+            "selected_layers": ["verifier_check"],
+            "messages": [
+                HumanMessage(content="Advise on acquisition structure with compliance liabilities."),
+                AIMessage(
+                    content=(
+                        "<think>Need external search.</think>\n"
+                        '{"name": "internet_search", "arguments": {"query": "M&A structure"}}'
+                    )
+                ),
+            ],
+            "checkpoint_stack": [],
+            "task_type": "legal",
+        }
+
+        result = verifier(state)
+
+        mock_chat_openai.assert_not_called()
+        assert isinstance(result["messages"], ReplaceMessages)
+        assert "internet_search" in result["messages"][-1].content
+        assert "not allowed" in result["messages"][-1].content
+
+    @patch("agent.nodes.verifier.ChatOpenAI")
+    def test_verifier_revises_on_textual_truncated_tool_attempt(self, mock_chat_openai):
+        """A truncated textual tool attempt should be revised before it is mistaken for a final answer."""
+        budget = BudgetTracker()
+        state = {
+            "selected_layers": ["verifier_check"],
+            "messages": [
+                HumanMessage(content="IV is high. Recommend an options strategy."),
+                AIMessage(
+                    content=(
+                        "<think>Need tool data.</think>\n"
+                        '{"name": "analyze_strategy", "arguments": {"legs": [{"option_type": "call"'
+                    )
+                ),
+            ],
+            "checkpoint_stack": [],
+            "task_type": "options",
+            "budget_tracker": budget,
+        }
+
+        result = verifier(state)
+
+        mock_chat_openai.assert_not_called()
+        warning = result["messages"][0]
+        assert isinstance(warning, SystemMessage)
+        assert "raw tool JSON" in warning.content
+        assert "CONSTRAINED OPTIONS MODE" in warning.content
+
+    @patch("agent.nodes.verifier.ChatOpenAI")
     def test_verifier_uses_latest_user_turn_for_repair_lookup(self, mock_chat_openai):
         """Repair lookup should use the current turn, not the oldest human message."""
         mock_llm = MagicMock()

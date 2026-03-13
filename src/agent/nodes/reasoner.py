@@ -14,7 +14,7 @@ from langchain_openai import ChatOpenAI
 
 from agent.cost import CostTracker
 from agent.memory.schema import _normalize_task_type
-from agent.model_config import get_client_kwargs, get_model_name, _tool_call_mode
+from agent.model_config import _extract_json_payload, get_client_kwargs, get_model_name, _tool_call_mode
 from agent.pruning import prune_for_reasoner
 from agent.prompts import SYSTEM_PROMPT
 from agent.state import AgentState
@@ -163,6 +163,8 @@ def _executor_max_tokens(task_type: str) -> int:
     normalized_type = _normalize_task_type(task_type)
     if normalized_type == "legal":
         return 1500
+    if normalized_type == "options":
+        return 1300
     return 1000
 
 
@@ -262,36 +264,38 @@ def patch_oss_tool_calls(response: AIMessage, tools: list) -> AIMessage:
         if len(lines) >= 3:
             content = "\n".join(lines[1:-1]).strip()
 
-    if content.startswith("{") and content.endswith("}"):
+    if "{" in content:
         try:
-            payload = json.loads(content)
+            payload = json.loads(_extract_json_payload(content))
 
             # Pattern 1: Explicit {"name": ..., "arguments": ...}
             if "name" in payload and "arguments" in payload:
                 tool_name = payload["name"]
                 tool_args = payload["arguments"]
-                valid_names = set()
-                for t in tools:
-                    n = getattr(t, "name", None) or (t.get("function", {}).get("name") if isinstance(t, dict) else None)
-                    if n:
-                        valid_names.add(n)
+                valid_names = {
+                    (
+                        getattr(t, "name", None)
+                        or (t.get("function", {}).get("name") if isinstance(t, dict) else None)
+                    )
+                    for t in tools
+                }
+                valid_names.discard(None)
                 if tool_name in valid_names:
                     logger.info(f"[OSS Patch] Converted prompt-mode JSON to tool call for '{tool_name}'")
-                    response.tool_calls = [
-                        {
-                            "name": tool_name,
-                            "args": tool_args if isinstance(tool_args, dict) else {},
-                            "id": f"call_{uuid.uuid4().hex[:10]}",
-                            "type": "tool_call"
-                        }
-                    ]
-                    response.content = ""
-                    return response
-                # Do not silently remap an explicit tool envelope to a different tool.
-                logger.warning(
-                    "[OSS Patch] Ignoring explicit tool envelope for hidden/unknown tool '%s'.",
-                    tool_name,
-                )
+                else:
+                    logger.warning(
+                        "[OSS Patch] Preserving explicit tool envelope for downstream validation of hidden/unknown tool '%s'.",
+                        tool_name,
+                    )
+                response.tool_calls = [
+                    {
+                        "name": tool_name,
+                        "args": tool_args if isinstance(tool_args, dict) else {},
+                        "id": f"call_{uuid.uuid4().hex[:10]}",
+                        "type": "tool_call"
+                    }
+                ]
+                response.content = ""
                 return response
 
             # Pattern 2: Leaked schema match (original logic)
@@ -327,7 +331,7 @@ def patch_oss_tool_calls(response: AIMessage, tools: list) -> AIMessage:
                 ]
                 response.content = ""
                 return response
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, ValueError):
             pass
 
     return response

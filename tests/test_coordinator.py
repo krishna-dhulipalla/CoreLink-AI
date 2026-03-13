@@ -250,6 +250,11 @@ class TestRoutingPolicy:
         assert allowed is not None
         assert "create_portfolio" not in allowed
 
+    def test_quantitative_prompt_using_word_does_not_false_match_us_legal_keyword(self):
+        """Short keyword matching should not classify 'using' as legal due to substring 'us'."""
+        prompt = "Calculate the financial leverage effect using ROE 3.0433% and ROA 1.579%. Return JSON only."
+        assert _heuristic_task_type(prompt) == "quantitative"
+
     def test_generic_options_strategy_prompt_hides_paper_trading_tools(self):
         prompt = "IV is high versus historical volatility. Recommend an options strategy with Greeks and risk management."
         allowed = _allowed_tool_names_for_task("options", prompt)
@@ -275,8 +280,8 @@ class TestRoutingPolicy:
         }
         assert should_use_tools(state) == "verifier"
 
-    def test_oss_patcher_respects_filtered_tool_surface(self):
-        """Hidden tools should not be revived by the OSS patcher."""
+    def test_oss_patcher_preserves_explicit_hidden_tool_for_downstream_validation(self):
+        """Explicit tool envelopes should survive as tool calls so the executor can block them cleanly."""
 
         class _Tool:
             def __init__(self, name):
@@ -286,8 +291,9 @@ class TestRoutingPolicy:
             content='{"name": "internet_search", "arguments": {"query": "latest rule"}}'
         )
         patched = patch_oss_tool_calls(response, [_Tool("calculator"), _Tool("fetch_reference_file")])
-        assert not patched.tool_calls
-        assert "internet_search" in patched.content
+        assert patched.tool_calls
+        assert patched.tool_calls[0]["name"] == "internet_search"
+        assert patched.content == ""
 
 
 # ── Format Normalizer Conditional Tests ──────────────────────────────────────
@@ -371,3 +377,22 @@ class TestDirectResponderPrompt:
     def test_system_prompt_has_tool_mentions(self):
         """SYSTEM_PROMPT (for reasoner) should mention tools — sanity check."""
         assert "tool" in SYSTEM_PROMPT.lower()
+
+
+class TestDirectResponderBehavior:
+
+    @patch("agent.nodes.coordinator.ChatOpenAI")
+    def test_direct_responder_strips_think_markup(self, mock_chat_openai):
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = AIMessage(
+            content="<think>internal chain</think>\n\nHello! How can I help?"
+        )
+        mock_chat_openai.return_value = mock_llm
+
+        state = {
+            "messages": [HumanMessage(content="Hello")],
+            "cost_tracker": CostTracker(),
+        }
+
+        result = direct_responder(state)
+        assert result["messages"][0].content == "Hello! How can I help?"
