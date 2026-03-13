@@ -104,6 +104,55 @@ class TestVerifierNode:
         assert "checkpoint_stack" not in result
 
     @patch("agent.nodes.verifier.ChatOpenAI")
+    def test_verifier_legal_revise_injects_constrained_template(self, mock_chat_openai):
+        """Legal tasks should switch into constrained final-answer mode after REVISE."""
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = VerdictDecision(verdict="REVISE", reasoning="Too verbose")
+        mock_chat_openai.return_value.with_structured_output.return_value = mock_llm
+
+        state = {
+            "selected_layers": ["verifier_check"],
+            "messages": [
+                HumanMessage(content="Advise on acquisition structure with EU/US compliance risk."),
+                AIMessage(content="Long wandering legal draft"),
+            ],
+            "checkpoint_stack": [],
+            "task_type": "legal",
+            "budget_tracker": BudgetTracker(),
+        }
+
+        result = verifier(state)
+
+        assert "messages" in result
+        warning = result["messages"][0]
+        assert isinstance(warning, SystemMessage)
+        assert "CONSTRAINED ANSWER MODE" in warning.content
+        assert "1. STRUCTURE OPTIONS" in warning.content
+
+    @patch("agent.nodes.verifier.ChatOpenAI")
+    def test_verifier_nonlegal_revise_does_not_inject_constrained_template(self, mock_chat_openai):
+        """The constrained legal template should not bleed into other task families."""
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = VerdictDecision(verdict="REVISE", reasoning="Needs fuller risk analysis")
+        mock_chat_openai.return_value.with_structured_output.return_value = mock_llm
+
+        state = {
+            "selected_layers": ["verifier_check"],
+            "messages": [
+                HumanMessage(content="IV is elevated. Recommend an options strategy."),
+                AIMessage(content="Short strangle is appropriate."),
+            ],
+            "checkpoint_stack": [],
+            "task_type": "options",
+            "budget_tracker": BudgetTracker(),
+        }
+
+        result = verifier(state)
+
+        warning = result["messages"][0]
+        assert "CONSTRAINED ANSWER MODE" not in warning.content
+
+    @patch("agent.nodes.verifier.ChatOpenAI")
     def test_verifier_uses_latest_user_turn_for_repair_lookup(self, mock_chat_openai):
         """Repair lookup should use the current turn, not the oldest human message."""
         mock_llm = MagicMock()

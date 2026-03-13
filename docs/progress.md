@@ -610,3 +610,26 @@ This file operates in a "Chat" structure. Whenever an agent finishes a major uni
   5. **Task 3 is materially healthier, but still shallow.** The agent now uses `analyze_strategy`, gets the corrected net credit, and produces a coherent short-vol answer, but it still explores only one concrete strategy path and does not deepen Greeks coverage beyond partial aggregate analysis.
   6. **Reasoner prompt/tool overhead is still high** on benchmark tasks (for example ~3k prompt tokens on the options task before the final answer), so even successful paths remain expensive and leave less room for deeper follow-up analysis.
 - **Handoff Notes:** The recent architecture hardening fixed the catastrophic legal->options misclassification and malformed tool-call loop. The remaining problem is different: the legal executor path now routes correctly but still cannot reliably convert long internal analysis into a complete final legal recommendation under the current model/profile and token budget. Task 3 shows the options path is now functional, but still not deep enough to maximize benchmark scoring.
+
+### Chat 48: Phase 4 Verification & Narrow Patch
+
+- **Role:** Reviewer / Coder
+- **Actions Taken:**
+  1. Reviewed the newly implemented Phase 4 changes in `src/agent/nodes/reasoner.py` and `src/agent/nodes/verifier.py`.
+  2. Confirmed the core logic landed correctly:
+     - legal domain prompt now forces a fixed final-answer shape
+     - legal `REVISE` path now injects a constrained section template
+     - options prompt now asks for tool-backed primary analysis plus concrete comparative alternatives
+     - options final-answer verifier checks now require quantitative tradeoffs rather than shallow naming of alternatives
+  3. Found one implementation issue: the executor token bump had been applied globally (`1500` for every task family), which would increase cost/latency on non-legal tasks without targeting the actual failure mode.
+  4. Patched `src/agent/nodes/reasoner.py` to make the executor output budget task-aware:
+     - `legal` -> `1500`
+     - all other task families -> `1000`
+  5. Added regression coverage:
+     - new `tests/test_reasoner.py` verifies the legal-only token bump
+     - `tests/test_verifier.py` now verifies that legal `REVISE` injects constrained answer mode and that non-legal tasks do not inherit that template
+  6. Verified with:
+     - `pytest tests/test_reasoner.py tests/test_verifier.py tests/test_coordinator.py tests/test_tool_executor.py tests/test_end_to_end_verifier.py -q` -> **53 passed**
+     - `python -m py_compile src/agent/nodes/reasoner.py src/agent/nodes/verifier.py tests/test_reasoner.py tests/test_verifier.py` -> **passed**
+- **Blockers:** Live FAB++ rerun not executed in this verification pass, so benchmark impact is still pending.
+- **Handoff Notes:** Phase 4 is implemented cleanly enough to test live now. The one correction was to avoid paying the higher executor token budget on every task. The next meaningful check is another FAB++ slice to see whether the legal path now finalizes instead of looping and whether the options path gains depth without a cost blow-up.

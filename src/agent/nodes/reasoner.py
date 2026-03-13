@@ -153,17 +153,30 @@ def _increment_step() -> int:
     return _step_counter
 
 
+def _executor_max_tokens(task_type: str) -> int:
+    """Return a conservative per-task output budget for the executor.
+
+    Legal synthesis needs a little more runway to finalize a structured answer.
+    Most other task families should stay on the tighter budget to avoid paying
+    for longer-than-necessary Qwen-style reasoning traces.
+    """
+    normalized_type = _normalize_task_type(task_type)
+    if normalized_type == "legal":
+        return 1500
+    return 1000
+
+
 # ---------------------------------------------------------------------------
 # LLM Factory
 # ---------------------------------------------------------------------------
 
-def build_model(tools: list):
+def build_model(tools: list, task_type: str = "general"):
     """Instantiate the LLM, optionally with native tool bindings."""
     llm = ChatOpenAI(
         model=get_model_name("executor"),
         **get_client_kwargs("executor"),
         temperature=0,
-        max_tokens=1500,
+        max_tokens=_executor_max_tokens(task_type),
     )
     mode = _tool_call_mode("executor")
     if mode == "native":
@@ -373,7 +386,7 @@ def make_reasoner(tools: list):
         task_type = _normalize_task_type(state.get("task_type", "general"))
         task_text = _latest_human_text(state["messages"])
         filtered_tools = _filter_tools_for_task_type(tools, task_type, task_text)
-        model = build_model(filtered_tools)
+        model = build_model(filtered_tools, task_type=task_type)
 
         # Sprint 4: Prune state before building LLM prompt
         messages = prune_for_reasoner(state["messages"])
