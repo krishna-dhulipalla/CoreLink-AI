@@ -189,7 +189,7 @@ def _structured_output_mode(role: str) -> str:
         return "native"
 
     host = (urlparse(base_url).hostname or "").lower()
-    if host in LOCAL_BACKEND_HOSTS:
+    if host in LOCAL_BACKEND_HOSTS or host in _PROMPT_TOOL_HOSTS:
         return "local_json"
     return "native"
 

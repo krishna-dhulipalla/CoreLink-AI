@@ -262,6 +262,21 @@ class TestRoutingPolicy:
         assert "analyze_strategy" in allowed
         assert "create_portfolio" not in allowed
 
+    def test_legal_structuring_prompt_hides_calculator_by_default(self):
+        prompt = (
+            "Target company has EU and US compliance gaps, board wants stock consideration "
+            "for tax reasons, and we need a rapid acquisition structure."
+        )
+        allowed = _allowed_tool_names_for_task("legal", prompt)
+        assert allowed is not None
+        assert "calculator" not in allowed
+
+    def test_legal_numeric_prompt_keeps_calculator_when_explicit_math_is_requested(self):
+        prompt = "Calculate the break fee percentage and damages exposure for the merger dispute."
+        allowed = _allowed_tool_names_for_task("legal", prompt)
+        assert allowed is not None
+        assert "calculator" in allowed
+
     def test_tool_edge_skips_verifier_when_not_selected(self):
         """If the plan omits verifier_check, reasoner exits to format_normalizer."""
         state = {

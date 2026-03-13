@@ -128,6 +128,7 @@ class TestVerifierNode:
         assert isinstance(warning, SystemMessage)
         assert "CONSTRAINED ANSWER MODE" in warning.content
         assert "1. STRUCTURE OPTIONS" in warning.content
+        assert "5. KEY OPEN QUESTIONS / ASSUMPTIONS" in warning.content
 
     @patch("agent.nodes.verifier.ChatOpenAI")
     def test_verifier_nonlegal_revise_does_not_inject_constrained_template(self, mock_chat_openai):
@@ -204,6 +205,75 @@ class TestVerifierNode:
         assert isinstance(warning, SystemMessage)
         assert "raw tool JSON" in warning.content
         assert "CONSTRAINED OPTIONS MODE" in warning.content
+
+    @patch("agent.nodes.verifier.ChatOpenAI")
+    def test_verifier_revises_incomplete_transactional_legal_answer_without_llm(self, mock_chat_openai):
+        """Shallow transactional legal answers should be revised before verifier PASS drift."""
+        state = {
+            "selected_layers": ["verifier_check"],
+            "messages": [
+                HumanMessage(
+                    content=(
+                        "Target company has compliance gaps in EU and US, board wants stock consideration "
+                        "for tax reasons, and we need a rapid acquisition structure."
+                    )
+                ),
+                AIMessage(
+                    content=(
+                        "1. STRUCTURE OPTIONS\n"
+                        "Use an asset purchase or stock purchase.\n"
+                        "2. TAX CONSEQUENCES\n"
+                        "There are tax tradeoffs.\n"
+                        "3. LIABILITY PROTECTION\n"
+                        "Use indemnities and escrow.\n"
+                        "4. REGULATORY/DILIGENCE RISKS\n"
+                        "Consider EU and US compliance.\n"
+                        "6. RECOMMENDED NEXT STEPS\n"
+                        "Move quickly with counsel."
+                    )
+                ),
+            ],
+            "checkpoint_stack": [],
+            "task_type": "legal",
+            "budget_tracker": BudgetTracker(),
+        }
+
+        result = verifier(state)
+
+        mock_chat_openai.assert_not_called()
+        warning = result["messages"][0]
+        assert isinstance(warning, SystemMessage)
+        assert "KEY OPEN QUESTIONS / ASSUMPTIONS" in warning.content
+
+    @patch("agent.nodes.verifier.ChatOpenAI")
+    def test_verifier_revises_truncated_options_final_answer_without_llm(self, mock_chat_openai):
+        """A clipped options final answer must not PASS just because it is directionally correct."""
+        state = {
+            "selected_layers": ["verifier_check"],
+            "messages": [
+                HumanMessage(content="IV is elevated. Recommend an options strategy."),
+                AIMessage(
+                    content=(
+                        "PRIMARY STRATEGY\n- Short strangle\n"
+                        "ALTERNATIVE STRATEGY\n- Iron condor\n"
+                        "KEY GREEKS / P&L / BREAKEVENS\n- Delta: -0.07\n"
+                        "RISK MANAGEMENT / HEDGE / SIZING\n- Buy"
+                    ),
+                    response_metadata={"finish_reason": "length"},
+                ),
+            ],
+            "checkpoint_stack": [],
+            "task_type": "options",
+            "budget_tracker": BudgetTracker(),
+        }
+
+        result = verifier(state)
+
+        mock_chat_openai.assert_not_called()
+        warning = result["messages"][0]
+        assert isinstance(warning, SystemMessage)
+        assert "CONSTRAINED OPTIONS MODE" in warning.content
+        assert "truncated" in warning.content.lower()
 
     @patch("agent.nodes.verifier.ChatOpenAI")
     def test_verifier_uses_latest_user_turn_for_repair_lookup(self, mock_chat_openai):

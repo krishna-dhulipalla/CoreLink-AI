@@ -553,6 +553,19 @@ This file operates in a "Chat" structure. Whenever an agent finishes a major uni
 
 - Run the full FAB++ benchmark and verify if these targeted improvements prevent the Legal path collapse (Task 2) and deepen Options path scores (Task 3).
 
+### Phase 5: Coordinator Parsing, Legal Depth, & Options Limits
+
+**Status:** Implemented.
+
+**What we did:**
+
+1. **Coordinator Native JSON failure:** Updated `model_config.py` to enforce `local_json` fallback for `_PROMPT_TOOL_HOSTS` so that Nebius correctly parses structured output requests.
+2. **Legal Task 2 Depth:** Rewrote `DOMAIN_ADDENDA["legal"]` and `_LEGAL_CONSTRAINED_TEMPLATE` to explicitly demand comprehensive, deeply analytical, partner-level depth without strict sentence limits.
+3. **Options Task 3 Truncation:** Increased the executor `max_tokens` from 1300/1500 to 2000 for both legal and options tasks to prevent truncation.
+
+**Next Steps / Handoff:**
+- Re-run the FAB++ benchmark to verify the fix for JSON parsing and the enhanced legal depth.
+
 ### Chat 46: FAB++ Trace Post-Mortem & Runtime Recovery Fixes
 
 - **Role:** Debugger / Coder

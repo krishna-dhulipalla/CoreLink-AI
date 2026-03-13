@@ -60,7 +60,8 @@ _FINAL_ANSWER_CHECKS = {
     ),
     "legal": (
         "- For legal tasks: verify the answer covers structure options, liability allocation, tax implications, "
-        "regulatory/compliance issues, diligence, and execution next steps when relevant."
+        "regulatory/compliance issues, diligence, key open questions/assumptions, and execution next steps when relevant. "
+        "Do not PASS a generic memo that omits decision-driving unknowns or concrete risk-allocation mechanisms."
     ),
     "options": (
         "- For options tasks: verify the answer includes a primary strategy with "
@@ -68,6 +69,7 @@ _FINAL_ANSWER_CHECKS = {
         "Verify that at least one alternative strategy is discussed with concrete "
         "quantitative tradeoffs (e.g., different max-loss, Greeks profile), "
         "not merely named. "
+        "Reject final answers that are visibly truncated or stop mid-bullet. "
         "Do NOT reject an answer solely for lacking a second tool-backed analysis "
         "if the alternative includes concrete numerical comparison."
     ),
@@ -78,6 +80,72 @@ _FINAL_ANSWER_CHECKS = {
     "retrieval": (
         "- For retrieval tasks: verify the answer uses retrieved evidence rather than generic filler and reflects "
         "the requested external facts or sources."
+    ),
+}
+
+_LEGAL_COMPLETENESS_RULES: dict[str, tuple[str, ...]] = {
+    "structure options": (
+        "asset purchase",
+        "stock purchase",
+        "merger",
+        "spv",
+        "carve-out",
+        "hybrid",
+        "triangular",
+    ),
+    "tax consequences": (
+        "tax",
+        "capital gain",
+        "basis",
+        "deferral",
+        "step-up",
+        "tax-free",
+        "section 355",
+    ),
+    "liability protection": (
+        "indemn",
+        "escrow",
+        "holdback",
+        "rep",
+        "warrant",
+        "insurance",
+        "disclosure schedule",
+        "cap",
+    ),
+    "regulatory/diligence risks": (
+        "regulator",
+        "compliance",
+        "filing",
+        "approval",
+        "diligence",
+        "audit",
+        "hsr",
+        "gdpr",
+        "eu",
+        "us",
+    ),
+    "key open questions / assumptions": (
+        "need to determine",
+        "need to assess",
+        "need to confirm",
+        "assumption",
+        "willingness",
+        "risk tolerance",
+        "severity",
+        "feasible",
+        "timeline requirement",
+        "unknown",
+        "clarify",
+    ),
+    "recommended next steps": (
+        "recommend",
+        "next step",
+        "engage",
+        "draft",
+        "file",
+        "timeline",
+        "week",
+        "immediately",
     ),
 }
 
@@ -105,6 +173,30 @@ def _strip_think_markup(text: str) -> str:
     return clean.strip()
 
 
+def _ai_finish_reason(msg: BaseMessage | None) -> str:
+    if not isinstance(msg, AIMessage):
+        return ""
+    return str(getattr(msg, "response_metadata", {}).get("finish_reason", "") or "").lower()
+
+
+def _looks_truncated_answer(msg: BaseMessage | None) -> bool:
+    if not isinstance(msg, AIMessage) or not msg.content:
+        return False
+    if _ai_finish_reason(msg) == "length":
+        return True
+
+    text = _strip_think_markup(str(msg.content)).rstrip()
+    if not text:
+        return False
+    if text.endswith(("(", "[", "{", ":", ",", "/", "-", "**")):
+        return True
+
+    last_line = text.splitlines()[-1].strip()
+    if last_line.startswith(("-", "*")) and len(last_line) <= 6:
+        return True
+    return False
+
+
 def _textual_tool_attempt_name(msg: BaseMessage | None) -> str | None:
     if not isinstance(msg, AIMessage) or msg.tool_calls or not msg.content:
         return None
@@ -113,6 +205,54 @@ def _textual_tool_attempt_name(msg: BaseMessage | None) -> str | None:
     if match:
         return match.group(1).strip()
     return None
+
+
+def _requires_transactional_legal_depth(task_text: str) -> bool:
+    normalized = (task_text or "").lower()
+    return any(
+        token in normalized
+        for token in (
+            "acquisition",
+            "merger",
+            "deal",
+            "stock consideration",
+            "liability",
+            "compliance",
+            "transaction",
+            "target company",
+        )
+    )
+
+
+def _legal_completeness_gaps(answer_text: str, task_text: str) -> list[str]:
+    if not answer_text:
+        return ["final answer text"]
+
+    normalized = _normalize_memory_text(answer_text, max_len=5000)
+    gaps: list[str] = []
+    for label, keywords in _LEGAL_COMPLETENESS_RULES.items():
+        if not any(keyword in normalized for keyword in keywords):
+            gaps.append(label)
+
+    if _requires_transactional_legal_depth(task_text):
+        structure_hits = sum(
+            1
+            for keyword in ("asset purchase", "stock purchase", "merger", "spv", "carve-out", "hybrid", "triangular")
+            if keyword in normalized
+        )
+        if structure_hits < 2 and "multiple structure alternatives" not in gaps:
+            gaps.append("multiple structure alternatives")
+
+        if "eu" in task_text.lower() and "eu" not in normalized:
+            gaps.append("EU-specific regulatory touchpoint")
+        if "us" in task_text.lower() and "us" not in normalized and "hsr" not in normalized:
+            gaps.append("US-specific regulatory touchpoint")
+
+    deduped: list[str] = []
+    for gap in gaps:
+        if gap not in deduped:
+            deduped.append(gap)
+    return deduped
 
 
 def _baseline_checkpoint_messages(messages: list[BaseMessage]) -> list[BaseMessage]:
@@ -356,6 +496,10 @@ def verifier(state: AgentState) -> dict:
     used_llm = False
     invocation_messages: list[BaseMessage] = []
 
+    verdict = None
+    latency = 0.0
+    success = False
+
     if textual_tool_attempt:
         allowed_tools = _allowed_tool_names_for_task(task_type, task_text)
         disallowed = allowed_tools is not None and textual_tool_attempt not in allowed_tools
@@ -378,6 +522,37 @@ def verifier(state: AgentState) -> dict:
             textual_tool_attempt,
             task_type,
         )
+    elif is_final_answer and _looks_truncated_answer(last_msg):
+        verdict = VerdictDecision(
+            verdict="REVISE",
+            reasoning=(
+                "The final answer was truncated before completion. Re-synthesize a compact final answer. "
+                "Do not include internal reasoning, and do not end with a partial bullet or unfinished sentence."
+            ),
+        )
+        logger.warning(
+            "[Verifier] Detected truncated final answer for task_type=%s; bypassing verifier LLM.",
+            task_type,
+        )
+    elif is_final_answer and task_type == "legal":
+        legal_answer = _strip_think_markup(str(getattr(last_msg, "content", "") or ""))
+        gaps = _legal_completeness_gaps(legal_answer, task_text)
+        if gaps:
+            verdict = VerdictDecision(
+                verdict="REVISE",
+                reasoning=(
+                    "The legal final answer is incomplete. Add the missing dimensions: "
+                    + ", ".join(gaps[:6])
+                    + ". Use the required legal sections and make the answer specific."
+                ),
+            )
+            logger.warning(
+                "[Verifier] Detected incomplete legal final answer; missing=%s. Bypassing verifier LLM.",
+                ", ".join(gaps[:6]),
+            )
+
+    if verdict is not None:
+        pass
     else:
         llm = ChatOpenAI(
             model=model_name,
@@ -517,21 +692,22 @@ def verifier(state: AgentState) -> dict:
                 }
         if verdict.verdict == "REVISE":
             _LEGAL_CONSTRAINED_TEMPLATE = (
-                "\n\nCONSTRAINED ANSWER MODE: Your previous answer was too verbose or incomplete. "
-                "You MUST now produce your final answer using ONLY these sections:\n"
+                "\n\nCONSTRAINED ANSWER MODE: Your previous answer was incomplete. "
+                "You MUST now produce your final answer using ONLY these sections, "
+                "providing HIGHLY DETAILED and exhaustive analytical depth for each:\n"
                 "1. STRUCTURE OPTIONS\n2. TAX CONSEQUENCES\n3. LIABILITY PROTECTION\n"
-                "4. REGULATORY/DILIGENCE RISKS\n5. RECOMMENDED NEXT STEPS\n"
-                "Each section: 2-4 sentences. No preamble. No internal reasoning. "
-                "Start directly with '1. STRUCTURE OPTIONS'."
+                "4. REGULATORY/DILIGENCE RISKS\n5. KEY OPEN QUESTIONS / ASSUMPTIONS\n"
+                "6. RECOMMENDED NEXT STEPS\n"
+                "No preamble. No internal reasoning. Start directly with '1. STRUCTURE OPTIONS'."
             )
             _OPTIONS_CONSTRAINED_TEMPLATE = (
                 "\n\nCONSTRAINED OPTIONS MODE: Your previous answer was incomplete or malformed. "
                 "Output ONLY these blocks, in order:\n"
-                "1. STRUCTURED_RESULTS JSON\n"
-                "2. PRIMARY STRATEGY\n"
-                "3. ALTERNATIVE STRATEGY\n"
-                "4. RISK MANAGEMENT\n"
-                "Use compact bullet points. No preamble. No internal reasoning. "
+                "1. PRIMARY STRATEGY\n"
+                "2. ALTERNATIVE STRATEGY\n"
+                "3. KEY GREEKS / P&L / BREAKEVENS\n"
+                "4. RISK MANAGEMENT / HEDGE / SIZING\n"
+                "Use compact bullet points (2-4 bullets per block). No preamble. No internal reasoning. "
                 "If you use a tool, emit ONLY the tool JSON. Do not embed tool JSON inside prose."
             )
 

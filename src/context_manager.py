@@ -50,8 +50,11 @@ def _get_encoding():
     """Get the tiktoken encoding for the configured model."""
     try:
         return tiktoken.encoding_for_model(MODEL_ENCODING)
-    except KeyError:
-        return tiktoken.get_encoding("cl100k_base")
+    except Exception:
+        try:
+            return tiktoken.get_encoding("cl100k_base")
+        except Exception:
+            return None
 
 
 def count_tokens(messages: Sequence[BaseMessage]) -> int:
@@ -64,7 +67,11 @@ def count_tokens(messages: Sequence[BaseMessage]) -> int:
     total = 0
     for msg in messages:
         content = msg.content if isinstance(msg.content, str) else str(msg.content)
-        total += len(enc.encode(content)) + 4  # +4 for role + separators
+        if enc is not None:
+            total += len(enc.encode(content)) + 4  # +4 for role + separators
+        else:
+            # Offline-safe approximation when tokenizer assets are unavailable.
+            total += max(1, len(content) // 4) + 4
     return total
 
 

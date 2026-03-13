@@ -8,8 +8,9 @@ import json
 import logging
 import time
 import uuid
+import re
 
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_openai import ChatOpenAI
 
 from agent.cost import CostTracker
@@ -89,6 +90,38 @@ DOMAIN_ADDENDA: dict[str, str] = {
     "general": "",
 }
 
+# Override the highest-impact domain instructions explicitly so they stay
+# stable even if the literal block above is edited with mixed encodings.
+DOMAIN_ADDENDA["legal"] = (
+    "Answer from domain knowledge first. Do NOT use internet_search "
+    "for domain knowledge you already have.\n"
+    "Structure your answer using these exact sections. Provide comprehensive, deeply analytical, partner-level legal depth for each:\n"
+    "1. STRUCTURE OPTIONS - detailed deal/entity structuring alternatives\n"
+    "2. TAX CONSEQUENCES - in-depth tax treatment of each alternative\n"
+    "3. LIABILITY PROTECTION - specific mechanisms for liability isolation, indemnification, reps/warranties\n"
+    "4. REGULATORY/DILIGENCE RISKS - exhaustive analysis of cross-border regulatory issues, compliance, diligence\n"
+    "5. KEY OPEN QUESTIONS / ASSUMPTIONS - critical facts, thresholds, consents, or risk-tolerance items that could change the recommendation\n"
+    "6. RECOMMENDED NEXT STEPS - concrete execution actions and timing\n"
+    "No generic preamble. Go directly into the sections. "
+    "Use concrete contractual mechanisms and jurisdiction-specific touchpoints when the prompt names jurisdictions."
+)
+
+DOMAIN_ADDENDA["options"] = (
+    "Include full Greeks analysis (Delta, Gamma, Theta, Vega) for every leg "
+    "and aggregate them for the overall strategy position.\n"
+    "Show P&L breakdown with breakevens.\n"
+    "Your PRIMARY strategy must be fully analyzed using the provided tools "
+    "(e.g., analyze_strategy, option_greeks).\n"
+    "Provide at least one ALTERNATIVE strategy with a concrete quantitative "
+    "tradeoff discussion (e.g., different max-loss, different Greeks profile, "
+    "different breakeven). Use tools if the same input parameters apply; "
+    "otherwise, provide a concrete numerical comparison from your analysis.\n"
+    "Include risk management: max loss, position sizing, hedging.\n"
+    "Verify that sell positions generate credit, buy positions generate debit.\n"
+    "Keep the final synthesis compact: PRIMARY STRATEGY, ALTERNATIVE STRATEGY, "
+    "KEY GREEKS/RISK, and HEDGE/SIZING. Avoid long prose."
+)
+
 
 def _looks_like_trade_simulation(task_text: str) -> bool:
     normalized = (task_text or "").lower()
@@ -116,6 +149,65 @@ def _looks_like_trade_simulation(task_text: str) -> bool:
     )
 
 
+def _looks_like_numeric_request(task_text: str) -> bool:
+    normalized = (task_text or "").lower()
+    for token in (
+        "calculate",
+        "compute",
+        "formula",
+        "ratio",
+        "percentage",
+        "percent",
+        "sum",
+        "difference",
+        "multiply",
+        "divide",
+        "valuation",
+        "damages",
+        "interest amount",
+        "break fee",
+    ):
+        if re.fullmatch(r"[a-z0-9 ]+", token):
+            if re.search(rf"(?<!\w){re.escape(token)}(?!\w)", normalized):
+                return True
+        elif token in normalized:
+            return True
+    return False
+
+
+def _legal_allows_first_turn_tools(task_text: str) -> bool:
+    normalized = (task_text or "").lower()
+    if _looks_like_numeric_request(task_text):
+        return True
+    return any(
+        token in normalized
+        for token in (
+            "reference file",
+            "attachment",
+            "attached",
+            "http://",
+            "https://",
+            "latest",
+            "current law",
+            "current regulation",
+            "recent filing",
+            "look up",
+            "search",
+            "source",
+            "citation",
+            "pdf",
+            "table",
+        )
+    )
+
+
+def _has_tool_history(messages: list[BaseMessage]) -> bool:
+    return any(
+        isinstance(msg, (ToolMessage,)) or (isinstance(msg, AIMessage) and bool(msg.tool_calls))
+        for msg in messages
+    )
+
+
 def _allowed_tool_names_for_task(task_type: str, task_text: str = "") -> set[str] | None:
     """Return the effective tool allowlist for the task.
 
@@ -129,6 +221,8 @@ def _allowed_tool_names_for_task(task_type: str, task_text: str = "") -> set[str
         return None
 
     effective = set(allowed)
+    if normalized_type == "legal" and not _looks_like_numeric_request(task_text):
+        effective.discard("calculator")
     if normalized_type == "options" and not _looks_like_trade_simulation(task_text):
         effective -= _TRADING_SIM_TOOLS
     return effective
@@ -162,10 +256,62 @@ def _executor_max_tokens(task_type: str) -> int:
     """
     normalized_type = _normalize_task_type(task_type)
     if normalized_type == "legal":
-        return 1500
+        return 2000
     if normalized_type == "options":
-        return 1300
+        return 2000
     return 1000
+
+
+def _build_revision_guidance(task_type: str, pending_feedback: dict | None) -> str:
+    """Turn verifier feedback into a compact, task-aware revision instruction."""
+    if not pending_feedback:
+        return ""
+
+    reasoning = str(pending_feedback.get("reasoning", "")).strip()
+    if not reasoning:
+        return ""
+
+    normalized_type = _normalize_task_type(task_type)
+    if normalized_type == "legal":
+        return (
+            "VERIFIER FEEDBACK:\n"
+            f"{reasoning}\n\n"
+            "REVISION RULES:\n"
+            "- Add the missing legal dimensions with exhaustive, partner-level analytical depth; do not just output a superficial summary.\n"
+            "- Use exactly these sections in order:\n"
+            "  1. STRUCTURE OPTIONS\n"
+            "  2. TAX CONSEQUENCES\n"
+            "  3. LIABILITY PROTECTION\n"
+            "  4. REGULATORY/DILIGENCE RISKS\n"
+            "  5. KEY OPEN QUESTIONS / ASSUMPTIONS\n"
+            "  6. RECOMMENDED NEXT STEPS\n"
+            "- Each section must be highly detailed and specific.\n"
+            "- Name concrete legal mechanisms when relevant (e.g. escrow, indemnity, reps/warranties, disclosure schedules, insurance, filing/approval touchpoints).\n"
+            "- Output only the final answer. No internal reasoning."
+        )
+
+    if normalized_type == "options":
+        return (
+            "VERIFIER FEEDBACK:\n"
+            f"{reasoning}\n\n"
+            "REVISION RULES:\n"
+            "- Re-synthesize from the tool facts only.\n"
+            "- Use exactly these blocks in order:\n"
+            "  1. PRIMARY STRATEGY\n"
+            "  2. ALTERNATIVE STRATEGY\n"
+            "  3. KEY GREEKS / P&L / BREAKEVENS\n"
+            "  4. RISK MANAGEMENT / HEDGE / SIZING\n"
+            "- Keep each block to 2-4 bullet points.\n"
+            "- Do not repeat long explanations.\n"
+            "- If no extra tool is required, output only the compact final answer."
+        )
+
+    return (
+        "VERIFIER FEEDBACK:\n"
+        f"{reasoning}\n\n"
+        "Revise only the missing pieces and return a concise final answer. "
+        "Do not repeat the same draft verbatim."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -400,6 +546,29 @@ def make_reasoner(tools: list):
         addendum = DOMAIN_ADDENDA.get(task_type, "")
         if addendum:
             messages = messages[:1] + [SystemMessage(content=addendum)] + messages[1:]
+
+        revision_guidance = _build_revision_guidance(
+            task_type,
+            state.get("pending_verifier_feedback"),
+        )
+        if revision_guidance:
+            messages = messages[:1] + [SystemMessage(content=revision_guidance)] + messages[1:]
+
+        if (
+            task_type == "legal"
+            and not state.get("pending_verifier_feedback")
+            and not _has_tool_history(state["messages"])
+            and not _legal_allows_first_turn_tools(task_text)
+        ):
+            messages = messages[:1] + [SystemMessage(
+                content=(
+                    "FIRST LEGAL TURN POLICY:\n"
+                    "- Answer directly from legal/domain knowledge on this turn.\n"
+                    "- Do NOT call any tool on this turn.\n"
+                    "- Do NOT emit tool JSON.\n"
+                    "- Only use tools later if the verifier says external grounding or explicit calculation is missing."
+                )
+            )] + messages[1:]
 
         # Prompt-mode: inject filtered tool descriptions into system prompt
         if use_prompt_tools:
