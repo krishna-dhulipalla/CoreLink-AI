@@ -537,6 +537,22 @@ This file operates in a "Chat" structure. Whenever an agent finishes a major uni
 - **Blockers:** None.
 - **Handoff Notes:** Restart server and re-run FAB++ benchmark. Expected improvements: corrected sign math for options, fewer wasted tool calls via allowlisting, stronger final answers via domain prompts and verifier completeness gate.
 
+### Phase 4 (Chat 47-49): Control & Tool Coverage Implementation
+
+**Status:** Implemented and ready for benchmark verification.
+
+**What we did:**
+
+1. **Legal Path Control:** Addressed the root cause of Task 2 failing to finalize. Instead of just wildly raising tokens or asking for generic conciseness, we structured the legal answer shape into 5 strict sections (Structure Options, Tax, Liability, Regulatory, Next Steps) directly in the `DOMAIN_ADDENDA`.
+2. **Constrained REVISE Mode:** Modified `verifier.py` so that on the first `REVISE` for a legal task, a strict template directive is injected as a system warning back to the reasoner, constraining it into producing only the final sections without preamble or `<think>` loops.
+3. **Modest Token Bump:** Safely bumped the `max_tokens` for the `executor` role in `reasoner.py` from 1000 to 1500 to prevent edge-case truncation (leaving `coordinator.py` alone at 300).
+4. **Tool-Backed Options Comparison:** Rewrote the `options` `DOMAIN_ADDENDA` to strictly demand tool-backed comparative analysis for the primary strategy and concrete quantitative tradeoffs for alternatives.
+5. **Execution-Aware Verifier:** Updated `_FINAL_ANSWER_CHECKS["options"]` in `verifier.py` to only accept alternative strategies if they include quantitative tradeoffs, rather than just naming them in prose, ensuring depth while avoiding forcing arbitrary double tool calls where parameters don't match.
+
+**Next Steps / Handoff:**
+
+- Run the full FAB++ benchmark and verify if these targeted improvements prevent the Legal path collapse (Task 2) and deepen Options path scores (Task 3).
+
 ### Chat 46: FAB++ Trace Post-Mortem & Runtime Recovery Fixes
 
 - **Role:** Debugger / Coder
@@ -561,3 +577,36 @@ This file operates in a "Chat" structure. Whenever an agent finishes a major uni
 - **Blockers:** Full FAB++ rerun was not executed inside this patch pass, so benchmark score impact is still pending live verification.
 - **Sync Notes:** Re-checked after the latest runtime recovery fixes. Chat 46 remains the active reference entry before the next FAB++ rerun and score comparison.
 - **Handoff Notes:** The latest benchmark failures were not just "model weakness" â€” they were also runtime robustness issues. Coordinator specialization should now survive schema failure, raw `<think>` should stop leaking into benchmark outputs, verifier memory is less likely to reinforce bad repair patterns, and repeated revise loops should now backtrack earlier instead of wasting the full budget.
+### Chat 47: Task-Family Hardening & Current FAB++ Blockers
+
+- **Role:** Debugger / Coder / Analyst
+- **Actions Taken:**
+  1. Hardened heuristic task-family routing in `src/agent/nodes/coordinator.py` so legal prompts containing the English word "options" no longer get misclassified as options-trading tasks. Legal now wins before options, and the options classifier only keys off finance-specific phrases (`implied volatility`, `iv percentile`, `straddle`, `black-scholes`, etc.).
+  2. Tightened runtime tool gating in `src/agent/nodes/reasoner.py`. Generic options-strategy prompts no longer expose paper-trading / portfolio-simulation tools unless the task explicitly looks like execution or portfolio simulation.
+  3. Added payload-level tool-call validation in `src/agent/nodes/tool_executor.py` so malformed nested envelopes like `create_portfolio(name="internet_search", arguments={...})` are rejected before execution instead of being silently run.
+  4. Hardened checkpoint / budget semantics in `src/agent/nodes/verifier.py`:
+     - seeded rollback checkpoints from the stable conversation prefix
+     - prevented revise-budget exits from saving poisoned states as verified checkpoints
+     - improved fallback selection of the "best available" answer when the run terminates under budget pressure
+  5. Added regression coverage for:
+     - legal-vs-options phrase collisions
+     - hidden / malformed tool envelopes
+     - poisoned-checkpoint prevention
+     - end-to-end verifier recovery behavior
+  6. Verified the patch slices with:
+     - `pytest tests/test_coordinator.py tests/test_verifier.py tests/test_tool_executor.py -q` -> **49 passed**
+     - `pytest tests/test_end_to_end_verifier.py tests/test_sprint4.py tests/test_memory.py -q` -> **53 passed**
+     - `python -m py_compile src/agent/nodes/coordinator.py src/agent/nodes/reasoner.py src/agent/nodes/tool_executor.py src/agent/nodes/verifier.py tests/test_tool_executor.py` -> **passed**
+- **Current FAB++ Rerun Status:**
+  - Overall score from the latest 3-task rerun: **62.25 / 100**
+  - `bizfinbench` quantitative task: **correct**
+  - `prbench` legal task: **collapsed to near-zero quality**
+  - `vol_001` options task: **improved to 70.0**, with better strategy/risk handling but still weak Greeks depth
+- **Current Blockers:**
+  1. **Coordinator structured-output still fails live** for the benchmarked Qwen/Nebius setup, so the system is still relying on heuristic fallback instead of model-produced route JSON. The fallback now correctly recovers `task_type=legal` and `task_type=options`, but the coordinator model itself remains unreliable.
+  2. **Task 2 is no longer failing because of misrouting or bad tool execution.** It now fails because the legal path burns repeated `react_reason -> verifier_check` cycles with **0 MCP calls**, repeatedly producing long truncated reasoning drafts instead of a concise legal recommendation.
+  3. **Task 2 repeatedly hits the executor completion cap** (`max_tokens=1000` in `reasoner.py`), so the model spends its budget inside analysis and returns an incomplete answer body. The final benchmark answer is then only the stripped inner reasoning text because no proper final answer was ever produced.
+  4. **Stagnation/backtrack detection is firing, but too late to rescue the run.** The trace shows the loop eventually escalates to a `BACKTRACK WARNING`, but the recovery step still returns another long reasoning draft rather than a materially different legal answer.
+  5. **Task 3 is materially healthier, but still shallow.** The agent now uses `analyze_strategy`, gets the corrected net credit, and produces a coherent short-vol answer, but it still explores only one concrete strategy path and does not deepen Greeks coverage beyond partial aggregate analysis.
+  6. **Reasoner prompt/tool overhead is still high** on benchmark tasks (for example ~3k prompt tokens on the options task before the final answer), so even successful paths remain expensive and leave less room for deeper follow-up analysis.
+- **Handoff Notes:** The recent architecture hardening fixed the catastrophic legal->options misclassification and malformed tool-call loop. The remaining problem is different: the legal executor path now routes correctly but still cannot reliably convert long internal analysis into a complete final legal recommendation under the current model/profile and token budget. Task 3 shows the options path is now functional, but still not deep enough to maximize benchmark scoring.

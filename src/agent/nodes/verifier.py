@@ -55,8 +55,13 @@ _FINAL_ANSWER_CHECKS = {
         "regulatory/compliance issues, diligence, and execution next steps when relevant."
     ),
     "options": (
-        "- For options tasks: verify the answer covers recommendation, strategy rationale, Greeks, breakevens or "
-        "risk/reward, and practical risk management."
+        "- For options tasks: verify the answer includes a primary strategy with "
+        "tool-backed Greeks analysis and P&L/breakeven data. "
+        "Verify that at least one alternative strategy is discussed with concrete "
+        "quantitative tradeoffs (e.g., different max-loss, Greeks profile), "
+        "not merely named. "
+        "Do NOT reject an answer solely for lacking a second tool-backed analysis "
+        "if the alternative includes concrete numerical comparison."
     ),
     "document": (
         "- For document tasks: verify the answer is grounded in file content and includes the key extracted figures "
@@ -457,8 +462,22 @@ def verifier(state: AgentState) -> dict:
                     "pending_verifier_feedback": None,
                 }
         if verdict.verdict == "REVISE":
+            _LEGAL_CONSTRAINED_TEMPLATE = (
+                "\n\nCONSTRAINED ANSWER MODE: Your previous answer was too verbose or incomplete. "
+                "You MUST now produce your final answer using ONLY these sections:\n"
+                "1. STRUCTURE OPTIONS\n2. TAX CONSEQUENCES\n3. LIABILITY PROTECTION\n"
+                "4. REGULATORY/DILIGENCE RISKS\n5. RECOMMENDED NEXT STEPS\n"
+                "Each section: 2-4 sentences. No preamble. No internal reasoning. "
+                "Start directly with '1. STRUCTURE OPTIONS'."
+            )
+
+            constrained_suffix = ""
+            if task_type == "legal" and budget and budget.revise_cycles >= 1:
+                constrained_suffix = _LEGAL_CONSTRAINED_TEMPLATE
+                logger.info("[Verifier] Legal task: injecting constrained answer template after REVISE #%d", budget.revise_cycles)
+
             warning_msg = SystemMessage(
-                content=f"VERIFIER REVISION REQUIRED:\n{verdict.reasoning}{repair_hint_block}",
+                content=f"VERIFIER REVISION REQUIRED:\n{verdict.reasoning}{repair_hint_block}{constrained_suffix}",
                 additional_kwargs={"is_warning": True},
             )
             return {

@@ -54,15 +54,28 @@ DOMAIN_ADDENDA: dict[str, str] = {
         "Show intermediate calculations. Match the exact output format specified."
     ),
     "legal": (
-        "Answer from domain knowledge first. Cover: structure alternatives, "
-        "tax treatment, liability isolation, cross-border regulatory issues, "
-        "diligence requirements, and reps/warranties. Do NOT use internet_search "
-        "for domain knowledge you already have."
+        "Answer from domain knowledge first. Do NOT use internet_search "
+        "for domain knowledge you already have.\n"
+        "Structure your answer using these sections:\n"
+        "1. STRUCTURE OPTIONS — deal/entity structuring alternatives\n"
+        "2. TAX CONSEQUENCES — tax treatment of each alternative\n"
+        "3. LIABILITY PROTECTION — liability isolation, indemnification, reps/warranties\n"
+        "4. REGULATORY/DILIGENCE RISKS — cross-border regulatory issues, compliance, diligence\n"
+        "5. RECOMMENDED NEXT STEPS — concrete execution actions\n"
+        "No long preamble. Go directly into the sections. "
+        "Each section should be 2-4 sentences, not multi-paragraph essays."
     ),
     "options": (
-        "Include full Greeks analysis (Delta, Gamma, Theta, Vega) for every leg. "
-        "Show P&L breakdown with breakevens. Compare at least 2 strategy alternatives. "
-        "Include risk management: max loss, position sizing, hedging. "
+        "Include full Greeks analysis (Delta, Gamma, Theta, Vega) for every leg "
+        "and aggregate them for the overall strategy position.\n"
+        "Show P&L breakdown with breakevens.\n"
+        "Your PRIMARY strategy must be fully analyzed using the provided tools "
+        "(e.g., analyze_strategy, option_greeks).\n"
+        "Provide at least one ALTERNATIVE strategy with a concrete quantitative "
+        "tradeoff discussion (e.g., different max-loss, different Greeks profile, "
+        "different breakeven). Use tools if the same input parameters apply; "
+        "otherwise, provide a concrete numerical comparison from your analysis.\n"
+        "Include risk management: max loss, position sizing, hedging.\n"
         "Verify that sell positions generate credit, buy positions generate debit."
     ),
     "document": (
@@ -150,7 +163,7 @@ def build_model(tools: list):
         model=get_model_name("executor"),
         **get_client_kwargs("executor"),
         temperature=0,
-        max_tokens=1000,
+        max_tokens=1500,
     )
     mode = _tool_call_mode("executor")
     if mode == "native":
