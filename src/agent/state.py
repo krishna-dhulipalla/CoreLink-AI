@@ -41,6 +41,8 @@ class AgentState(TypedDict):
     execution_template: dict[str, Any]
     answer_contract: dict[str, Any]
     evidence_pack: dict[str, Any]
+    assumption_ledger: list[dict[str, Any]]
+    provenance_map: dict[str, dict[str, Any]]
     solver_stage: str
     workpad: dict[str, Any]
     pending_tool_call: dict[str, Any] | None

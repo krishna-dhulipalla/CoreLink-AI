@@ -9,11 +9,13 @@ from staged_test_utils import make_state
 class _FakeModel:
     def __init__(self, response):
         self._response = response
+        self.last_messages = None
 
     def bind_tools(self, tools):
         return self
 
     def invoke(self, messages):
+        self.last_messages = messages
         return self._response
 
 
@@ -34,7 +36,7 @@ def test_solver_emits_one_tool_call_in_compute_stage(monkeypatch):
         task_profile="finance_quant",
         capability_flags=["needs_math"],
         solver_stage="COMPUTE",
-        evidence_pack={"inline_facts": {"roe": 0.030433, "roa": 0.015791}},
+        evidence_pack={"prompt_facts": {"roe": 0.030433, "roa": 0.015791}},
     )
 
     result = solver(state)
@@ -89,7 +91,7 @@ def test_solver_revise_can_target_compute_without_final_answer(monkeypatch):
             "answer_focus": [],
         },
         solver_stage="REVISE",
-        evidence_pack={"derived_signals": {"iv_premium": 0.07}},
+        evidence_pack={"derived_facts": {"iv_premium": 0.07}},
         review_feedback={"repair_target": "compute", "missing_dimensions": ["concrete comparative analysis"]},
     )
 
@@ -140,7 +142,7 @@ def test_solver_revise_compute_uses_existing_tool_result_before_more_tools(monke
             "answer_focus": [],
         },
         solver_stage="REVISE",
-        evidence_pack={"derived_signals": {"iv_premium": 0.07}},
+        evidence_pack={"derived_facts": {"iv_premium": 0.07}},
         review_feedback={"repair_target": "compute", "missing_dimensions": ["tool-backed strategy analysis"]},
         last_tool_result={
             "type": "analyze_strategy",
@@ -156,3 +158,97 @@ def test_solver_revise_compute_uses_existing_tool_result_before_more_tools(monke
     assert result["pending_tool_call"] is None
     assert result["workpad"]["review_stage"] == "COMPUTE"
     assert "tool-backed" in result["workpad"]["stage_outputs"]["COMPUTE"].lower()
+
+
+def test_solver_document_gather_prompt_requires_targeted_extraction(monkeypatch):
+    fake_model = _FakeModel(AIMessage(content='{"name":"fetch_reference_file","arguments":{"url":"https://example.com/report.csv","row_limit":25}}'))
+    monkeypatch.setattr("agent.nodes.solver.ChatOpenAI", lambda **kwargs: fake_model)
+    monkeypatch.setattr("agent.nodes.solver._tool_call_mode", lambda role: "prompt")
+
+    solver = make_solver([_DummyTool("fetch_reference_file", "Fetch a reference file")])
+    state = make_state(
+        "Read the attached report and answer from the file at https://example.com/report.csv.",
+        task_profile="document_qa",
+        capability_flags=["needs_files"],
+        execution_template={
+            "template_id": "document_qa",
+            "allowed_stages": ["GATHER", "SYNTHESIZE", "REVISE", "COMPLETE"],
+            "default_initial_stage": "GATHER",
+            "allowed_tool_names": ["fetch_reference_file", "list_reference_files"],
+            "review_stages": ["GATHER", "SYNTHESIZE"],
+            "review_cadence": "milestone_and_final",
+            "answer_focus": [],
+        },
+        solver_stage="GATHER",
+        evidence_pack={
+            "prompt_facts": {},
+            "retrieved_facts": {},
+            "derived_facts": {},
+            "document_evidence": [
+                {
+                    "document_id": "report_csv",
+                    "citation": "https://example.com/report.csv",
+                    "status": "discovered",
+                    "metadata": {"format": "csv"},
+                    "chunks": [],
+                    "tables": [],
+                    "numeric_summaries": [],
+                }
+            ],
+            "citations": ["https://example.com/report.csv"],
+            "open_questions": ["Document evidence has not been extracted yet."],
+        },
+    )
+
+    result = solver(state)
+
+    assert result["pending_tool_call"]["name"] == "fetch_reference_file"
+    assert "narrow page/row window first" in fake_model.last_messages[1].content
+
+
+def test_solver_compact_evidence_uses_document_summary_not_raw_blob(monkeypatch):
+    long_text = "alpha beta gamma " * 200
+    fake_model = _FakeModel(AIMessage(content="Answer: the document shows the covenant threshold in the extracted table."))
+    monkeypatch.setattr("agent.nodes.solver.ChatOpenAI", lambda **kwargs: fake_model)
+    monkeypatch.setattr("agent.nodes.solver._tool_call_mode", lambda role: "prompt")
+
+    solver = make_solver([])
+    state = make_state(
+        "Summarize the covenant threshold from the attached report.",
+        task_profile="document_qa",
+        capability_flags=["needs_files"],
+        execution_template={
+            "template_id": "document_qa",
+            "allowed_stages": ["GATHER", "SYNTHESIZE", "REVISE", "COMPLETE"],
+            "default_initial_stage": "SYNTHESIZE",
+            "allowed_tool_names": ["fetch_reference_file"],
+            "review_stages": ["GATHER", "SYNTHESIZE"],
+            "review_cadence": "milestone_and_final",
+            "answer_focus": [],
+        },
+        solver_stage="SYNTHESIZE",
+        evidence_pack={
+            "prompt_facts": {},
+            "retrieved_facts": {"fetch_reference_file": {"documents": [{"document_id": "report_pdf", "status": "extracted"}]}},
+            "derived_facts": {},
+            "document_evidence": [
+                {
+                    "document_id": "report_pdf",
+                    "citation": "https://example.com/report.pdf",
+                    "status": "extracted",
+                    "metadata": {"file_name": "report.pdf", "format": "pdf", "window": "Pages 1-2"},
+                    "chunks": [{"locator": "Pages 1-2", "kind": "text_excerpt", "text": long_text, "citation": "https://example.com/report.pdf"}],
+                    "tables": [],
+                    "numeric_summaries": [],
+                }
+            ],
+            "citations": ["https://example.com/report.pdf"],
+        },
+    )
+
+    solver(state)
+
+    evidence_message = fake_model.last_messages[2].content
+    assert '"document_evidence"' in evidence_message
+    assert long_text[:400] not in evidence_message
+    assert '"chunk_count": 1' in evidence_message

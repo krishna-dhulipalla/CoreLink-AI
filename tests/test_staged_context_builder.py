@@ -31,9 +31,14 @@ class TestContextBuilder:
         assert result["execution_template"]["template_id"] == "quant_with_tool_compute"
         assert evidence["tables"]
         assert any("Financial Leverage Effect" in formula for formula in evidence["formulas"])
-        assert evidence["file_refs"] == ["https://example.com/report.pdf"]
+        assert evidence["citations"] == ["https://example.com/report.pdf"]
+        assert evidence["document_evidence"][0]["status"] == "discovered"
+        assert evidence["document_evidence"][0]["metadata"]["format"] == "pdf"
         assert evidence["answer_contract"]["format"] == "json"
         assert "Use formulas and inline tables from the prompt before calling tools." in evidence["constraints"]
+        assert any("metadata or a narrow page/row window first" in item for item in evidence["constraints"])
+        assert "prompt_facts.numbers" in result["provenance_map"]
+        assert "document_evidence.report_pdf.metadata.citation" in result["provenance_map"]
         assert result["workpad"]["profile_pack"]["profile"] == "finance_quant"
 
     def test_derives_options_market_signals(self):
@@ -49,11 +54,12 @@ class TestContextBuilder:
         result = context_builder(state)
         evidence = result["evidence_pack"]
 
-        assert evidence["market_snapshot"]["implied_volatility"] == 0.35
-        assert evidence["market_snapshot"]["historical_volatility"] == 0.28
-        assert evidence["derived_signals"]["iv_premium"] == 0.07
-        assert evidence["derived_signals"]["vol_bias"] == "short_vol"
+        assert evidence["prompt_facts"]["market_snapshot"]["implied_volatility"] == 0.35
+        assert evidence["prompt_facts"]["market_snapshot"]["historical_volatility"] == 0.28
+        assert evidence["derived_facts"]["iv_premium"] == 0.07
+        assert evidence["derived_facts"]["vol_bias"] == "short_vol"
         assert result["execution_template"]["template_id"] == "options_tool_backed"
+        assert any("Spot price is not explicit" in question for question in evidence["open_questions"])
         assert "Recommendation" in result["answer_contract"]["section_requirements"]
 
     def test_ambiguous_profile_adds_conservative_constraint(self):
@@ -71,3 +77,22 @@ class TestContextBuilder:
 
         assert "Task profile is partially ambiguous" in " ".join(evidence["constraints"])
         assert result["ambiguity_flags"]
+        assert "time_sensitive" not in evidence["derived_facts"]
+
+    def test_legal_prompt_without_source_document_does_not_fabricate_retrieved_provenance(self):
+        prompt = (
+            "We need acquisition structure advice for a fast stock-for-stock deal, "
+            "but there is no file or external source attached."
+        )
+        state = make_state(prompt)
+        state.update(intake(state))
+        state.update(task_profiler(state))
+        state.update(template_selector(state))
+
+        result = context_builder(state)
+
+        assert result["evidence_pack"]["retrieved_facts"] == {}
+        assert all(
+            value["source_class"] != "retrieved"
+            for value in result["provenance_map"].values()
+        )

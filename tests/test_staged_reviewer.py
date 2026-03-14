@@ -69,6 +69,56 @@ def test_reviewer_requires_tool_backed_options_compute():
     assert "tool-backed strategy analysis" in [gap.lower() for gap in result["review_feedback"]["missing_dimensions"]]
 
 
+def test_reviewer_revises_undisclosed_options_pricing_assumption():
+    state = make_state(
+        "Should I be a net buyer or seller of options?",
+        task_profile="finance_options",
+        capability_flags=["needs_options_engine"],
+        solver_stage="SYNTHESIZE",
+        workpad={
+            "events": [],
+            "stage_outputs": {},
+            "tool_results": [
+                {
+                    "type": "analyze_strategy",
+                    "facts": {"net_premium": 9.16},
+                    "assumptions": {},
+                    "source": {"tool": "analyze_strategy"},
+                    "errors": [],
+                }
+            ],
+            "review_ready": True,
+            "review_stage": "SYNTHESIZE",
+        },
+        assumption_ledger=[
+            {
+                "key": "spot_price",
+                "assumption": "Spot price was assumed as 300.0 from tool arguments because it was not explicit in prompt evidence.",
+                "source": "tool_arguments:analyze_strategy",
+                "confidence": "medium",
+                "requires_user_visible_disclosure": True,
+                "review_status": "pending",
+            }
+        ],
+    )
+    state["messages"].append(
+        AIMessage(
+            content=(
+                "Recommendation: be a net seller of options.\n"
+                "Primary strategy: short strangle.\n"
+                "Alternative strategy comparison: iron condor reduces tail risk at lower premium.\n"
+                "Key Greeks and breakevens: delta near flat, positive theta, breakevens around short strikes plus collected credit.\n"
+                "Risk management: small sizing and defined stop-loss on large moves."
+            )
+        )
+    )
+
+    result = reviewer(state)
+
+    assert result["solver_stage"] == "REVISE"
+    assert "disclosed material assumptions" in [gap.lower() for gap in result["review_feedback"]["missing_dimensions"]]
+
+
 def test_reviewer_backtracks_bad_gather_result():
     state = make_state(
         "Read the attached file.",
@@ -95,6 +145,56 @@ def test_reviewer_backtracks_bad_gather_result():
 
     assert result["solver_stage"] == "REVISE"
     assert result["review_feedback"]["verdict"] == "backtrack"
+
+
+def test_reviewer_revises_document_gather_that_only_discovers_urls():
+    state = make_state(
+        "Read the attached report.",
+        task_profile="document_qa",
+        capability_flags=["needs_files"],
+        execution_template={
+            "template_id": "document_qa",
+            "allowed_stages": ["GATHER", "SYNTHESIZE", "REVISE", "COMPLETE"],
+            "default_initial_stage": "GATHER",
+            "allowed_tool_names": ["fetch_reference_file", "list_reference_files"],
+            "review_stages": ["GATHER", "SYNTHESIZE"],
+            "review_cadence": "milestone_and_final",
+            "answer_focus": [],
+        },
+        evidence_pack={
+            "document_evidence": [
+                {
+                    "document_id": "report_pdf",
+                    "citation": "https://example.com/report.pdf",
+                    "status": "discovered",
+                    "metadata": {"format": "pdf"},
+                    "chunks": [],
+                    "tables": [],
+                    "numeric_summaries": [],
+                }
+            ]
+        },
+        solver_stage="GATHER",
+        workpad={
+            "events": [],
+            "stage_outputs": {},
+            "tool_results": [],
+            "review_ready": True,
+            "review_stage": "GATHER",
+        },
+        last_tool_result={
+            "type": "list_reference_files",
+            "facts": {"document_count": 1, "documents": [{"document_id": "report_pdf", "citation": "https://example.com/report.pdf"}]},
+            "assumptions": {},
+            "source": {"tool": "list_reference_files"},
+            "errors": [],
+        },
+    )
+
+    result = reviewer(state)
+
+    assert result["solver_stage"] == "REVISE"
+    assert "targeted document evidence" in [gap.lower() for gap in result["review_feedback"]["missing_dimensions"]]
 
 
 def test_reviewer_revises_quant_final_that_is_not_scalar_for_json_contract():
@@ -135,6 +235,19 @@ def test_reviewer_pass_from_document_gather_moves_to_synthesize_for_document_tem
             "answer_focus": [],
         },
         solver_stage="GATHER",
+        evidence_pack={
+            "document_evidence": [
+                {
+                    "document_id": "report_pdf",
+                    "citation": "https://example.com/report.pdf",
+                    "status": "extracted",
+                    "metadata": {"file_name": "report.pdf", "format": "pdf"},
+                    "chunks": [{"locator": "Pages 1-2", "text": "metric value", "citation": "https://example.com/report.pdf"}],
+                    "tables": [],
+                    "numeric_summaries": [],
+                }
+            ]
+        },
         workpad={
             "events": [],
             "stage_outputs": {},

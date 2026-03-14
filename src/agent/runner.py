@@ -85,6 +85,8 @@ async def run_agent_trace(
         "execution_template": {},
         "answer_contract": {},
         "evidence_pack": {},
+        "assumption_ledger": [],
+        "provenance_map": {},
         "solver_stage": "PLAN",
         "workpad": {"events": [], "stage_outputs": {}, "tool_results": []},
         "pending_tool_call": None,

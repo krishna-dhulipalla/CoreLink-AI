@@ -51,6 +51,11 @@ PROMPTS = [
         "but also quantify a holdback formula tied to EBITDA and current liabilities. "
         "Do not browse unless the prompt truly requires it.",
     ),
+    (
+        "document_qa",
+        "Read the reference file at https://raw.githubusercontent.com/cs109/2014_data/master/countries.csv. "
+        "Summarize what structured evidence you extracted from it and include the source reference.",
+    ),
 ]
 
 
@@ -63,6 +68,8 @@ def _summarize(trace: dict) -> dict:
         "capability_flags": state.get("capability_flags"),
         "ambiguity_flags": state.get("ambiguity_flags"),
         "execution_template": (state.get("execution_template") or {}).get("template_id"),
+        "assumption_ledger": state.get("assumption_ledger", []),
+        "provenance_keys": sorted((state.get("provenance_map") or {}).keys())[:20],
         "solver_stage": state.get("solver_stage"),
         "events": workpad.get("events", []),
         "tool_results": workpad.get("tool_results", []),

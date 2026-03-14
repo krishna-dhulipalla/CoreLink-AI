@@ -12,7 +12,22 @@ from typing import Any
 
 from langchain_core.messages import BaseMessage, HumanMessage
 
-from agent.contracts import AnswerContract, EvidencePack, ExecutionTemplate, ProfileDecision, TaskProfile
+from agent.contracts import (
+    AnswerContract,
+    AssumptionRecord,
+    EvidencePack,
+    ExecutionTemplate,
+    ProfileDecision,
+    ProvenanceRecord,
+    TaskProfile,
+    ToolResult,
+)
+from agent.document_evidence import (
+    build_document_placeholders,
+    document_records_from_tool_result,
+    guess_document_format,
+    merge_document_evidence_records,
+)
 from agent.profile_packs import get_profile_pack
 from agent.template_library import get_execution_template
 
@@ -36,6 +51,81 @@ def allowed_tools_for_template(template: dict[str, Any] | ExecutionTemplate | No
     if not allowed:
         return allowed_tools_for_profile(profile)
     return allowed & allowed_tools_for_profile(profile)
+
+
+def _flatten_provenance(
+    prefix: str,
+    payload: dict[str, Any],
+    *,
+    source_class: str,
+    source_id: str,
+    extraction_method: str,
+    tool_name: str | None = None,
+) -> dict[str, dict[str, Any]]:
+    records: dict[str, dict[str, Any]] = {}
+    for key, value in (payload or {}).items():
+        path = f"{prefix}.{key}" if prefix else str(key)
+        if isinstance(value, dict):
+            records.update(
+                _flatten_provenance(
+                    path,
+                    value,
+                    source_class=source_class,
+                    source_id=source_id,
+                    extraction_method=extraction_method,
+                    tool_name=tool_name,
+                )
+            )
+            continue
+        if isinstance(value, list):
+            if value and all(isinstance(item, dict) for item in value):
+                for idx, item in enumerate(value[:20]):
+                    records.update(
+                        _flatten_provenance(
+                            f"{path}[{idx}]",
+                            item,
+                            source_class=source_class,
+                            source_id=source_id,
+                            extraction_method=extraction_method,
+                            tool_name=tool_name,
+                        )
+                    )
+            else:
+                records[path] = ProvenanceRecord(
+                    source_class=source_class,
+                    source_id=source_id,
+                    extraction_method=extraction_method,
+                    tool_name=tool_name,
+                ).model_dump()
+            continue
+        records[path] = ProvenanceRecord(
+            source_class=source_class,
+            source_id=source_id,
+            extraction_method=extraction_method,
+            tool_name=tool_name,
+        ).model_dump()
+    return records
+
+
+def _has_prompt_fact(prompt_facts: dict[str, Any], *keys: str) -> bool:
+    haystack = json.dumps(prompt_facts or {}, ensure_ascii=True).lower()
+    return any(key.lower() in haystack for key in keys)
+
+
+def _merge_unique_assumptions(
+    existing: list[dict[str, Any]] | list[AssumptionRecord],
+    additions: list[dict[str, Any]] | list[AssumptionRecord],
+) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for record in [*(existing or []), *(additions or [])]:
+        payload = record.model_dump() if isinstance(record, AssumptionRecord) else dict(record)
+        signature = (str(payload.get("key", "")), str(payload.get("assumption", "")))
+        if signature in seen:
+            continue
+        seen.add(signature)
+        merged.append(payload)
+    return merged
 
 
 def apply_profile_contract_rules(answer_contract: AnswerContract, task_profile: str) -> AnswerContract:
@@ -402,10 +492,45 @@ def derive_market_snapshot(task_text: str, inline_facts: dict[str, Any]) -> tupl
             else "neutral"
         )
 
-    if "latest" in (task_text or "").lower() or "current" in (task_text or "").lower():
+    lowered = (task_text or "").lower()
+    if any(
+        token in lowered
+        for token in (
+            "latest",
+            "today",
+            "recent",
+            "as of",
+            "look up",
+            "search",
+            "source-backed",
+            "current price",
+            "current filing",
+            "current market",
+        )
+    ):
         derived["time_sensitive"] = True
 
     return snapshot, derived
+
+
+def _initial_assumption_ledger(
+    task_profile: str,
+    prompt_facts: dict[str, Any],
+    derived_facts: dict[str, Any],
+) -> list[dict[str, Any]]:
+    assumptions: list[dict[str, Any]] = []
+    if derived_facts.get("time_sensitive"):
+        assumptions.append(
+            AssumptionRecord(
+                key="time_sensitive_context",
+                assumption="Current-data interpretation depends on the retrieval timestamp and should be source-backed.",
+                source="prompt_time_sensitivity",
+                confidence="medium",
+                requires_user_visible_disclosure=False,
+                review_status="pending",
+            ).model_dump()
+        )
+    return assumptions
 
 
 def build_evidence_pack(
@@ -414,11 +539,15 @@ def build_evidence_pack(
     task_profile: str,
     capability_flags: list[str],
     ambiguity_flags: list[str] | None = None,
-) -> EvidencePack:
+) -> tuple[EvidencePack, list[dict[str, Any]], dict[str, dict[str, Any]]]:
     pack = get_profile_pack(task_profile)
     urls = extract_urls(task_text)
+    document_placeholders = build_document_placeholders(urls) if "needs_files" in capability_flags else []
     inline_facts = extract_inline_facts(task_text)
     market_snapshot, derived = derive_market_snapshot(task_text, inline_facts)
+    prompt_facts: dict[str, Any] = dict(inline_facts)
+    if market_snapshot:
+        prompt_facts["market_snapshot"] = market_snapshot
 
     constraints: list[str] = []
     if "requires_exact_format" in capability_flags:
@@ -427,35 +556,235 @@ def build_evidence_pack(
         constraints.append("External retrieval is allowed only if the prompt explicitly requests current data.")
     if ambiguity_flags:
         constraints.append("Task profile is partially ambiguous; avoid unsupported domain assumptions or premature tool use.")
+    if document_placeholders:
+        constraints.append("For file-backed tasks, gather document metadata or a narrow page/row window first; do not dump raw document bodies.")
     for rule in pack.content_rules[:3]:
         constraints.append(rule)
 
     open_questions: list[str] = []
-    if task_profile == "finance_options" and "spot" not in json.dumps(inline_facts).lower():
+    if task_profile == "finance_options" and not _has_prompt_fact(prompt_facts, "spot", "spot_price", '"spot"'):
         open_questions.append("Spot price is not explicit in the prompt; any strategy pricing may require a stated assumption.")
+    if document_placeholders:
+        open_questions.append("Document evidence has not been extracted yet; start with metadata or a targeted fetch before answering.")
 
-    return EvidencePack(
+    evidence = EvidencePack(
         task_brief=normalize_whitespace(task_text)[:280],
         answer_contract=answer_contract.model_dump(),
         entities=extract_entities(task_text),
         constraints=constraints,
-        inline_facts=inline_facts,
+        prompt_facts=prompt_facts,
+        retrieved_facts={},
+        derived_facts=derived,
+        document_evidence=document_placeholders,
         tables=parse_markdown_tables(task_text),
         formulas=extract_formulas(task_text),
-        file_refs=urls,
-        market_snapshot=market_snapshot,
-        derived_signals=derived,
         citations=urls[:],
-        assumptions=list(pack.failure_modes[:2]),
         open_questions=open_questions,
     )
+    provenance_map: dict[str, dict[str, Any]] = {}
+    provenance_map.update(
+        _flatten_provenance(
+            "prompt_facts",
+            prompt_facts,
+            source_class="prompt",
+            source_id="user_prompt",
+            extraction_method="inline_extraction",
+        )
+    )
+    provenance_map.update(
+        _flatten_provenance(
+            "derived_facts",
+            derived,
+            source_class="derived",
+            source_id="context_builder",
+            extraction_method="derive_market_snapshot",
+        )
+    )
+    for record in document_placeholders:
+        document_id = str(record.get("document_id", "document"))
+        metadata = dict(record.get("metadata", {}))
+        metadata["citation"] = record.get("citation", "")
+        provenance_map.update(
+            _flatten_provenance(
+                f"document_evidence.{document_id}.metadata",
+                metadata,
+                source_class="prompt",
+                source_id="user_prompt",
+                extraction_method="url_discovery",
+            )
+        )
+    assumption_ledger = _initial_assumption_ledger(task_profile, prompt_facts, derived)
+    return evidence, assumption_ledger, provenance_map
+
+
+def _tool_result_source_class(tool_name: str) -> str:
+    if tool_name in {"fetch_reference_file", "list_reference_files", "internet_search"}:
+        return "retrieved"
+    return "derived"
+
+
+def _tool_result_source_id(tool_result: ToolResult, tool_args: dict[str, Any]) -> str:
+    if tool_name := str(tool_result.source.get("tool", tool_result.type)):
+        if tool_name == "fetch_reference_file":
+            return str(tool_args.get("url") or tool_result.facts.get("file_name") or tool_name)
+        if tool_name == "internet_search":
+            return str(tool_args.get("query") or tool_name)
+    return str(tool_result.type)
+
+
+def derive_assumption_ledger_entries(
+    tool_name: str,
+    tool_args: dict[str, Any],
+    evidence_pack: dict[str, Any],
+) -> list[dict[str, Any]]:
+    prompt_facts = dict((evidence_pack or {}).get("prompt_facts", {}))
+    records: list[dict[str, Any]] = []
+    option_tools = {"analyze_strategy", "black_scholes_price", "option_greeks", "mispricing_analysis", "get_options_chain"}
+
+    if tool_name in option_tools:
+        spot_value = None
+        if isinstance(tool_args.get("S"), (int, float)):
+            spot_value = tool_args.get("S")
+        elif tool_name == "analyze_strategy":
+            legs = tool_args.get("legs", [])
+            if isinstance(legs, list):
+                for leg in legs:
+                    if isinstance(leg, dict) and isinstance(leg.get("S"), (int, float)):
+                        spot_value = leg.get("S")
+                        break
+        if spot_value is not None and not _has_prompt_fact(prompt_facts, "spot", "spot_price", '"spot"'):
+            records.append(
+                AssumptionRecord(
+                    key="spot_price",
+                    assumption=f"Spot price was assumed as {spot_value} from tool arguments because it was not explicit in prompt evidence.",
+                    source=f"tool_arguments:{tool_name}",
+                    confidence="medium",
+                    requires_user_visible_disclosure=True,
+                    review_status="pending",
+                ).model_dump()
+            )
+
+    return records
+
+
+def merge_tool_result_into_evidence(
+    evidence_pack: dict[str, Any],
+    tool_result: dict[str, Any] | ToolResult,
+    tool_args: dict[str, Any] | None = None,
+    provenance_map: dict[str, dict[str, Any]] | None = None,
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    evidence = EvidencePack.model_validate(evidence_pack or {})
+    result = ToolResult.model_validate(tool_result)
+    updated = evidence.model_copy(deep=True)
+    provenance = dict(provenance_map or {})
+    if result.errors or not result.facts:
+        return updated.model_dump(), provenance
+
+    if result.type in {"list_reference_files", "fetch_reference_file"}:
+        document_records = document_records_from_tool_result(result, tool_args or {})
+        if document_records:
+            updated.document_evidence = merge_document_evidence_records(updated.document_evidence, document_records)
+        if result.type == "list_reference_files":
+            updated.retrieved_facts = dict(updated.retrieved_facts)
+            updated.retrieved_facts[result.type] = {
+                "document_count": len(document_records),
+                "documents": [
+                    {
+                        "document_id": record.get("document_id", ""),
+                        "citation": record.get("citation", ""),
+                        "format": (record.get("metadata", {}) or {}).get("format", guess_document_format(record.get("citation", ""))),
+                    }
+                    for record in document_records
+                ],
+            }
+        else:
+            updated.retrieved_facts = dict(updated.retrieved_facts)
+            updated.retrieved_facts[result.type] = {
+                "document_count": len(document_records),
+                "documents": [
+                    {
+                        "document_id": record.get("document_id", ""),
+                        "citation": record.get("citation", ""),
+                        "status": record.get("status", ""),
+                        "table_count": len(record.get("tables", []) or []),
+                        "chunk_count": len(record.get("chunks", []) or []),
+                        "numeric_summary_count": len(record.get("numeric_summaries", []) or []),
+                    }
+                    for record in document_records
+                ],
+            }
+        updated.citations = list(
+            dict.fromkeys(
+                [
+                    *updated.citations,
+                    *[
+                        str(record.get("citation", ""))
+                        for record in document_records
+                        if str(record.get("citation", "")).strip()
+                    ],
+                ]
+            )
+        )
+        for record in document_records:
+            document_id = str(record.get("document_id", "document"))
+            metadata = dict(record.get("metadata", {}))
+            metadata["citation"] = record.get("citation", "")
+            provenance.update(
+                _flatten_provenance(
+                    f"document_evidence.{document_id}.metadata",
+                    metadata,
+                    source_class="retrieved",
+                    source_id=str(record.get("citation", "") or document_id),
+                    extraction_method="document_evidence_merge",
+                    tool_name=str(result.source.get("tool", result.type)),
+                )
+            )
+            for section in ("chunks", "tables", "numeric_summaries"):
+                items = record.get(section, [])
+                if isinstance(items, list) and items:
+                    provenance[f"document_evidence.{document_id}.{section}"] = ProvenanceRecord(
+                        source_class="retrieved",
+                        source_id=str(record.get("citation", "") or document_id),
+                        extraction_method="document_evidence_merge",
+                        tool_name=str(result.source.get("tool", result.type)),
+                    ).model_dump()
+        return updated.model_dump(), provenance
+
+    source_class = _tool_result_source_class(result.type)
+    fact_bucket = dict(updated.retrieved_facts if source_class == "retrieved" else updated.derived_facts)
+    fact_bucket[result.type] = result.facts
+    if source_class == "retrieved":
+        updated.retrieved_facts = fact_bucket
+    else:
+        updated.derived_facts = fact_bucket
+
+    if result.type == "internet_search":
+        urls = [entry.get("url") for entry in result.facts.get("results", []) if isinstance(entry, dict) and entry.get("url")]
+        updated.citations = list(dict.fromkeys([*updated.citations, *urls]))
+    elif result.type == "fetch_reference_file":
+        source_id = str((tool_args or {}).get("url") or result.facts.get("file_name") or "")
+        if source_id:
+            updated.citations = list(dict.fromkeys([*updated.citations, source_id]))
+
+    prefix = f"{'retrieved_facts' if source_class == 'retrieved' else 'derived_facts'}.{result.type}"
+    provenance.update(
+        _flatten_provenance(
+            prefix,
+            result.facts,
+            source_class=source_class,
+            source_id=_tool_result_source_id(result, tool_args or {}),
+            extraction_method="tool_normalization",
+            tool_name=str(result.source.get("tool", result.type)),
+        )
+    )
+    return updated.model_dump(), provenance
 
 
 def initial_solver_stage(task_profile: str, capability_flags: list[str], evidence_pack: dict[str, Any]) -> str:
     flags = set(capability_flags)
-    if evidence_pack.get("file_refs") and "needs_files" in flags:
+    if evidence_pack.get("citations") and "needs_files" in flags:
         return "GATHER"
-    if task_profile in {"document_qa", "external_retrieval"} and evidence_pack.get("file_refs"):
+    if task_profile in {"document_qa", "external_retrieval"} and evidence_pack.get("citations"):
         return "GATHER"
     if task_profile == "external_retrieval":
         return "GATHER"
@@ -489,7 +818,7 @@ def initial_stage_for_template(
     if template_id in {"options_tool_backed", "quant_inline_exact"}:
         return "COMPUTE"
     if template_id == "quant_with_tool_compute":
-        if evidence_pack.get("file_refs") and ("needs_files" in flags or task_profile in {"document_qa", "external_retrieval"}):
+        if evidence_pack.get("citations") and ("needs_files" in flags or task_profile in {"document_qa", "external_retrieval"}):
             return "GATHER"
         return "COMPUTE"
     if default_stage in allowed_stages or not allowed_stages:

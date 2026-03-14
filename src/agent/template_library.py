@@ -87,7 +87,8 @@ TEMPLATE_LIBRARY: dict[ExecutionTemplateId, ExecutionTemplate] = {
         review_stages=["GATHER", "SYNTHESIZE"],
         review_cadence="milestone_and_final",
         answer_focus=[
-            "Retrieve only targeted file evidence and preserve source references.",
+            "Retrieve only targeted document evidence and preserve source references.",
+            "Start with metadata or a narrow extraction window before deeper reads.",
             "Synthesize legal structure tradeoffs without raw document dumping.",
         ],
         ambiguity_safe=True,
@@ -102,6 +103,7 @@ TEMPLATE_LIBRARY: dict[ExecutionTemplateId, ExecutionTemplate] = {
         review_cadence="milestone_and_final",
         answer_focus=[
             "Ground the answer in extracted evidence.",
+            "Start with a narrow extraction window instead of pulling the whole document body.",
             "Prefer evidence summaries and source references over raw excerpts.",
         ],
         ambiguity_safe=True,

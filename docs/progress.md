@@ -1044,6 +1044,174 @@ This file operates in a "Chat" structure. Whenever an agent finishes a major uni
      - this is not a Phase 2 selector regression; the template was selected correctly and the control gap is deeper in the quant solve/review loop
 - **Handoff Notes:** Phase 2 is complete. The runtime now has deterministic, explainable template-level execution control without moving to arbitrary dynamic FSM synthesis. The next phase should be `EvidencePack v2`, not more selector complexity. The main unresolved live issue remains terse `finance_quant` completion behavior, which should be handled in later evidence/assumption/runtime-control work rather than by weakening the template layer.
 
+### Chat 56: Architecture v3 Phase 3 - EvidencePack v2, Assumptions, and Provenance
+
+- **Role:** Architect / Coder
+- **Date:** 2026-03-14
+- **Goal:** Execute Phase 3 of `docs/architecture_v3_implementation_plan.md` by making runtime evidence source-aware, assumption-aware, and reusable across solver, reviewer, and persistence.
+- **Actions Taken:**
+  1. Expanded typed contracts in `src/agent/contracts.py`:
+     - added `AssumptionRecord`
+     - added `ProvenanceRecord`
+     - upgraded `EvidencePack` from the old flat fields to:
+       - `prompt_facts`
+       - `retrieved_facts`
+       - `derived_facts`
+       - `tables`
+       - `formulas`
+       - `citations`
+       - `open_questions`
+     - kept task-level context fields (`task_brief`, `answer_contract`, `entities`, `constraints`)
+  2. Expanded `AgentState` and test fixtures to carry:
+     - `assumption_ledger`
+     - `provenance_map`
+  3. Upgraded `src/agent/runtime_support.py`:
+     - `build_evidence_pack()` now returns:
+       - `EvidencePack`
+       - initial `assumption_ledger`
+       - initial `provenance_map`
+     - prompt facts now get prompt provenance
+     - derived facts now get derived provenance
+     - added tool-result merge helpers so tool outputs are folded back into `retrieved_facts` or `derived_facts` instead of living only as detached workpad blobs
+     - added explicit assumption extraction from tool arguments for options workflows (for example assumed spot price)
+  4. Updated `src/agent/nodes/context_builder.py` to emit the full Phase 3 artifact bundle into state and checkpoints:
+     - `evidence_pack`
+     - `assumption_ledger`
+     - `provenance_map`
+  5. Updated `src/agent/nodes/tool_runner.py` so a successful tool call now:
+     - normalizes tool output
+     - merges the normalized facts back into `evidence_pack`
+     - records provenance for the newly added facts
+     - records any new disclosure-worthy assumptions in `assumption_ledger`
+  6. Updated `src/agent/nodes/solver.py` to consume compact evidence classes instead of the old flat evidence blob:
+     - prompt facts / retrieved facts / derived facts are shown separately
+     - compact provenance summary is passed to the model
+     - disclosure-worthy assumptions are surfaced directly in stage prompts
+  7. Updated `src/agent/nodes/reviewer.py`:
+     - reviewer payload now includes `assumption_ledger` and compact provenance summary
+     - final options answers now deterministically revise if a material pricing assumption was introduced but not disclosed
+     - checkpoints now persist and restore:
+       - `evidence_pack`
+       - `assumption_ledger`
+       - `provenance_map`
+  8. Updated `src/agent/nodes/reflect.py` so persisted run/tool memory now stores:
+     - assumption count
+     - provenance count
+     - tool-specific provenance keys in metadata
+  9. Updated `src/agent/profile_packs.py` required-evidence types to the Phase 3 naming scheme (`prompt_facts`, `retrieved_facts`, `derived_facts`) instead of the retired flat names.
+  10. Updated smoke summaries in `scripts/run_live_staged_smoke.py` so live diagnostics now show:
+      - `assumption_ledger`
+      - provenance keys
+  11. Added/updated behavior-first tests:
+      - `tests/test_staged_context_builder.py`
+      - `tests/test_staged_tool_runner.py`
+      - `tests/test_staged_solver.py`
+      - `tests/test_staged_reviewer.py`
+      - `tests/test_staged_reflect.py`
+- **Verification:**
+  - `python -m pytest tests/test_staged_context_builder.py tests/test_staged_tool_runner.py tests/test_staged_solver.py tests/test_staged_reviewer.py tests/test_staged_reflect.py -q` -> **24 passed**
+  - `python -m pytest tests -q` -> **45 passed, 2 skipped**
+  - `python scripts/run_staged_runtime_smoke.py` -> **ok: true**
+  - `python -m py_compile src/agent/contracts.py src/agent/state.py src/agent/runtime_support.py src/agent/profile_packs.py src/agent/runner.py src/agent/nodes/context_builder.py src/agent/nodes/tool_runner.py src/agent/nodes/solver.py src/agent/nodes/reviewer.py src/agent/nodes/reflect.py scripts/run_staged_runtime_smoke.py scripts/run_live_staged_smoke.py tests/test_staged_context_builder.py tests/test_staged_tool_runner.py tests/test_staged_reviewer.py tests/test_staged_reflect.py` -> **passed**
+  - Focused live LLM smoke (finance-options + mixed legal/math) completed successfully with the new evidence path
+- **Live Smoke Findings:**
+  1. `finance_options`
+     - selected `options_tool_backed`
+     - produced a structured `assumption_ledger` entry for the assumed spot price
+     - produced a populated `provenance_map` for prompt facts, derived volatility signals, and tool-derived strategy facts
+     - final answer disclosed the pricing assumption explicitly
+  2. `mixed_legal_math`
+     - selected `legal_reasoning_only`
+     - completed without fabricated retrieved provenance
+     - no false `time_sensitive` assumption remained after tightening the freshness detector
+  3. `finance_quant`
+     - deterministic smoke remains healthy
+     - full live 4-prompt smoke is still expensive on this machine, so Phase 3 live validation was done with the affected templates directly rather than the whole script
+- **Handoff Notes:** Phase 3 is complete. Evidence in the runtime is now explicitly split into prompt, retrieved, and derived classes, and hidden assumptions can be surfaced and reviewed as typed artifacts instead of being buried inside prose or raw tool args. The next phase should be `Document Evidence Service`, not more evidence-contract expansion.
+
+### Chat 57: Architecture v3 Phase 4 - Document Evidence Service
+
+- **Role:** Architect / Coder
+- **Date:** 2026-03-14
+- **Goal:** Execute Phase 4 of `docs/architecture_v3_implementation_plan.md` by replacing raw file/document blobs with a structured document-evidence service that works inside the staged runtime.
+- **Actions Taken:**
+  1. Added a typed document artifact in `src/agent/contracts.py`:
+     - `DocumentEvidenceRecord`
+     - `EvidencePack.document_evidence`
+  2. Added `src/agent/document_evidence.py` with reusable helpers for:
+     - document placeholders from prompt URLs
+     - document-record construction from tool outputs
+     - document-evidence merge semantics
+     - compact document-evidence summaries for solver prompts
+     - extracted-evidence checks for reviewer gating
+  3. Upgraded `src/agent/runtime_support.py`:
+     - `build_evidence_pack()` now seeds document placeholders for file-backed tasks
+     - context constraints/open questions now explicitly direct metadata-first / narrow-window gathering
+     - `merge_tool_result_into_evidence()` now routes file-tool outputs into `document_evidence` instead of treating them like generic retrieved blobs
+     - provenance is now recorded for document metadata and extracted document sections
+  4. Upgraded `src/agent/tool_normalization.py`:
+     - `list_reference_files` now normalizes into discovered document records
+     - `fetch_reference_file` now normalizes into:
+       - metadata
+       - chunks
+       - tables
+       - numeric summaries
+       - citation
+     - raw file previews are no longer the primary contract shape
+     - file parse errors are now surfaced as tool errors instead of silently passing as pseudo-evidence
+  5. Updated staged runtime nodes:
+     - `src/agent/nodes/context_builder.py`
+       - logs document counts and seeds checkpoints with document-aware evidence
+     - `src/agent/nodes/solver.py`
+       - sends compact `document_evidence` summaries to the model instead of raw file blobs
+       - for `document_qa` / `legal_with_document_evidence`, GATHER now explicitly instructs metadata-first / narrow extraction behavior
+       - GATHER tool surface for document templates is restricted to file discovery/fetch tools
+     - `src/agent/nodes/reviewer.py`
+       - document gather stages now revise if they only discover URLs but fail to extract targeted evidence
+       - `document_qa` finals now revise if there is no extracted document evidence
+  6. Hardened the source file tool itself in `src/mcp_servers/file_handler/server.py`:
+     - CSV parsing now uses a more tolerant line-based fallback
+     - this came directly from the live run, where the initial public CSV produced a parse-error pseudo-artifact
+  7. Updated template/profile guidance:
+     - `src/agent/template_library.py`
+     - `src/agent/profile_packs.py`
+  8. Extended smoke coverage:
+     - `scripts/run_staged_runtime_smoke.py` now includes a deterministic `document_qa` scenario
+     - `scripts/run_live_staged_smoke.py` now includes a live `document_qa` prompt using a public CSV URL
+  9. Added/updated behavior-first tests:
+     - `tests/test_staged_context_builder.py`
+     - `tests/test_staged_tool_runner.py`
+     - `tests/test_staged_solver.py`
+     - `tests/test_staged_reviewer.py`
+- **Verification:**
+  - `python -m pytest tests/test_staged_context_builder.py tests/test_staged_tool_runner.py tests/test_staged_solver.py tests/test_staged_reviewer.py -q` -> **27 passed**
+  - `python scripts/run_staged_runtime_smoke.py` -> **ok: true**
+  - `python -m pytest tests -q` -> **49 passed, 2 skipped**
+  - `python -m py_compile src/agent/contracts.py src/agent/document_evidence.py src/agent/runtime_support.py src/agent/tool_normalization.py src/agent/profile_packs.py src/agent/template_library.py src/agent/nodes/context_builder.py src/agent/nodes/solver.py src/agent/nodes/reviewer.py src/mcp_servers/file_handler/server.py scripts/run_staged_runtime_smoke.py scripts/run_live_staged_smoke.py tests/test_staged_context_builder.py tests/test_staged_tool_runner.py tests/test_staged_solver.py tests/test_staged_reviewer.py` -> **passed**
+  - `python scripts/run_live_staged_smoke.py` -> live staged smoke completed successfully after rerunning outside the sandbox
+- **Live Smoke Findings:**
+  1. `document_qa`
+     - selected `document_qa`
+     - followed the intended path:
+       - `GATHER -> fetch_reference_file -> GATHER milestone review -> SYNTHESIZE`
+     - live file fetch now produced structured document evidence:
+       - metadata
+       - table rows
+       - numeric summaries
+       - citation
+     - final answer synthesized from extracted evidence, not from a raw text dump
+  2. `finance_quant`
+     - remained stable on `quant_inline_exact`
+     - used calculator in the live path
+  3. `finance_options`
+     - remained stable on `options_tool_backed`
+     - still needed multiple revise cycles to satisfy material-assumption disclosure
+     - this is a known solver/reviewer behavior issue, not a Phase 4 regression
+  4. `legal_transactional` and `mixed_legal_math`
+     - remained stable
+     - no new unsafe tool drift was introduced by the document-evidence layer
+- **Handoff Notes:** Phase 4 is complete. Document tasks now carry structured evidence artifacts through the runtime instead of raw file blobs, and the live staged smoke proves the new document path on the active graph. The next phase should be `Selective Checkpoints and Backtracking`, not more document parsing expansion.
+
 ### Chat 55: Review of Phase 2 Implementation
 
 - **Role:** Reviewer

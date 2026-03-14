@@ -75,6 +75,28 @@ def analyze_strategy(legs: list[dict]) -> str:
     )
 
 
+@tool
+def fetch_reference_file(url: str, row_limit: int = 25, page_limit: int = 2) -> str:
+    """Return a deterministic document preview for smoke testing."""
+    if url.endswith(".csv"):
+        return (
+            "FILE: report.csv\n"
+            "FORMAT: CSV | SIZE: 4.2 KB\n"
+            "--------------------------------------------------\n"
+            "[Rows 0-3 of ~3]\n"
+            "metric,value\n"
+            "roe,3.0433\n"
+            "roa,1.5791\n"
+        )
+    return (
+        "FILE: report.pdf\n"
+        "FORMAT: PDF | SIZE: 120.5 KB\n"
+        "--------------------------------------------------\n"
+        "[Pages 1-2 of 10]\n"
+        "Covenant threshold is 4.5x net leverage. Cure period is 30 days."
+    )
+
+
 async def run_quant_scenario():
     executor_queue = [
         AIMessage(content='{"name":"calculator","arguments":{"expression":"round((3.0433-1.5791)/1.5791, 4)"}}'),
@@ -118,7 +140,7 @@ async def run_options_scenario():
         AIMessage(
             content=(
                 "Recommendation: be a net seller of options.\n"
-                "Primary strategy: short strangle with net credit and positive theta.\n"
+                "Primary strategy: short strangle with net credit and positive theta, assuming spot is 300.\n"
                 "Alternative strategy: iron condor for lower tail risk at the cost of lower premium.\n"
                 "Key Greeks: delta near flat, negative gamma, positive theta, negative vega.\n"
                 "Breakevens: manage around the short strikes plus or minus collected credit.\n"
@@ -143,10 +165,52 @@ async def run_options_scenario():
     return {"scenario": "finance_options", "answer": answer, "steps": steps}
 
 
+async def run_document_scenario():
+    executor_queue = [
+        AIMessage(
+            content=json.dumps(
+                {
+                    "name": "fetch_reference_file",
+                    "arguments": {
+                        "url": "https://example.com/report.csv",
+                        "row_limit": 25,
+                    },
+                }
+            )
+        ),
+        AIMessage(
+            content=(
+                "Extracted document evidence: the CSV preview contains two metrics, ROE 3.0433 and ROA 1.5791, "
+                "from the first table window of the source file."
+            )
+        ),
+        AIMessage(
+            content=(
+                "Answer: the extracted CSV preview shows ROE 3.0433 and ROA 1.5791.\n"
+                "Evidence summary: rows were extracted from the file preview rather than guessed from narrative.\n"
+                "Source references: https://example.com/report.csv"
+            )
+        ),
+    ]
+    reviewer_queue = [
+        AIMessage(content='{"verdict":"pass","reasoning":"Gather output contains structured document evidence.","missing_dimensions":[],"repair_target":"synthesize"}'),
+        AIMessage(content='{"verdict":"pass","reasoning":"Final answer is grounded and complete.","missing_dimensions":[],"repair_target":"final"}'),
+    ]
+    graph = build_agent_graph(external_tools=[fetch_reference_file])
+    prompt = "Read the attached CSV at https://example.com/report.csv and summarize the extracted values with a source reference."
+    with patched_models(executor_queue, reviewer_queue):
+        answer, steps, _ = await run_agent(graph, prompt)
+    assert "source references" in answer.lower()
+    assert any(event["action"].startswith("ran fetch_reference_file") for event in steps if event["node"] == "tool_runner")
+    assert any("template=document_qa" in event.get("action", "") for event in steps if event.get("node") == "template_selector")
+    return {"scenario": "document_qa", "answer": answer, "steps": steps}
+
+
 async def main():
     quant = await run_quant_scenario()
     options = await run_options_scenario()
-    print(json.dumps({"ok": True, "scenarios": [quant, options]}, ensure_ascii=True))
+    document = await run_document_scenario()
+    print(json.dumps({"ok": True, "scenarios": [quant, options, document]}, ensure_ascii=True))
 
 
 if __name__ == "__main__":

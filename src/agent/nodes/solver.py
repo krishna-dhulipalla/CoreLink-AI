@@ -17,6 +17,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
 from agent.contracts import ReviewResult, ToolCallEnvelope, ToolResult
+from agent.document_evidence import has_extracted_document_evidence, summarize_document_evidence
 from agent.cost import CostTracker
 from agent.model_config import _extract_json_payload, _tool_call_mode, get_client_kwargs, get_model_name
 from agent.profile_packs import get_profile_pack
@@ -94,6 +95,9 @@ def _allowed_tools_for_state(all_tools: list, state: AgentState) -> list:
 
     if stage == "SYNTHESIZE":
         allowed_names = set()
+
+    if stage == "GATHER" and template.get("template_id") in {"legal_with_document_evidence", "document_qa"}:
+        allowed_names &= {"fetch_reference_file", "list_reference_files"}
 
     review_feedback = state.get("review_feedback") or {}
     repair_target = str(review_feedback.get("repair_target", "final"))
@@ -176,6 +180,8 @@ def _compact_evidence_block(state: AgentState) -> str:
     evidence = state.get("evidence_pack", {})
     workpad = state.get("workpad", {})
     review_feedback = state.get("review_feedback") or {}
+    assumption_ledger = list(state.get("assumption_ledger", []))
+    provenance_map = dict(state.get("provenance_map", {}))
     profile_pack = workpad.get("profile_pack") or get_profile_pack(state.get("task_profile", "general")).model_dump()
     answer_contract = state.get("answer_contract", {})
     execution_template = state.get("execution_template", {})
@@ -204,7 +210,32 @@ def _compact_evidence_block(state: AgentState) -> str:
             "schema_hint": answer_contract.get("schema_hint", {}),
             "value_rules": answer_contract.get("value_rules", {}),
         },
-        "evidence_pack": evidence,
+        "evidence_pack": {
+            "task_brief": evidence.get("task_brief", ""),
+            "constraints": evidence.get("constraints", []),
+            "entities": evidence.get("entities", []),
+            "prompt_facts": evidence.get("prompt_facts", {}),
+            "retrieved_facts": {
+                key: value
+                for key, value in evidence.get("retrieved_facts", {}).items()
+                if key not in {"fetch_reference_file"}
+            },
+            "derived_facts": evidence.get("derived_facts", {}),
+            "document_evidence": summarize_document_evidence(evidence.get("document_evidence", [])),
+            "tables": evidence.get("tables", []),
+            "formulas": evidence.get("formulas", []),
+            "citations": evidence.get("citations", []),
+            "open_questions": evidence.get("open_questions", []),
+        },
+        "assumption_ledger": assumption_ledger[:8],
+        "provenance_summary": {
+            key: {
+                "source_class": value.get("source_class"),
+                "source_id": value.get("source_id"),
+                "tool_name": value.get("tool_name"),
+            }
+            for key, value in list(provenance_map.items())[:20]
+        },
         "last_tool_result": state.get("last_tool_result"),
         "stage_outputs": workpad.get("stage_outputs", {}),
         "review_feedback": review_feedback,
@@ -293,6 +324,29 @@ def make_solver(tools: list):
             stage_prompt += "\nContent rules:\n- " + "\n- ".join(contract["content_rules"])
         if effective_stage == "SYNTHESIZE" and contract.get("section_requirements"):
             stage_prompt += "\nRequired sections:\n- " + "\n- ".join(contract["section_requirements"])
+        disclosure_assumptions = [
+            entry.get("assumption", "")
+            for entry in state.get("assumption_ledger", [])
+            if isinstance(entry, dict) and entry.get("requires_user_visible_disclosure")
+        ]
+        if effective_stage in {"SYNTHESIZE", "COMPUTE"} and disclosure_assumptions:
+            stage_prompt += "\nDisclose these assumptions if they affect the answer:\n- " + "\n- ".join(disclosure_assumptions[:4])
+        document_evidence = state.get("evidence_pack", {}).get("document_evidence", [])
+        if effective_stage == "GATHER" and execution_template.get("template_id") in {
+            "legal_with_document_evidence",
+            "document_qa",
+        }:
+            if not has_extracted_document_evidence(document_evidence):
+                stage_prompt += (
+                    "\nFor document gathering, fetch metadata plus a narrow page/row window first. "
+                    "Prefer targeted extraction over raw document dumps. "
+                    "If the prompt already includes a URL, use fetch_reference_file directly with small limits."
+                )
+            else:
+                stage_prompt += (
+                    "\nDocument evidence already exists. Gather only one additional targeted window if the current "
+                    "evidence still leaves a material question unanswered."
+                )
         if profile == "finance_options" and effective_stage == "COMPUTE" and not state.get("last_tool_result"):
             stage_prompt += (
                 "\nFor finance_options compute stage, emit one options-analysis tool call before narrative "

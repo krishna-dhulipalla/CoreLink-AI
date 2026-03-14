@@ -34,6 +34,24 @@ def test_reflect_persists_run_tool_and_review_memory():
         },
         "answer_contract": {"format": "json", "requires_adapter": True},
         "evidence_pack": {},
+        "assumption_ledger": [
+            {
+                "key": "spot_price",
+                "assumption": "Spot price must be disclosed if introduced later.",
+                "source": "context_builder_open_question",
+                "confidence": "low",
+                "requires_user_visible_disclosure": True,
+                "review_status": "pending",
+            }
+        ],
+        "provenance_map": {
+            "prompt_facts.roe": {
+                "source_class": "prompt",
+                "source_id": "user_prompt",
+                "extraction_method": "inline_extraction",
+                "tool_name": None,
+            }
+        },
         "solver_stage": "COMPLETE",
         "workpad": {
             "events": [

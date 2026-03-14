@@ -48,6 +48,9 @@ SolverStage = Literal[
 ]
 
 ReviewVerdict = Literal["pass", "revise", "backtrack"]
+SourceClass = Literal["prompt", "retrieved", "derived", "assumption"]
+AssumptionConfidence = Literal["low", "medium", "high"]
+AssumptionReviewStatus = Literal["pending", "accepted", "rejected", "disclosed"]
 ExecutionTemplateId = Literal[
     "quant_inline_exact",
     "quant_with_tool_compute",
@@ -104,19 +107,44 @@ class ProfileContextPack(BaseModel):
     reviewer_dimensions: dict[str, list[str]] = Field(default_factory=dict)
 
 
+class AssumptionRecord(BaseModel):
+    key: str = ""
+    assumption: str
+    source: str
+    confidence: AssumptionConfidence = "medium"
+    requires_user_visible_disclosure: bool = False
+    review_status: AssumptionReviewStatus = "pending"
+
+
+class ProvenanceRecord(BaseModel):
+    source_class: SourceClass
+    source_id: str = ""
+    extraction_method: str = ""
+    tool_name: str | None = None
+
+
+class DocumentEvidenceRecord(BaseModel):
+    document_id: str
+    citation: str = ""
+    status: Literal["discovered", "indexed", "extracted"] = "discovered"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    chunks: list[dict[str, Any]] = Field(default_factory=list)
+    tables: list[dict[str, Any]] = Field(default_factory=list)
+    numeric_summaries: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class EvidencePack(BaseModel):
     task_brief: str = ""
     answer_contract: dict[str, Any] = Field(default_factory=dict)
     entities: list[str] = Field(default_factory=list)
     constraints: list[str] = Field(default_factory=list)
-    inline_facts: dict[str, Any] = Field(default_factory=dict)
+    prompt_facts: dict[str, Any] = Field(default_factory=dict)
+    retrieved_facts: dict[str, Any] = Field(default_factory=dict)
+    derived_facts: dict[str, Any] = Field(default_factory=dict)
+    document_evidence: list[dict[str, Any]] = Field(default_factory=list)
     tables: list[dict[str, Any]] = Field(default_factory=list)
     formulas: list[str] = Field(default_factory=list)
-    file_refs: list[str] = Field(default_factory=list)
-    market_snapshot: dict[str, Any] = Field(default_factory=dict)
-    derived_signals: dict[str, Any] = Field(default_factory=dict)
     citations: list[str] = Field(default_factory=list)
-    assumptions: list[str] = Field(default_factory=list)
     open_questions: list[str] = Field(default_factory=list)
 
 

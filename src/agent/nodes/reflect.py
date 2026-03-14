@@ -27,6 +27,8 @@ def _persist_run(state: AgentState, task_text: str, workpad: dict) -> None:
     ambiguity_flags = list(state.get("ambiguity_flags", []))
     execution_template = state.get("execution_template", {}) or {}
     template_id = str(execution_template.get("template_id", ""))
+    assumption_ledger = list(state.get("assumption_ledger", []))
+    provenance_map = dict(state.get("provenance_map", {}))
     route_path = list(dict.fromkeys(event.get("node", "") for event in workpad.get("events", []) if event.get("node")))
     tool_results = list(workpad.get("tool_results", []))
     review_results = list(workpad.get("review_results", []))
@@ -55,6 +57,8 @@ def _persist_run(state: AgentState, task_text: str, workpad: dict) -> None:
             "final_stage": state.get("solver_stage", "PLAN"),
             "ambiguity_flags": ambiguity_flags,
             "template_id": template_id,
+            "assumption_count": len(assumption_ledger),
+            "provenance_count": len(provenance_map),
         },
     )
     store.store_run(record)
@@ -90,6 +94,10 @@ def _persist_tools(state: AgentState, task_text: str, workpad: dict) -> None:
             success=not bool(errors),
             metadata={
                 "source": source,
+                "provenance_keys": [
+                    key for key, value in (state.get("provenance_map") or {}).items()
+                    if isinstance(value, dict) and str(value.get("tool_name", "")) == str(source.get("tool", result.get("type", "unknown")))
+                ][:20],
             },
         )
         store.store_tool(record)

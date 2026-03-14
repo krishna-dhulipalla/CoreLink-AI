@@ -54,7 +54,7 @@ def context_builder(state: AgentState) -> dict:
     profile_pack = get_profile_pack(task_profile)
     merged_contract = apply_profile_contract_rules(answer_contract, task_profile)
 
-    evidence: EvidencePack = build_evidence_pack(
+    evidence, assumption_ledger, provenance_map = build_evidence_pack(
         task_text=task_text,
         answer_contract=merged_contract,
         task_profile=task_profile,
@@ -80,7 +80,8 @@ def context_builder(state: AgentState) -> dict:
             "node": "context_builder",
             "action": (
                 f"template={execution_template.template_id} "
-                f"stage={next_stage} entities={len(evidence.entities)} files={len(evidence.file_refs)}"
+                f"stage={next_stage} entities={len(evidence.entities)} "
+                f"citations={len(evidence.citations)} documents={len(evidence.document_evidence)}"
             ),
         }
     )
@@ -90,6 +91,8 @@ def context_builder(state: AgentState) -> dict:
             {
                 "messages": list(state.get("messages", [])),
                 "evidence_pack": evidence.model_dump(),
+                "assumption_ledger": assumption_ledger,
+                "provenance_map": provenance_map,
                 "workpad": workpad,
                 "solver_stage": next_stage,
                 "last_tool_result": None,
@@ -97,12 +100,13 @@ def context_builder(state: AgentState) -> dict:
         )
 
     logger.info(
-        "[Step %s] context_builder -> profile=%s stage=%s entities=%s files=%s",
+        "[Step %s] context_builder -> profile=%s stage=%s entities=%s citations=%s documents=%s",
         step,
         task_profile,
         next_stage,
         evidence.entities,
-        len(evidence.file_refs),
+        len(evidence.citations),
+        len(evidence.document_evidence),
     )
 
     return {
@@ -114,5 +118,7 @@ def context_builder(state: AgentState) -> dict:
         "capability_flags": capability_flags,
         "ambiguity_flags": ambiguity_flags,
         "execution_template": execution_template.model_dump(),
+        "assumption_ledger": assumption_ledger,
+        "provenance_map": provenance_map,
         "checkpoint_stack": checkpoint_stack,
     }

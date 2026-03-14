@@ -16,7 +16,12 @@ from langgraph.prebuilt import ToolNode
 
 from agent.contracts import ToolResult
 from agent.runtime_clock import increment_runtime_step
-from agent.runtime_support import allowed_tools_for_template
+from agent.runtime_support import (
+    _merge_unique_assumptions,
+    allowed_tools_for_template,
+    derive_assumption_ledger_entries,
+    merge_tool_result_into_evidence,
+)
 from agent.state import AgentState
 from agent.tool_normalization import normalize_tool_output
 
@@ -109,6 +114,21 @@ def make_tool_runner(tool_node: ToolNode):
             tool_args if isinstance(tool_args, dict) else {},
         )
         tool_result.source.setdefault("solver_stage", state.get("solver_stage", "COMPUTE"))
+        updated_evidence_pack, updated_provenance_map = merge_tool_result_into_evidence(
+            state.get("evidence_pack", {}),
+            tool_result,
+            tool_args if isinstance(tool_args, dict) else {},
+            state.get("provenance_map", {}),
+        )
+        added_assumptions = derive_assumption_ledger_entries(
+            tool_name,
+            tool_args if isinstance(tool_args, dict) else {},
+            state.get("evidence_pack", {}),
+        )
+        updated_assumption_ledger = _merge_unique_assumptions(
+            state.get("assumption_ledger", []),
+            added_assumptions,
+        )
         workpad.setdefault("tool_results", []).append(tool_result.model_dump())
         workpad.setdefault("events", []).append({"node": "tool_runner", "action": f"ran {tool_name}"})
 
@@ -128,6 +148,9 @@ def make_tool_runner(tool_node: ToolNode):
         return {
             "messages": messages,
             "last_tool_result": tool_result.model_dump(),
+            "evidence_pack": updated_evidence_pack,
+            "assumption_ledger": updated_assumption_ledger,
+            "provenance_map": updated_provenance_map,
             "pending_tool_call": None,
             "tool_fail_count": state.get("tool_fail_count", 0) + (1 if tool_result.errors else 0),
             "last_tool_signature": _tool_signature(state),

@@ -81,7 +81,15 @@ def test_tool_runner_normalizes_analyze_strategy_output():
     state = make_state(
         "Analyze a short premium strategy.",
         task_profile="finance_options",
-        pending_tool_call={"name": "analyze_strategy", "arguments": {"legs": []}},
+        evidence_pack={"prompt_facts": {}, "retrieved_facts": {}, "derived_facts": {}, "citations": []},
+        pending_tool_call={
+            "name": "analyze_strategy",
+            "arguments": {
+                "legs": [
+                    {"option_type": "call", "action": "sell", "S": 300.0, "K": 310.0, "T_days": 30, "sigma": 0.35}
+                ]
+            },
+        },
     )
 
     result = asyncio.run(runner(state))
@@ -92,6 +100,8 @@ def test_tool_runner_normalizes_analyze_strategy_output():
     assert normalized["facts"]["total_theta_per_day"] == 0.04
     assert result["messages"][0].name == "analyze_strategy"
     assert json.loads(result["messages"][0].content)["facts"]["total_delta"] == -0.12
+    assert result["evidence_pack"]["derived_facts"]["analyze_strategy"]["net_premium"] == 9.16
+    assert any(entry["key"] == "spot_price" for entry in result["assumption_ledger"])
 
 
 def test_tool_runner_flags_unstructured_output():
@@ -144,15 +154,44 @@ def test_tool_runner_normalizes_reference_file_rows():
     state = make_state(
         "Read the attached file.",
         task_profile="document_qa",
+        evidence_pack={"prompt_facts": {}, "retrieved_facts": {}, "derived_facts": {}, "citations": []},
         pending_tool_call={"name": "fetch_reference_file", "arguments": {"url": "https://example.com/report.csv"}},
     )
 
     result = asyncio.run(runner(state))
     normalized = result["last_tool_result"]
 
-    assert normalized["facts"]["file_name"] == "report.csv"
-    assert normalized["facts"]["format"] == "csv"
-    assert normalized["facts"]["rows"][0] == ["metric", "value"]
+    assert normalized["facts"]["metadata"]["file_name"] == "report.csv"
+    assert normalized["facts"]["metadata"]["format"] == "csv"
+    assert normalized["facts"]["tables"][0]["headers"] == ["metric", "value"]
+    assert normalized["facts"]["tables"][0]["rows"][0] == ["roe", "3.0433"]
+    assert any(summary["metric"] == "row_count" for summary in normalized["facts"]["numeric_summaries"])
+    assert result["evidence_pack"]["document_evidence"][0]["metadata"]["file_name"] == "report.csv"
+    assert result["evidence_pack"]["document_evidence"][0]["status"] == "extracted"
+    assert result["evidence_pack"]["retrieved_facts"]["fetch_reference_file"]["documents"][0]["document_id"] == "report_csv"
+    assert result["provenance_map"]["document_evidence.report_csv.metadata.file_name"]["source_class"] == "retrieved"
+    assert "preview" not in normalized["facts"]
+
+
+def test_tool_runner_normalizes_reference_listing_into_document_placeholders():
+    raw = (
+        "REFERENCE FILES DETECTED:\n\n"
+        "  1. [CSV] https://example.com/report.csv\n"
+        "  2. [PDF] https://example.com/deal.pdf\n"
+    )
+    runner = make_tool_runner(_DummyToolNode("list_reference_files", raw))
+    state = make_state(
+        "Read the attached files.",
+        task_profile="document_qa",
+        evidence_pack={"prompt_facts": {}, "retrieved_facts": {}, "derived_facts": {}, "document_evidence": [], "citations": []},
+        pending_tool_call={"name": "list_reference_files", "arguments": {"prompt_text": "REFERENCE FILES AVAILABLE"}} ,
+    )
+
+    result = asyncio.run(runner(state))
+
+    assert result["last_tool_result"]["facts"]["document_count"] == 2
+    assert result["evidence_pack"]["document_evidence"][0]["status"] == "discovered"
+    assert result["evidence_pack"]["retrieved_facts"]["list_reference_files"]["document_count"] == 2
 
 
 def test_tool_runner_normalizes_expiration_schedule():

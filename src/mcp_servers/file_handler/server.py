@@ -112,8 +112,18 @@ def _parse_csv(raw: bytes, row_offset: int, row_limit: int) -> tuple[str, int]:
     """Parse CSV and return rows for the requested range."""
     try:
         text = raw.decode("utf-8", errors="replace")
-        reader = csv.reader(io.StringIO(text))
-        all_rows = list(reader)
+        try:
+            all_rows = list(csv.reader(text.splitlines()))
+        except csv.Error:
+            all_rows = []
+            for line in text.splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    parsed = next(csv.reader([line]))
+                except csv.Error:
+                    parsed = [part.strip() for part in line.split(",")]
+                all_rows.append(parsed)
         total = len(all_rows)
         rows = all_rows[row_offset: row_offset + row_limit]
         return "\n".join(",".join(r) for r in rows), total

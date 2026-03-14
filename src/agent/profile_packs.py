@@ -21,7 +21,7 @@ PROFILE_PACKS: dict[TaskProfile, ProfileContextPack] = {
             "Keep the analytical summary compact and exact.",
             "Do not introduce external assumptions unless explicitly stated.",
         ],
-        required_evidence_types=["inline_facts", "tables", "formulas"],
+        required_evidence_types=["prompt_facts", "tables", "formulas"],
         allowed_tools=["calculator", "fetch_reference_file", "list_reference_files"],
         failure_modes=[
             "Missing or misread values from inline tables.",
@@ -46,7 +46,7 @@ PROFILE_PACKS: dict[TaskProfile, ProfileContextPack] = {
             "Key Greeks and breakevens",
             "Risk management",
         ],
-        required_evidence_types=["market_snapshot", "derived_signals", "tool_results"],
+        required_evidence_types=["prompt_facts", "derived_facts"],
         allowed_tools=[
             "calculator",
             "black_scholes_price",
@@ -91,7 +91,7 @@ PROFILE_PACKS: dict[TaskProfile, ProfileContextPack] = {
             "Key open questions and assumptions",
             "Recommended next steps",
         ],
-        required_evidence_types=["inline_facts", "file_refs"],
+        required_evidence_types=["prompt_facts", "citations"],
         allowed_tools=["calculator", "fetch_reference_file", "list_reference_files"],
         failure_modes=[
             "Generic memo that omits diligence or liability allocation.",
@@ -117,7 +117,7 @@ PROFILE_PACKS: dict[TaskProfile, ProfileContextPack] = {
             "Call file tools only when a file or URL is actually present.",
         ],
         section_requirements=["Answer", "Evidence summary", "Source references"],
-        required_evidence_types=["file_refs", "tables", "citations"],
+        required_evidence_types=["document_evidence", "citations"],
         allowed_tools=["calculator", "fetch_reference_file", "list_reference_files"],
         failure_modes=[
             "Answering from raw guesses without extracted evidence.",
@@ -139,7 +139,7 @@ PROFILE_PACKS: dict[TaskProfile, ProfileContextPack] = {
             "Cite retrieved facts directly and keep unsupported extrapolation out of the answer.",
         ],
         section_requirements=["Answer", "Retrieved evidence", "Sources"],
-        required_evidence_types=["citations", "tool_results"],
+        required_evidence_types=["retrieved_facts", "citations"],
         allowed_tools=["calculator", "internet_search", "fetch_reference_file", "list_reference_files"],
         failure_modes=[
             "Using stale model knowledge where explicit retrieval was required.",

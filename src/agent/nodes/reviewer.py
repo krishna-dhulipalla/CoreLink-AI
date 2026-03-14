@@ -16,6 +16,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from langchain_openai import ChatOpenAI
 
 from agent.contracts import ReviewResult
+from agent.document_evidence import has_extracted_document_evidence
 from agent.cost import CostTracker
 from agent.model_config import _extract_json_payload, get_client_kwargs, get_model_name
 from agent.profile_packs import get_profile_pack
@@ -131,6 +132,19 @@ def _options_gaps(answer_text: str) -> list[str]:
     return _keyword_gaps(answer_text, get_profile_pack("finance_options").reviewer_dimensions)
 
 
+def _has_undisclosed_required_assumption(state: AgentState, answer_text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", (answer_text or "").lower()).strip()
+    for record in state.get("assumption_ledger", []):
+        if not isinstance(record, dict):
+            continue
+        if not record.get("requires_user_visible_disclosure"):
+            continue
+        key = str(record.get("key", "")).lower()
+        if key == "spot_price" and "spot" not in normalized and "assum" not in normalized:
+            return True
+    return False
+
+
 def _deterministic_review(state: AgentState, artifact: str, is_final: bool) -> ReviewResult | None:
     profile = state.get("task_profile", "general")
     workpad = state.get("workpad", {})
@@ -138,6 +152,8 @@ def _deterministic_review(state: AgentState, artifact: str, is_final: bool) -> R
     last_tool_result = state.get("last_tool_result") or {}
     profile_pack = get_profile_pack(profile)
     tool_results = workpad.get("tool_results", [])
+    template_id = str((state.get("execution_template") or {}).get("template_id", ""))
+    document_evidence = (state.get("evidence_pack") or {}).get("document_evidence", [])
 
     if review_stage == "GATHER" and last_tool_result.get("errors"):
         return ReviewResult(
@@ -146,6 +162,15 @@ def _deterministic_review(state: AgentState, artifact: str, is_final: bool) -> R
             missing_dimensions=["valid evidence"],
             repair_target="gather",
         )
+
+    if review_stage == "GATHER" and template_id in {"legal_with_document_evidence", "document_qa"}:
+        if not has_extracted_document_evidence(document_evidence):
+            return ReviewResult(
+                verdict="revise",
+                reasoning="Document gather stage found document references but not targeted extracted evidence yet.",
+                missing_dimensions=["targeted document evidence"],
+                repair_target="gather",
+            )
 
     if review_stage == "COMPUTE" and not re.search(r"\d", artifact or ""):
         return ReviewResult(
@@ -210,6 +235,22 @@ def _deterministic_review(state: AgentState, artifact: str, is_final: bool) -> R
                 reasoning="Final options answer is missing one or more benchmark-critical dimensions.",
                 missing_dimensions=gaps,
                 repair_target="final",
+            )
+        if _has_undisclosed_required_assumption(state, artifact):
+            return ReviewResult(
+                verdict="revise",
+                reasoning="Final options answer must disclose material pricing assumptions introduced during compute.",
+                missing_dimensions=["disclosed material assumptions"],
+                repair_target="final",
+            )
+
+    if is_final and profile == "document_qa":
+        if not has_extracted_document_evidence(document_evidence):
+            return ReviewResult(
+                verdict="revise",
+                reasoning="Document QA final answer requires extracted document evidence, not URL discovery alone.",
+                missing_dimensions=["extracted document evidence"],
+                repair_target="gather",
             )
 
     if is_final and profile_pack.reviewer_dimensions and profile not in {"legal_transactional", "finance_options"}:
@@ -279,6 +320,8 @@ def _snapshot_state(state: AgentState) -> dict[str, Any]:
     return {
         "messages": list(state.get("messages", [])),
         "evidence_pack": dict(state.get("evidence_pack", {})),
+        "assumption_ledger": list(state.get("assumption_ledger", [])),
+        "provenance_map": dict(state.get("provenance_map", {})),
         "workpad": dict(state.get("workpad", {})),
         "solver_stage": state.get("solver_stage", "SYNTHESIZE"),
         "last_tool_result": state.get("last_tool_result"),
@@ -292,6 +335,8 @@ def _restore_checkpoint(state: AgentState) -> dict[str, Any]:
         return {
             "messages": ReplaceMessages(checkpoint.get("messages", [])),
             "evidence_pack": checkpoint.get("evidence_pack", {}),
+            "assumption_ledger": checkpoint.get("assumption_ledger", []),
+            "provenance_map": checkpoint.get("provenance_map", {}),
             "workpad": checkpoint.get("workpad", {}),
             "solver_stage": checkpoint.get("solver_stage", "SYNTHESIZE"),
             "last_tool_result": checkpoint.get("last_tool_result"),
@@ -344,6 +389,14 @@ def reviewer(state: AgentState) -> dict:
                     "task": task_text,
                     "artifact": artifact,
                     "answer_contract": state.get("answer_contract", {}),
+                    "assumption_ledger": state.get("assumption_ledger", []),
+                    "provenance_summary": {
+                        key: {
+                            "source_class": value.get("source_class"),
+                            "source_id": value.get("source_id"),
+                        }
+                        for key, value in list((state.get("provenance_map") or {}).items())[:12]
+                    },
                     "last_tool_result": state.get("last_tool_result"),
                 },
                 ensure_ascii=True,

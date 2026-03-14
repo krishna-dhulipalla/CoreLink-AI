@@ -83,12 +83,32 @@ def _parse_strategy_analysis(raw: str) -> dict[str, Any]:
 
 
 def _parse_reference_listing(raw: str) -> dict[str, Any]:
-    urls = re.findall(r"https?://[^\s\)\]\"',]+", raw or "")
-    formats = re.findall(r"\[(pdf|excel|word|csv|json|text|image|audio|video|archive)\]", raw or "", re.IGNORECASE)
-    result: dict[str, Any] = {"urls": urls}
-    if formats:
-        result["formats"] = [fmt.lower() for fmt in formats[: len(urls) or None]]
-    return result
+    documents = []
+    for idx, match in enumerate(
+        re.finditer(r"\d+\.\s+\[(?P<fmt>[A-Z]+)\]\s+(?P<url>https?://[^\s\)\]\"',]+)", raw or ""),
+        start=1,
+    ):
+        url = match.group("url").strip()
+        documents.append(
+            {
+                "document_id": re.sub(r"[^a-zA-Z0-9_]+", "_", url.rsplit("/", 1)[-1].split("?", 1)[0]).strip("_").lower()
+                or f"document_{idx}",
+                "citation": url,
+                "format": match.group("fmt").strip().lower(),
+            }
+        )
+    if not documents:
+        urls = re.findall(r"https?://[^\s\)\]\"',]+", raw or "")
+        documents = [
+            {
+                "document_id": re.sub(r"[^a-zA-Z0-9_]+", "_", url.rsplit("/", 1)[-1].split("?", 1)[0]).strip("_").lower()
+                or f"document_{idx}",
+                "citation": url,
+                "format": "unknown",
+            }
+            for idx, url in enumerate(urls, start=1)
+        ]
+    return {"documents": documents, "document_count": len(documents)}
 
 
 def _parse_document_rows(text: str) -> list[list[str]]:
@@ -112,29 +132,102 @@ def _parse_file_fetch(raw: str) -> dict[str, Any]:
     format_match = re.search(r"FORMAT:\s*([A-Z0-9_]+)", raw or "")
     size_match = re.search(r"SIZE:\s*([0-9.]+)\s*KB", raw or "")
     window_match = re.search(r"\[(Pages|Rows)\s+([^\]]+)\]", raw or "")
+    metadata: dict[str, Any] = {}
     if file_match:
-        facts["file_name"] = file_match.group(1).strip()
+        metadata["file_name"] = file_match.group(1).strip()
     if format_match:
-        facts["format"] = format_match.group(1).strip().lower()
+        metadata["format"] = format_match.group(1).strip().lower()
     if size_match:
-        facts["size_kb"] = float(size_match.group(1))
+        metadata["size_kb"] = float(size_match.group(1))
     if window_match:
-        facts["window"] = f"{window_match.group(1)} {window_match.group(2)}"
+        metadata["window"] = f"{window_match.group(1)} {window_match.group(2)}"
 
     parts = re.split(r"\n[-\u2500]{10,}\n", raw or "", maxsplit=1)
     body = parts[1] if len(parts) > 1 else raw
     rows = _parse_document_rows(body)
+    chunks: list[dict[str, Any]] = []
+    tables: list[dict[str, Any]] = []
+    numeric_summaries: list[dict[str, Any]] = []
     if rows:
-        facts["rows"] = rows
+        headers = rows[0] if rows else []
+        data_rows = rows[1:21] if len(rows) > 1 else []
+        if headers:
+            tables.append(
+                {
+                    "locator": metadata.get("window", "body"),
+                    "headers": headers,
+                    "rows": data_rows[:12],
+                    "citation": "",
+                }
+            )
+        numeric_cells = []
+        numeric_columns: dict[int, list[float]] = {}
+        for row in data_rows:
+            for idx, cell in enumerate(row):
+                if isinstance(cell, str) and re.fullmatch(r"[+-]?\d+(?:\.\d+)?", cell.strip()):
+                    value = float(cell)
+                    numeric_cells.append(value)
+                    numeric_columns.setdefault(idx, []).append(value)
+        numeric_summaries.append({"metric": "row_count", "value": len(data_rows)})
+        numeric_summaries.append({"metric": "column_count", "value": len(headers)})
+        if numeric_cells:
+            numeric_summaries.append({"metric": "numeric_cell_count", "value": len(numeric_cells)})
+        for idx, values in list(numeric_columns.items())[:4]:
+            header = headers[idx] if idx < len(headers) else f"col_{idx}"
+            numeric_summaries.append(
+                {
+                    "metric": f"{header}_range",
+                    "value": {"min": min(values), "max": max(values)},
+                }
+            )
+        preview_rows = rows[: min(len(rows), 4)]
+        chunks.append(
+            {
+                "locator": metadata.get("window", "body"),
+                "kind": "table_preview",
+                "text": "\n".join(",".join(row) for row in preview_rows)[:280].strip(),
+                "citation": "",
+            }
+        )
     else:
         json_candidate = body.strip()
         if json_candidate.startswith("{") or json_candidate.startswith("["):
             try:
-                facts["json_preview"] = json.loads(json_candidate)
+                parsed = json.loads(json_candidate)
+                chunks.append(
+                    {
+                        "locator": metadata.get("window", "body"),
+                        "kind": "json_preview",
+                        "text": json.dumps(parsed, ensure_ascii=True)[:280],
+                        "citation": "",
+                    }
+                )
             except Exception:
                 pass
-    if facts:
-        facts["preview"] = body[:400].strip()
+    excerpt = re.sub(r"\s+", " ", body).strip()
+    if excerpt and not chunks:
+        chunks.append(
+            {
+                "locator": metadata.get("window", "body"),
+                "kind": "text_excerpt",
+                "text": excerpt[:280],
+                "citation": "",
+            }
+        )
+
+    if not metadata and not tables and not numeric_summaries:
+        return {}
+
+    document_id = re.sub(
+        r"[^a-zA-Z0-9_]+",
+        "_",
+        str(metadata.get("file_name", "document")).split("?", 1)[0],
+    ).strip("_").lower() or "document"
+    facts["document_id"] = document_id
+    facts["metadata"] = metadata
+    facts["chunks"] = chunks
+    facts["tables"] = tables
+    facts["numeric_summaries"] = numeric_summaries
     return facts
 
 
@@ -285,6 +378,20 @@ def normalize_tool_output(tool_name: str, raw_content: Any, args: dict[str, Any]
         facts = {"result": _normalize_scalar(text)}
 
     errors = [] if facts else ["Unstructured tool output could not be normalized into machine-usable facts."]
+    if tool_name == "fetch_reference_file":
+        parse_error_match = re.search(r"\[(CSV|PDF|Excel|Word|JSON) parse error:[^\]]+\]", text)
+        if parse_error_match:
+            errors = [parse_error_match.group(0)]
+    if facts and tool_name == "fetch_reference_file":
+        citation = str(args.get("url", "")).strip()
+        if citation:
+            facts["citation"] = citation
+            for chunk in facts.get("chunks", []):
+                if isinstance(chunk, dict):
+                    chunk.setdefault("citation", citation)
+            for table in facts.get("tables", []):
+                if isinstance(table, dict):
+                    table.setdefault("citation", citation)
     return ToolResult(
         type=tool_name,
         facts=facts,
