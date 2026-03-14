@@ -1,7 +1,7 @@
 """
 Agent State: TypedDict & Custom Reducer
-========================================
-Defines the shared state schema used by all LangGraph nodes.
+======================================
+Defines the shared runtime state for the staged finance-first graph.
 """
 
 from typing import Annotated, Any, TypedDict
@@ -28,41 +28,24 @@ def _messages_reducer(
 
 
 class AgentState(TypedDict):
-    """Typed state for the LangGraph reasoning engine.
+    """Typed state for the staged runtime.
 
-    Core fields:
-        messages: Conversation history with custom append/replace reducer.
-        reflection_count: Number of self-critique cycles completed.
-        tool_fail_count: Consecutive tool failures (triggers forced fallback).
-        last_tool_signature: Hash of last tool call for dedup detection.
-
-    MaAS-lite fields (Sprint 1.5):
-        selected_layers: Operator names chosen by the coordinator.
-        format_required: Whether the format_normalizer should fire.
-        policy_confidence: Coordinator confidence for the selected plan.
-        estimated_steps: Coordinator estimate of reasoning depth.
-        early_exit_allowed: Whether the selected plan can stop early.
-        architecture_trace: Serialized OperatorTrace entries for cost tracking.
-        cost_tracker: Live CostTracker instance (not persisted).
+    The runtime now moves explicit artifacts between nodes instead of
+    passing coordinator telemetry through the whole graph.
     """
     messages: Annotated[list[BaseMessage], _messages_reducer]
-    reflection_count: int
+    task_profile: str
+    capability_flags: list[str]
+    answer_contract: dict[str, Any]
+    evidence_pack: dict[str, Any]
+    solver_stage: str
+    workpad: dict[str, Any]
+    pending_tool_call: dict[str, Any] | None
+    last_tool_result: dict[str, Any] | None
+    review_feedback: dict[str, Any] | None
+    checkpoint_stack: list[dict]
     tool_fail_count: int
     last_tool_signature: str
-    # Sprint 1.5: MaAS-lite policy & cost fields
-    selected_layers: list[str]
-    format_required: bool
-    policy_confidence: float
-    estimated_steps: int
-    early_exit_allowed: bool
-    architecture_trace: list[dict]
-    # Sprint 2: PRIME Triads & Backtracking
-    checkpoint_stack: list[dict]
-    pending_verifier_feedback: dict[str, str] | None
-    # Sprint 5: Task-family specialization
-    task_type: str  # "quantitative" | "legal" | "options" | "document" | "retrieval" | "general"
-    # Sprint 3: Execution Memory
-    cost_tracker: Any  # CostTracker instance (not persisted)
-    memory_store: Any  # MemoryStore instance (not persisted)
-    # Sprint 4: Budget Control
-    budget_tracker: Any  # BudgetTracker instance (not persisted)
+    budget_tracker: Any
+    cost_tracker: Any
+    memory_store: Any

@@ -674,3 +674,95 @@ This file operates in a "Chat" structure. Whenever an agent finishes a major uni
 - **Handoff Notes:** The current patch set directly targets the two trace-proven failures:
   - Task 2: hidden/disallowed tool attempts should no longer collapse into a mediocre essay after output extraction.
   - Task 3: truncated textual tool attempts should no longer be treated as final answers, and options retries should now be more compact and completion-oriented.
+
+### Chat 50: Finance-First Runtime Redesign
+
+- **Role:** Architect / Coder
+- **Actions Taken:**
+  1. Replaced the old prompt-heavy runtime shape with a staged graph in `src/agent/graph.py`:
+     - `intake -> task_profiler -> context_builder -> solver -> tool_runner -> solver -> reviewer -> output_adapter -> reflect`
+     - reviewer is now milestone/final only
+     - tool flow is now `solver -> tool_runner -> solver`
+  2. Replaced the old broad runtime state in `src/agent/state.py` with explicit runtime artifacts:
+     - `task_profile`
+     - `capability_flags`
+     - `answer_contract`
+     - `evidence_pack`
+     - `solver_stage`
+     - `workpad`
+     - `pending_tool_call`
+     - `last_tool_result`
+     - `review_feedback`
+     - plus compact operational fields (`checkpoint_stack`, budget/cost/memory trackers)
+     Removed from runtime state:
+     - `policy_confidence`
+     - `estimated_steps`
+     - `early_exit_allowed`
+     - `architecture_trace`
+     - `reflection_count`
+     - `selected_layers`
+  3. Added typed runtime contracts in `src/agent/contracts.py`:
+     - `AnswerContract`
+     - `EvidencePack`
+     - `ToolCallEnvelope`
+     - `ToolResult`
+     - `ReviewResult`
+     - task/profile/stage literals
+  4. Added finance-first context assembly in `src/agent/runtime_support.py`:
+     - hierarchical task profiling helpers
+     - capability-flag detection
+     - inline formula/table/url extraction
+     - market-signal derivation (e.g. IV vs HV premium)
+     - evidence-pack construction
+  5. Added new staged nodes:
+     - `src/agent/nodes/intake.py`
+     - `src/agent/nodes/task_profiler.py`
+     - `src/agent/nodes/context_builder.py`
+     - `src/agent/nodes/solver.py`
+     - `src/agent/nodes/tool_runner.py`
+     - `src/agent/nodes/reviewer.py`
+     - `src/agent/nodes/output_adapter.py`
+     - `src/agent/nodes/reflect.py`
+  6. Rewrote `src/agent/runner.py` around the new state and staged event trace. Persistence now keeps compact conversation history and stores memory after completion instead of injecting memory back into runtime prompts.
+  7. Normalized tool results in `src/agent/nodes/tool_runner.py` into a shared contract:
+     - `type`
+     - `facts`
+     - `assumptions`
+     - `source`
+     - `errors`
+     Added strict normalization for:
+     - `calculator`
+     - `analyze_strategy`
+     - `STRUCTURED_RESULTS` finance tools
+     - reference-file listing/fetch metadata
+     Unstructured narrative tool output is now explicitly marked as an error instead of silently trusted.
+  8. Narrowed reviewer responsibilities in `src/agent/nodes/reviewer.py`:
+     - milestone/final review only
+     - deterministic completeness checks for legal/options/truncation/tool-error cases
+     - checkpoint snapshots on pass
+     - backtrack restores from checkpoint instead of acting as a general runtime controller
+  9. Added a deterministic output adapter in `src/agent/nodes/output_adapter.py` for exact JSON/XML wrapping without using another formatter LLM call.
+  10. Removed obsolete architecture-specific tests tied to the retired coordinator/reasoner/verifier loop and replaced them with behavior-first staged-runtime tests:
+      - `tests/test_staged_profiler.py`
+      - `tests/test_staged_context_builder.py`
+      - `tests/test_staged_solver.py`
+      - `tests/test_staged_tool_runner.py`
+      - `tests/test_staged_reviewer.py`
+      - `tests/test_staged_output_adapter.py`
+      Kept still-relevant model/tool tests:
+      - `tests/test_model_config.py`
+      - `tests/test_finance_tools.py`
+  11. Added deterministic graph-path smoke coverage in `scripts/run_staged_runtime_smoke.py` for:
+      - finance quant path with calculator + JSON adapter
+      - finance options path with external `analyze_strategy`
+      This script is intended to catch routing/stage/tool/review regressions cheaply before full benchmark reruns.
+  12. Tightened instrumentation so deterministic profiler/reviewer/adapter work is no longer counted as LLM calls in cost summaries.
+- **Verification:**
+  - `python -m py_compile src/agent/contracts.py src/agent/state.py src/agent/runtime_support.py src/agent/runtime_clock.py src/agent/graph.py src/agent/runner.py src/agent/nodes/intake.py src/agent/nodes/task_profiler.py src/agent/nodes/context_builder.py src/agent/nodes/solver.py src/agent/nodes/tool_runner.py src/agent/nodes/reviewer.py src/agent/nodes/output_adapter.py src/agent/nodes/reflect.py scripts/run_staged_runtime_smoke.py` -> **passed**
+  - `pytest tests/test_staged_profiler.py tests/test_staged_context_builder.py tests/test_staged_solver.py tests/test_staged_tool_runner.py tests/test_staged_reviewer.py tests/test_staged_output_adapter.py tests/test_model_config.py tests/test_finance_tools.py -q` -> **22 passed, 1 skipped**
+  - `python scripts/run_staged_runtime_smoke.py` -> **ok: true**
+- **Current Caveats:**
+  1. Legacy coordinator/reasoner/verifier modules still exist in the repo for compatibility and history, but the graph no longer routes through them.
+  2. LangSmith outbound tracing still emits connection warnings in this local environment even when tracing is disabled via env vars; this did not affect pass/fail status of the new test or smoke runs.
+  3. Router memory storage is still using the legacy `RouterMemory` schema as a compatibility shim, with the new runtime artifacts stored in metadata. It is now store-only, not prompt-injected.
+- **Handoff Notes:** The runtime is now organized around explicit contracts and staged control instead of prompt-layer patching. The next meaningful work should be on improving domain context quality and tool coverage within this new structure, not on reintroducing old coordinator/verifier complexity.

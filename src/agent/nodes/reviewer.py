@@ -1,0 +1,317 @@
+"""
+Reviewer Node
+=============
+Milestone and final review only. The reviewer no longer sits in every tool hop.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+import time
+from typing import Any
+
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_openai import ChatOpenAI
+
+from agent.contracts import ReviewResult
+from agent.cost import CostTracker
+from agent.model_config import _extract_json_payload, get_client_kwargs, get_model_name
+from agent.runtime_clock import increment_runtime_step
+from agent.runtime_support import latest_human_text, next_stage_after_review
+from agent.state import AgentState, ReplaceMessages
+from context_manager import count_tokens
+
+logger = logging.getLogger(__name__)
+
+_REVIEW_PROMPT = """You are the stage reviewer.
+Review the provided stage artifact only.
+Return ONLY one JSON object with:
+- verdict: pass | revise | backtrack
+- reasoning: short explanation
+- missing_dimensions: list of short strings
+- repair_target: gather | compute | synthesize | final
+
+Do not answer the task.
+Do not produce user-facing prose.
+"""
+
+_LEGAL_SECTIONS = {
+    "structure options": ("asset", "stock", "merger", "triangular", "carve-out", "hybrid"),
+    "tax consequences": ("tax", "deferral", "step-up", "capital gain", "basis"),
+    "liability protection": ("indemn", "escrow", "reps", "warrant", "insurance", "holdback"),
+    "regulatory/diligence risks": ("regulatory", "compliance", "diligence", "approval", "eu", "us", "hsr"),
+    "key open questions / assumptions": ("assumption", "confirm", "determine", "assess", "willingness", "risk tolerance"),
+    "recommended next steps": ("next step", "engage", "draft", "timeline", "immediately", "recommend"),
+}
+
+
+def _record_event(workpad: dict[str, Any], action: str) -> dict[str, Any]:
+    updated = dict(workpad)
+    events = list(updated.get("events", []))
+    events.append({"node": "reviewer", "action": action})
+    updated["events"] = events
+    return updated
+
+
+def _artifact_for_review(state: AgentState) -> tuple[str, bool]:
+    workpad = state.get("workpad", {})
+    review_stage = workpad.get("review_stage", state.get("solver_stage", "SYNTHESIZE"))
+    if review_stage == "GATHER":
+        artifact = json.dumps(state.get("last_tool_result") or workpad.get("stage_outputs", {}).get("GATHER", {}), ensure_ascii=True)
+        return artifact, False
+    if review_stage == "COMPUTE":
+        artifact = str(workpad.get("stage_outputs", {}).get("COMPUTE", "")).strip()
+        return artifact, False
+
+    for msg in reversed(state.get("messages", [])):
+        if isinstance(msg, AIMessage) and msg.content:
+            return str(msg.content), True
+    return str(workpad.get("draft_answer", "")), True
+
+
+def _looks_truncated(text: str) -> bool:
+    stripped = (text or "").strip()
+    if not stripped:
+        return False
+    if stripped.endswith((":", ",", "(", "[", "{", "/", "-", "**")):
+        return True
+    last_line = stripped.splitlines()[-1].strip()
+    if last_line.startswith(("-", "*")) and len(last_line) < 8:
+        return True
+    return False
+
+
+def _legal_gaps(answer_text: str) -> list[str]:
+    normalized = re.sub(r"\s+", " ", (answer_text or "").lower()).strip()
+    gaps = []
+    for label, tokens in _LEGAL_SECTIONS.items():
+        if not any(token in normalized for token in tokens):
+            gaps.append(label)
+    return gaps
+
+
+def _options_gaps(answer_text: str) -> list[str]:
+    normalized = re.sub(r"\s+", " ", (answer_text or "").lower()).strip()
+    gaps = []
+    if not any(token in normalized for token in ("seller", "net seller", "short vol", "sell volatility")):
+        gaps.append("net seller recommendation")
+    if not any(token in normalized for token in ("delta", "gamma", "theta", "vega")):
+        gaps.append("Greeks coverage")
+    if "breakeven" not in normalized and "break-even" not in normalized:
+        gaps.append("breakeven analysis")
+    if not any(token in normalized for token in ("alternative", "instead", "compared", "iron condor", "strangle", "credit spread")):
+        gaps.append("alternative strategy comparison")
+    if not any(token in normalized for token in ("risk", "hedge", "sizing", "max loss")):
+        gaps.append("risk management")
+    return gaps
+
+
+def _deterministic_review(state: AgentState, artifact: str, is_final: bool) -> ReviewResult | None:
+    profile = state.get("task_profile", "general")
+    workpad = state.get("workpad", {})
+    review_stage = workpad.get("review_stage", state.get("solver_stage", "SYNTHESIZE"))
+    last_tool_result = state.get("last_tool_result") or {}
+
+    if review_stage == "GATHER" and last_tool_result.get("errors"):
+        return ReviewResult(
+            verdict="backtrack",
+            reasoning="Gather stage produced invalid or unusable tool evidence.",
+            missing_dimensions=["valid evidence"],
+            repair_target="gather",
+        )
+
+    if review_stage == "COMPUTE" and not re.search(r"\d", artifact or ""):
+        return ReviewResult(
+            verdict="revise",
+            reasoning="Compute stage did not produce concrete numerical or analytical output.",
+            missing_dimensions=["concrete analytical output"],
+            repair_target="compute",
+        )
+
+    if is_final and _looks_truncated(artifact):
+        return ReviewResult(
+            verdict="revise",
+            reasoning="Final answer appears truncated or cut off.",
+            missing_dimensions=["complete final answer"],
+            repair_target="final",
+        )
+
+    if is_final and profile == "legal_transactional":
+        gaps = _legal_gaps(artifact)
+        if gaps:
+            return ReviewResult(
+                verdict="revise",
+                reasoning="Final legal answer is directionally correct but incomplete.",
+                missing_dimensions=gaps,
+                repair_target="final",
+            )
+
+    if is_final and profile == "finance_options":
+        gaps = _options_gaps(artifact)
+        if gaps:
+            return ReviewResult(
+                verdict="revise",
+                reasoning="Final options answer is missing one or more benchmark-critical dimensions.",
+                missing_dimensions=gaps,
+                repair_target="final",
+            )
+
+    return None
+
+
+def _next_target_for_pass(state: AgentState) -> str:
+    profile = state.get("task_profile", "general")
+    review_stage = state.get("workpad", {}).get("review_stage", state.get("solver_stage", "SYNTHESIZE"))
+    if review_stage == "GATHER":
+        if profile in {"finance_quant", "finance_options"} or "needs_math" in set(state.get("capability_flags", [])):
+            return "compute"
+        return "synthesize"
+    if review_stage == "COMPUTE":
+        return "synthesize"
+    return "final"
+
+
+def _snapshot_state(state: AgentState) -> dict[str, Any]:
+    return {
+        "messages": list(state.get("messages", [])),
+        "evidence_pack": dict(state.get("evidence_pack", {})),
+        "workpad": dict(state.get("workpad", {})),
+        "solver_stage": state.get("solver_stage", "SYNTHESIZE"),
+        "last_tool_result": state.get("last_tool_result"),
+    }
+
+
+def _restore_checkpoint(state: AgentState) -> dict[str, Any]:
+    stack = list(state.get("checkpoint_stack", []))
+    if stack:
+        checkpoint = stack[-1]
+        return {
+            "messages": ReplaceMessages(checkpoint.get("messages", [])),
+            "evidence_pack": checkpoint.get("evidence_pack", {}),
+            "workpad": checkpoint.get("workpad", {}),
+            "solver_stage": checkpoint.get("solver_stage", "SYNTHESIZE"),
+            "last_tool_result": checkpoint.get("last_tool_result"),
+            "pending_tool_call": None,
+        }
+
+    messages = list(state.get("messages", []))
+    baseline = messages[:]
+    for idx in range(len(messages) - 1, -1, -1):
+        if isinstance(messages[idx], HumanMessage):
+            baseline = messages[: idx + 1]
+            break
+    return {
+        "messages": ReplaceMessages(baseline),
+        "pending_tool_call": None,
+    }
+
+
+def route_from_reviewer(state: AgentState) -> str:
+    if state.get("solver_stage") == "COMPLETE":
+        if state.get("answer_contract", {}).get("requires_adapter"):
+            return "output_adapter"
+        return "reflect"
+    return "solver"
+
+
+def reviewer(state: AgentState) -> dict:
+    step = increment_runtime_step()
+    tracker: CostTracker = state.get("cost_tracker")
+    artifact, is_final = _artifact_for_review(state)
+    workpad = dict(state.get("workpad", {}))
+    deterministic = _deterministic_review(state, artifact, is_final)
+    task_text = latest_human_text(state.get("messages", []))
+
+    verdict = deterministic
+    latency = 0.0
+    model_name = get_model_name("verifier")
+    used_llm = False
+    invocation_messages = [
+        SystemMessage(content=_REVIEW_PROMPT),
+        HumanMessage(
+            content=json.dumps(
+                {
+                    "task_profile": state.get("task_profile", "general"),
+                    "capability_flags": state.get("capability_flags", []),
+                    "is_final": is_final,
+                    "review_stage": workpad.get("review_stage", state.get("solver_stage", "SYNTHESIZE")),
+                    "task": task_text,
+                    "artifact": artifact,
+                    "answer_contract": state.get("answer_contract", {}),
+                    "last_tool_result": state.get("last_tool_result"),
+                },
+                ensure_ascii=True,
+            )
+        ),
+    ]
+
+    if verdict is None:
+        used_llm = True
+        llm = ChatOpenAI(
+            model=model_name,
+            **get_client_kwargs("verifier"),
+            temperature=0,
+            max_tokens=240,
+        )
+        t0 = time.monotonic()
+        raw = llm.invoke(invocation_messages)
+        latency = (time.monotonic() - t0) * 1000
+        payload = json.loads(_extract_json_payload(str(raw.content or "")))
+        verdict = ReviewResult.model_validate(payload)
+
+    if tracker and used_llm:
+        tracker.record(
+            operator="reviewer",
+            model_name=model_name,
+            tokens_in=count_tokens(invocation_messages),
+            tokens_out=count_tokens([AIMessage(content=verdict.model_dump_json())]),
+            latency_ms=latency,
+            success=verdict.verdict == "pass",
+        )
+
+    budget = state.get("budget_tracker")
+    if verdict.verdict == "backtrack":
+        if budget:
+            budget.record_backtrack()
+        restored = _restore_checkpoint(state)
+        workpad = _record_event(workpad, f"BACKTRACK: {verdict.reasoning}")
+        logger.info("[Step %s] reviewer -> BACKTRACK", step)
+        return {
+            **restored,
+            "workpad": workpad,
+            "review_feedback": verdict.model_dump(),
+            "solver_stage": "REVISE",
+        }
+
+    if verdict.verdict == "revise":
+        if budget:
+            budget.record_revise()
+        workpad = _record_event(workpad, f"REVISE: {verdict.reasoning}")
+        workpad["review_ready"] = False
+        logger.info("[Step %s] reviewer -> REVISE missing=%s", step, verdict.missing_dimensions)
+        return {
+            "review_feedback": verdict.model_dump(),
+            "solver_stage": "REVISE",
+            "workpad": workpad,
+        }
+
+    checkpoint_stack = list(state.get("checkpoint_stack", []))
+    checkpoint_stack.append(_snapshot_state(state))
+    next_target = _next_target_for_pass(state)
+    next_stage = next_stage_after_review(
+        str(workpad.get("review_stage", state.get("solver_stage", "SYNTHESIZE"))),
+        next_target,
+        "pass",
+    )
+    workpad = _record_event(workpad, f"PASS -> {next_stage}")
+    workpad["review_ready"] = False
+    workpad["review_stage"] = None
+    logger.info("[Step %s] reviewer -> PASS next=%s", step, next_stage)
+    return {
+        "review_feedback": None,
+        "solver_stage": next_stage,
+        "checkpoint_stack": checkpoint_stack,
+        "workpad": workpad,
+    }

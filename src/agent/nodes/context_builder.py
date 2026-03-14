@@ -1,0 +1,76 @@
+"""
+Context Builder Node
+====================
+Builds a compact typed evidence pack before the solver starts acting.
+"""
+
+from __future__ import annotations
+
+import logging
+
+from agent.contracts import AnswerContract, EvidencePack
+from agent.runtime_clock import increment_runtime_step
+from agent.runtime_support import (
+    build_evidence_pack,
+    initial_solver_stage,
+    latest_human_text,
+    PROFILE_CONTEXT,
+)
+from agent.state import AgentState
+
+logger = logging.getLogger(__name__)
+
+
+def context_builder(state: AgentState) -> dict:
+    step = increment_runtime_step()
+    task_text = latest_human_text(state["messages"])
+    answer_contract = AnswerContract.model_validate(state.get("answer_contract", {}))
+    task_profile = state.get("task_profile", "general")
+    capability_flags = list(state.get("capability_flags", []))
+
+    evidence: EvidencePack = build_evidence_pack(
+        task_text=task_text,
+        answer_contract=answer_contract,
+        task_profile=task_profile,
+        capability_flags=capability_flags,
+    )
+
+    workpad = dict(state.get("workpad", {}))
+    workpad.setdefault("profile_context", PROFILE_CONTEXT.get(task_profile, PROFILE_CONTEXT["general"]))
+    workpad.setdefault("stage_history", [])
+    workpad.setdefault("events", [])
+    next_stage = initial_solver_stage(task_profile, capability_flags, evidence.model_dump())
+    workpad["stage_history"].append(next_stage)
+    workpad["events"].append(
+        {
+            "node": "context_builder",
+            "action": f"stage={next_stage} entities={len(evidence.entities)} files={len(evidence.file_refs)}",
+        }
+    )
+    checkpoint_stack = list(state.get("checkpoint_stack", []))
+    if not checkpoint_stack:
+        checkpoint_stack.append(
+            {
+                "messages": list(state.get("messages", [])),
+                "evidence_pack": evidence.model_dump(),
+                "workpad": workpad,
+                "solver_stage": next_stage,
+                "last_tool_result": None,
+            }
+        )
+
+    logger.info(
+        "[Step %s] context_builder -> profile=%s stage=%s entities=%s files=%s",
+        step,
+        task_profile,
+        next_stage,
+        evidence.entities,
+        len(evidence.file_refs),
+    )
+
+    return {
+        "evidence_pack": evidence.model_dump(),
+        "solver_stage": next_stage,
+        "workpad": workpad,
+        "checkpoint_stack": checkpoint_stack,
+    }
