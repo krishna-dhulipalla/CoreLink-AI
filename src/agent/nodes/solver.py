@@ -79,6 +79,7 @@ def _strip_think_markup(text: str) -> str:
 def _allowed_tools_for_state(all_tools: list, state: AgentState) -> list:
     profile = state.get("task_profile", "general")
     flags = set(state.get("capability_flags", []))
+    ambiguity = set(state.get("ambiguity_flags", []))
     stage = state.get("solver_stage", "SYNTHESIZE")
     task_text = latest_human_text(state["messages"]).lower()
 
@@ -105,6 +106,9 @@ def _allowed_tools_for_state(all_tools: list, state: AgentState) -> list:
 
     if "external_retrieval" != profile and "internet_search" in allowed_names and "latest" not in task_text and "current" not in task_text:
         allowed_names.discard("internet_search")
+
+    if ambiguity and profile == "general":
+        allowed_names &= {"calculator", "fetch_reference_file", "list_reference_files"}
 
     return [tool for tool in all_tools if getattr(tool, "name", "") in allowed_names]
 

@@ -7,8 +7,10 @@ from agent.cost import CostTracker
 def make_state(
     prompt: str,
     *,
+    profile_decision: dict | None = None,
     task_profile: str = "general",
     capability_flags: list[str] | None = None,
+    ambiguity_flags: list[str] | None = None,
     answer_contract: dict | None = None,
     evidence_pack: dict | None = None,
     solver_stage: str = "PLAN",
@@ -19,8 +21,10 @@ def make_state(
 ):
     return {
         "messages": [HumanMessage(content=prompt)],
+        "profile_decision": profile_decision or {},
         "task_profile": task_profile,
         "capability_flags": capability_flags or [],
+        "ambiguity_flags": ambiguity_flags or [],
         "answer_contract": answer_contract or {},
         "evidence_pack": evidence_pack or {},
         "solver_stage": solver_stage,

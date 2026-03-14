@@ -912,3 +912,52 @@ This file operates in a "Chat" structure. Whenever an agent finishes a major uni
   3. Persistence no longer stores coordinator-era router/executor/verifier fragments.
   4. The SQLite format is now explicitly versioned and resettable, which makes future architecture changes safer.
 - **Handoff Notes:** The next architecture work can proceed on the actual remaining runtime gaps without carrying stale public docs or stale memory format assumptions. The memory store is now structurally aligned with the staged runtime and prepared for future schema changes through explicit version resets.
+
+## Chat 52: Architecture v3 Phase 1 - ProfileDecision Hardening
+
+- **Date:** 2026-03-14
+- **Goal:** Execute Phase 1 of `docs/architecture_v3_implementation_plan.md` by hardening profile selection without destabilizing the staged runtime.
+- **Actions Taken:**
+  1. Added typed `ProfileDecision` support in `src/agent/contracts.py` with:
+     - `primary_profile`
+     - `capability_flags`
+     - `ambiguity_flags`
+     - `needs_external_data`
+     - `needs_output_adapter`
+  2. Expanded `AgentState` and test fixtures to carry:
+     - `profile_decision`
+     - `ambiguity_flags`
+  3. Upgraded `src/agent/runtime_support.py`:
+     - added `build_profile_decision()`
+     - added `detect_ambiguity_flags()`
+     - tightened math detection to use word boundaries so strings like `consideration` no longer trigger `ratio`
+     - added ambiguity-aware evidence constraints
+  4. Updated `src/agent/nodes/task_profiler.py` to emit and persist:
+     - `profile_decision`
+     - `task_profile`
+     - `capability_flags`
+     - `ambiguity_flags`
+     LLM fallback still exists, but deterministic profiling remains the source of truth when fallback fails.
+  5. Updated `src/agent/nodes/context_builder.py` to consume `ProfileDecision` and propagate ambiguity-aware context into the runtime.
+  6. Tightened `src/agent/nodes/solver.py` so ambiguous `general` cases use a conservative tool allowlist rather than jumping into broad or specialized tool surfaces.
+  7. Updated `src/agent/nodes/reflect.py` so staged run memory now stores ambiguity flags in metadata.
+  8. Extended live smoke coverage in `scripts/run_live_staged_smoke.py` with a new mixed legal/math prompt to exercise the ambiguity path.
+  9. Added/updated tests:
+     - `tests/test_staged_profiler.py`
+     - `tests/test_staged_context_builder.py`
+     - `tests/test_staged_reflect.py`
+- **Verification:**
+  - `python -m pytest tests/test_staged_profiler.py tests/test_staged_context_builder.py tests/test_staged_reflect.py tests/test_staged_solver.py tests/test_staged_reviewer.py tests/test_memory_store.py -q` -> **21 passed**
+  - `python -m pytest tests -q` -> **36 passed, 2 skipped**
+  - `python scripts/run_staged_runtime_smoke.py` -> **ok: true**
+  - `python scripts/run_live_staged_smoke.py` -> live run completed with the new mixed-task prompt
+- **Live Smoke Findings:**
+  1. `finance_options` remained stable and tool-backed.
+  2. `legal_transactional` remained stable on the no-tool path.
+  3. New `mixed_legal_math` prompt produced:
+     - `task_profile=legal_transactional`
+     - `capability_flags=[needs_legal_reasoning, needs_math]`
+     - `ambiguity_flags=[legal_finance_overlap]`
+     and completed successfully without unsafe tool drift.
+  4. `finance_quant` still showed the existing live weakness on terse prompts and hit step-limit behavior. This was not introduced by Phase 1; it remains a later-phase issue.
+- **Handoff Notes:** Phase 1 is complete. The runtime now carries an explicit profile decision and ambiguity markers instead of pretending the first coarse profile is always clean. The next architecture phase should be `template_selector`, not more profiler complexity.

@@ -17,6 +17,8 @@ class TestStagedProfiler:
         assert result["task_profile"] == "legal_transactional"
         assert "needs_legal_reasoning" in result["capability_flags"]
         assert "needs_options_engine" not in result["capability_flags"]
+        assert result["profile_decision"]["primary_profile"] == "legal_transactional"
+        assert result["ambiguity_flags"] == []
 
     def test_options_prompt_maps_to_finance_options(self):
         prompt = (
@@ -59,3 +61,34 @@ class TestStagedProfiler:
         assert result["task_profile"] == "finance_quant"
         assert "needs_legal_reasoning" not in result["capability_flags"]
         assert "needs_live_data" not in result["capability_flags"]
+
+    def test_mixed_legal_math_prompt_sets_ambiguity_flags(self):
+        prompt = (
+            "We are acquiring a target with EU compliance gaps and need a structure recommendation, "
+            "but also quantify a holdback formula based on EBITDA and current liabilities."
+        )
+        state = make_state(prompt)
+        state.update(intake(state))
+
+        result = task_profiler(state)
+
+        assert result["task_profile"] == "legal_transactional"
+        assert "needs_legal_reasoning" in result["capability_flags"]
+        assert "needs_math" in result["capability_flags"]
+        assert "legal_finance_overlap" in result["ambiguity_flags"]
+        assert result["profile_decision"]["ambiguity_flags"]
+
+    def test_legal_options_overlap_falls_back_to_general_profile(self):
+        prompt = (
+            "Our merger counsel wants structure options, but also asks whether an iron condor is a valid "
+            "hedge around closing risk and what legal protections should accompany it."
+        )
+        state = make_state(prompt)
+        state.update(intake(state))
+
+        result = task_profiler(state)
+
+        assert "needs_legal_reasoning" in result["capability_flags"]
+        assert "needs_options_engine" in result["capability_flags"]
+        assert "legal_options_overlap" in result["ambiguity_flags"]
+        assert result["task_profile"] == "general"

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 
-from agent.contracts import AnswerContract, EvidencePack
+from agent.contracts import AnswerContract, EvidencePack, ProfileDecision
 from agent.profile_packs import get_profile_pack
 from agent.runtime_clock import increment_runtime_step
 from agent.runtime_support import (
@@ -26,8 +26,18 @@ def context_builder(state: AgentState) -> dict:
     step = increment_runtime_step()
     task_text = latest_human_text(state["messages"])
     answer_contract = AnswerContract.model_validate(state.get("answer_contract", {}))
-    task_profile = state.get("task_profile", "general")
-    capability_flags = list(state.get("capability_flags", []))
+    profile_decision = ProfileDecision.model_validate(
+        state.get("profile_decision", {}) or {
+            "primary_profile": state.get("task_profile", "general"),
+            "capability_flags": state.get("capability_flags", []),
+            "ambiguity_flags": state.get("ambiguity_flags", []),
+            "needs_external_data": False,
+            "needs_output_adapter": bool(answer_contract.requires_adapter),
+        }
+    )
+    task_profile = profile_decision.primary_profile
+    capability_flags = list(profile_decision.capability_flags)
+    ambiguity_flags = list(profile_decision.ambiguity_flags)
     profile_pack = get_profile_pack(task_profile)
     merged_contract = apply_profile_contract_rules(answer_contract, task_profile)
 
@@ -36,9 +46,11 @@ def context_builder(state: AgentState) -> dict:
         answer_contract=merged_contract,
         task_profile=task_profile,
         capability_flags=capability_flags,
+        ambiguity_flags=ambiguity_flags,
     )
 
     workpad = dict(state.get("workpad", {}))
+    workpad["profile_decision"] = profile_decision.model_dump()
     workpad["profile_pack"] = profile_pack.model_dump()
     workpad.setdefault("stage_history", [])
     workpad.setdefault("events", [])
@@ -76,5 +88,8 @@ def context_builder(state: AgentState) -> dict:
         "solver_stage": next_stage,
         "workpad": workpad,
         "answer_contract": merged_contract.model_dump(),
+        "task_profile": task_profile,
+        "capability_flags": capability_flags,
+        "ambiguity_flags": ambiguity_flags,
         "checkpoint_stack": checkpoint_stack,
     }

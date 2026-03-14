@@ -34,8 +34,10 @@ class AgentState(TypedDict):
     passing coordinator telemetry through the whole graph.
     """
     messages: Annotated[list[BaseMessage], _messages_reducer]
+    profile_decision: dict[str, Any]
     task_profile: str
     capability_flags: list[str]
+    ambiguity_flags: list[str]
     answer_contract: dict[str, Any]
     evidence_pack: dict[str, Any]
     solver_stage: str

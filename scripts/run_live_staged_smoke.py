@@ -45,6 +45,12 @@ PROMPTS = [
         "Board wants stock consideration for tax reasons but we cannot inherit the compliance liabilities. "
         "Deal size is about $500M. What structure options could work quickly for both sides?",
     ),
+    (
+        "mixed_legal_math",
+        "We are acquiring a target with EU compliance gaps and need a fast structure recommendation, "
+        "but also quantify a holdback formula tied to EBITDA and current liabilities. "
+        "Do not browse unless the prompt truly requires it.",
+    ),
 ]
 
 
@@ -55,6 +61,7 @@ def _summarize(trace: dict) -> dict:
         "answer": trace["answer"],
         "task_profile": state.get("task_profile"),
         "capability_flags": state.get("capability_flags"),
+        "ambiguity_flags": state.get("ambiguity_flags"),
         "solver_stage": state.get("solver_stage"),
         "events": workpad.get("events", []),
         "tool_results": workpad.get("tool_results", []),

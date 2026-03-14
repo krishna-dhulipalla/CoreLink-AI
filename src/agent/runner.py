@@ -78,8 +78,10 @@ async def run_agent_trace(
 
     initial_state: AgentState = {
         "messages": messages,
+        "profile_decision": {},
         "task_profile": "general",
         "capability_flags": [],
+        "ambiguity_flags": [],
         "answer_contract": {},
         "evidence_pack": {},
         "solver_stage": "PLAN",

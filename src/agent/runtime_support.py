@@ -12,7 +12,7 @@ from typing import Any
 
 from langchain_core.messages import BaseMessage, HumanMessage
 
-from agent.contracts import AnswerContract, EvidencePack, TaskProfile
+from agent.contracts import AnswerContract, EvidencePack, ProfileDecision, TaskProfile
 from agent.profile_packs import get_profile_pack
 
 _URL_RE = re.compile(r"https?://[^\s\)\]\"',]+")
@@ -96,7 +96,16 @@ def detect_capability_flags(task_text: str, answer_contract: AnswerContract) -> 
     normalized = (task_text or "").lower()
     flags: set[str] = set()
 
-    if any(token in normalized for token in ("calculate", "formula", "ratio", "numerical", "compute")):
+    if any(
+        re.search(pattern, normalized)
+        for pattern in (
+            r"\bcalculate\b",
+            r"\bformula\b",
+            r"\bratio\b",
+            r"\bnumerical\b",
+            r"\bcompute\b",
+        )
+    ):
         flags.add("needs_math")
     if "|---" in task_text or ("row" in normalized and "column" in normalized):
         flags.add("needs_tables")
@@ -138,6 +147,41 @@ def detect_capability_flags(task_text: str, answer_contract: AnswerContract) -> 
     return sorted(flags)
 
 
+def detect_ambiguity_flags(task_text: str, capability_flags: list[str]) -> list[str]:
+    normalized = (task_text or "").lower()
+    flags = set(capability_flags)
+    ambiguity: set[str] = set()
+
+    if "needs_legal_reasoning" in flags and (
+        "needs_math" in flags
+        or any(token in normalized for token in ("roe", "roa", "yield", "valuation", "financial"))
+    ):
+        ambiguity.add("legal_finance_overlap")
+
+    if "needs_legal_reasoning" in flags and "needs_options_engine" in flags:
+        ambiguity.add("legal_options_overlap")
+
+    if "needs_files" in flags and "needs_math" in flags:
+        ambiguity.add("document_math_overlap")
+
+    if "needs_files" in flags and "needs_live_data" in flags:
+        ambiguity.add("document_live_overlap")
+
+    domain_markers = 0
+    if "needs_legal_reasoning" in flags:
+        domain_markers += 1
+    if "needs_options_engine" in flags or "needs_math" in flags:
+        domain_markers += 1
+    if "needs_files" in flags or "needs_tables" in flags:
+        domain_markers += 1
+    if "needs_live_data" in flags:
+        domain_markers += 1
+    if domain_markers >= 3:
+        ambiguity.add("broad_multi_capability")
+
+    return sorted(ambiguity)
+
+
 def infer_task_profile(task_text: str, capability_flags: list[str]) -> TaskProfile:
     normalized = (task_text or "").lower()
     flags = set(capability_flags)
@@ -158,6 +202,23 @@ def infer_task_profile(task_text: str, capability_flags: list[str]) -> TaskProfi
     if "needs_math" in flags:
         return "finance_quant"
     return "general"
+
+
+def build_profile_decision(task_text: str, answer_contract: AnswerContract) -> ProfileDecision:
+    capability_flags = detect_capability_flags(task_text, answer_contract)
+    primary_profile = infer_task_profile(task_text, capability_flags)
+    ambiguity_flags = detect_ambiguity_flags(task_text, capability_flags)
+
+    if "legal_options_overlap" in ambiguity_flags:
+        primary_profile = "general"
+
+    return ProfileDecision(
+        primary_profile=primary_profile,
+        capability_flags=capability_flags,
+        ambiguity_flags=ambiguity_flags,
+        needs_external_data="needs_live_data" in capability_flags,
+        needs_output_adapter=answer_contract.requires_adapter,
+    )
 
 
 def extract_urls(text: str) -> list[str]:
@@ -285,6 +346,7 @@ def build_evidence_pack(
     answer_contract: AnswerContract,
     task_profile: str,
     capability_flags: list[str],
+    ambiguity_flags: list[str] | None = None,
 ) -> EvidencePack:
     pack = get_profile_pack(task_profile)
     urls = extract_urls(task_text)
@@ -296,6 +358,8 @@ def build_evidence_pack(
         constraints.append("Must satisfy the exact output contract from the prompt.")
     if "needs_live_data" in capability_flags:
         constraints.append("External retrieval is allowed only if the prompt explicitly requests current data.")
+    if ambiguity_flags:
+        constraints.append("Task profile is partially ambiguous; avoid unsupported domain assumptions or premature tool use.")
     for rule in pack.content_rules[:3]:
         constraints.append(rule)
 

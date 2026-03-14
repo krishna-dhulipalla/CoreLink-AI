@@ -13,8 +13,16 @@ def test_reflect_persists_run_tool_and_review_memory():
 
     state = {
         "messages": [HumanMessage(content="Calculate ROE from the inline data.")],
+        "profile_decision": {
+            "primary_profile": "finance_quant",
+            "capability_flags": ["needs_math"],
+            "ambiguity_flags": [],
+            "needs_external_data": False,
+            "needs_output_adapter": True,
+        },
         "task_profile": "finance_quant",
         "capability_flags": ["needs_math"],
+        "ambiguity_flags": [],
         "answer_contract": {"format": "json", "requires_adapter": True},
         "evidence_pack": {},
         "solver_stage": "COMPLETE",

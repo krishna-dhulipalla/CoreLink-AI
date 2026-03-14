@@ -11,6 +11,24 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
+CapabilityFlag = Literal[
+    "needs_math",
+    "needs_tables",
+    "needs_files",
+    "needs_live_data",
+    "needs_options_engine",
+    "needs_legal_reasoning",
+    "requires_exact_format",
+]
+
+AmbiguityFlag = Literal[
+    "legal_finance_overlap",
+    "legal_options_overlap",
+    "document_math_overlap",
+    "document_live_overlap",
+    "broad_multi_capability",
+]
+
 TaskProfile = Literal[
     "finance_quant",
     "finance_options",
@@ -30,6 +48,14 @@ SolverStage = Literal[
 ]
 
 ReviewVerdict = Literal["pass", "revise", "backtrack"]
+
+
+class ProfileDecision(BaseModel):
+    primary_profile: TaskProfile = "general"
+    capability_flags: list[CapabilityFlag | str] = Field(default_factory=list)
+    ambiguity_flags: list[AmbiguityFlag | str] = Field(default_factory=list)
+    needs_external_data: bool = False
+    needs_output_adapter: bool = False
 
 
 class AnswerContract(BaseModel):

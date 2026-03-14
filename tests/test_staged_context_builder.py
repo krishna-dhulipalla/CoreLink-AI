@@ -50,3 +50,18 @@ class TestContextBuilder:
         assert evidence["derived_signals"]["iv_premium"] == 0.07
         assert evidence["derived_signals"]["vol_bias"] == "short_vol"
         assert "Recommendation" in result["answer_contract"]["section_requirements"]
+
+    def test_ambiguous_profile_adds_conservative_constraint(self):
+        prompt = (
+            "We need acquisition structure advice and also a quick valuation ratio calculation from a file "
+            "at https://example.com/deal.pdf."
+        )
+        state = make_state(prompt)
+        state.update(intake(state))
+        state.update(task_profiler(state))
+
+        result = context_builder(state)
+        evidence = result["evidence_pack"]
+
+        assert "Task profile is partially ambiguous" in " ".join(evidence["constraints"])
+        assert result["ambiguity_flags"]
