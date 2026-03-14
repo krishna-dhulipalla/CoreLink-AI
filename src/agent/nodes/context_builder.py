@@ -9,12 +9,13 @@ from __future__ import annotations
 import logging
 
 from agent.contracts import AnswerContract, EvidencePack
+from agent.profile_packs import get_profile_pack
 from agent.runtime_clock import increment_runtime_step
 from agent.runtime_support import (
+    apply_profile_contract_rules,
     build_evidence_pack,
     initial_solver_stage,
     latest_human_text,
-    PROFILE_CONTEXT,
 )
 from agent.state import AgentState
 
@@ -27,16 +28,18 @@ def context_builder(state: AgentState) -> dict:
     answer_contract = AnswerContract.model_validate(state.get("answer_contract", {}))
     task_profile = state.get("task_profile", "general")
     capability_flags = list(state.get("capability_flags", []))
+    profile_pack = get_profile_pack(task_profile)
+    merged_contract = apply_profile_contract_rules(answer_contract, task_profile)
 
     evidence: EvidencePack = build_evidence_pack(
         task_text=task_text,
-        answer_contract=answer_contract,
+        answer_contract=merged_contract,
         task_profile=task_profile,
         capability_flags=capability_flags,
     )
 
     workpad = dict(state.get("workpad", {}))
-    workpad.setdefault("profile_context", PROFILE_CONTEXT.get(task_profile, PROFILE_CONTEXT["general"]))
+    workpad["profile_pack"] = profile_pack.model_dump()
     workpad.setdefault("stage_history", [])
     workpad.setdefault("events", [])
     next_stage = initial_solver_stage(task_profile, capability_flags, evidence.model_dump())
@@ -72,5 +75,6 @@ def context_builder(state: AgentState) -> dict:
         "evidence_pack": evidence.model_dump(),
         "solver_stage": next_stage,
         "workpad": workpad,
+        "answer_contract": merged_contract.model_dump(),
         "checkpoint_stack": checkpoint_stack,
     }

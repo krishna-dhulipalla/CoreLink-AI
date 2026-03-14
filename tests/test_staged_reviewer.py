@@ -48,6 +48,27 @@ def test_reviewer_revises_truncated_options_final():
     assert result["review_feedback"]["repair_target"] == "final"
 
 
+def test_reviewer_requires_tool_backed_options_compute():
+    state = make_state(
+        "Should I be a net buyer or seller of options?",
+        task_profile="finance_options",
+        capability_flags=["needs_options_engine"],
+        solver_stage="COMPUTE",
+        workpad={
+            "events": [],
+            "stage_outputs": {"COMPUTE": "IV premium is 0.07, so short vol makes sense."},
+            "tool_results": [],
+            "review_ready": True,
+            "review_stage": "COMPUTE",
+        },
+    )
+
+    result = reviewer(state)
+
+    assert result["solver_stage"] == "REVISE"
+    assert "tool-backed strategy analysis" in [gap.lower() for gap in result["review_feedback"]["missing_dimensions"]]
+
+
 def test_reviewer_backtracks_bad_gather_result():
     state = make_state(
         "Read the attached file.",
@@ -74,3 +95,26 @@ def test_reviewer_backtracks_bad_gather_result():
 
     assert result["solver_stage"] == "REVISE"
     assert result["review_feedback"]["verdict"] == "backtrack"
+
+
+def test_reviewer_revises_quant_final_that_is_not_scalar_for_json_contract():
+    state = make_state(
+        "Compute the ratio.",
+        task_profile="finance_quant",
+        capability_flags=["needs_math", "requires_exact_format"],
+        answer_contract={"format": "json", "requires_adapter": True, "wrapper_key": "answer"},
+        solver_stage="SYNTHESIZE",
+        workpad={
+            "events": [],
+            "stage_outputs": {},
+            "tool_results": [],
+            "review_ready": True,
+            "review_stage": "SYNTHESIZE",
+        },
+    )
+    state["messages"].append(AIMessage(content="Here is a full explanation of the ratio and why it matters."))
+
+    result = reviewer(state)
+
+    assert result["solver_stage"] == "REVISE"
+    assert "scalar answer matching output contract" in [gap.lower() for gap in result["review_feedback"]["missing_dimensions"]]

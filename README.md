@@ -1,122 +1,203 @@
 # CoreLink AI
 
-General-purpose A2A reasoning engine built on LangGraph and MCP. The core runtime is domain-agnostic; domain capability comes from MCP servers discovered at startup.
+CoreLink AI is a staged A2A reasoning engine built for finance-first workflows on top of LangGraph and MCP. The runtime is designed to give general models structured context at each step instead of forcing one large prompt to handle routing, tool use, reasoning, review, and formatting all at once.
 
 ## Architecture
 
-<p align="center">
-  <img src="docs/architecture.svg" alt="CoreLink AI Architecture Diagram" width="100%">
-</p>
+![CoreLink AI staged architecture](docs/architecture.svg)
 
-### Key Components
+The active request path is:
 
-| Component             | Role                                                                              |
-| --------------------- | --------------------------------------------------------------------------------- |
-| **Coordinator**       | Chooses execution plan (`direct_answer` or `react_reason → verifier_check`)       |
-| **Reasoner**          | Tool-enabled LLM reasoning loop                                                   |
-| **Tool Executor**     | Runs tools, truncates output, applies guardrails                                  |
-| **Verifier**          | Step-level gate: `PASS`, `REVISE`, or `BACKTRACK`                                 |
-| **Context Window**    | Trims long histories while preserving tool-call adjacency                         |
-| **Format Normalizer** | Final formatting pass (JSON/XML if needed)                                        |
-| **Execution Memory**  | SQLite-backed hints for routing, tool selection, and repair strategies            |
-| **Pruning**           | Strips stale tool results and memory hints before LLM calls                       |
-| **Budget Tracker**    | Caps tool calls (15), revise (3), backtrack (2), hint tokens (200)                |
-| **Guardrails**        | Prompt-injection detection, tool-description validation, external-content tagging |
+```text
+A2A Request
+  -> intake
+  -> task_profiler
+  -> context_builder
+  -> solver
+       -> tool_runner -> solver
+       -> reviewer
+  -> output_adapter
+  -> reflect
+```
+
+## Node Responsibilities
+
+| Node | Responsibility |
+| --- | --- |
+| `intake` | Normalizes the incoming request and extracts output-format requirements into an `AnswerContract`. |
+| `task_profiler` | Chooses a coarse `task_profile` and additive `capability_flags` without overcommitting to one brittle route. |
+| `context_builder` | Builds a typed `EvidencePack` from prompt facts, formulas, tables, file references, and derived domain signals. |
+| `solver` | Runs stage-based reasoning across `PLAN`, `GATHER`, `COMPUTE`, `SYNTHESIZE`, `REVISE`, and `COMPLETE`. |
+| `tool_runner` | Executes one allowed tool call and normalizes the result into a structured `ToolResult`. |
+| `reviewer` | Reviews milestone and final artifacts only. It returns `pass`, `revise`, or `backtrack` plus missing dimensions. |
+| `output_adapter` | Applies exact JSON or XML wrapping without changing the underlying reasoning. |
+| `reflect` | Finalizes the run and writes compact execution memory to SQLite. |
+
+## Runtime Artifacts
+
+The runtime moves explicit artifacts between nodes:
+
+- `task_profile`
+- `capability_flags`
+- `answer_contract`
+- `evidence_pack`
+- `solver_stage`
+- `workpad`
+- `pending_tool_call`
+- `last_tool_result`
+- `review_feedback`
+
+These contracts are defined in [src/agent/contracts.py](src/agent/contracts.py).
+
+## How Context Is Supplied To The Model
+
+CoreLink AI does not rely on one universal prompt manifesto. It builds context in layers:
+
+1. `task_profiler` chooses a coarse domain profile such as `finance_quant`, `finance_options`, or `legal_transactional`.
+2. `context_builder` merges that profile with the request itself to assemble an `EvidencePack`.
+3. `solver` receives:
+   - the current stage
+   - the answer contract
+   - the compact evidence pack
+   - the last structured tool result
+   - the current review feedback, if any
+
+This keeps the model focused on the current stage rather than re-reading the full conversation on every turn.
+
+## Tool Contract
+
+Every tool result is normalized into the same shape before it goes back to the solver:
+
+```json
+{
+  "type": "tool_name",
+  "facts": {},
+  "assumptions": {},
+  "source": {},
+  "errors": []
+}
+```
+
+That normalization layer lives in [src/agent/tool_normalization.py](src/agent/tool_normalization.py).
+
+## Persistence
+
+Execution memory is written after each completed run into SQLite at `src/data/agent_memory.db`.
+
+The active store is versioned and keeps staged-runtime records only:
+
+- `run_memory`
+- `tool_memory`
+- `review_memory`
+
+If the on-disk schema is incompatible with the current runtime, it is reset automatically. The store implementation is in [src/agent/memory/store.py](src/agent/memory/store.py).
 
 ## Repository Layout
 
 ```text
 src/
-  server.py                 A2A server entrypoint
-  executor.py               A2A <-> LangGraph bridge
-  context_manager.py        token counting and message windowing
-  conversation_store.py     multi-turn conversation storage
-  mcp_client.py             MCP tool loading
-  tools.py                  built-in calculator/search/time tools
+  server.py
+  executor.py
+  mcp_client.py
+  tools.py
   agent/
-    graph.py                graph construction
-    runner.py               run wrapper and cost/budget summaries
-    state.py                shared state schema
-    prompts.py              prompts and structured outputs
-    cost.py                 token/cost accounting
-    budget.py               per-run budget enforcement
-    pruning.py              state pruning at node boundaries
-    guardrails.py           content sanitization and validation
-    operators.py            operator registry and defaults
-    memory/                 SQLite-backed execution memory
-    nodes/                  coordinator, reasoner, verifier, formatter, context
-  mcp_servers/              local MCP servers
+    contracts.py
+    graph.py
+    runner.py
+    runtime_support.py
+    profile_packs.py
+    tool_normalization.py
+    state.py
+    memory/
+    nodes/
+      intake.py
+      task_profiler.py
+      context_builder.py
+      solver.py
+      tool_runner.py
+      reviewer.py
+      output_adapter.py
+      reflect.py
+  mcp_servers/
+    finance/
+    options_chain/
+    file_handler/
+    risk_metrics/
+    trading_sim/
 
-tests/
 docs/
+  architecture.svg
 ```
 
 ## Setup
+
+Install dependencies:
 
 ```bash
 uv sync
 ```
 
-Create `.env` with your keys:
+Create a `.env` file with your model and MCP settings:
 
 ```env
 OPENAI_API_KEY=...
-MODEL_NAME=gpt-4o-mini
-MODEL_PROFILE=custom
-TAVILY_API_KEY=
+MODEL_PROFILE=balanced
+MODEL_NAME=Qwen/Qwen3-32B-fast
+STRUCTURED_OUTPUT_MODE=local_json
 MCP_SERVER_STDIO=
 MCP_SERVER_URLS=
 ```
 
-Model selection is role-based. You can keep one default model or override specific roles:
+## Run Locally
 
-```env
-# Presets: custom, oss_debug, cheap, balanced, score_max
-MODEL_PROFILE=balanced
-STRUCTURED_OUTPUT_MODE=auto
-
-# Global fallback used when a role-specific model is not set
-MODEL_NAME=openai/gpt-oss-20b
-
-# Optional role overrides
-COORDINATOR_MODEL=gpt-4.1-mini
-DIRECT_MODEL=gpt-4o-mini
-EXECUTOR_MODEL=gpt-4.1
-VERIFIER_MODEL=gpt-4.1-mini
-FORMATTER_MODEL=gpt-4o-mini
-REFLECTOR_MODEL=gpt-4o-mini
-
-# Optional role-specific OpenAI-compatible endpoints
-# EXECUTOR_OPENAI_BASE_URL=http://localhost:1234/v1
-# EXECUTOR_OPENAI_API_KEY=dummy
-```
-
-If you are using a local OpenAI-compatible backend such as vLLM and you see errors like `chat template is passed with request ... untrusted chat template`, set:
-
-```env
-STRUCTURED_OUTPUT_MODE=local_json
-```
-
-That forces the Coordinator and Verifier to use prompt-and-parse JSON instead of provider-native structured output.
-
-## Run
+Start the A2A server:
 
 ```bash
-uv run python src/server.py
-uv run python src/server.py --port 9010  # custom port
+uv run python src/server.py --port 9010
+```
+
+The agent card will be available at:
+
+```text
+http://127.0.0.1:9010/.well-known/agent-card.json
+```
+
+## Replicate The Runtime Locally
+
+To reproduce the same staged runtime flow:
+
+1. Install dependencies with `uv sync`.
+2. Configure your model and any MCP servers in `.env`.
+3. Start the server with `uv run python src/server.py --port 9010`.
+4. Run the deterministic smoke check:
+
+```bash
+uv run python scripts/run_staged_runtime_smoke.py
+```
+
+5. If you want to exercise the live LLM and active MCP surface:
+
+```bash
+uv run python scripts/run_live_staged_smoke.py
 ```
 
 ## Tests
 
+Run the full test suite:
+
 ```bash
-uv run pytest tests -v        # full suite
-uv run pytest tests -v -x     # stop on first failure
+uv run pytest tests -q
+```
+
+If you only want the staged-runtime core:
+
+```bash
+uv run pytest tests/test_staged_profiler.py tests/test_staged_context_builder.py tests/test_staged_solver.py tests/test_staged_tool_runner.py tests/test_staged_reviewer.py tests/test_staged_output_adapter.py -q
 ```
 
 ## Notes
 
-- Built-in tools and MCP tools are both available to the runtime.
-- Budget caps are env-configurable (`MAX_TOOL_CALLS`, `MAX_REVISE_CYCLES`, `MAX_BACKTRACK_CYCLES`, `MAX_HINT_TOKENS`).
-- Execution memory uses compact exact-match task signatures in SQLite with near-duplicate suppression.
-- Multi-turn conversation history is reused through A2A `context_id`.
-- Run summaries now include `models_used`, so mixed-model runs are visible in the trace.
+- The previous coordinator/reasoner/verifier runtime is retired.
+- Output formatting is handled by `output_adapter`, not by prompt-only instructions.
+- External retrieval is opt-in based on explicit request signals, not a generic fallback.
+- Execution memory is store-only in the current runtime and is not injected back into prompts.

@@ -41,3 +41,21 @@ class TestStagedProfiler:
 
         assert result["task_profile"] == "external_retrieval"
         assert "needs_live_data" in result["capability_flags"]
+
+    def test_quant_tables_do_not_false_positive_as_legal_or_live_data(self):
+        prompt = (
+            "Financial Leverage Effect = (ROE - ROA) / ROA\n"
+            "| Company | ROE | ROA |\n"
+            "|---|---|---|\n"
+            "| China Overseas Grand Oceans Group | 3.0433 % | 1.5791 % |\n"
+            "Quick Ratio = (Total Current Assets - Inventory) / Total Current Liabilities\n"
+            'Output Format: {"answer": <value>}'
+        )
+        state = make_state(prompt)
+        state.update(intake(state))
+
+        result = task_profiler(state)
+
+        assert result["task_profile"] == "finance_quant"
+        assert "needs_legal_reasoning" not in result["capability_flags"]
+        assert "needs_live_data" not in result["capability_flags"]

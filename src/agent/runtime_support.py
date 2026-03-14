@@ -13,6 +13,7 @@ from typing import Any
 from langchain_core.messages import BaseMessage, HumanMessage
 
 from agent.contracts import AnswerContract, EvidencePack, TaskProfile
+from agent.profile_packs import get_profile_pack
 
 _URL_RE = re.compile(r"https?://[^\s\)\]\"',]+")
 _JSON_WRAPPER_RE = re.compile(r"\{\s*\"([A-Za-z0-9_]+)\"\s*:\s*<")
@@ -20,54 +21,33 @@ _XML_TAG_RE = re.compile(r"<([A-Za-z][A-Za-z0-9_\-]*)>")
 _PERCENT_RE = re.compile(r"(-?\d+(?:\.\d+)?)\s*%")
 _NUMBER_RE = re.compile(r"(?<![A-Za-z0-9])(-?\d+(?:\.\d+)?)(?![A-Za-z0-9])")
 
-PROFILE_TOOL_ALLOWLIST: dict[str, set[str]] = {
-    "finance_quant": {"calculator", "fetch_reference_file", "list_reference_files"},
-    "finance_options": {
-        "calculator",
-        "black_scholes_price",
-        "option_greeks",
-        "mispricing_analysis",
-        "analyze_strategy",
-        "get_options_chain",
-        "get_iv_surface",
-        "get_expirations",
-        "fetch_reference_file",
-        "list_reference_files",
-    },
-    "legal_transactional": {"calculator", "fetch_reference_file", "list_reference_files"},
-    "document_qa": {"calculator", "fetch_reference_file", "list_reference_files"},
-    "external_retrieval": {
-        "calculator",
-        "internet_search",
-        "fetch_reference_file",
-        "list_reference_files",
-    },
-    "general": {"calculator", "fetch_reference_file", "list_reference_files"},
-}
+def allowed_tools_for_profile(profile: str) -> set[str]:
+    return set(get_profile_pack(profile).allowed_tools)
 
-PROFILE_CONTEXT: dict[str, str] = {
-    "finance_quant": (
-        "Focus on exact extraction and exact math. Use prompt-contained formulas and tables first. "
-        "Keep units, sign conventions, and requested output formatting precise."
-    ),
-    "finance_options": (
-        "Focus on volatility view, strategy structure, Greeks, breakevens, credit/debit direction, "
-        "and risk management. Prefer tool-backed calculations to prose estimates."
-    ),
-    "legal_transactional": (
-        "Focus on transactional structure alternatives, tax consequences, liability allocation, "
-        "regulatory and diligence risks, and practical next steps. Avoid unsupported legal citations."
-    ),
-    "document_qa": (
-        "Ground the answer in extracted file or table evidence. Summarize the evidence rather than "
-        "repeating raw document text."
-    ),
-    "external_retrieval": (
-        "Use retrieval only to fetch explicitly requested current or source-backed facts. "
-        "Cite retrieved evidence directly."
-    ),
-    "general": "Answer directly using prompt-contained facts first.",
-}
+
+def apply_profile_contract_rules(answer_contract: AnswerContract, task_profile: str) -> AnswerContract:
+    pack = get_profile_pack(task_profile)
+    contract = answer_contract.model_copy(deep=True)
+
+    if pack.content_rules:
+        merged_rules = list(dict.fromkeys([*contract.content_rules, *pack.content_rules]))
+        contract.content_rules = merged_rules
+
+    has_strict_wrapper = contract.requires_adapter and contract.format in {"json", "xml"}
+    if not has_strict_wrapper and pack.section_requirements:
+        contract.section_requirements = list(
+            dict.fromkeys([*contract.section_requirements, *pack.section_requirements])
+        )
+
+    if pack.required_evidence_types:
+        required = list(
+            dict.fromkeys(
+                [*(contract.schema_hint.get("required_evidence_types", []) or []), *pack.required_evidence_types]
+            )
+        )
+        contract.schema_hint["required_evidence_types"] = required
+
+    return contract
 
 
 def latest_human_text(messages: list[BaseMessage]) -> str:
@@ -122,11 +102,35 @@ def detect_capability_flags(task_text: str, answer_contract: AnswerContract) -> 
         flags.add("needs_tables")
     if _URL_RE.search(task_text) or any(ext in normalized for ext in (".pdf", ".csv", ".xlsx", ".xls", ".docx", ".json")):
         flags.add("needs_files")
-    if any(token in normalized for token in ("latest", "current", "today", "recent", "source", "citation", "look up", "search")):
+    if any(
+        token in normalized
+        for token in ("latest", "today", "recent", "look up", "search", "source-backed", "source citation", "cite sources", "as of")
+    ):
         flags.add("needs_live_data")
     if any(token in normalized for token in ("iv percentile", "implied volatility", "historical volatility", "greeks", "straddle", "strangle", "iron condor", "credit spread", "call option", "put option")):
         flags.add("needs_options_engine")
-    if any(token in normalized for token in ("acquisition", "merger", "liability", "indemnification", "transaction", "compliance", "regulatory", "stock consideration", "tax reasons")):
+    if any(
+        token in normalized
+        for token in (
+            "acquisition",
+            "merger",
+            "transaction structure",
+            "deal structure",
+            "compliance",
+            "regulatory",
+            "stock consideration",
+            "tax reasons",
+            "indemnification",
+            "indemnity",
+            "compliance liabilities",
+            "liability protection",
+            "liability isolation",
+            "escrow",
+            "warranties",
+            "reverse triangular",
+            "asset purchase",
+        )
+    ):
         flags.add("needs_legal_reasoning")
     if answer_contract.requires_adapter:
         flags.add("requires_exact_format")
@@ -282,6 +286,7 @@ def build_evidence_pack(
     task_profile: str,
     capability_flags: list[str],
 ) -> EvidencePack:
+    pack = get_profile_pack(task_profile)
     urls = extract_urls(task_text)
     inline_facts = extract_inline_facts(task_text)
     market_snapshot, derived = derive_market_snapshot(task_text, inline_facts)
@@ -291,6 +296,8 @@ def build_evidence_pack(
         constraints.append("Must satisfy the exact output contract from the prompt.")
     if "needs_live_data" in capability_flags:
         constraints.append("External retrieval is allowed only if the prompt explicitly requests current data.")
+    for rule in pack.content_rules[:3]:
+        constraints.append(rule)
 
     open_questions: list[str] = []
     if task_profile == "finance_options" and "spot" not in json.dumps(inline_facts).lower():
@@ -308,7 +315,7 @@ def build_evidence_pack(
         market_snapshot=market_snapshot,
         derived_signals=derived,
         citations=urls[:],
-        assumptions=[],
+        assumptions=list(pack.failure_modes[:2]),
         open_questions=open_questions,
     )
 

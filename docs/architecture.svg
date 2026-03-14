@@ -1,128 +1,113 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 500" width="100%" height="100%" fill="#ffffff">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760" width="100%" height="100%">
   <style>
-    .bg { fill: #f8fafc; rx: 8; stroke: #e2e8f0; stroke-width: 1; }
-    .box { fill: #ffffff; stroke: #cbd5e1; stroke-width: 1.5; rx: 6; }
-    .box-alt { fill: #f1f5f9; stroke: #94a3b8; stroke-width: 1.5; rx: 6; stroke-dasharray: 4; }
-    .text-title { font-family: -apple-system, sans-serif; font-size: 14px; font-weight: 600; fill: #334155; text-anchor: middle; }
-    .text-sm { font-family: -apple-system, sans-serif; font-size: 11px; font-weight: 500; fill: #64748b; text-anchor: middle; }
-    .line { stroke: #94a3b8; stroke-width: 1.5; fill: none; }
-    .line-dash { stroke: #cbd5e1; stroke-width: 1.5; fill: none; stroke-dasharray: 4; }
-    .marker { fill: #94a3b8; }
+    .bg { fill: #f8fafc; stroke: #dbe5ef; stroke-width: 1.5; rx: 18; }
+    .box { fill: #ffffff; stroke: #94a3b8; stroke-width: 2; rx: 14; }
+    .box-accent { fill: #eef4ff; stroke: #5b8def; stroke-width: 2; rx: 14; }
+    .box-side { fill: #f6f9fc; stroke: #cbd5e1; stroke-width: 1.5; rx: 12; }
+    .text-title { font-family: 'Segoe UI', Arial, sans-serif; font-size: 20px; font-weight: 700; fill: #1e293b; text-anchor: middle; }
+    .text-body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 13px; fill: #475569; text-anchor: middle; }
+    .text-small { font-family: 'Segoe UI', Arial, sans-serif; font-size: 12px; fill: #64748b; text-anchor: middle; }
+    .line { stroke: #64748b; stroke-width: 2.5; fill: none; }
+    .line-soft { stroke: #94a3b8; stroke-width: 2; fill: none; stroke-dasharray: 6 6; }
+    .marker { fill: #64748b; }
+    .marker-soft { fill: #94a3b8; }
   </style>
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" class="marker" />
+      <path d="M 0 0 L 10 5 L 0 10 z" class="marker"/>
     </marker>
-    <marker id="arrow-dash" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#cbd5e1" />
+    <marker id="arrow-soft" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" class="marker-soft"/>
     </marker>
   </defs>
 
-  <!-- Backgrounds -->
-  <rect x="170" y="180" width="460" height="220" class="bg" />
-  <text x="400" y="195" class="text-sm">Runtime Controls &amp; Core Nodes</text>
+  <rect x="60" y="70" width="810" height="560" class="bg"/>
+  <text x="465" y="100" class="text-small">Active Staged Runtime</text>
 
-  <rect x="650" y="20" width="140" height="460" class="bg" />
-  <text x="720" y="40" class="text-sm">Persistence</text>
+  <rect x="920" y="70" width="220" height="560" class="bg"/>
+  <text x="1030" y="100" class="text-small">Persistence</text>
 
-  <!-- Nodes -->
-  <rect x="330" y="30" width="140" height="40" class="box" />
-  <text x="400" y="55" class="text-title">A2A Request</text>
+  <rect x="365" y="30" width="200" height="54" class="box-accent"/>
+  <text x="465" y="63" class="text-title">A2A Request</text>
 
-  <rect x="330" y="110" width="140" height="40" class="box" />
-  <text x="400" y="135" class="text-title">Coordinator</text>
+  <rect x="365" y="130" width="200" height="58" class="box"/>
+  <text x="465" y="164" class="text-title">Intake</text>
+  <text x="465" y="184" class="text-body">Normalize input + extract answer contract</text>
 
-  <rect x="80" y="200" width="140" height="40" class="box" />
-  <text x="150" y="225" class="text-title">Direct Responder</text>
+  <rect x="365" y="225" width="200" height="58" class="box"/>
+  <text x="465" y="258" class="text-title">Task Profiler</text>
+  <text x="465" y="278" class="text-body">Choose task profile + capability flags</text>
 
-  <rect x="330" y="220" width="140" height="40" class="box" />
-  <text x="400" y="245" class="text-title">Reasoner</text>
+  <rect x="365" y="320" width="200" height="72" class="box"/>
+  <text x="465" y="354" class="text-title">Context Builder</text>
+  <text x="465" y="376" class="text-body">Assemble evidence pack</text>
+  <text x="465" y="394" class="text-small">facts, formulas, tables, files, signals</text>
 
-  <rect x="230" y="320" width="120" height="40" class="box" />
-  <text x="290" y="345" class="text-title">Tool Executor</text>
+  <rect x="170" y="470" width="220" height="86" class="box"/>
+  <text x="280" y="504" class="text-title">Solver</text>
+  <text x="280" y="526" class="text-body">PLAN / GATHER / COMPUTE /</text>
+  <text x="280" y="544" class="text-body">SYNTHESIZE / REVISE / COMPLETE</text>
 
-  <rect x="450" y="320" width="120" height="40" class="box" />
-  <text x="510" y="345" class="text-title">Verifier</text>
+  <rect x="465" y="470" width="220" height="86" class="box"/>
+  <text x="575" y="504" class="text-title">Tool Runner</text>
+  <text x="575" y="526" class="text-body">Execute one tool call</text>
+  <text x="575" y="544" class="text-body">Return normalized ToolResult</text>
 
-  <!-- Format Normalizer pushed down properly -->
-  <rect x="330" y="440" width="140" height="40" class="box" />
-  <text x="400" y="465" class="text-title">Format Normalizer</text>
+  <rect x="170" y="590" width="220" height="86" class="box"/>
+  <text x="280" y="624" class="text-title">Reviewer</text>
+  <text x="280" y="646" class="text-body">Milestone + final review only</text>
+  <text x="280" y="664" class="text-small">pass / revise / backtrack</text>
 
-  <!-- Side Nodes -->
-  <rect x="340" y="370" width="120" height="30" class="box-alt" />
-  <text x="400" y="389" class="text-sm">Context Window</text>
+  <rect x="465" y="590" width="220" height="86" class="box"/>
+  <text x="575" y="624" class="text-title">Output Adapter</text>
+  <text x="575" y="646" class="text-body">Apply exact JSON / XML wrapping</text>
+  <text x="575" y="664" class="text-small">No substantive answer changes</text>
 
-  <rect x="660" y="60" width="120" height="40" class="box-alt" />
-  <text x="720" y="85" class="text-sm">SQLite Memory</text>
+  <rect x="710" y="590" width="140" height="86" class="box-accent"/>
+  <text x="780" y="624" class="text-title">Reflect</text>
+  <text x="780" y="646" class="text-body">Finalize run</text>
+  <text x="780" y="664" class="text-body">Persist memory</text>
 
-  <!-- Control nodes -->
-  <rect x="200" y="260" width="90" height="24" class="box-alt" />
-  <text x="245" y="276" class="text-sm">Guardrails</text>
+  <rect x="95" y="210" width="200" height="110" class="box-side"/>
+  <text x="195" y="238" class="text-title">Runtime Artifacts</text>
+  <text x="195" y="262" class="text-small">task_profile</text>
+  <text x="195" y="280" class="text-small">capability_flags</text>
+  <text x="195" y="298" class="text-small">answer_contract</text>
+  <text x="195" y="316" class="text-small">evidence_pack</text>
 
-  <rect x="520" y="260" width="90" height="24" class="box-alt" />
-  <text x="565" y="276" class="text-sm">Pruning</text>
+  <rect x="620" y="210" width="200" height="110" class="box-side"/>
+  <text x="720" y="238" class="text-title">Tool Contract</text>
+  <text x="720" y="262" class="text-small">type</text>
+  <text x="720" y="280" class="text-small">facts</text>
+  <text x="720" y="298" class="text-small">assumptions</text>
+  <text x="720" y="316" class="text-small">source / errors</text>
 
-  <rect x="500" y="200" width="90" height="24" class="box-alt" />
-  <text x="545" y="216" class="text-sm">Budget Tracker</text>
+  <rect x="955" y="155" width="150" height="86" class="box-side"/>
+  <text x="1030" y="188" class="text-title">SQLite Memory</text>
+  <text x="1030" y="210" class="text-body">Versioned schema</text>
+  <text x="1030" y="228" class="text-small">auto-reset on mismatch</text>
 
+  <rect x="955" y="300" width="150" height="176" class="box-side"/>
+  <text x="1030" y="332" class="text-title">Stored Records</text>
+  <text x="1030" y="360" class="text-small">run_memory</text>
+  <text x="1030" y="382" class="text-small">tool_memory</text>
+  <text x="1030" y="404" class="text-small">review_memory</text>
+  <text x="1030" y="440" class="text-small">store-only in v1</text>
 
-  <!-- Connecting Lines -->
-  <!-- A2A to Coordinator -->
-  <line x1="400" y1="70" x2="400" y2="108" class="line" marker-end="url(#arrow)" />
-  
-  <!-- Coordinator to Direct Responder -->
-  <path d="M 330 130 C 150 130 150 160 150 198" class="line" marker-end="url(#arrow)" />
-  <text x="210" y="120" class="text-sm">direct_answer</text>
+  <line x1="465" y1="84" x2="465" y2="128" class="line" marker-end="url(#arrow)"/>
+  <line x1="465" y1="188" x2="465" y2="223" class="line" marker-end="url(#arrow)"/>
+  <line x1="465" y1="283" x2="465" y2="318" class="line" marker-end="url(#arrow)"/>
+  <line x1="465" y1="392" x2="465" y2="432" class="line" marker-end="url(#arrow)"/>
 
-  <!-- Coordinator to Reasoner -->
-  <line x1="400" y1="150" x2="400" y2="218" class="line" marker-end="url(#arrow)" />
-  <text x="450" y="180" class="text-sm">react_reason</text>
+  <path d="M 465 432 C 465 455 350 455 280 468" class="line" marker-end="url(#arrow)"/>
+  <path d="M 390 513 C 425 513 430 513 463 513" class="line" marker-end="url(#arrow)"/>
+  <path d="M 575 556 C 575 575 405 575 290 590" class="line" marker-end="url(#arrow)"/>
+  <path d="M 390 633 C 425 633 430 633 463 633" class="line" marker-end="url(#arrow)"/>
+  <line x1="685" y1="633" x2="708" y2="633" class="line" marker-end="url(#arrow)"/>
 
-  <!-- Direct Responder to Format Normalizer -->
-  <!-- Direct goes from 150x240 to 330x460 (format norm) -->
-  <path d="M 150 240 C 150 460 328 460 328 460" class="line" marker-end="url(#arrow)" />
+  <path d="M 280 590 C 280 570 280 560 280 558" class="line-soft" marker-end="url(#arrow-soft)"/>
+  <text x="215" y="572" class="text-small">revise / backtrack</text>
 
-  <!-- Reasoner split -->
-  <!-- Reasoner(400,260) to Tool Executor(290, 320) -->
-  <line x1="380" y1="260" x2="310" y2="318" class="line" marker-end="url(#arrow)" />
-  <text x="320" y="285" class="text-sm">tool calls</text>
-
-  <!-- Reasoner(400,260) to Verifier(510, 320) -->
-  <line x1="420" y1="260" x2="490" y2="318" class="line" marker-end="url(#arrow)" />
-  <text x="480" y="285" class="text-sm">final answer</text>
-
-  <!-- Executor to Verifier loops -->
-  <!-- Tool Exec to Context Window -->
-  <line x1="290" y1="360" x2="338" y2="385" class="line-dash" marker-end="url(#arrow-dash)" />
-  
-  <!-- Context Window to Verifier -->
-  <line x1="460" y1="385" x2="510" y2="362" class="line-dash" marker-end="url(#arrow-dash)" />
-
-  <!-- Verifier back to Reasoner -->
-  <path d="M 510 320 C 510 240 472 240 472 240" class="line" marker-end="url(#arrow)" />
-  <text x="560" y="260" class="text-sm">REVISE /</text>
-  <text x="560" y="272" class="text-sm">BACKTRACK</text>
-
-  <!-- Verifier to Format Normalizer -->
-  <line x1="510" y1="360" x2="420" y2="438" class="line" marker-end="url(#arrow)" />
-  <text x="495" y="405" class="text-sm">PASS</text>
-  
-  <!-- Format Normalizer Out -->
-  <line x1="400" y1="480" x2="400" y2="500" class="line" marker-end="url(#arrow)" />
-  
-  <!-- SQLite Memory links to Coordinator, Reasoner, Verifier -->
-  <path d="M 660 80 C 470 80 470 110 470 110" class="line-dash" marker-end="url(#arrow-dash)" />
-  <path d="M 660 70 C 580 70 580 230 470 230" class="line-dash" marker-end="url(#arrow-dash)" />
-  <path d="M 660 90 C 700 350 570 350 570 350" class="line-dash" marker-end="url(#arrow-dash)" />
-  
-  <!-- Control Lines -->
-  <!-- Guardrails to TE -->
-  <line x1="290" y1="272" x2="290" y2="318" class="line-dash" marker-end="url(#arrow-dash)" />
-  <!-- Pruning to Reasoner -->
-  <line x1="520" y1="272" x2="471" y2="255" class="line-dash" marker-end="url(#arrow-dash)" />
-  <!-- Budget to TE -->
-  <path d="M 500 212 C 480 212 480 300 250 300" class="line-dash" marker-end="url(#arrow-dash)" />
-  <!-- Budget to Verifier -->
-  <path d="M 590 212 C 600 212 600 330 572 330" class="line-dash" marker-end="url(#arrow-dash)" />
-
+  <path d="M 780 590 C 780 510 940 510 1030 478" class="line-soft" marker-end="url(#arrow-soft)"/>
+  <path d="M 1030 240 C 1030 265 1030 275 1030 298" class="line-soft" marker-end="url(#arrow-soft)"/>
 </svg>

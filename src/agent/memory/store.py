@@ -1,13 +1,13 @@
 """
-Memory Store (Sprint 3)
-=======================
-Bounded SQLite-backed store for role-specific execution memory.
+Memory Store
+============
+Versioned SQLite-backed store for staged-runtime execution memory.
 
-Key design decisions:
-- SQLite for simplicity and zero-dependency persistence.
-- Strict admission policy: only verified-successful or high-signal repair records.
-- Bounded: each table is capped at MAX_RECORDS; oldest entries are evicted.
-- Retrieval returns compact structured hints, never raw transcript dumps.
+Design goals:
+- Persist compact staged-runtime artifacts, not legacy coordinator telemetry.
+- Reset incompatible schemas automatically so stale DB files do not poison the
+  active runtime after architecture changes.
+- Keep the on-disk format simple enough to evolve again later.
 """
 
 from __future__ import annotations
@@ -18,134 +18,138 @@ import os
 import sqlite3
 import threading
 from pathlib import Path
-from typing import Optional
 
-from agent.memory.schema import (
-    ExecutorMemory,
-    RouterMemory,
-    VerifierMemory,
-    _task_signature,
-)
+from agent.memory.schema import MEMORY_SCHEMA_VERSION, ReviewMemory, RunMemory, ToolMemory
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
-
-MAX_RECORDS_PER_TABLE = int(os.getenv("MEMORY_MAX_RECORDS", "500"))
-TOP_K = int(os.getenv("MEMORY_TOP_K", "3"))
-DEDUP_WINDOW_SECONDS = int(os.getenv("MEMORY_DEDUP_WINDOW", "3600"))  # Sprint 4
+MAX_RECORDS_PER_TABLE = int(os.getenv("MEMORY_MAX_RECORDS", "1000"))
 DEFAULT_DB_PATH = os.getenv(
     "MEMORY_DB_PATH",
     str(Path(__file__).resolve().parent.parent.parent / "data" / "agent_memory.db"),
 )
 
-# ---------------------------------------------------------------------------
-# SQL DDL
-# ---------------------------------------------------------------------------
-
 _DDL = """
-CREATE TABLE IF NOT EXISTS router_memory (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_sig      TEXT NOT NULL,
-    task_summary  TEXT NOT NULL,
-    semantic_text TEXT DEFAULT '',
-    task_family   TEXT DEFAULT 'general',
-    layers        TEXT NOT NULL,
-    success       INTEGER NOT NULL,
-    cost_usd      REAL DEFAULT 0.0,
-    latency_ms    REAL DEFAULT 0.0,
-    timestamp     REAL NOT NULL,
-    tags          TEXT DEFAULT '[]',
-    metadata_json TEXT DEFAULT '{}'
+CREATE TABLE IF NOT EXISTS memory_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS executor_memory (
-    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_sig                TEXT NOT NULL,
-    partial_context_summary TEXT NOT NULL,
-    semantic_text           TEXT DEFAULT '',
-    task_family             TEXT DEFAULT 'general',
-    tool_used               TEXT NOT NULL,
-    tool_family             TEXT DEFAULT 'generic',
-    arguments_pattern       TEXT NOT NULL,
-    outcome_quality         TEXT NOT NULL,
-    success                 INTEGER NOT NULL,
-    timestamp               REAL NOT NULL,
-    tags                    TEXT DEFAULT '[]',
-    metadata_json           TEXT DEFAULT '{}'
+CREATE TABLE IF NOT EXISTS run_memory (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_sig         TEXT NOT NULL,
+    task_summary     TEXT NOT NULL,
+    semantic_text    TEXT DEFAULT '',
+    task_profile     TEXT NOT NULL,
+    task_family      TEXT DEFAULT 'general',
+    capability_flags TEXT DEFAULT '[]',
+    route_path       TEXT DEFAULT '[]',
+    stage_history    TEXT DEFAULT '[]',
+    answer_format    TEXT DEFAULT 'text',
+    success          INTEGER NOT NULL,
+    tool_call_count  INTEGER DEFAULT 0,
+    review_cycles    INTEGER DEFAULT 0,
+    cost_usd         REAL DEFAULT 0.0,
+    latency_ms       REAL DEFAULT 0.0,
+    timestamp        REAL NOT NULL,
+    tags             TEXT DEFAULT '[]',
+    metadata_json    TEXT DEFAULT '{}'
 );
 
-CREATE TABLE IF NOT EXISTS verifier_memory (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_sig        TEXT NOT NULL,
-    failure_pattern TEXT NOT NULL,
-    semantic_text   TEXT DEFAULT '',
-    task_family     TEXT DEFAULT 'general',
-    failure_family  TEXT DEFAULT 'generic',
-    verdict         TEXT NOT NULL,
-    repair_action   TEXT NOT NULL,
-    repair_worked   INTEGER NOT NULL,
-    timestamp       REAL NOT NULL,
-    tags            TEXT DEFAULT '[]',
-    metadata_json   TEXT DEFAULT '{}'
+CREATE TABLE IF NOT EXISTS tool_memory (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_sig       TEXT NOT NULL,
+    task_profile   TEXT NOT NULL,
+    task_family    TEXT DEFAULT 'general',
+    solver_stage   TEXT DEFAULT 'COMPUTE',
+    tool_name      TEXT NOT NULL,
+    result_type    TEXT NOT NULL,
+    semantic_text  TEXT DEFAULT '',
+    arguments_json TEXT DEFAULT '{}',
+    fact_keys      TEXT DEFAULT '[]',
+    error_count    INTEGER DEFAULT 0,
+    success        INTEGER NOT NULL,
+    timestamp      REAL NOT NULL,
+    metadata_json  TEXT DEFAULT '{}'
 );
 
-CREATE INDEX IF NOT EXISTS idx_router_sig   ON router_memory(task_sig);
-CREATE INDEX IF NOT EXISTS idx_executor_sig ON executor_memory(task_sig);
-CREATE INDEX IF NOT EXISTS idx_verifier_sig ON verifier_memory(task_sig);
+CREATE TABLE IF NOT EXISTS review_memory (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_sig           TEXT NOT NULL,
+    task_profile       TEXT NOT NULL,
+    task_family        TEXT DEFAULT 'general',
+    review_stage       TEXT DEFAULT 'SYNTHESIZE',
+    verdict            TEXT NOT NULL,
+    repair_target      TEXT DEFAULT 'final',
+    missing_dimensions TEXT DEFAULT '[]',
+    reasoning          TEXT DEFAULT '',
+    success            INTEGER NOT NULL,
+    timestamp          REAL NOT NULL,
+    metadata_json      TEXT DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS idx_run_sig    ON run_memory(task_sig);
+CREATE INDEX IF NOT EXISTS idx_tool_sig   ON tool_memory(task_sig);
+CREATE INDEX IF NOT EXISTS idx_review_sig ON review_memory(task_sig);
 """
 
 _EXPECTED_COLUMNS = {
-    "router_memory": {
+    "memory_meta": {"key", "value"},
+    "run_memory": {
         "id",
         "task_sig",
         "task_summary",
         "semantic_text",
+        "task_profile",
         "task_family",
-        "layers",
+        "capability_flags",
+        "route_path",
+        "stage_history",
+        "answer_format",
         "success",
+        "tool_call_count",
+        "review_cycles",
         "cost_usd",
         "latency_ms",
         "timestamp",
         "tags",
         "metadata_json",
     },
-    "executor_memory": {
+    "tool_memory": {
         "id",
         "task_sig",
-        "partial_context_summary",
-        "semantic_text",
+        "task_profile",
         "task_family",
-        "tool_used",
-        "tool_family",
-        "arguments_pattern",
-        "outcome_quality",
+        "solver_stage",
+        "tool_name",
+        "result_type",
+        "semantic_text",
+        "arguments_json",
+        "fact_keys",
+        "error_count",
         "success",
         "timestamp",
-        "tags",
         "metadata_json",
     },
-    "verifier_memory": {
+    "review_memory": {
         "id",
         "task_sig",
-        "failure_pattern",
-        "semantic_text",
+        "task_profile",
         "task_family",
-        "failure_family",
+        "review_stage",
         "verdict",
-        "repair_action",
-        "repair_worked",
+        "repair_target",
+        "missing_dimensions",
+        "reasoning",
+        "success",
         "timestamp",
-        "tags",
         "metadata_json",
     },
 }
 
 
 class MemoryStore:
-    """Thread-safe, bounded SQLite store for agent execution memory."""
+    """Thread-safe, versioned SQLite store for staged-runtime memory."""
 
     def __init__(self, db_path: str | None = None):
         self._db_path = db_path or DEFAULT_DB_PATH
@@ -153,8 +157,6 @@ class MemoryStore:
         if self._db_path != ":memory:":
             Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
-
-    # ---- connection management (per-thread) ----
 
     def _get_conn(self) -> sqlite3.Connection:
         if not hasattr(self._local, "conn") or self._local.conn is None:
@@ -167,8 +169,10 @@ class MemoryStore:
         conn.executescript(_DDL)
         conn.commit()
         if not self._schema_matches():
-            logger.warning("[Memory] Resetting memory DB because the stored schema is outdated.")
-            self._reset_schema()
+            logger.warning("[Memory] Resetting staged memory DB because the stored schema is incompatible.")
+            self.reset()
+            conn = self._get_conn()
+        self._write_schema_version(conn)
 
     def _schema_matches(self) -> bool:
         conn = self._get_conn()
@@ -177,20 +181,33 @@ class MemoryStore:
             columns = {row["name"] for row in rows}
             if columns != expected:
                 return False
-        return True
+        row = conn.execute("SELECT value FROM memory_meta WHERE key = 'schema_version'").fetchone()
+        if row is None:
+            # Existing DB with staged tables but no meta version is still treated as stale.
+            return False
+        return str(row["value"]) == str(MEMORY_SCHEMA_VERSION)
 
-    def _reset_schema(self) -> None:
+    def _write_schema_version(self, conn: sqlite3.Connection) -> None:
+        conn.execute(
+            "INSERT OR REPLACE INTO memory_meta(key, value) VALUES('schema_version', ?)",
+            (str(MEMORY_SCHEMA_VERSION),),
+        )
+        conn.commit()
+
+    def reset(self) -> None:
+        """Reset the DB to the active staged-runtime schema."""
         if self._db_path == ":memory:":
             conn = self._get_conn()
             conn.executescript(
                 """
-                DROP TABLE IF EXISTS router_memory;
-                DROP TABLE IF EXISTS executor_memory;
-                DROP TABLE IF EXISTS verifier_memory;
+                DROP TABLE IF EXISTS memory_meta;
+                DROP TABLE IF EXISTS run_memory;
+                DROP TABLE IF EXISTS tool_memory;
+                DROP TABLE IF EXISTS review_memory;
                 """
             )
             conn.executescript(_DDL)
-            conn.commit()
+            self._write_schema_version(conn)
             return
 
         db_file = Path(self._db_path)
@@ -200,32 +217,12 @@ class MemoryStore:
         self._local = threading.local()
         conn = self._get_conn()
         conn.executescript(_DDL)
-        conn.commit()
+        self._write_schema_version(conn)
 
     def close(self) -> None:
         if hasattr(self._local, "conn") and self._local.conn:
             self._local.conn.close()
             self._local.conn = None
-
-    # ====================================================================
-    # ADMISSION POLICY
-    # ====================================================================
-
-    def _admit_router(self, rec: RouterMemory) -> bool:
-        """Only store successful routing decisions."""
-        return rec.success
-
-    def _admit_executor(self, rec: ExecutorMemory) -> bool:
-        """Only store successful tool calls or acceptable quality ones."""
-        return rec.success or rec.outcome_quality == "acceptable"
-
-    def _admit_verifier(self, rec: VerifierMemory) -> bool:
-        """Only store repair patterns that actually worked."""
-        return rec.repair_worked
-
-    # ====================================================================
-    # STORAGE (with admission + eviction)
-    # ====================================================================
 
     def _evict_oldest(self, table: str) -> None:
         conn = self._get_conn()
@@ -233,54 +230,34 @@ class MemoryStore:
         if count >= MAX_RECORDS_PER_TABLE:
             overflow = count - MAX_RECORDS_PER_TABLE + 1
             conn.execute(
-                f"DELETE FROM {table} WHERE id IN "
-                f"(SELECT id FROM {table} ORDER BY timestamp ASC LIMIT ?)",
+                f"DELETE FROM {table} WHERE id IN (SELECT id FROM {table} ORDER BY timestamp ASC LIMIT ?)",
                 (overflow,),
             )
 
-    # Sprint 4: Near-duplicate suppression
-    def _is_near_duplicate(
-        self, table: str, task_sig: str,
-        extra_col: str, extra_val: str,
-        extra_col2: str | None = None, extra_val2: str | None = None,
-    ) -> bool:
-        """Check if a very similar record was stored recently."""
-        import time as _time
-        cutoff = _time.time() - DEDUP_WINDOW_SECONDS
+    def store_run(self, rec: RunMemory) -> bool:
         conn = self._get_conn()
-        if extra_col2 and extra_val2:
-            row = conn.execute(
-                f"SELECT 1 FROM {table} WHERE task_sig = ? AND {extra_col} = ? "
-                f"AND {extra_col2} = ? AND timestamp > ? LIMIT 1",
-                (task_sig, extra_val, extra_val2, cutoff),
-            ).fetchone()
-        else:
-            row = conn.execute(
-                f"SELECT 1 FROM {table} WHERE task_sig = ? AND {extra_col} = ? "
-                f"AND timestamp > ? LIMIT 1",
-                (task_sig, extra_val, cutoff),
-            ).fetchone()
-        if row:
-            logger.info(f"[Memory] Dedup: skipped near-duplicate in {table} (sig={task_sig[:8]}).")
-        return row is not None
-
-    def store_router(self, rec: RouterMemory) -> bool:
-        """Store a router memory record if it passes admission. Returns True if stored."""
-        if not self._admit_router(rec):
-            logger.debug("RouterMemory rejected by admission policy.")
-            return False
-        conn = self._get_conn()
-        self._evict_oldest("router_memory")
+        self._evict_oldest("run_memory")
         conn.execute(
-            "INSERT INTO router_memory (task_sig, task_summary, semantic_text, task_family, layers, success, cost_usd, latency_ms, timestamp, tags, metadata_json) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            """
+            INSERT INTO run_memory (
+                task_sig, task_summary, semantic_text, task_profile, task_family,
+                capability_flags, route_path, stage_history, answer_format, success,
+                tool_call_count, review_cycles, cost_usd, latency_ms, timestamp, tags, metadata_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
             (
                 rec.task_signature,
                 rec.task_summary,
                 rec.semantic_text,
+                str(rec.task_profile),
                 rec.task_family,
-                json.dumps(rec.selected_layers),
+                json.dumps(rec.capability_flags),
+                json.dumps(rec.route_path),
+                json.dumps(rec.stage_history),
+                rec.answer_format,
                 int(rec.success),
+                rec.tool_call_count,
+                rec.review_cycle_count,
                 rec.cost_usd,
                 rec.latency_ms,
                 rec.timestamp,
@@ -291,186 +268,67 @@ class MemoryStore:
         conn.commit()
         return True
 
-    def store_executor(self, rec: ExecutorMemory) -> bool:
-        """Store an executor memory record if it passes admission."""
-        if not self._admit_executor(rec):
-            logger.debug("ExecutorMemory rejected by admission policy.")
-            return False
-        # Sprint 4: dedup — check both tool_used AND arguments_pattern
-        if self._is_near_duplicate(
-            "executor_memory", rec.task_signature,
-            "tool_used", rec.tool_used,
-            "arguments_pattern", rec.arguments_pattern[:60],
-        ):
-            return False
+    def store_tool(self, rec: ToolMemory) -> bool:
         conn = self._get_conn()
-        self._evict_oldest("executor_memory")
+        self._evict_oldest("tool_memory")
         conn.execute(
-            "INSERT INTO executor_memory (task_sig, partial_context_summary, semantic_text, task_family, tool_used, tool_family, arguments_pattern, outcome_quality, success, timestamp, tags, metadata_json) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            """
+            INSERT INTO tool_memory (
+                task_sig, task_profile, task_family, solver_stage, tool_name, result_type,
+                semantic_text, arguments_json, fact_keys, error_count, success, timestamp, metadata_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
             (
                 rec.task_signature,
-                rec.partial_context_summary,
-                rec.semantic_text,
+                str(rec.task_profile),
                 rec.task_family,
-                rec.tool_used,
-                rec.tool_family,
-                rec.arguments_pattern,
-                rec.outcome_quality,
+                rec.solver_stage,
+                rec.tool_name,
+                rec.result_type,
+                rec.semantic_text,
+                json.dumps(rec.arguments_json),
+                json.dumps(rec.fact_keys),
+                rec.error_count,
                 int(rec.success),
                 rec.timestamp,
-                json.dumps(rec.tags),
                 json.dumps(rec.metadata),
             ),
         )
         conn.commit()
         return True
 
-    def store_verifier(self, rec: VerifierMemory) -> bool:
-        """Store a verifier memory record if it passes admission."""
-        if not self._admit_verifier(rec):
-            logger.debug("VerifierMemory rejected by admission policy.")
-            return False
-        # Sprint 4: dedup
-        if self._is_near_duplicate("verifier_memory", rec.task_signature, "failure_pattern", rec.failure_pattern[:60]):
-            return False
+    def store_review(self, rec: ReviewMemory) -> bool:
         conn = self._get_conn()
-        self._evict_oldest("verifier_memory")
+        self._evict_oldest("review_memory")
         conn.execute(
-            "INSERT INTO verifier_memory (task_sig, failure_pattern, semantic_text, task_family, failure_family, verdict, repair_action, repair_worked, timestamp, tags, metadata_json) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            """
+            INSERT INTO review_memory (
+                task_sig, task_profile, task_family, review_stage, verdict, repair_target,
+                missing_dimensions, reasoning, success, timestamp, metadata_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
             (
                 rec.task_signature,
-                rec.failure_pattern,
-                rec.semantic_text,
+                str(rec.task_profile),
                 rec.task_family,
-                rec.failure_family,
+                rec.review_stage,
                 rec.verdict,
-                rec.repair_action,
-                int(rec.repair_worked),
+                rec.repair_target,
+                json.dumps(rec.missing_dimensions),
+                rec.reasoning,
+                int(rec.success),
                 rec.timestamp,
-                json.dumps(rec.tags),
                 json.dumps(rec.metadata),
             ),
         )
         conn.commit()
         return True
 
-    # ====================================================================
-    # RETRIEVAL (compact hints, never raw dumps)
-    # ====================================================================
-
-    def retrieve_router_hints(self, task_text: str, top_k: int = TOP_K) -> list[str]:
-        """Return compact text hints for the Coordinator based on similar past routes.
-
-        Returns lines like:
-          'For similar tasks, layers ["react_reason","verifier_check"] succeeded (cost $0.002, 1200ms).'
-        """
-        sig = _task_signature(task_text)
-        conn = self._get_conn()
-        rows = conn.execute(
-            "SELECT task_summary, layers, cost_usd, latency_ms "
-            "FROM router_memory WHERE task_sig = ? AND success = 1 "
-            "ORDER BY timestamp DESC LIMIT ?",
-            (sig, top_k),
-        ).fetchall()
-
-        hints = []
-        for r in rows:
-            layers = json.loads(r["layers"])
-            hints.append(
-                f"For similar task \"{r['task_summary'][:80]}\", "
-                f"layers {layers} succeeded "
-                f"(cost ${r['cost_usd']:.4f}, {r['latency_ms']:.0f}ms)."
-            )
-        return hints
-
-    def retrieve_executor_hints(self, task_text: str, top_k: int = TOP_K) -> list[str]:
-        """Return compact tool-selection hints for the Executor.
-
-        Returns lines like:
-          'For similar context, use black_scholes_price with spot=180, strike=175. Quality: good.'
-        """
-        sig = _task_signature(task_text)
-        conn = self._get_conn()
-        rows = conn.execute(
-            "SELECT partial_context_summary, tool_used, arguments_pattern, outcome_quality "
-            "FROM executor_memory WHERE task_sig = ? "
-            "AND (success = 1 OR outcome_quality = 'acceptable') "
-            "ORDER BY timestamp DESC LIMIT ?",
-            (sig, top_k),
-        ).fetchall()
-
-        hints = []
-        for r in rows:
-            hints.append(
-                f"For \"{r['partial_context_summary'][:60]}\", "
-                f"use {r['tool_used']} with {r['arguments_pattern'][:80]}. "
-                f"Quality: {r['outcome_quality']}."
-            )
-        return hints
-
-    def retrieve_verifier_hints(
-        self,
-        task_text: str,
-        top_k: int = TOP_K,
-        failure_family: str | None = None,
-    ) -> list[str]:
-        """Return compact repair-strategy hints for the Verifier.
-
-        Returns lines like:
-          'Known failure: calculator rejects multiline. Repair: switch to finance tool. Worked: True.'
-        """
-        sig = _task_signature(task_text)
-        conn = self._get_conn()
-        if failure_family:
-            rows = conn.execute(
-                "SELECT failure_pattern, verdict, repair_action, repair_worked "
-                "FROM verifier_memory WHERE task_sig = ? AND failure_family = ? "
-                "ORDER BY timestamp DESC LIMIT ?",
-                (sig, failure_family, top_k),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT failure_pattern, verdict, repair_action, repair_worked "
-                "FROM verifier_memory WHERE task_sig = ? "
-                "ORDER BY timestamp DESC LIMIT ?",
-                (sig, top_k),
-            ).fetchall()
-
-        hints = []
-        for r in rows:
-            hints.append(
-                f"Known failure: {r['failure_pattern'][:80]}. "
-                f"Repair ({r['verdict']}): {r['repair_action'][:80]}. "
-                f"Worked: {bool(r['repair_worked'])}."
-            )
-        return hints
-
-    # ---- Stats ----
-
-    def stats(self) -> dict:
-        """Return record counts per table."""
+    def stats(self) -> dict[str, int]:
         conn = self._get_conn()
         return {
-            "router_memory": conn.execute("SELECT COUNT(*) FROM router_memory").fetchone()[0],
-            "executor_memory": conn.execute("SELECT COUNT(*) FROM executor_memory").fetchone()[0],
-            "verifier_memory": conn.execute("SELECT COUNT(*) FROM verifier_memory").fetchone()[0],
+            "schema_version": MEMORY_SCHEMA_VERSION,
+            "run_memory": conn.execute("SELECT COUNT(*) FROM run_memory").fetchone()[0],
+            "tool_memory": conn.execute("SELECT COUNT(*) FROM tool_memory").fetchone()[0],
+            "review_memory": conn.execute("SELECT COUNT(*) FROM review_memory").fetchone()[0],
         }
-
-    # Sprint 4: Compaction
-    def compact_router_memory(self) -> int:
-        """Per task_sig, keep only the lowest-cost successful record. Returns removed count."""
-        conn = self._get_conn()
-        removed = conn.execute(
-            "DELETE FROM router_memory WHERE id NOT IN ("
-            "  SELECT id FROM ("
-            "    SELECT id, ROW_NUMBER() OVER (PARTITION BY task_sig ORDER BY cost_usd ASC) AS rn"
-            "    FROM router_memory WHERE success = 1"
-            "  ) WHERE rn = 1"
-            ") AND success = 1"
-        ).rowcount
-        conn.commit()
-        if removed:
-            logger.info(f"[Memory] Compacted router_memory: removed {removed} duplicate records.")
-        return removed

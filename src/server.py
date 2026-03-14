@@ -1,61 +1,49 @@
 """
-CoreLink AI – A2A Server
-=========================
-Serves the Purple Agent over the A2A protocol.
+CoreLink AI - A2A Server
+========================
+Serves the staged finance-first runtime over the A2A protocol.
 """
 
 import argparse
-import uvicorn
 
+import uvicorn
 from a2a.server.apps import A2AStarletteApplication
 from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.tasks import InMemoryTaskStore
-from a2a.types import (
-    AgentCapabilities,
-    AgentCard,
-    AgentSkill,
-)
+from a2a.types import AgentCapabilities, AgentCard, AgentSkill
 
 from executor import Executor
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="Run the CoreLink AI A2A agent.")
-    parser.add_argument(
-        "--host", type=str, default="127.0.0.1", help="Host to bind the server"
-    )
-    parser.add_argument(
-        "--port", type=int, default=9009, help="Port to bind the server"
-    )
-    parser.add_argument(
-        "--card-url", type=str, help="URL to advertise in the agent card"
-    )
+    parser.add_argument("--host", type=str, default="127.0.0.1", help="Host to bind the server")
+    parser.add_argument("--port", type=int, default=9009, help="Port to bind the server")
+    parser.add_argument("--card-url", type=str, help="URL to advertise in the agent card")
     args = parser.parse_args()
 
-    # ── Agent Skill ───────────────────────────────────────────────────
     skill = AgentSkill(
-        id="generalist-reasoning",
-        name="Generalist Reasoning",
+        id="finance-first-reasoning",
+        name="Finance-First Reasoning",
         description=(
-            "A benchmark-agnostic reasoning engine that uses a Plan-Act-Learn "
-            "loop to solve tasks. Capable of multi-step reasoning, tool use, "
-            "and self-correction through reflective feedback."
+            "A staged reasoning engine that builds task-specific context, uses structured "
+            "tools when needed, and returns normalized answers for finance, legal, and "
+            "document-oriented tasks."
         ),
-        tags=["reasoning", "tool-use", "planning", "generalist"],
+        tags=["reasoning", "finance", "tool-use", "staged-runtime"],
         examples=[
-            "What is the square root of 144?",
-            "What time is it right now in UTC?",
-            "Break down how to solve this problem step by step.",
+            "Calculate a finance metric from inline table data.",
+            "Design an options strategy from volatility inputs.",
+            "Explain acquisition structure tradeoffs under regulatory constraints.",
         ],
     )
 
-    # ── Agent Card ────────────────────────────────────────────────────
     agent_card = AgentCard(
         name="CoreLink AI",
         description=(
-            "A generalist reasoning engine for the AgentX-AgentBeats Competition. "
-            "Implements a Plan-Act-Learn architecture powered by LangGraph "
-            "for multi-step reasoning, dynamic tool use, and self-evolving feedback."
+            "A staged finance-first reasoning engine built on LangGraph and MCP. "
+            "It profiles each request, assembles structured evidence, runs solver/tool "
+            "stages, reviews milestone outputs, and applies final answer normalization."
         ),
         url=args.card_url or f"http://{args.host}:{args.port}/",
         version="0.1.0",
@@ -65,7 +53,6 @@ def main():
         skills=[skill],
     )
 
-    # ── Server ────────────────────────────────────────────────────────
     request_handler = DefaultRequestHandler(
         agent_executor=Executor(),
         task_store=InMemoryTaskStore(),

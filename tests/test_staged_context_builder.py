@@ -30,6 +30,8 @@ class TestContextBuilder:
         assert any("Financial Leverage Effect" in formula for formula in evidence["formulas"])
         assert evidence["file_refs"] == ["https://example.com/report.pdf"]
         assert evidence["answer_contract"]["format"] == "json"
+        assert "Use formulas and inline tables from the prompt before calling tools." in evidence["constraints"]
+        assert result["workpad"]["profile_pack"]["profile"] == "finance_quant"
 
     def test_derives_options_market_signals(self):
         prompt = (
@@ -47,3 +49,4 @@ class TestContextBuilder:
         assert evidence["market_snapshot"]["historical_volatility"] == 0.28
         assert evidence["derived_signals"]["iv_premium"] == 0.07
         assert evidence["derived_signals"]["vol_bias"] == "short_vol"
+        assert "Recommendation" in result["answer_contract"]["section_requirements"]

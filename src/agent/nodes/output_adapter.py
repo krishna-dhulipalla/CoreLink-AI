@@ -47,7 +47,10 @@ def output_adapter(state: AgentState) -> dict:
     if fmt == "json":
         try:
             parsed = json.loads(source_text)
-            if contract.get("wrapper_key"):
+            if contract.get("wrapper_key") and not (
+                isinstance(parsed, dict)
+                and set(parsed.keys()) == {contract["wrapper_key"]}
+            ):
                 adapted = json.dumps({contract["wrapper_key"]: parsed}, ensure_ascii=True)
             else:
                 adapted = json.dumps(parsed, ensure_ascii=True)

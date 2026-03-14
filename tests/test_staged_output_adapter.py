@@ -16,6 +16,18 @@ def test_output_adapter_wraps_json_answer():
     assert result["messages"][0].content == '{"answer": 0.9274}'
 
 
+def test_output_adapter_does_not_double_wrap_existing_json_answer():
+    state = make_state(
+        "Return JSON.",
+        answer_contract={"format": "json", "requires_adapter": True, "wrapper_key": "answer"},
+    )
+    state["messages"].append(AIMessage(content='{"answer": 0.9274}'))
+
+    result = output_adapter(state)
+
+    assert result["messages"] == []
+
+
 def test_output_adapter_wraps_xml_answer():
     state = make_state(
         "Return XML.",

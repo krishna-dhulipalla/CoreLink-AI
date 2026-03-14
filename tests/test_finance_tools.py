@@ -30,6 +30,10 @@ def _parse_structured(output: str) -> dict:
     return result
 
 
+def _call(tool_fn, payload: dict) -> str:
+    return tool_fn(**payload)
+
+
 # ---------------------------------------------------------------------------
 # black_scholes_price — opt_pricing_001 benchmark values
 # AAPL: S=175, K=180, T=30d, r=5%, sigma=25% → call=3.22, put=7.48
@@ -38,13 +42,13 @@ def _parse_structured(output: str) -> dict:
 class TestBlackScholesPrice:
 
     def test_has_structured_results_header(self):
-        out = black_scholes_price.invoke(
+        out = _call(black_scholes_price,
             {"S": 175.0, "K": 180.0, "T_days": 30, "r": 0.05, "sigma": 0.25}
         )
         assert out.startswith("STRUCTURED_RESULTS:"), "Output must start with STRUCTURED_RESULTS:"
 
     def test_call_price_matches_benchmark(self):
-        out = black_scholes_price.invoke(
+        out = _call(black_scholes_price,
             {"S": 175.0, "K": 180.0, "T_days": 30, "r": 0.05, "sigma": 0.25}
         )
         kv = _parse_structured(out)
@@ -52,7 +56,7 @@ class TestBlackScholesPrice:
             f"call_price mismatch: {kv['call_price']}"
 
     def test_put_price_matches_benchmark(self):
-        out = black_scholes_price.invoke(
+        out = _call(black_scholes_price,
             {"S": 175.0, "K": 180.0, "T_days": 30, "r": 0.05, "sigma": 0.25}
         )
         kv = _parse_structured(out)
@@ -60,14 +64,14 @@ class TestBlackScholesPrice:
             f"put_price mismatch: {kv['put_price']}"
 
     def test_method_field_present(self):
-        out = black_scholes_price.invoke(
+        out = _call(black_scholes_price,
             {"S": 175.0, "K": 180.0, "T_days": 30, "r": 0.05, "sigma": 0.25}
         )
         kv = _parse_structured(out)
         assert "Black-Scholes" in kv["method"], "method field must say Black-Scholes"
 
     def test_greeks_present_in_structured(self):
-        out = black_scholes_price.invoke(
+        out = _call(black_scholes_price,
             {"S": 175.0, "K": 180.0, "T_days": 30, "r": 0.05, "sigma": 0.25}
         )
         kv = _parse_structured(out)
@@ -75,7 +79,7 @@ class TestBlackScholesPrice:
             assert greek in kv, f"Missing {greek} in STRUCTURED_RESULTS"
 
     def test_error_on_invalid_inputs(self):
-        out = black_scholes_price.invoke(
+        out = _call(black_scholes_price,
             {"S": -1.0, "K": 180.0, "T_days": 30, "r": 0.05, "sigma": 0.25}
         )
         assert out.startswith("Error"), "Should return Error for negative S"
@@ -90,13 +94,13 @@ class TestBlackScholesPrice:
 class TestOptionGreeks:
 
     def test_has_structured_results_header(self):
-        out = option_greeks.invoke(
+        out = _call(option_greeks,
             {"S": 245.0, "K": 250.0, "T_days": 21, "r": 0.05, "sigma": 0.55}
         )
         assert out.startswith("STRUCTURED_RESULTS:")
 
     def test_delta_matches_benchmark(self):
-        out = option_greeks.invoke(
+        out = _call(option_greeks,
             {"S": 245.0, "K": 250.0, "T_days": 21, "r": 0.05, "sigma": 0.55}
         )
         kv = _parse_structured(out)
@@ -104,7 +108,7 @@ class TestOptionGreeks:
             f"delta mismatch: {kv['delta']}"
 
     def test_gamma_matches_benchmark(self):
-        out = option_greeks.invoke(
+        out = _call(option_greeks,
             {"S": 245.0, "K": 250.0, "T_days": 21, "r": 0.05, "sigma": 0.55}
         )
         kv = _parse_structured(out)
@@ -112,7 +116,7 @@ class TestOptionGreeks:
             f"gamma mismatch: {kv['gamma']}"
 
     def test_theta_matches_benchmark(self):
-        out = option_greeks.invoke(
+        out = _call(option_greeks,
             {"S": 245.0, "K": 250.0, "T_days": 21, "r": 0.05, "sigma": 0.55}
         )
         kv = _parse_structured(out)
@@ -120,7 +124,7 @@ class TestOptionGreeks:
             f"theta mismatch: {kv['theta']}"
 
     def test_vega_matches_benchmark(self):
-        out = option_greeks.invoke(
+        out = _call(option_greeks,
             {"S": 245.0, "K": 250.0, "T_days": 21, "r": 0.05, "sigma": 0.55}
         )
         kv = _parse_structured(out)
@@ -137,14 +141,14 @@ class TestOptionGreeks:
 class TestMispricingAnalysis:
 
     def test_has_structured_results_header(self):
-        out = mispricing_analysis.invoke({
+        out = _call(mispricing_analysis, {
             "market_price": 18.50, "S": 450.0, "K": 460.0,
             "T_days": 45, "r": 0.0525, "sigma": 0.45
         })
         assert out.startswith("STRUCTURED_RESULTS:")
 
     def test_theoretical_price_matches_benchmark(self):
-        out = mispricing_analysis.invoke({
+        out = _call(mispricing_analysis, {
             "market_price": 18.50, "S": 450.0, "K": 460.0,
             "T_days": 45, "r": 0.0525, "sigma": 0.45
         })
@@ -153,7 +157,7 @@ class TestMispricingAnalysis:
             f"theoretical_price mismatch: {kv['theoretical_price']}"
 
     def test_assessment_is_underpriced(self):
-        out = mispricing_analysis.invoke({
+        out = _call(mispricing_analysis, {
             "market_price": 18.50, "S": 450.0, "K": 460.0,
             "T_days": 45, "r": 0.0525, "sigma": 0.45
         })
@@ -162,7 +166,7 @@ class TestMispricingAnalysis:
             f"assessment mismatch: {kv['assessment']}"
 
     def test_discrepancy_pct_matches_benchmark(self):
-        out = mispricing_analysis.invoke({
+        out = _call(mispricing_analysis, {
             "market_price": 18.50, "S": 450.0, "K": 460.0,
             "T_days": 45, "r": 0.0525, "sigma": 0.45
         })
@@ -171,7 +175,7 @@ class TestMispricingAnalysis:
             f"discrepancy_pct mismatch: {kv['discrepancy_pct']}"
 
     def test_market_price_preserved(self):
-        out = mispricing_analysis.invoke({
+        out = _call(mispricing_analysis, {
             "market_price": 18.50, "S": 450.0, "K": 460.0,
             "T_days": 45, "r": 0.0525, "sigma": 0.45
         })

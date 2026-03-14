@@ -766,3 +766,149 @@ This file operates in a "Chat" structure. Whenever an agent finishes a major uni
   2. LangSmith outbound tracing still emits connection warnings in this local environment even when tracing is disabled via env vars; this did not affect pass/fail status of the new test or smoke runs.
   3. Router memory storage is still using the legacy `RouterMemory` schema as a compatibility shim, with the new runtime artifacts stored in metadata. It is now store-only, not prompt-injected.
 - **Handoff Notes:** The runtime is now organized around explicit contracts and staged control instead of prompt-layer patching. The next meaningful work should be on improving domain context quality and tool coverage within this new structure, not on reintroducing old coordinator/verifier complexity.
+
+## Chat 50: Profile Packs, Structured Tool Normalization, Staged Slice Rerun
+
+- **Date:** 2026-03-14
+- **Goal:** Finish the first usable pass of the staged runtime by moving remaining domain guidance out of legacy prompt logic, normalizing more tool outputs into structured facts, rerunning the saved 3-task slice on the new graph, reviewing live LLM behavior, and removing retired coordinator-era code.
+- **Key Changes:**
+  1. Added explicit profile context packs in `src/agent/profile_packs.py` and moved domain guidance into typed runtime artifacts instead of legacy `prompts.py`.
+     - Each profile pack now defines:
+       - `summary`
+       - `allowed_tool_classes`
+       - `required_evidence_types`
+       - `content_rules`
+       - `section_requirements`
+       - reviewer completeness dimensions
+  2. Expanded `AnswerContract` in `src/agent/contracts.py` to carry:
+     - `content_rules`
+     - `section_requirements`
+     - `value_rules`
+     This lets output requirements live in state/contracts rather than buried in free-form prompts.
+  3. Reworked `src/agent/runtime_support.py` and `src/agent/nodes/context_builder.py` so profile rules are merged into `answer_contract` and `evidence_pack` at build time. Inline facts remain preferred over tools; external retrieval still requires explicit triggers.
+  4. Updated `src/agent/nodes/solver.py` to consume profile packs directly:
+     - stage prompts now use profile summary + contract rules + compact evidence
+     - options compute/revise flow is explicitly tool-backed
+     - revise path now asks for full replacement answers, not partial patches
+  5. Updated `src/agent/nodes/reviewer.py` to evaluate against profile-pack completeness rules instead of legacy hardcoded prompt-era checks. Added deterministic guards for:
+     - missing tool-backed evidence in finance options compute/final stages
+     - scalar JSON-style quant outputs before adapter
+     - truncated final answers
+     Reviewer LLM parse failures now fall back deterministically instead of breaking the run.
+  6. Added centralized tool normalization in `src/agent/tool_normalization.py` and wired it into `src/agent/nodes/tool_runner.py`.
+     Structured normalization now covers:
+     - `STRUCTURED_RESULTS`
+     - `black_scholes_price`
+     - `analyze_strategy`
+     - `get_options_chain`
+     - `get_expirations`
+     - `get_iv_surface`
+     - `list_reference_files`
+     - `fetch_reference_file`
+     - `internet_search`
+     - `calculator`
+     This reduced string parsing inside solver/reviewer and made tool facts reusable in `evidence_pack`.
+  7. Removed retired legacy runtime modules that were no longer on the active graph path:
+     - `src/agent/prompts.py`
+     - `src/agent/operators.py`
+     - `src/agent/nodes/context.py`
+     - `src/agent/nodes/coordinator.py`
+     - `src/agent/nodes/reasoner.py`
+     - `src/agent/nodes/reflector.py`
+     - `src/agent/nodes/tool_executor.py`
+     - `src/agent/nodes/verifier.py`
+  8. Rewrote `README.md` around the staged runtime:
+     - node responsibilities
+     - runtime artifacts
+     - profile/context model
+     - structured tool contract
+     - smoke scripts
+     - note that the old coordinator/reasoner/verifier stack is retired
+  9. Added staged-runner scripts:
+     - `scripts/run_staged_slice.py`
+     - `scripts/run_live_staged_smoke.py`
+     These are intended to replace repeated full benchmark reruns when checking graph behavior.
+  10. Updated tests around staged behavior and removed stale coordinator-era expectations. Also hardened env loading so explicit test/script env vars win over `.env` defaults.
+- **Staged Slice Rerun (`langsmith_runs/staged_slice_results.json`):**
+  1. `task1.json`
+     - `task_profile=finance_quant`
+     - no tool call needed
+     - clean final answer: `{"answer": 0.9274}`
+     - correct exact-format path through `output_adapter`
+  2. `task2.json`
+     - `task_profile=legal_transactional`
+     - no tools used
+     - stable structured legal answer with required sections
+     - reviewer passed without the old prompt-loop churn
+  3. `task3.json`
+     - `task_profile=finance_options`
+     - reviewer forced tool-backed compute before synthesis
+     - structured `black_scholes_price` tool result captured in trace
+     - final answer improved, but still showed some shallow/truncated behavior before final revise/pass
+- **Live LLM Smoke Review (`scripts/run_live_staged_smoke.py`):**
+  1. `finance_options`
+     - path is now healthy
+     - reviewer correctly forces tool-backed analysis
+     - solver uses structured tool results instead of prose re-parsing
+  2. `legal_transactional`
+     - stable no-tool path
+     - still somewhat generic because this is mostly model-limited domain reasoning without stronger legal evidence sources
+  3. `finance_quant`
+     - still the weakest live path for short prompts
+     - in live smoke, terse quant prompts can still hit recursion/step-limit behavior even though the saved benchmark-aligned quant slice now passes cleanly
+- **Verification:**
+  - `pytest tests -q` with tracing disabled and LangSmith API keys cleared -> `46 passed, 3 skipped`
+  - `python scripts/run_staged_runtime_smoke.py` -> `ok: true`
+  - `python scripts/run_staged_slice.py` -> wrote `langsmith_runs/staged_slice_results.json`
+  - `python scripts/run_live_staged_smoke.py` -> live staged runtime exercised successfully enough to expose remaining weak paths without crashing the architecture
+- **Current Remaining Gaps:**
+  1. Reviewer LLM schema compliance is still weak on the current live model/backend, but the runtime now survives via deterministic fallback instead of collapsing.
+  2. Finance quant remains fragile for terse live prompts even though the saved quant benchmark slice now profiles and completes correctly.
+  3. Legal/domain depth is still limited more by available evidence/tooling than by graph control.
+- **Handoff Notes:** The redesign is now materially cleaner: explicit profile packs, explicit answer contracts, structured tool facts, staged graph, and retired legacy nodes removed. The next improvements should target domain evidence quality and finance/legal tool depth, not more prompt-layer patching.
+
+## Chat 51: Public Docs Cleanup + Versioned Staged Memory
+
+- **Date:** 2026-03-14
+- **Goal:** Align the public-facing repository docs with the active staged runtime, replace the outdated coordinator-era architecture diagram, and migrate persistence away from the legacy router/executor/verifier memory schema.
+- **Actions Taken:**
+  1. Rewrote `README.md` around the active runtime for general users instead of benchmark-task examples. The README now focuses on:
+     - what the architecture is
+     - node responsibilities
+     - runtime artifacts
+     - tool contract
+     - persistence model
+     - setup / local run steps
+     - how to reproduce the same staged runtime locally
+  2. Replaced `docs/architecture.svg` with a new diagram for the staged flow:
+     - `A2A Request -> intake -> task_profiler -> context_builder -> solver <-> tool_runner -> reviewer -> output_adapter -> reflect`
+     - plus a persistence sidecar showing versioned SQLite memory.
+  3. Removed public README references to internal benchmark-analysis assets and slice-output files. Those remain developer utilities, not part of the public architecture story.
+  4. Replaced the old persistence schema in `src/agent/memory/schema.py` and `src/agent/memory/store.py`.
+     The active memory layer is now versioned and stores staged-runtime records only:
+     - `RunMemory`
+     - `ToolMemory`
+     - `ReviewMemory`
+     The SQLite store now includes a schema-version table and automatically resets incompatible on-disk schemas.
+  5. Moved persistence to the terminal staged path in `src/agent/nodes/reflect.py` so memory is written from the actual runtime completion path instead of the old runner-side router-memory shim.
+  6. Updated `src/agent/runner.py` to stop writing legacy router memory records.
+  7. Cleaned the stale committed SQLite state:
+     - added `src/data/.gitignore`
+     - removed `src/data/agent_memory.db` from source control
+     - runtime still recreates a fresh local DB automatically when needed
+  8. Updated `src/server.py` agent-card descriptions to describe the staged finance-first runtime instead of the retired Plan-Act-Learn / coordinator-era language.
+  9. Added persistence regression tests:
+     - `tests/test_memory_store.py`
+     - `tests/test_staged_reflect.py`
+- **Verification:**
+  - `python -m pytest tests -q` -> **33 passed, 2 skipped**
+  - `python -m py_compile src/server.py src/agent/memory/schema.py src/agent/memory/store.py src/agent/nodes/reflect.py src/agent/runner.py` -> **passed**
+  - `python scripts/run_staged_runtime_smoke.py` -> **ok: true**
+  - Smoke run confirmed the new DB reset path with:
+    - `[Memory] Resetting staged memory DB because the stored schema is incompatible.`
+- **Outcome:**
+  1. Public documentation now explains the current architecture and how to replicate it, instead of describing retired benchmark-era flows.
+  2. The architecture diagram now matches the live staged graph.
+  3. Persistence no longer stores coordinator-era router/executor/verifier fragments.
+  4. The SQLite format is now explicitly versioned and resettable, which makes future architecture changes safer.
+- **Handoff Notes:** The next architecture work can proceed on the actual remaining runtime gaps without carrying stale public docs or stale memory format assumptions. The memory store is now structurally aligned with the staged runtime and prepared for future schema changes through explicit version resets.

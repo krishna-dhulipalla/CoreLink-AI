@@ -25,7 +25,7 @@ from agent.nodes.tool_runner import make_tool_runner
 from agent.state import AgentState
 from tools import CALCULATOR_TOOL, SEARCH_TOOL
 
-load_dotenv(override=True)
+load_dotenv(override=False)
 
 logger = logging.getLogger(__name__)
 

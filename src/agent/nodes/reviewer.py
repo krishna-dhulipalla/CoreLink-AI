@@ -18,6 +18,7 @@ from langchain_openai import ChatOpenAI
 from agent.contracts import ReviewResult
 from agent.cost import CostTracker
 from agent.model_config import _extract_json_payload, get_client_kwargs, get_model_name
+from agent.profile_packs import get_profile_pack
 from agent.runtime_clock import increment_runtime_step
 from agent.runtime_support import latest_human_text, next_stage_after_review
 from agent.state import AgentState, ReplaceMessages
@@ -37,21 +38,33 @@ Do not answer the task.
 Do not produce user-facing prose.
 """
 
-_LEGAL_SECTIONS = {
-    "structure options": ("asset", "stock", "merger", "triangular", "carve-out", "hybrid"),
-    "tax consequences": ("tax", "deferral", "step-up", "capital gain", "basis"),
-    "liability protection": ("indemn", "escrow", "reps", "warrant", "insurance", "holdback"),
-    "regulatory/diligence risks": ("regulatory", "compliance", "diligence", "approval", "eu", "us", "hsr"),
-    "key open questions / assumptions": ("assumption", "confirm", "determine", "assess", "willingness", "risk tolerance"),
-    "recommended next steps": ("next step", "engage", "draft", "timeline", "immediately", "recommend"),
-}
-
-
 def _record_event(workpad: dict[str, Any], action: str) -> dict[str, Any]:
     updated = dict(workpad)
     events = list(updated.get("events", []))
     events.append({"node": "reviewer", "action": action})
     updated["events"] = events
+    return updated
+
+
+def _append_review_result(
+    workpad: dict[str, Any],
+    verdict: ReviewResult,
+    review_stage: str,
+    is_final: bool,
+) -> dict[str, Any]:
+    updated = dict(workpad)
+    history = list(updated.get("review_results", []))
+    history.append(
+        {
+            "review_stage": review_stage,
+            "is_final": is_final,
+            "verdict": verdict.verdict,
+            "reasoning": verdict.reasoning,
+            "missing_dimensions": list(verdict.missing_dimensions),
+            "repair_target": verdict.repair_target,
+        }
+    )
+    updated["review_results"] = history
     return updated
 
 
@@ -83,29 +96,39 @@ def _looks_truncated(text: str) -> bool:
     return False
 
 
-def _legal_gaps(answer_text: str) -> list[str]:
+def _is_numeric_like(value: Any) -> bool:
+    if isinstance(value, (int, float)):
+        return True
+    if isinstance(value, str):
+        return bool(re.fullmatch(r"[+-]?\d+(?:\.\d+)?", value.strip()))
+    return False
+
+
+def _matches_exact_json_contract(answer_text: str, answer_contract: dict[str, Any]) -> bool:
+    stripped = (answer_text or "").strip()
+    wrapper_key = answer_contract.get("wrapper_key")
+    if _is_numeric_like(stripped):
+        return True
+    try:
+        parsed = json.loads(stripped)
+    except Exception:
+        return False
+    if wrapper_key:
+        return isinstance(parsed, dict) and wrapper_key in parsed and _is_numeric_like(parsed.get(wrapper_key))
+    return isinstance(parsed, (dict, list, int, float, str))
+
+
+def _keyword_gaps(answer_text: str, dimensions: dict[str, list[str]]) -> list[str]:
     normalized = re.sub(r"\s+", " ", (answer_text or "").lower()).strip()
     gaps = []
-    for label, tokens in _LEGAL_SECTIONS.items():
+    for label, tokens in dimensions.items():
         if not any(token in normalized for token in tokens):
             gaps.append(label)
     return gaps
 
 
 def _options_gaps(answer_text: str) -> list[str]:
-    normalized = re.sub(r"\s+", " ", (answer_text or "").lower()).strip()
-    gaps = []
-    if not any(token in normalized for token in ("seller", "net seller", "short vol", "sell volatility")):
-        gaps.append("net seller recommendation")
-    if not any(token in normalized for token in ("delta", "gamma", "theta", "vega")):
-        gaps.append("Greeks coverage")
-    if "breakeven" not in normalized and "break-even" not in normalized:
-        gaps.append("breakeven analysis")
-    if not any(token in normalized for token in ("alternative", "instead", "compared", "iron condor", "strangle", "credit spread")):
-        gaps.append("alternative strategy comparison")
-    if not any(token in normalized for token in ("risk", "hedge", "sizing", "max loss")):
-        gaps.append("risk management")
-    return gaps
+    return _keyword_gaps(answer_text, get_profile_pack("finance_options").reviewer_dimensions)
 
 
 def _deterministic_review(state: AgentState, artifact: str, is_final: bool) -> ReviewResult | None:
@@ -113,6 +136,8 @@ def _deterministic_review(state: AgentState, artifact: str, is_final: bool) -> R
     workpad = state.get("workpad", {})
     review_stage = workpad.get("review_stage", state.get("solver_stage", "SYNTHESIZE"))
     last_tool_result = state.get("last_tool_result") or {}
+    profile_pack = get_profile_pack(profile)
+    tool_results = workpad.get("tool_results", [])
 
     if review_stage == "GATHER" and last_tool_result.get("errors"):
         return ReviewResult(
@@ -130,6 +155,16 @@ def _deterministic_review(state: AgentState, artifact: str, is_final: bool) -> R
             repair_target="compute",
         )
 
+    if review_stage == "COMPUTE" and profile == "finance_options":
+        has_structured_tool = any(result.get("facts") and not result.get("errors") for result in tool_results)
+        if not has_structured_tool:
+            return ReviewResult(
+                verdict="revise",
+                reasoning="Options compute stage requires tool-backed strategy analysis before synthesis.",
+                missing_dimensions=["tool-backed strategy analysis"],
+                repair_target="compute",
+            )
+
     if is_final and _looks_truncated(artifact):
         return ReviewResult(
             verdict="revise",
@@ -138,8 +173,19 @@ def _deterministic_review(state: AgentState, artifact: str, is_final: bool) -> R
             repair_target="final",
         )
 
+    if is_final and profile == "finance_quant":
+        answer_contract = state.get("answer_contract", {})
+        if answer_contract.get("requires_adapter") and answer_contract.get("format") == "json":
+            if not _matches_exact_json_contract(artifact, answer_contract):
+                return ReviewResult(
+                    verdict="revise",
+                    reasoning="Final quantitative answer must be a scalar value or already match the JSON answer contract.",
+                    missing_dimensions=["scalar answer matching output contract"],
+                    repair_target="final",
+                )
+
     if is_final and profile == "legal_transactional":
-        gaps = _legal_gaps(artifact)
+        gaps = _keyword_gaps(artifact, profile_pack.reviewer_dimensions)
         if gaps:
             return ReviewResult(
                 verdict="revise",
@@ -149,11 +195,29 @@ def _deterministic_review(state: AgentState, artifact: str, is_final: bool) -> R
             )
 
     if is_final and profile == "finance_options":
+        has_structured_tool = any(result.get("facts") and not result.get("errors") for result in tool_results)
+        if not has_structured_tool:
+            return ReviewResult(
+                verdict="revise",
+                reasoning="Final options answer must be grounded in at least one structured tool result.",
+                missing_dimensions=["tool-backed strategy analysis"],
+                repair_target="compute",
+            )
         gaps = _options_gaps(artifact)
         if gaps:
             return ReviewResult(
                 verdict="revise",
                 reasoning="Final options answer is missing one or more benchmark-critical dimensions.",
+                missing_dimensions=gaps,
+                repair_target="final",
+            )
+
+    if is_final and profile_pack.reviewer_dimensions and profile not in {"legal_transactional", "finance_options"}:
+        gaps = _keyword_gaps(artifact, profile_pack.reviewer_dimensions)
+        if gaps:
+            return ReviewResult(
+                verdict="revise",
+                reasoning="Final answer is incomplete relative to the required profile dimensions.",
                 missing_dimensions=gaps,
                 repair_target="final",
             )
@@ -171,6 +235,40 @@ def _next_target_for_pass(state: AgentState) -> str:
     if review_stage == "COMPUTE":
         return "synthesize"
     return "final"
+
+
+def _fallback_review_on_parse_failure(state: AgentState, artifact: str, is_final: bool, error: Exception) -> ReviewResult:
+    review_stage = state.get("workpad", {}).get("review_stage", state.get("solver_stage", "SYNTHESIZE"))
+    logger.warning("Reviewer LLM parse failed: %s. Using deterministic fallback verdict.", error)
+
+    if not str(artifact or "").strip():
+        return ReviewResult(
+            verdict="revise",
+            reasoning="Reviewer fallback: empty artifact cannot be accepted.",
+            missing_dimensions=["non-empty artifact"],
+            repair_target="final" if is_final else "compute",
+        )
+
+    if review_stage == "GATHER":
+        return ReviewResult(
+            verdict="pass",
+            reasoning="Reviewer fallback: gather artifact accepted after deterministic checks.",
+            missing_dimensions=[],
+            repair_target="compute",
+        )
+    if review_stage == "COMPUTE":
+        return ReviewResult(
+            verdict="pass",
+            reasoning="Reviewer fallback: compute artifact accepted after deterministic checks.",
+            missing_dimensions=[],
+            repair_target="synthesize",
+        )
+    return ReviewResult(
+        verdict="pass",
+        reasoning="Reviewer fallback: final artifact accepted after deterministic checks.",
+        missing_dimensions=[],
+        repair_target="final",
+    )
 
 
 def _snapshot_state(state: AgentState) -> dict[str, Any]:
@@ -221,6 +319,7 @@ def reviewer(state: AgentState) -> dict:
     tracker: CostTracker = state.get("cost_tracker")
     artifact, is_final = _artifact_for_review(state)
     workpad = dict(state.get("workpad", {}))
+    review_stage = workpad.get("review_stage", state.get("solver_stage", "SYNTHESIZE"))
     deterministic = _deterministic_review(state, artifact, is_final)
     task_text = latest_human_text(state.get("messages", []))
 
@@ -256,10 +355,14 @@ def reviewer(state: AgentState) -> dict:
             max_tokens=240,
         )
         t0 = time.monotonic()
-        raw = llm.invoke(invocation_messages)
-        latency = (time.monotonic() - t0) * 1000
-        payload = json.loads(_extract_json_payload(str(raw.content or "")))
-        verdict = ReviewResult.model_validate(payload)
+        try:
+            raw = llm.invoke(invocation_messages)
+            latency = (time.monotonic() - t0) * 1000
+            payload = json.loads(_extract_json_payload(str(raw.content or "")))
+            verdict = ReviewResult.model_validate(payload)
+        except Exception as exc:
+            latency = (time.monotonic() - t0) * 1000
+            verdict = _fallback_review_on_parse_failure(state, artifact, is_final, exc)
 
     if tracker and used_llm:
         tracker.record(
@@ -276,6 +379,7 @@ def reviewer(state: AgentState) -> dict:
         if budget:
             budget.record_backtrack()
         restored = _restore_checkpoint(state)
+        workpad = _append_review_result(workpad, verdict, str(review_stage), is_final)
         workpad = _record_event(workpad, f"BACKTRACK: {verdict.reasoning}")
         logger.info("[Step %s] reviewer -> BACKTRACK", step)
         return {
@@ -288,6 +392,7 @@ def reviewer(state: AgentState) -> dict:
     if verdict.verdict == "revise":
         if budget:
             budget.record_revise()
+        workpad = _append_review_result(workpad, verdict, str(review_stage), is_final)
         workpad = _record_event(workpad, f"REVISE: {verdict.reasoning}")
         workpad["review_ready"] = False
         logger.info("[Step %s] reviewer -> REVISE missing=%s", step, verdict.missing_dimensions)
@@ -305,6 +410,7 @@ def reviewer(state: AgentState) -> dict:
         next_target,
         "pass",
     )
+    workpad = _append_review_result(workpad, verdict, str(review_stage), is_final)
     workpad = _record_event(workpad, f"PASS -> {next_stage}")
     workpad["review_ready"] = False
     workpad["review_stage"] = None

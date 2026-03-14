@@ -21,7 +21,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 
-load_dotenv(override=True)
+load_dotenv(override=False)
 
 logger = logging.getLogger(__name__)
 

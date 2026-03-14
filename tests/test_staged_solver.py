@@ -83,3 +83,32 @@ def test_solver_synthesize_generates_final_draft(monkeypatch):
 
     assert result["workpad"]["review_ready"] is True
     assert result["messages"][0].content.startswith("Use an asset purchase")
+
+
+def test_solver_revise_compute_uses_existing_tool_result_before_more_tools(monkeypatch):
+    response = AIMessage(content="Primary strategy is tool-backed: short straddle credit with negative vega and positive theta.")
+    monkeypatch.setattr("agent.nodes.solver.ChatOpenAI", lambda **kwargs: _FakeModel(response))
+    monkeypatch.setattr("agent.nodes.solver._tool_call_mode", lambda role: "prompt")
+
+    solver = make_solver([_DummyTool("analyze_strategy", "Analyze a strategy")])
+    state = make_state(
+        "Compare volatility-selling strategies for META.",
+        task_profile="finance_options",
+        capability_flags=["needs_options_engine"],
+        solver_stage="REVISE",
+        evidence_pack={"derived_signals": {"iv_premium": 0.07}},
+        review_feedback={"repair_target": "compute", "missing_dimensions": ["tool-backed strategy analysis"]},
+        last_tool_result={
+            "type": "analyze_strategy",
+            "facts": {"net_premium": 9.16, "total_theta_per_day": 0.04},
+            "assumptions": {},
+            "source": {"tool": "analyze_strategy"},
+            "errors": [],
+        },
+    )
+
+    result = solver(state)
+
+    assert result["pending_tool_call"] is None
+    assert result["workpad"]["review_stage"] == "COMPUTE"
+    assert "tool-backed" in result["workpad"]["stage_outputs"]["COMPUTE"].lower()

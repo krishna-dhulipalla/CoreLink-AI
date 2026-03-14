@@ -40,6 +40,20 @@ class AnswerContract(BaseModel):
     xml_root_tag: str | None = None
     schema_hint: dict[str, Any] = Field(default_factory=dict)
     exact_output_example: str | None = None
+    content_rules: list[str] = Field(default_factory=list)
+    section_requirements: list[str] = Field(default_factory=list)
+    value_rules: dict[str, Any] = Field(default_factory=dict)
+
+
+class ProfileContextPack(BaseModel):
+    profile: TaskProfile
+    domain_summary: str
+    content_rules: list[str] = Field(default_factory=list)
+    section_requirements: list[str] = Field(default_factory=list)
+    required_evidence_types: list[str] = Field(default_factory=list)
+    allowed_tools: list[str] = Field(default_factory=list)
+    failure_modes: list[str] = Field(default_factory=list)
+    reviewer_dimensions: dict[str, list[str]] = Field(default_factory=dict)
 
 
 class EvidencePack(BaseModel):

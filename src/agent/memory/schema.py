@@ -1,12 +1,16 @@
 """
-Memory Schemas (Sprint 3)
-=========================
-Pydantic models for the three role-specific memory units:
-  - RouterMemory:   What operator plan worked for a given task signature.
-  - ExecutorMemory: Which tool + args pattern produced a quality outcome.
-  - VerifierMemory: Which failure pattern was recovered via REVISE or BACKTRACK.
+Memory Schemas
+==============
+Versioned persistence records for the staged finance-first runtime.
 
-Each schema is compact by design. We store *fragments*, not full trajectories.
+The active runtime persists three compact record types:
+  - RunMemory:    one record per completed graph run
+  - ToolMemory:   one record per normalized tool execution
+  - ReviewMemory: one record per reviewer verdict
+
+These records are intentionally small and schema-versioned so future runtime
+changes can replace the on-disk format without inheriting stale coordinator-era
+data.
 """
 
 from __future__ import annotations
@@ -18,234 +22,99 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from agent.contracts import TaskProfile
 
-def _task_signature(text: str) -> str:
+MEMORY_SCHEMA_VERSION = 2
+
+
+def task_signature(text: str) -> str:
     """Create a stable, short hash of the task text for dedup / retrieval."""
     return hashlib.sha256(text.strip().lower().encode()).hexdigest()[:16]
 
 
-def _normalize_memory_text(text: str, max_len: int = 400) -> str:
-    """Normalize free-text fields so future semantic indexing has clean input."""
+def normalize_memory_text(text: str, max_len: int = 500) -> str:
+    """Normalize free-text fields so future retrieval/indexing has clean input."""
     if not text:
         return ""
     normalized = re.sub(r"\s+", " ", text).strip()
     return normalized[:max_len]
 
 
-_VALID_TASK_TYPES = {
-    "quantitative",
-    "legal",
-    "options",
-    "document",
-    "retrieval",
-    "general",
-}
-
-
-def _normalize_task_type(task_type: str | None) -> str:
-    """Normalize runtime task type into a supported control label."""
-    normalized = (task_type or "").strip().lower()
-    if normalized in _VALID_TASK_TYPES:
-        return normalized
-    return "general"
-
-
-def _infer_task_family(text: str) -> str:
-    """Assign a coarse task family for future filtered retrieval."""
-    normalized = _normalize_memory_text(text, max_len=800).lower()
-    if not normalized:
-        return "general"
-    if any(
-        token in normalized for token in (
-            "option", "greeks", "volatility", "iv", "p&l", "black-scholes",
-            "portfolio", "yield", "bond", "stock", "market", "trade", "var",
-            "risk", "roe", "roa", "financial", "price", "valuation",
-        )
-    ):
+def infer_memory_family(task_profile: str | None, text: str = "") -> str:
+    """Map runtime profile into a broader persistence bucket."""
+    normalized = (task_profile or "").strip().lower()
+    if normalized in {"finance_quant", "finance_options"}:
         return "finance"
-    if any(
-        token in normalized for token in (
-            "acquisition", "merger", "regulatory", "compliance", "liability",
-            "indemnification", "contract", "legal", "tax", "board", "eu", "us law",
-        )
-    ):
+    if normalized == "legal_transactional":
         return "legal"
-    if any(
-        token in normalized for token in (
-            "pdf", "document", "reference data", "table", "page", "treasury",
-            "bulletin", "extract", "file", "row", "column",
-        )
-    ):
+    if normalized == "document_qa":
         return "document"
-    if any(
-        token in normalized for token in (
-            "search", "retrieve", "look up", "reference file", "source", "citation",
-        )
-    ):
+    if normalized == "external_retrieval":
+        return "retrieval"
+
+    content = normalize_memory_text(text, max_len=800).lower()
+    if any(token in content for token in ("option", "greeks", "iv", "volatility", "roe", "roa", "valuation")):
+        return "finance"
+    if any(token in content for token in ("merger", "acquisition", "compliance", "liability", "indemnity", "tax")):
+        return "legal"
+    if any(token in content for token in ("pdf", "document", "table", "page", "extract", "file")):
+        return "document"
+    if any(token in content for token in ("latest", "current", "search", "look up", "citation", "source")):
         return "retrieval"
     return "general"
 
 
-def _task_type_to_family(task_type: str | None, text: str = "") -> str:
-    """Map runtime task_type to the broader memory task_family taxonomy.
+class RunMemory(BaseModel):
+    """Compact record of one staged-runtime execution."""
 
-    Runtime task_type is used to steer prompts and tool surface.
-    Memory task_family is a broader offline indexing label for future retrieval.
-    """
-    normalized_type = _normalize_task_type(task_type)
-    if normalized_type == "options":
-        return "finance"
-    if normalized_type == "legal":
-        return "legal"
-    if normalized_type == "document":
-        return "document"
-    if normalized_type == "retrieval":
-        return "retrieval"
-    if normalized_type == "quantitative":
-        inferred = _infer_task_family(text)
-        return inferred if inferred != "general" else "general"
-    return _infer_task_family(text)
-
-
-def _infer_tool_family(tool_name: str) -> str:
-    """Assign a coarse tool family for later executor-memory filtering."""
-    normalized = (tool_name or "").strip().lower()
-    if any(token in normalized for token in ("search", "tavily", "internet", "lookup")):
-        return "search"
-    if any(token in normalized for token in ("file", "pdf", "document", "table", "fetch_reference", "extract")):
-        return "document"
-    if any(
-        token in normalized for token in (
-            "black_scholes", "greek", "option", "risk", "portfolio", "yield",
-            "volatility", "price", "cagr", "finance", "market_data",
-        )
-    ):
-        return "finance"
-    if any(token in normalized for token in ("calculator", "math", "python", "compute")):
-        return "calculator"
-    return "generic"
-
-
-def _infer_failure_family(text: str) -> str:
-    """Assign a coarse verifier-failure family for later repair filtering."""
-    normalized = _normalize_memory_text(text, max_len=800).lower()
-    if any(token in normalized for token in ("json", "schema", "field required", "structured output")):
-        return "schema"
-    if any(token in normalized for token in ("format", "missing field", "invalid format", "output format")):
-        return "format"
-    if any(token in normalized for token in ("hallucinat", "made up", "unsupported claim", "not grounded")):
-        return "hallucination"
-    if any(token in normalized for token in ("repeat", "same mistake", "loop", "again")):
-        return "repetition"
-    if any(token in normalized for token in ("lack of data", "missing data", "unable to find", "not enough data")):
-        return "missing_data"
-    if any(
-        token in normalized for token in (
-            "tool call", "tool_use", "tool use", "bad argument", "invalid argument",
-            "calculator", "mcp", "same tool", "wrong tool",
-        )
-    ):
-        return "tool_use"
-    return "generic"
-
-
-class RouterMemory(BaseModel):
-    """Compact record of a Coordinator routing decision and its outcome."""
-
-    task_signature: str = Field(
-        description="SHA-256 prefix of the normalized task text."
-    )
-    task_summary: str = Field(
-        description="One-line summary of the task (max ~120 chars)."
-    )
-    semantic_text: str = Field(
-        default="",
-        description="Normalized text chunk intended for future semantic retrieval."
-    )
-    task_family: str = Field(
-        default="generic",
-        description="Coarse task bucket such as finance, legal, retrieval, document, or general."
-    )
-    selected_layers: list[str] = Field(
-        description="Operator plan chosen by the Coordinator."
-    )
-    success: bool = Field(
-        description="Whether the run ended with a verified PASS final answer."
-    )
-    cost_usd: float = Field(default=0.0, description="Total run cost in USD.")
-    latency_ms: float = Field(default=0.0, description="Total wall-clock ms.")
+    task_signature: str
+    task_summary: str
+    semantic_text: str = ""
+    task_profile: TaskProfile | str = "general"
+    task_family: str = "general"
+    capability_flags: list[str] = Field(default_factory=list)
+    route_path: list[str] = Field(default_factory=list)
+    stage_history: list[str] = Field(default_factory=list)
+    answer_format: Literal["text", "json", "xml"] | str = "text"
+    success: bool
+    tool_call_count: int = 0
+    review_cycle_count: int = 0
+    cost_usd: float = 0.0
+    latency_ms: float = 0.0
     timestamp: float = Field(default_factory=time.time)
     tags: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-class ExecutorMemory(BaseModel):
-    """Compact record of a single tool-selection fragment."""
+class ToolMemory(BaseModel):
+    """Compact record of one structured tool execution."""
 
-    task_signature: str = Field(
-        description="SHA-256 prefix of the normalized task text."
-    )
-    partial_context_summary: str = Field(
-        description="One-line summary of what the executor was trying to do."
-    )
-    semantic_text: str = Field(
-        default="",
-        description="Normalized retrieval text for future semantic memory lookup."
-    )
-    task_family: str = Field(
-        default="generic",
-        description="Coarse task bucket such as finance, legal, retrieval, document, or general."
-    )
-    tool_used: str = Field(description="Name of the tool selected.")
-    tool_family: str = Field(
-        default="generic",
-        description="Coarse tool bucket such as search, calculator, finance, file, or generic."
-    )
-    arguments_pattern: str = Field(
-        description=(
-            "Normalized hint about the arguments used, e.g. "
-            "'spot=180, strike=175, rate=0.05, vol=0.25, T=0.5'."
-        )
-    )
-    outcome_quality: Literal["good", "acceptable", "poor"] = Field(
-        description="Subjective quality based on verifier verdict."
-    )
-    success: bool = Field(description="True if the tool call ultimately PASSed.")
+    task_signature: str
+    task_profile: TaskProfile | str = "general"
+    task_family: str = "general"
+    solver_stage: str = "COMPUTE"
+    tool_name: str
+    result_type: str
+    semantic_text: str = ""
+    arguments_json: dict[str, Any] = Field(default_factory=dict)
+    fact_keys: list[str] = Field(default_factory=list)
+    error_count: int = 0
+    success: bool = True
     timestamp: float = Field(default_factory=time.time)
-    tags: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-class VerifierMemory(BaseModel):
-    """Compact record of a failure-recovery pattern."""
+class ReviewMemory(BaseModel):
+    """Compact record of one reviewer decision."""
 
-    task_signature: str = Field(
-        description="SHA-256 prefix of the normalized task text."
-    )
-    failure_pattern: str = Field(
-        description="One-line description of what went wrong."
-    )
-    semantic_text: str = Field(
-        default="",
-        description="Normalized retrieval text for future semantic repair lookup."
-    )
-    task_family: str = Field(
-        default="generic",
-        description="Coarse task bucket such as finance, legal, retrieval, document, or general."
-    )
-    failure_family: str = Field(
-        default="generic",
-        description="Coarse failure bucket such as schema, hallucination, repetition, format, or missing_data."
-    )
-    verdict: Literal["REVISE", "BACKTRACK"] = Field(
-        description="Which verdict was issued."
-    )
-    repair_action: str = Field(
-        description="What the executor did differently after the verdict."
-    )
-    repair_worked: bool = Field(
-        description="Whether the repair ultimately led to PASS."
-    )
+    task_signature: str
+    task_profile: TaskProfile | str = "general"
+    task_family: str = "general"
+    review_stage: str = "SYNTHESIZE"
+    verdict: Literal["pass", "revise", "backtrack"]
+    repair_target: Literal["gather", "compute", "synthesize", "final"] = "final"
+    missing_dimensions: list[str] = Field(default_factory=list)
+    reasoning: str = ""
+    success: bool = True
     timestamp: float = Field(default_factory=time.time)
-    tags: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)

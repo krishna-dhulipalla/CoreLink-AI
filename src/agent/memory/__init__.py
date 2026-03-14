@@ -1,19 +1,11 @@
-"""
-Agent Memory Package (Sprint 3)
-================================
-Role-specific execution memory for the Coordinator, Executor, and Verifier.
-"""
+"""Versioned staged-runtime memory package."""
 
-from agent.memory.schema import (
-    RouterMemory,
-    ExecutorMemory,
-    VerifierMemory,
-)
+from agent.memory.schema import ReviewMemory, RunMemory, ToolMemory
 from agent.memory.store import MemoryStore
 
 __all__ = [
-    "RouterMemory",
-    "ExecutorMemory",
-    "VerifierMemory",
+    "RunMemory",
+    "ToolMemory",
+    "ReviewMemory",
     "MemoryStore",
 ]

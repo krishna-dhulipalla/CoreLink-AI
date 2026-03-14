@@ -4,6 +4,11 @@ import sys
 import httpx
 import pytest
 
+os.environ["LANGCHAIN_TRACING_V2"] = "false"
+os.environ["LANGSMITH_TRACING"] = "false"
+os.environ["LANGSMITH_RUNS_ENDPOINTS"] = ""
+os.environ["LANGCHAIN_API_KEY"] = ""
+
 ROOT = os.path.dirname(os.path.dirname(__file__))
 SRC = os.path.join(ROOT, "src")
 if SRC not in sys.path:

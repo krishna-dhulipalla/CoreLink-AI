@@ -19,10 +19,10 @@ from langchain_openai import ChatOpenAI
 from agent.contracts import ReviewResult, ToolCallEnvelope, ToolResult
 from agent.cost import CostTracker
 from agent.model_config import _extract_json_payload, _tool_call_mode, get_client_kwargs, get_model_name
+from agent.profile_packs import get_profile_pack
 from agent.runtime_clock import increment_runtime_step
 from agent.runtime_support import (
-    PROFILE_CONTEXT,
-    PROFILE_TOOL_ALLOWLIST,
+    allowed_tools_for_profile,
     latest_human_text,
 )
 from agent.state import AgentState
@@ -57,12 +57,14 @@ _STAGE_INSTRUCTIONS = {
         "Current stage: SYNTHESIZE.\n"
         "Goal: write the final user-facing answer.\n"
         "Respect the answer contract, but do not add formatting wrappers unless the output adapter is required later.\n"
+        "Do not narrate your reasoning process or include planning filler.\n"
         "Use compact sections or bullets only when they improve clarity."
     ),
     "REVISE": (
         "Current stage: REVISE.\n"
         "Goal: fix only the missing dimensions identified by the reviewer.\n"
-        "Do not rewrite from scratch if only a section is missing.\n"
+        "When repairing a final answer, return a complete replacement final answer that preserves valid sections and adds the missing ones.\n"
+        "Do not include planning filler or self-talk.\n"
         "Use tools again only if the reviewer explicitly points to missing evidence or missing computation."
     ),
 }
@@ -80,7 +82,7 @@ def _allowed_tools_for_state(all_tools: list, state: AgentState) -> list:
     stage = state.get("solver_stage", "SYNTHESIZE")
     task_text = latest_human_text(state["messages"]).lower()
 
-    allowed_names = set(PROFILE_TOOL_ALLOWLIST.get(profile, PROFILE_TOOL_ALLOWLIST["general"]))
+    allowed_names = allowed_tools_for_profile(profile)
 
     if profile == "legal_transactional" and stage in {"COMPUTE", "SYNTHESIZE"}:
         if not ({"needs_files", "needs_live_data", "needs_math"} & flags):
@@ -92,6 +94,13 @@ def _allowed_tools_for_state(all_tools: list, state: AgentState) -> list:
     review_feedback = state.get("review_feedback") or {}
     repair_target = str(review_feedback.get("repair_target", "final"))
     if stage == "REVISE" and repair_target not in {"gather", "compute"}:
+        allowed_names = set()
+    if (
+        stage == "REVISE"
+        and repair_target == "compute"
+        and (state.get("last_tool_result") or {}).get("facts")
+        and not (state.get("last_tool_result") or {}).get("errors")
+    ):
         allowed_names = set()
 
     if "external_retrieval" != profile and "internet_search" in allowed_names and "latest" not in task_text and "current" not in task_text:
@@ -160,11 +169,28 @@ def _compact_evidence_block(state: AgentState) -> str:
     evidence = state.get("evidence_pack", {})
     workpad = state.get("workpad", {})
     review_feedback = state.get("review_feedback") or {}
+    profile_pack = workpad.get("profile_pack") or get_profile_pack(state.get("task_profile", "general")).model_dump()
+    answer_contract = state.get("answer_contract", {})
     payload = {
         "task_profile": state.get("task_profile", "general"),
         "capability_flags": state.get("capability_flags", []),
-        "profile_context": workpad.get("profile_context", PROFILE_CONTEXT.get(state.get("task_profile", "general"), "")),
-        "answer_contract": state.get("answer_contract", {}),
+        "profile_pack": {
+            "domain_summary": profile_pack.get("domain_summary", ""),
+            "content_rules": profile_pack.get("content_rules", []),
+            "section_requirements": profile_pack.get("section_requirements", []),
+            "required_evidence_types": profile_pack.get("required_evidence_types", []),
+            "failure_modes": profile_pack.get("failure_modes", []),
+        },
+        "answer_contract": {
+            "format": answer_contract.get("format", "text"),
+            "requires_adapter": answer_contract.get("requires_adapter", False),
+            "wrapper_key": answer_contract.get("wrapper_key"),
+            "xml_root_tag": answer_contract.get("xml_root_tag"),
+            "content_rules": answer_contract.get("content_rules", []),
+            "section_requirements": answer_contract.get("section_requirements", []),
+            "schema_hint": answer_contract.get("schema_hint", {}),
+            "value_rules": answer_contract.get("value_rules", {}),
+        },
         "evidence_pack": evidence,
         "last_tool_result": state.get("last_tool_result"),
         "stage_outputs": workpad.get("stage_outputs", {}),
@@ -223,6 +249,7 @@ def make_solver(tools: list):
         stage = state.get("solver_stage", "SYNTHESIZE")
         workpad = dict(state.get("workpad", {}))
         review_feedback = state.get("review_feedback") or {}
+        profile_pack = workpad.get("profile_pack") or get_profile_pack(profile).model_dump()
 
         if stage == "PLAN":
             next_stage = "SYNTHESIZE"
@@ -240,6 +267,18 @@ def make_solver(tools: list):
                 effective_stage = "SYNTHESIZE"
 
         stage_prompt = _STAGE_INSTRUCTIONS.get(stage, _STAGE_INSTRUCTIONS["SYNTHESIZE"])
+        if profile_pack.get("domain_summary"):
+            stage_prompt += f"\nDomain summary: {profile_pack['domain_summary']}"
+        contract = state.get("answer_contract", {})
+        if contract.get("content_rules"):
+            stage_prompt += "\nContent rules:\n- " + "\n- ".join(contract["content_rules"])
+        if effective_stage == "SYNTHESIZE" and contract.get("section_requirements"):
+            stage_prompt += "\nRequired sections:\n- " + "\n- ".join(contract["section_requirements"])
+        if profile == "finance_options" and effective_stage == "COMPUTE" and not state.get("last_tool_result"):
+            stage_prompt += (
+                "\nFor finance_options compute stage, emit one options-analysis tool call before narrative "
+                "unless the evidence pack already contains concrete tool-backed strategy facts."
+            )
         if stage == "REVISE" and review_feedback:
             stage_prompt += (
                 "\nReviewer feedback:\n"
