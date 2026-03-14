@@ -62,6 +62,7 @@ def _summarize(trace: dict) -> dict:
         "task_profile": state.get("task_profile"),
         "capability_flags": state.get("capability_flags"),
         "ambiguity_flags": state.get("ambiguity_flags"),
+        "execution_template": (state.get("execution_template") or {}).get("template_id"),
         "solver_stage": state.get("solver_stage"),
         "events": workpad.get("events", []),
         "tool_results": workpad.get("tool_results", []),

@@ -22,8 +22,10 @@ from agent.model_config import _extract_json_payload, _tool_call_mode, get_clien
 from agent.profile_packs import get_profile_pack
 from agent.runtime_clock import increment_runtime_step
 from agent.runtime_support import (
-    allowed_tools_for_profile,
+    allowed_tools_for_template,
     latest_human_text,
+    next_stage_after_review,
+    stage_is_review_milestone,
 )
 from agent.state import AgentState
 from context_manager import count_tokens
@@ -81,9 +83,10 @@ def _allowed_tools_for_state(all_tools: list, state: AgentState) -> list:
     flags = set(state.get("capability_flags", []))
     ambiguity = set(state.get("ambiguity_flags", []))
     stage = state.get("solver_stage", "SYNTHESIZE")
+    template = state.get("execution_template", {})
     task_text = latest_human_text(state["messages"]).lower()
 
-    allowed_names = allowed_tools_for_profile(profile)
+    allowed_names = allowed_tools_for_template(template, profile)
 
     if profile == "legal_transactional" and stage in {"COMPUTE", "SYNTHESIZE"}:
         if not ({"needs_files", "needs_live_data", "needs_math"} & flags):
@@ -175,9 +178,15 @@ def _compact_evidence_block(state: AgentState) -> str:
     review_feedback = state.get("review_feedback") or {}
     profile_pack = workpad.get("profile_pack") or get_profile_pack(state.get("task_profile", "general")).model_dump()
     answer_contract = state.get("answer_contract", {})
+    execution_template = state.get("execution_template", {})
     payload = {
         "task_profile": state.get("task_profile", "general"),
         "capability_flags": state.get("capability_flags", []),
+        "execution_template": {
+            "template_id": execution_template.get("template_id"),
+            "description": execution_template.get("description", ""),
+            "answer_focus": execution_template.get("answer_focus", []),
+        },
         "profile_pack": {
             "domain_summary": profile_pack.get("domain_summary", ""),
             "content_rules": profile_pack.get("content_rules", []),
@@ -254,9 +263,13 @@ def make_solver(tools: list):
         workpad = dict(state.get("workpad", {}))
         review_feedback = state.get("review_feedback") or {}
         profile_pack = workpad.get("profile_pack") or get_profile_pack(profile).model_dump()
+        execution_template = state.get("execution_template", {}) or workpad.get("execution_template", {})
+        allowed_stages = set(execution_template.get("allowed_stages", []))
 
         if stage == "PLAN":
-            next_stage = "SYNTHESIZE"
+            next_stage = str(execution_template.get("default_initial_stage", "SYNTHESIZE"))
+            if allowed_stages and next_stage not in allowed_stages:
+                next_stage = "COMPUTE" if "COMPUTE" in allowed_stages else "GATHER" if "GATHER" in allowed_stages else "SYNTHESIZE"
             workpad = _record_event(workpad, "solver", f"Plan complete -> {next_stage}")
             return {"solver_stage": next_stage, "workpad": workpad}
 
@@ -273,6 +286,8 @@ def make_solver(tools: list):
         stage_prompt = _STAGE_INSTRUCTIONS.get(stage, _STAGE_INSTRUCTIONS["SYNTHESIZE"])
         if profile_pack.get("domain_summary"):
             stage_prompt += f"\nDomain summary: {profile_pack['domain_summary']}"
+        if execution_template.get("answer_focus"):
+            stage_prompt += "\nTemplate focus:\n- " + "\n- ".join(execution_template["answer_focus"])
         contract = state.get("answer_contract", {})
         if contract.get("content_rules"):
             stage_prompt += "\nContent rules:\n- " + "\n- ".join(contract["content_rules"])
@@ -348,11 +363,26 @@ def make_solver(tools: list):
         workpad = _merge_stage_output(workpad, effective_stage, content)
 
         if effective_stage in {"GATHER", "COMPUTE"}:
-            workpad["review_ready"] = True
-            workpad["review_stage"] = effective_stage
-            workpad = _record_event(workpad, "solver", f"{effective_stage}: milestone draft ready")
-            logger.info("[Step %s] solver(%s) -> milestone ready", step, effective_stage)
+            if stage_is_review_milestone(execution_template, effective_stage):
+                workpad["review_ready"] = True
+                workpad["review_stage"] = effective_stage
+                workpad = _record_event(workpad, "solver", f"{effective_stage}: milestone draft ready")
+                logger.info("[Step %s] solver(%s) -> milestone ready", step, effective_stage)
+                return {
+                    "workpad": workpad,
+                    "pending_tool_call": None,
+                }
+            next_target = "compute"
+            if effective_stage == "COMPUTE":
+                next_target = "synthesize"
+            elif effective_stage == "GATHER":
+                if not ("needs_math" in set(state.get("capability_flags", [])) or profile in {"finance_quant", "finance_options"}):
+                    next_target = "synthesize"
+            next_stage = next_stage_after_review(effective_stage, next_target, "pass")
+            workpad = _record_event(workpad, "solver", f"{effective_stage}: auto-advance -> {next_stage}")
+            logger.info("[Step %s] solver(%s) -> auto-advance %s", step, effective_stage, next_stage)
             return {
+                "solver_stage": next_stage,
                 "workpad": workpad,
                 "pending_tool_call": None,
             }

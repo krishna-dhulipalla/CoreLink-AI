@@ -16,7 +16,7 @@ from langgraph.prebuilt import ToolNode
 
 from agent.contracts import ToolResult
 from agent.runtime_clock import increment_runtime_step
-from agent.runtime_support import allowed_tools_for_profile
+from agent.runtime_support import allowed_tools_for_template
 from agent.state import AgentState
 from agent.tool_normalization import normalize_tool_output
 
@@ -44,7 +44,7 @@ def make_tool_runner(tool_node: ToolNode):
         pending = state.get("pending_tool_call") or {}
         tool_name = str(pending.get("name", "")).strip()
         tool_args = pending.get("arguments", {})
-        allowed = allowed_tools_for_profile(profile)
+        allowed = allowed_tools_for_template(state.get("execution_template"), profile)
         registry = _tool_registry(tool_node)
         workpad = dict(state.get("workpad", {}))
 

@@ -45,6 +45,29 @@ def test_tool_runner_blocks_disallowed_tool():
     assert "not allowed" in result["last_tool_result"]["errors"][0]
 
 
+def test_tool_runner_blocks_profile_allowed_tool_when_template_disallows_it():
+    runner = make_tool_runner(_DummyToolNode("fetch_reference_file", "unused"))
+    state = make_state(
+        "Advise on deal structure from the prompt only.",
+        task_profile="legal_transactional",
+        execution_template={
+            "template_id": "legal_reasoning_only",
+            "allowed_tool_names": ["calculator"],
+            "allowed_stages": ["SYNTHESIZE", "REVISE", "COMPLETE"],
+            "default_initial_stage": "SYNTHESIZE",
+            "review_stages": ["SYNTHESIZE"],
+            "review_cadence": "final_only",
+            "answer_focus": [],
+        },
+        pending_tool_call={"name": "fetch_reference_file", "arguments": {"url": "https://example.com/deal.pdf"}},
+    )
+
+    result = asyncio.run(runner(state))
+
+    assert result["tool_fail_count"] == 1
+    assert "not allowed" in result["last_tool_result"]["errors"][0]
+
+
 def test_tool_runner_normalizes_analyze_strategy_output():
     raw = (
         "Multi-Leg Strategy (2 legs):\n"

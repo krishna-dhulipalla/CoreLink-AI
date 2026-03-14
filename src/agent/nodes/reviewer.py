@@ -227,9 +227,13 @@ def _deterministic_review(state: AgentState, artifact: str, is_final: bool) -> R
 
 def _next_target_for_pass(state: AgentState) -> str:
     profile = state.get("task_profile", "general")
+    template = state.get("execution_template", {}) or {}
+    allowed_stages = set(template.get("allowed_stages", []))
     review_stage = state.get("workpad", {}).get("review_stage", state.get("solver_stage", "SYNTHESIZE"))
     if review_stage == "GATHER":
-        if profile in {"finance_quant", "finance_options"} or "needs_math" in set(state.get("capability_flags", [])):
+        if "COMPUTE" in allowed_stages and (
+            profile in {"finance_quant", "finance_options"} or "needs_math" in set(state.get("capability_flags", []))
+        ):
             return "compute"
         return "synthesize"
     if review_stage == "COMPUTE":
@@ -333,6 +337,7 @@ def reviewer(state: AgentState) -> dict:
             content=json.dumps(
                 {
                     "task_profile": state.get("task_profile", "general"),
+                    "execution_template": state.get("execution_template", {}),
                     "capability_flags": state.get("capability_flags", []),
                     "is_final": is_final,
                     "review_stage": workpad.get("review_stage", state.get("solver_stage", "SYNTHESIZE")),

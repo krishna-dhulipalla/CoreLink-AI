@@ -43,6 +43,32 @@ def test_solver_emits_one_tool_call_in_compute_stage(monkeypatch):
     assert result["messages"][0].tool_calls[0]["name"] == "calculator"
 
 
+def test_solver_plan_uses_template_initial_stage(monkeypatch):
+    monkeypatch.setattr("agent.nodes.solver.ChatOpenAI", lambda **kwargs: _FakeModel(AIMessage(content="unused")))
+    monkeypatch.setattr("agent.nodes.solver._tool_call_mode", lambda role: "prompt")
+
+    solver = make_solver([])
+    state = make_state(
+        "Look up the latest SEC filing for META.",
+        task_profile="external_retrieval",
+        capability_flags=["needs_live_data"],
+        solver_stage="PLAN",
+        execution_template={
+            "template_id": "live_retrieval",
+            "allowed_stages": ["GATHER", "SYNTHESIZE", "REVISE", "COMPLETE"],
+            "default_initial_stage": "GATHER",
+            "allowed_tool_names": ["internet_search"],
+            "review_stages": ["GATHER", "SYNTHESIZE"],
+            "review_cadence": "milestone_and_final",
+            "answer_focus": [],
+        },
+    )
+
+    result = solver(state)
+
+    assert result["solver_stage"] == "GATHER"
+
+
 def test_solver_revise_can_target_compute_without_final_answer(monkeypatch):
     response = AIMessage(content="IV premium is 0.07, which supports a net short-volatility bias.")
     monkeypatch.setattr("agent.nodes.solver.ChatOpenAI", lambda **kwargs: _FakeModel(response))
@@ -53,6 +79,15 @@ def test_solver_revise_can_target_compute_without_final_answer(monkeypatch):
         "Compare volatility-selling strategies for META.",
         task_profile="finance_options",
         capability_flags=["needs_options_engine"],
+        execution_template={
+            "template_id": "options_tool_backed",
+            "allowed_stages": ["COMPUTE", "SYNTHESIZE", "REVISE", "COMPLETE"],
+            "default_initial_stage": "COMPUTE",
+            "allowed_tool_names": ["analyze_strategy"],
+            "review_stages": ["COMPUTE", "SYNTHESIZE"],
+            "review_cadence": "milestone_and_final",
+            "answer_focus": [],
+        },
         solver_stage="REVISE",
         evidence_pack={"derived_signals": {"iv_premium": 0.07}},
         review_feedback={"repair_target": "compute", "missing_dimensions": ["concrete comparative analysis"]},
@@ -95,6 +130,15 @@ def test_solver_revise_compute_uses_existing_tool_result_before_more_tools(monke
         "Compare volatility-selling strategies for META.",
         task_profile="finance_options",
         capability_flags=["needs_options_engine"],
+        execution_template={
+            "template_id": "options_tool_backed",
+            "allowed_stages": ["COMPUTE", "SYNTHESIZE", "REVISE", "COMPLETE"],
+            "default_initial_stage": "COMPUTE",
+            "allowed_tool_names": ["analyze_strategy"],
+            "review_stages": ["COMPUTE", "SYNTHESIZE"],
+            "review_cadence": "milestone_and_final",
+            "answer_focus": [],
+        },
         solver_stage="REVISE",
         evidence_pack={"derived_signals": {"iv_premium": 0.07}},
         review_feedback={"repair_target": "compute", "missing_dimensions": ["tool-backed strategy analysis"]},

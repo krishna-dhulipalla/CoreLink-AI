@@ -1,6 +1,7 @@
 from agent.nodes.context_builder import context_builder
 from agent.nodes.intake import intake
 from agent.nodes.task_profiler import task_profiler
+from agent.nodes.template_selector import template_selector
 from staged_test_utils import make_state
 
 
@@ -21,11 +22,13 @@ class TestContextBuilder:
         state = make_state(prompt)
         state.update(intake(state))
         state.update(task_profiler(state))
+        state.update(template_selector(state))
 
         result = context_builder(state)
         evidence = result["evidence_pack"]
 
         assert result["solver_stage"] == "GATHER"
+        assert result["execution_template"]["template_id"] == "quant_with_tool_compute"
         assert evidence["tables"]
         assert any("Financial Leverage Effect" in formula for formula in evidence["formulas"])
         assert evidence["file_refs"] == ["https://example.com/report.pdf"]
@@ -41,6 +44,7 @@ class TestContextBuilder:
         state = make_state(prompt)
         state.update(intake(state))
         state.update(task_profiler(state))
+        state.update(template_selector(state))
 
         result = context_builder(state)
         evidence = result["evidence_pack"]
@@ -49,6 +53,7 @@ class TestContextBuilder:
         assert evidence["market_snapshot"]["historical_volatility"] == 0.28
         assert evidence["derived_signals"]["iv_premium"] == 0.07
         assert evidence["derived_signals"]["vol_bias"] == "short_vol"
+        assert result["execution_template"]["template_id"] == "options_tool_backed"
         assert "Recommendation" in result["answer_contract"]["section_requirements"]
 
     def test_ambiguous_profile_adds_conservative_constraint(self):
@@ -59,6 +64,7 @@ class TestContextBuilder:
         state = make_state(prompt)
         state.update(intake(state))
         state.update(task_profiler(state))
+        state.update(template_selector(state))
 
         result = context_builder(state)
         evidence = result["evidence_pack"]

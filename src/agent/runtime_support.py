@@ -12,8 +12,9 @@ from typing import Any
 
 from langchain_core.messages import BaseMessage, HumanMessage
 
-from agent.contracts import AnswerContract, EvidencePack, ProfileDecision, TaskProfile
+from agent.contracts import AnswerContract, EvidencePack, ExecutionTemplate, ProfileDecision, TaskProfile
 from agent.profile_packs import get_profile_pack
+from agent.template_library import get_execution_template
 
 _URL_RE = re.compile(r"https?://[^\s\)\]\"',]+")
 _JSON_WRAPPER_RE = re.compile(r"\{\s*\"([A-Za-z0-9_]+)\"\s*:\s*<")
@@ -23,6 +24,18 @@ _NUMBER_RE = re.compile(r"(?<![A-Za-z0-9])(-?\d+(?:\.\d+)?)(?![A-Za-z0-9])")
 
 def allowed_tools_for_profile(profile: str) -> set[str]:
     return set(get_profile_pack(profile).allowed_tools)
+
+
+def allowed_tools_for_template(template: dict[str, Any] | ExecutionTemplate | None, profile: str) -> set[str]:
+    if isinstance(template, dict):
+        allowed = set(template.get("allowed_tool_names", []))
+    elif isinstance(template, ExecutionTemplate):
+        allowed = set(template.allowed_tool_names)
+    else:
+        allowed = set()
+    if not allowed:
+        return allowed_tools_for_profile(profile)
+    return allowed & allowed_tools_for_profile(profile)
 
 
 def apply_profile_contract_rules(answer_contract: AnswerContract, task_profile: str) -> AnswerContract:
@@ -221,6 +234,60 @@ def build_profile_decision(task_text: str, answer_contract: AnswerContract) -> P
     )
 
 
+def select_execution_template(
+    task_text: str,
+    profile_decision: ProfileDecision,
+    answer_contract: AnswerContract,
+) -> ExecutionTemplate:
+    flags = set(profile_decision.capability_flags)
+    ambiguity = set(profile_decision.ambiguity_flags)
+    profile = profile_decision.primary_profile
+    has_files = bool(extract_urls(task_text)) or "needs_files" in flags
+    has_live = "needs_live_data" in flags
+    exact_contract = answer_contract.requires_adapter and answer_contract.format in {"json", "xml"}
+    lowered = (task_text or "").lower()
+    has_inline_quant_evidence = any(token in lowered for token in ("=", "|---", "roe", "roa", "ebitda", "yield"))
+
+    template_id = "legal_reasoning_only"
+
+    if profile == "finance_options":
+        template_id = "options_tool_backed"
+    elif profile == "legal_transactional":
+        template_id = "legal_with_document_evidence" if has_files else "legal_reasoning_only"
+    elif profile == "document_qa":
+        template_id = "document_qa"
+    elif profile == "external_retrieval":
+        template_id = "live_retrieval"
+    elif profile == "finance_quant":
+        if has_files or has_live:
+            template_id = "quant_with_tool_compute"
+        elif exact_contract or has_inline_quant_evidence:
+            template_id = "quant_inline_exact"
+        else:
+            template_id = "quant_with_tool_compute"
+    else:
+        if has_live:
+            template_id = "live_retrieval"
+        elif has_files and "needs_legal_reasoning" in flags:
+            template_id = "legal_with_document_evidence"
+        elif has_files:
+            template_id = "document_qa"
+        elif "needs_options_engine" in flags and "legal_options_overlap" not in ambiguity:
+            template_id = "options_tool_backed"
+        elif "needs_legal_reasoning" in flags:
+            template_id = "legal_reasoning_only"
+        elif "needs_math" in flags:
+            template_id = "quant_inline_exact" if (exact_contract or has_inline_quant_evidence) else "quant_with_tool_compute"
+
+    if ambiguity and template_id == "options_tool_backed" and "needs_legal_reasoning" in flags:
+        template_id = "legal_reasoning_only"
+
+    if ambiguity and template_id == "quant_with_tool_compute" and "needs_legal_reasoning" in flags and not has_files:
+        template_id = "legal_reasoning_only"
+
+    return get_execution_template(template_id)
+
+
 def extract_urls(text: str) -> list[str]:
     urls = []
     for match in _URL_RE.findall(text or ""):
@@ -395,6 +462,49 @@ def initial_solver_stage(task_profile: str, capability_flags: list[str], evidenc
     if task_profile in {"finance_quant", "finance_options"} or "needs_math" in flags or "needs_options_engine" in flags:
         return "COMPUTE"
     return "SYNTHESIZE"
+
+
+def initial_stage_for_template(
+    template: dict[str, Any] | ExecutionTemplate | None,
+    task_profile: str,
+    capability_flags: list[str],
+    evidence_pack: dict[str, Any],
+) -> str:
+    if isinstance(template, dict):
+        default_stage = str(template.get("default_initial_stage", "SYNTHESIZE"))
+        allowed_stages = set(template.get("allowed_stages", []))
+        template_id = str(template.get("template_id", ""))
+    elif isinstance(template, ExecutionTemplate):
+        default_stage = template.default_initial_stage
+        allowed_stages = set(template.allowed_stages)
+        template_id = template.template_id
+    else:
+        default_stage = "SYNTHESIZE"
+        allowed_stages = set()
+        template_id = ""
+
+    flags = set(capability_flags)
+    if template_id in {"legal_with_document_evidence", "document_qa", "live_retrieval"}:
+        return "GATHER"
+    if template_id in {"options_tool_backed", "quant_inline_exact"}:
+        return "COMPUTE"
+    if template_id == "quant_with_tool_compute":
+        if evidence_pack.get("file_refs") and ("needs_files" in flags or task_profile in {"document_qa", "external_retrieval"}):
+            return "GATHER"
+        return "COMPUTE"
+    if default_stage in allowed_stages or not allowed_stages:
+        return default_stage
+    return initial_solver_stage(task_profile, capability_flags, evidence_pack)
+
+
+def stage_is_review_milestone(template: dict[str, Any] | ExecutionTemplate | None, stage: str) -> bool:
+    if isinstance(template, dict):
+        review_stages = set(template.get("review_stages", []))
+    elif isinstance(template, ExecutionTemplate):
+        review_stages = set(template.review_stages)
+    else:
+        review_stages = set()
+    return stage in review_stages
 
 
 def next_stage_after_review(stage: str, review_target: str, verdict: str) -> str:

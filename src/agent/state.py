@@ -38,6 +38,7 @@ class AgentState(TypedDict):
     task_profile: str
     capability_flags: list[str]
     ambiguity_flags: list[str]
+    execution_template: dict[str, Any]
     answer_contract: dict[str, Any]
     evidence_pack: dict[str, Any]
     solver_stage: str

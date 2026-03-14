@@ -422,8 +422,8 @@ This file operates in a "Chat" structure. Whenever an agent finishes a major uni
 - **Role:** Coder / Architect
 - **Actions Taken:**
   1. **Root-caused two live failures** when running against Nebius TokenFactory (vLLM backend):
-     - *Coordinator RouteDecision validation error*: The 8B model returned `{"answer": ...}` instead of the `{layers, confidence, ...}` schema. The `STRUCTURED_OUTPUT_MODE=local_json` fallback was already active, but the model simply couldn't follow the schema reliably. The existing default-plan fallback (`heavy_research`) handles this gracefully.
-     - *400 chat-template rejection*: `llm.bind_tools(tools)` causes LangChain to send tool definitions via the OpenAI `tools` API parameter, which triggers vLLM's `--trust-request-chat-template` guard. This is a server-side restriction we cannot change.
+     - _Coordinator RouteDecision validation error_: The 8B model returned `{"answer": ...}` instead of the `{layers, confidence, ...}` schema. The `STRUCTURED_OUTPUT_MODE=local_json` fallback was already active, but the model simply couldn't follow the schema reliably. The existing default-plan fallback (`heavy_research`) handles this gracefully.
+     - _400 chat-template rejection_: `llm.bind_tools(tools)` causes LangChain to send tool definitions via the OpenAI `tools` API parameter, which triggers vLLM's `--trust-request-chat-template` guard. This is a server-side restriction we cannot change.
   2. **Added `TOOL_CALL_MODE` auto-detection** in `src/agent/model_config.py`:
      - New `_tool_call_mode(role)` function returns `"native"` (use `bind_tools`) or `"prompt"` (inject tool descriptions into system prompt).
      - Auto-detects `"prompt"` mode for all Nebius profiles (`cheap`, `balanced`, `score_max`) and for localhost/known-vLLM hosts.
@@ -433,8 +433,8 @@ This file operates in a "Chat" structure. Whenever an agent finishes a major uni
      - New `_build_tool_prompt_block(tools)` generates a compact system-prompt block listing all tool names, descriptions, parameter schemas, and the expected JSON response format.
      - `make_reasoner()` pre-computes this block and injects it after the system prompt when prompt mode is active.
   4. **Enhanced `patch_oss_tool_calls()`** to handle two JSON patterns:
-     - *Pattern 1 (new)*: `{"name": "tool_name", "arguments": {...}}` — the explicit prompt-mode format. Validates the tool name against the registry before converting.
-     - *Pattern 2 (existing)*: Naked `{arg1: val1}` — leaked schema match via intersection scoring.
+     - _Pattern 1 (new)_: `{"name": "tool_name", "arguments": {...}}` — the explicit prompt-mode format. Validates the tool name against the registry before converting.
+     - _Pattern 2 (existing)_: Naked `{arg1: val1}` — leaked schema match via intersection scoring.
      - Also strips markdown fences before JSON parsing.
   5. **Updated Nebius model profiles** in `model_config.py` to use the exact model IDs available on the Nebius API (verified via `/v1/models` endpoint):
      - `cheap`: `meta-llama/Meta-Llama-3.1-8B-Instruct-fast` (all roles)
@@ -459,7 +459,7 @@ This file operates in a "Chat" structure. Whenever an agent finishes a major uni
   4. Retired `meta-llama/Meta-Llama-3.1-8B-Instruct-fast` from all thinking roles. Restructured all three Nebius profiles using verified models from `/v1/models`:
      - _cheap_: `Qwen/Qwen3-32B-fast` for coordinator/executor/verifier (was 8B). 8B only for formatter/reflector.
      - _balanced_: `Qwen3-32B-fast` for coordinator/verifier, `Llama-3.3-70B-Instruct-fast` for executor.
-     - _score\_max_: `Qwen3-32B-fast` for coordinator, `DeepSeek-V3-0324-fast` for executor, `Llama-70B` for verifier.
+     - _score_max_: `Qwen3-32B-fast` for coordinator, `DeepSeek-V3-0324-fast` for executor, `Llama-70B` for verifier.
   5. Hardened the executor `SYSTEM_PROMPT` with three benchmark-specific fixes:
      - Added explicit prohibitions: "NEVER list your available tools", "NEVER ask the user which tool to use"
      - Added in-context data extraction mandate: "extract values DIRECTLY from the provided text"
@@ -514,17 +514,8 @@ This file operates in a "Chat" structure. Whenever an agent finishes a major uni
   1. Fixed options sign bug in `options_chain/server.py:188` — selling options now correctly shows as CREDIT (was DEBIT due to `sign * price` instead of `-sign * price`).
   2. Fixed broken first-step BACKTRACK in `verifier.py` — added pre-step checkpoint creation from HumanMessages when stack is empty, and real empty-stack BACKTRACK now reverts to last HumanMessage + warning using `ReplaceMessages` instead of appending warning that leaves bad tool output.
   3. Fixed non-string tool content bypass in `tool_executor.py` — rich MCP list responses are now normalized to str before sanitization/truncation. `mcp_calls` count is now correct.
-- **Actions Taken (Phase 2 — Task-Family Specialization):**
-  4. Added `task_type` field to `AgentState` (`state.py`), initialized in `runner.py`.
-  5. Updated `RouteDecision` schema with `task_type` field (quantitative/legal/options/general).
-  6. Coordinator now classifies and emits `task_type` into state (`coordinator.py`).
-  7. Added `TOOL_FAMILIES` allowlist dict and `DOMAIN_ADDENDA` prompts in `reasoner.py`.
-  8. `_build_tool_prompt_block()` now filters tools by task_type — legal tasks don't see options tools, quantitative tasks don't see `internet_search`.
-  9. Domain addendum injected per task type (e.g., options: "Include Greeks, P&L, 2+ alternatives"; legal: "Answer from knowledge first, cover structure/tax/liability/regulatory").
-  10. Removed finance-specific rules from universal `SYSTEM_PROMPT` (was bloating all tasks).
-- **Actions Taken (Phase 3 — Verifier Completeness):**
-  11. Added `VERIFIER_FINAL_ANSWER_ADDENDUM` prompt — stricter completeness criteria.
-  12. Wired final-answer detection in `verifier.py` — only final answers (AIMessage without tool_calls) get the stricter prompt. Intermediate steps keep current permissiveness.
+- **Actions Taken (Phase 2 — Task-Family Specialization):** 4. Added `task_type` field to `AgentState` (`state.py`), initialized in `runner.py`. 5. Updated `RouteDecision` schema with `task_type` field (quantitative/legal/options/general). 6. Coordinator now classifies and emits `task_type` into state (`coordinator.py`). 7. Added `TOOL_FAMILIES` allowlist dict and `DOMAIN_ADDENDA` prompts in `reasoner.py`. 8. `_build_tool_prompt_block()` now filters tools by task_type — legal tasks don't see options tools, quantitative tasks don't see `internet_search`. 9. Domain addendum injected per task type (e.g., options: "Include Greeks, P&L, 2+ alternatives"; legal: "Answer from knowledge first, cover structure/tax/liability/regulatory"). 10. Removed finance-specific rules from universal `SYSTEM_PROMPT` (was bloating all tasks).
+- **Actions Taken (Phase 3 — Verifier Completeness):** 11. Added `VERIFIER_FINAL_ANSWER_ADDENDUM` prompt — stricter completeness criteria. 12. Wired final-answer detection in `verifier.py` — only final answers (AIMessage without tool_calls) get the stricter prompt. Intermediate steps keep current permissiveness.
 - **Files Modified:**
   - `src/mcp_servers/options_chain/server.py` (sign fix)
   - `src/agent/nodes/verifier.py` (checkpoint, BACKTRACK, final-answer detection)
@@ -564,6 +555,7 @@ This file operates in a "Chat" structure. Whenever an agent finishes a major uni
 3. **Options Task 3 Truncation:** Increased the executor `max_tokens` from 1300/1500 to 2000 for both legal and options tasks to prevent truncation.
 
 **Next Steps / Handoff:**
+
 - Re-run the FAB++ benchmark to verify the fix for JSON parsing and the enhanced legal depth.
 
 ### Chat 46: FAB++ Trace Post-Mortem & Runtime Recovery Fixes
@@ -590,6 +582,7 @@ This file operates in a "Chat" structure. Whenever an agent finishes a major uni
 - **Blockers:** Full FAB++ rerun was not executed inside this patch pass, so benchmark score impact is still pending live verification.
 - **Sync Notes:** Re-checked after the latest runtime recovery fixes. Chat 46 remains the active reference entry before the next FAB++ rerun and score comparison.
 - **Handoff Notes:** The latest benchmark failures were not just "model weakness" â€” they were also runtime robustness issues. Coordinator specialization should now survive schema failure, raw `<think>` should stop leaking into benchmark outputs, verifier memory is less likely to reinforce bad repair patterns, and repeated revise loops should now backtrack earlier instead of wasting the full budget.
+
 ### Chat 47: Task-Family Hardening & Current FAB++ Blockers
 
 - **Role:** Debugger / Coder / Analyst
@@ -656,11 +649,11 @@ This file operates in a "Chat" structure. Whenever an agent finishes a major uni
      - `legal` -> `1500`
      - `options` -> `1300`
      - all others -> `1000`
-     This keeps the legal/options buffer targeted instead of globally inflating cost.
+       This keeps the legal/options buffer targeted instead of globally inflating cost.
   3. Added a deterministic verifier guard in `src/agent/nodes/verifier.py` for textual tool attempts:
      - complete raw tool JSON embedded in prose
      - truncated tool-envelope prefixes that never became executable tool calls
-     These now trigger `REVISE` or `BACKTRACK` without trusting the verifier LLM to notice them.
+       These now trigger `REVISE` or `BACKTRACK` without trusting the verifier LLM to notice them.
   4. Added an options-specific constrained revise mode in `src/agent/nodes/verifier.py` so repeated options revisions are pushed into a compact answer shape instead of another long `<think>`-heavy draft.
   5. Updated the old OSS-patcher regression in `tests/test_coordinator.py` to reflect the intended long-term behavior: explicit hidden tool envelopes should be surfaced for downstream validation, not silently ignored.
   6. Added trace-shaped regressions in `tests/test_verifier.py`:
@@ -694,7 +687,7 @@ This file operates in a "Chat" structure. Whenever an agent finishes a major uni
      - `last_tool_result`
      - `review_feedback`
      - plus compact operational fields (`checkpoint_stack`, budget/cost/memory trackers)
-     Removed from runtime state:
+       Removed from runtime state:
      - `policy_confidence`
      - `estimated_steps`
      - `early_exit_allowed`
@@ -730,12 +723,12 @@ This file operates in a "Chat" structure. Whenever an agent finishes a major uni
      - `assumptions`
      - `source`
      - `errors`
-     Added strict normalization for:
+       Added strict normalization for:
      - `calculator`
      - `analyze_strategy`
      - `STRUCTURED_RESULTS` finance tools
      - reference-file listing/fetch metadata
-     Unstructured narrative tool output is now explicitly marked as an error instead of silently trusted.
+       Unstructured narrative tool output is now explicitly marked as an error instead of silently trusted.
   8. Narrowed reviewer responsibilities in `src/agent/nodes/reviewer.py`:
      - milestone/final review only
      - deterministic completeness checks for legal/options/truncation/tool-error cases
@@ -749,13 +742,13 @@ This file operates in a "Chat" structure. Whenever an agent finishes a major uni
       - `tests/test_staged_tool_runner.py`
       - `tests/test_staged_reviewer.py`
       - `tests/test_staged_output_adapter.py`
-      Kept still-relevant model/tool tests:
+        Kept still-relevant model/tool tests:
       - `tests/test_model_config.py`
       - `tests/test_finance_tools.py`
   11. Added deterministic graph-path smoke coverage in `scripts/run_staged_runtime_smoke.py` for:
       - finance quant path with calculator + JSON adapter
       - finance options path with external `analyze_strategy`
-      This script is intended to catch routing/stage/tool/review regressions cheaply before full benchmark reruns.
+        This script is intended to catch routing/stage/tool/review regressions cheaply before full benchmark reruns.
   12. Tightened instrumentation so deterministic profiler/reviewer/adapter work is no longer counted as LLM calls in cost summaries.
 - **Verification:**
   - `python -m py_compile src/agent/contracts.py src/agent/state.py src/agent/runtime_support.py src/agent/runtime_clock.py src/agent/graph.py src/agent/runner.py src/agent/nodes/intake.py src/agent/nodes/task_profiler.py src/agent/nodes/context_builder.py src/agent/nodes/solver.py src/agent/nodes/tool_runner.py src/agent/nodes/reviewer.py src/agent/nodes/output_adapter.py src/agent/nodes/reflect.py scripts/run_staged_runtime_smoke.py` -> **passed**
@@ -784,7 +777,7 @@ This file operates in a "Chat" structure. Whenever an agent finishes a major uni
      - `content_rules`
      - `section_requirements`
      - `value_rules`
-     This lets output requirements live in state/contracts rather than buried in free-form prompts.
+       This lets output requirements live in state/contracts rather than buried in free-form prompts.
   3. Reworked `src/agent/runtime_support.py` and `src/agent/nodes/context_builder.py` so profile rules are merged into `answer_contract` and `evidence_pack` at build time. Inline facts remain preferred over tools; external retrieval still requires explicit triggers.
   4. Updated `src/agent/nodes/solver.py` to consume profile packs directly:
      - stage prompts now use profile summary + contract rules + compact evidence
@@ -794,7 +787,7 @@ This file operates in a "Chat" structure. Whenever an agent finishes a major uni
      - missing tool-backed evidence in finance options compute/final stages
      - scalar JSON-style quant outputs before adapter
      - truncated final answers
-     Reviewer LLM parse failures now fall back deterministically instead of breaking the run.
+       Reviewer LLM parse failures now fall back deterministically instead of breaking the run.
   6. Added centralized tool normalization in `src/agent/tool_normalization.py` and wired it into `src/agent/nodes/tool_runner.py`.
      Structured normalization now covers:
      - `STRUCTURED_RESULTS`
@@ -807,7 +800,7 @@ This file operates in a "Chat" structure. Whenever an agent finishes a major uni
      - `fetch_reference_file`
      - `internet_search`
      - `calculator`
-     This reduced string parsing inside solver/reviewer and made tool facts reusable in `evidence_pack`.
+       This reduced string parsing inside solver/reviewer and made tool facts reusable in `evidence_pack`.
   7. Removed retired legacy runtime modules that were no longer on the active graph path:
      - `src/agent/prompts.py`
      - `src/agent/operators.py`
@@ -827,7 +820,7 @@ This file operates in a "Chat" structure. Whenever an agent finishes a major uni
   9. Added staged-runner scripts:
      - `scripts/run_staged_slice.py`
      - `scripts/run_live_staged_smoke.py`
-     These are intended to replace repeated full benchmark reruns when checking graph behavior.
+       These are intended to replace repeated full benchmark reruns when checking graph behavior.
   10. Updated tests around staged behavior and removed stale coordinator-era expectations. Also hardened env loading so explicit test/script env vars win over `.env` defaults.
 - **Staged Slice Rerun (`langsmith_runs/staged_slice_results.json`):**
   1. `task1.json`
@@ -889,7 +882,7 @@ This file operates in a "Chat" structure. Whenever an agent finishes a major uni
      - `RunMemory`
      - `ToolMemory`
      - `ReviewMemory`
-     The SQLite store now includes a schema-version table and automatically resets incompatible on-disk schemas.
+       The SQLite store now includes a schema-version table and automatically resets incompatible on-disk schemas.
   5. Moved persistence to the terminal staged path in `src/agent/nodes/reflect.py` so memory is written from the actual runtime completion path instead of the old runner-side router-memory shim.
   6. Updated `src/agent/runner.py` to stop writing legacy router memory records.
   7. Cleaned the stale committed SQLite state:
@@ -937,7 +930,7 @@ This file operates in a "Chat" structure. Whenever an agent finishes a major uni
      - `task_profile`
      - `capability_flags`
      - `ambiguity_flags`
-     LLM fallback still exists, but deterministic profiling remains the source of truth when fallback fails.
+       LLM fallback still exists, but deterministic profiling remains the source of truth when fallback fails.
   5. Updated `src/agent/nodes/context_builder.py` to consume `ProfileDecision` and propagate ambiguity-aware context into the runtime.
   6. Tightened `src/agent/nodes/solver.py` so ambiguous `general` cases use a conservative tool allowlist rather than jumping into broad or specialized tool surfaces.
   7. Updated `src/agent/nodes/reflect.py` so staged run memory now stores ambiguity flags in metadata.
@@ -958,6 +951,108 @@ This file operates in a "Chat" structure. Whenever an agent finishes a major uni
      - `task_profile=legal_transactional`
      - `capability_flags=[needs_legal_reasoning, needs_math]`
      - `ambiguity_flags=[legal_finance_overlap]`
-     and completed successfully without unsafe tool drift.
+       and completed successfully without unsafe tool drift.
   4. `finance_quant` still showed the existing live weakness on terse prompts and hit step-limit behavior. This was not introduced by Phase 1; it remains a later-phase issue.
 - **Handoff Notes:** Phase 1 is complete. The runtime now carries an explicit profile decision and ambiguity markers instead of pretending the first coarse profile is always clean. The next architecture phase should be `template_selector`, not more profiler complexity.
+
+### Chat 54: Review of Phase 1 Implementation
+
+- **Role:** Reviewer
+- **Date:** 2026-03-14
+- **Goal:** Review Phase 1 progress and validate direction based on architecture v3 plan.
+- **Review Findings:**
+  1. The direction is undeniably aligned with the v3 architecture proposal.
+  2. Adding explicit profile decisions with mbiguity_flags correctly solves the previous brittle single-label routing WITHOUT turning to error-prone LLM dynamic graph synthesis.
+  3. Test successes and live staged smoke completion for mixed tasks prove the deterministic profiling is acting as the stable source of truth.
+- **Handoff Notes:** Phase 1 implementation successfully hits the goals of decoupling profile extraction from strict execution without over-complicating the graph. Next target is Phase 2 (Execution Template Selection) to fully utilize these flags via a static template library. (No Phase 2 code implementation executed in this step).
+
+### Chat 55: Architecture v3 Phase 2 - Execution Template Selection
+
+- **Role:** Architect / Coder
+- **Date:** 2026-03-14
+- **Goal:** Execute Phase 2 of `docs/architecture_v3_implementation_plan.md` by adding static, deterministic execution-template selection and wiring it into live runtime control.
+- **Actions Taken:**
+  1. Added typed `ExecutionTemplate` support in `src/agent/contracts.py` with:
+     - `template_id`
+     - `allowed_stages`
+     - `default_initial_stage`
+     - `allowed_tool_names`
+     - `review_stages`
+     - `review_cadence`
+     - `answer_focus`
+     - `ambiguity_safe`
+  2. Added a static template library in `src/agent/template_library.py` with the first vetted template set:
+     - `quant_inline_exact`
+     - `quant_with_tool_compute`
+     - `options_tool_backed`
+     - `legal_reasoning_only`
+     - `legal_with_document_evidence`
+     - `document_qa`
+     - `live_retrieval`
+  3. Expanded `AgentState` and runner/test fixtures to carry `execution_template`.
+  4. Upgraded `src/agent/runtime_support.py` with deterministic template helpers:
+     - `select_execution_template()`
+     - `allowed_tools_for_template()`
+     - `initial_stage_for_template()`
+     - `stage_is_review_milestone()`
+  5. Added the new `src/agent/nodes/template_selector.py` node and rewired the graph in `src/agent/graph.py`:
+     - `intake -> task_profiler -> template_selector -> context_builder -> ...`
+  6. Updated `src/agent/nodes/context_builder.py` to:
+     - consume `execution_template`
+     - select initial stage from template policy instead of raw profile heuristics
+     - record template choice in the workpad
+  7. Updated `src/agent/nodes/solver.py` so template choice now affects real execution:
+     - tool allowlist now intersects profile policy with template policy
+     - template `answer_focus` is added to stage prompts
+     - milestone review now triggers only on template-configured review stages
+     - non-review milestones auto-advance deterministically instead of always routing to reviewer
+  8. Updated `src/agent/nodes/tool_runner.py` to block tools by template policy, not just by coarse profile.
+  9. Updated `src/agent/nodes/reviewer.py` so pass-routing from milestones respects template-allowed stage flow.
+  10. Updated `src/agent/nodes/reflect.py` so stored run memory now includes `template_id`.
+  11. Updated staged smoke scripts:
+      - `scripts/run_staged_runtime_smoke.py`
+      - `scripts/run_live_staged_smoke.py`
+      They now surface the selected execution template in their summaries.
+  12. Added/updated behavior-first tests:
+      - new `tests/test_staged_template_selector.py`
+      - updated `tests/test_staged_context_builder.py`
+      - updated `tests/test_staged_solver.py`
+      - updated `tests/test_staged_tool_runner.py`
+      - updated `tests/test_staged_reviewer.py`
+      - updated `tests/test_staged_reflect.py`
+- **Verification:**
+  - `python -m pytest tests/test_staged_template_selector.py tests/test_staged_context_builder.py tests/test_staged_solver.py tests/test_staged_reviewer.py tests/test_staged_tool_runner.py tests/test_staged_reflect.py -q` -> **26 passed**
+  - `python -m pytest tests -q` -> **43 passed, 2 skipped**
+  - `python scripts/run_staged_runtime_smoke.py` -> **ok: true**
+  - `python scripts/run_live_staged_smoke.py` -> live staged smoke completed successfully
+  - `python -m py_compile src/agent/contracts.py src/agent/state.py src/agent/template_library.py src/agent/runtime_support.py src/agent/graph.py src/agent/runner.py src/agent/nodes/template_selector.py src/agent/nodes/context_builder.py src/agent/nodes/solver.py src/agent/nodes/tool_runner.py src/agent/nodes/reviewer.py src/agent/nodes/reflect.py scripts/run_staged_runtime_smoke.py scripts/run_live_staged_smoke.py tests/test_staged_template_selector.py tests/test_staged_context_builder.py tests/test_staged_solver.py tests/test_staged_tool_runner.py tests/test_staged_reviewer.py tests/test_staged_reflect.py` -> **passed**
+- **Live Smoke Findings:**
+  1. `finance_options`
+     - selected `options_tool_backed`
+     - forced tool-backed compute before final synthesis
+     - completed successfully on the live model
+  2. `legal_transactional`
+     - selected `legal_reasoning_only`
+     - stayed on the no-file, no-retrieval path
+     - completed successfully on the live model
+  3. `mixed_legal_math`
+     - selected `legal_reasoning_only` as the ambiguity-safe template
+     - completed successfully without unsafe tool drift
+  4. `finance_quant`
+     - selected `quant_inline_exact`
+     - still shows the pre-existing terse-prompt recursion/step-limit weakness on the live model
+     - this is not a Phase 2 selector regression; the template was selected correctly and the control gap is deeper in the quant solve/review loop
+- **Handoff Notes:** Phase 2 is complete. The runtime now has deterministic, explainable template-level execution control without moving to arbitrary dynamic FSM synthesis. The next phase should be `EvidencePack v2`, not more selector complexity. The main unresolved live issue remains terse `finance_quant` completion behavior, which should be handled in later evidence/assumption/runtime-control work rather than by weakening the template layer.
+
+### Chat 55: Review of Phase 2 Implementation
+
+- **Role:** Reviewer
+- **Date:** 2026-03-14
+- **Goal:** Review Phase 2 progress (Execution Template Selection) and validate correctness.
+- **Review Findings:**
+  1. The code perfectly implements static template_selector in place of LLM dynamic planning. Execution templates properly define explicit bounds (allowed_stages, allowed_tool_names, review_stages).
+  2. Rules and safe-defaults are cleanly mapped in runtime_support.py select_execution_template, safely defaulting ambiguity overlaps (options + legal) to legal_reasoning_only.
+  3. Threading via AgentState correctly propagates the selected templates directly back into solver.py without leaking prompt complexity.
+  4. Unnecessary historical planning docs (architecture_v2_plan.md, architecture_v3_proposal.md, architecture_v3_review.md) have been removed to reduce documentation noise, leaving architecture_v3_implementation_plan.md as the active reference source of truth.
+- **Handoff Notes:** The architecture cleanly fulfills its goal of deterministic structural assignment before reaching any LLM generation. Phase 2 properly completed the workflow mapping. Ready for moving on to Phase 3 (EvidencePack v2) when appropriate.
+

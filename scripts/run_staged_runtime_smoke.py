@@ -95,6 +95,7 @@ async def run_quant_scenario():
         answer, steps, _ = await run_agent(graph, prompt)
     assert answer == '{"answer": 0.9274}'
     assert any(event["node"] == "tool_runner" for event in steps)
+    assert any("template=quant_inline_exact" in event.get("action", "") for event in steps if event.get("node") == "template_selector")
     return {"scenario": "finance_quant", "answer": answer, "steps": steps}
 
 
@@ -138,6 +139,7 @@ async def run_options_scenario():
         answer, steps, _ = await run_agent(graph, prompt)
     assert "net seller" in answer.lower() or "seller" in answer.lower()
     assert any(event["action"].startswith("ran analyze_strategy") for event in steps if event["node"] == "tool_runner")
+    assert any("template=options_tool_backed" in event.get("action", "") for event in steps if event.get("node") == "template_selector")
     return {"scenario": "finance_options", "answer": answer, "steps": steps}
 
 

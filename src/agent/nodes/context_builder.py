@@ -8,13 +8,13 @@ from __future__ import annotations
 
 import logging
 
-from agent.contracts import AnswerContract, EvidencePack, ProfileDecision
+from agent.contracts import AnswerContract, EvidencePack, ExecutionTemplate, ProfileDecision
 from agent.profile_packs import get_profile_pack
 from agent.runtime_clock import increment_runtime_step
 from agent.runtime_support import (
     apply_profile_contract_rules,
     build_evidence_pack,
-    initial_solver_stage,
+    initial_stage_for_template,
     latest_human_text,
 )
 from agent.state import AgentState
@@ -38,6 +38,19 @@ def context_builder(state: AgentState) -> dict:
     task_profile = profile_decision.primary_profile
     capability_flags = list(profile_decision.capability_flags)
     ambiguity_flags = list(profile_decision.ambiguity_flags)
+    execution_template = ExecutionTemplate.model_validate(
+        state.get("execution_template", {}) or {
+            "template_id": "legal_reasoning_only",
+            "description": "Fallback reasoning-only template.",
+            "allowed_stages": ["SYNTHESIZE", "REVISE", "COMPLETE"],
+            "default_initial_stage": "SYNTHESIZE",
+            "allowed_tool_names": ["calculator"],
+            "review_stages": ["SYNTHESIZE"],
+            "review_cadence": "final_only",
+            "answer_focus": [],
+            "ambiguity_safe": True,
+        }
+    )
     profile_pack = get_profile_pack(task_profile)
     merged_contract = apply_profile_contract_rules(answer_contract, task_profile)
 
@@ -51,15 +64,24 @@ def context_builder(state: AgentState) -> dict:
 
     workpad = dict(state.get("workpad", {}))
     workpad["profile_decision"] = profile_decision.model_dump()
+    workpad["execution_template"] = execution_template.model_dump()
     workpad["profile_pack"] = profile_pack.model_dump()
     workpad.setdefault("stage_history", [])
     workpad.setdefault("events", [])
-    next_stage = initial_solver_stage(task_profile, capability_flags, evidence.model_dump())
+    next_stage = initial_stage_for_template(
+        execution_template,
+        task_profile,
+        capability_flags,
+        evidence.model_dump(),
+    )
     workpad["stage_history"].append(next_stage)
     workpad["events"].append(
         {
             "node": "context_builder",
-            "action": f"stage={next_stage} entities={len(evidence.entities)} files={len(evidence.file_refs)}",
+            "action": (
+                f"template={execution_template.template_id} "
+                f"stage={next_stage} entities={len(evidence.entities)} files={len(evidence.file_refs)}"
+            ),
         }
     )
     checkpoint_stack = list(state.get("checkpoint_stack", []))
@@ -91,5 +113,6 @@ def context_builder(state: AgentState) -> dict:
         "task_profile": task_profile,
         "capability_flags": capability_flags,
         "ambiguity_flags": ambiguity_flags,
+        "execution_template": execution_template.model_dump(),
         "checkpoint_stack": checkpoint_stack,
     }

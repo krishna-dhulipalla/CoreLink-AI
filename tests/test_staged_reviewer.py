@@ -118,3 +118,39 @@ def test_reviewer_revises_quant_final_that_is_not_scalar_for_json_contract():
 
     assert result["solver_stage"] == "REVISE"
     assert "scalar answer matching output contract" in [gap.lower() for gap in result["review_feedback"]["missing_dimensions"]]
+
+
+def test_reviewer_pass_from_document_gather_moves_to_synthesize_for_document_template():
+    state = make_state(
+        "Read the attached report and summarize the covenant breach.",
+        task_profile="document_qa",
+        capability_flags=["needs_files"],
+        execution_template={
+            "template_id": "document_qa",
+            "allowed_stages": ["GATHER", "SYNTHESIZE", "REVISE", "COMPLETE"],
+            "default_initial_stage": "GATHER",
+            "allowed_tool_names": ["fetch_reference_file", "list_reference_files"],
+            "review_stages": ["GATHER", "SYNTHESIZE"],
+            "review_cadence": "milestone_and_final",
+            "answer_focus": [],
+        },
+        solver_stage="GATHER",
+        workpad={
+            "events": [],
+            "stage_outputs": {},
+            "tool_results": [],
+            "review_ready": True,
+            "review_stage": "GATHER",
+        },
+        last_tool_result={
+            "type": "fetch_reference_file",
+            "facts": {"file_name": "report.pdf", "rows": [["metric", "value"]]},
+            "assumptions": {"url": "https://example.com/report.pdf"},
+            "source": {"tool": "fetch_reference_file"},
+            "errors": [],
+        },
+    )
+
+    result = reviewer(state)
+
+    assert result["solver_stage"] == "SYNTHESIZE"

@@ -48,6 +48,16 @@ SolverStage = Literal[
 ]
 
 ReviewVerdict = Literal["pass", "revise", "backtrack"]
+ExecutionTemplateId = Literal[
+    "quant_inline_exact",
+    "quant_with_tool_compute",
+    "options_tool_backed",
+    "legal_reasoning_only",
+    "legal_with_document_evidence",
+    "document_qa",
+    "live_retrieval",
+]
+ReviewCadence = Literal["final_only", "milestone_and_final"]
 
 
 class ProfileDecision(BaseModel):
@@ -56,6 +66,18 @@ class ProfileDecision(BaseModel):
     ambiguity_flags: list[AmbiguityFlag | str] = Field(default_factory=list)
     needs_external_data: bool = False
     needs_output_adapter: bool = False
+
+
+class ExecutionTemplate(BaseModel):
+    template_id: ExecutionTemplateId
+    description: str
+    allowed_stages: list[SolverStage] = Field(default_factory=list)
+    default_initial_stage: SolverStage = "SYNTHESIZE"
+    allowed_tool_names: list[str] = Field(default_factory=list)
+    review_stages: list[SolverStage] = Field(default_factory=list)
+    review_cadence: ReviewCadence = "final_only"
+    answer_focus: list[str] = Field(default_factory=list)
+    ambiguity_safe: bool = False
 
 
 class AnswerContract(BaseModel):

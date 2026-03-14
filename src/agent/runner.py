@@ -82,6 +82,7 @@ async def run_agent_trace(
         "task_profile": "general",
         "capability_flags": [],
         "ambiguity_flags": [],
+        "execution_template": {},
         "answer_contract": {},
         "evidence_pack": {},
         "solver_stage": "PLAN",

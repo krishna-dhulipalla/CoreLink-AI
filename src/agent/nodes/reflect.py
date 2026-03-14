@@ -25,6 +25,8 @@ def _persist_run(state: AgentState, task_text: str, workpad: dict) -> None:
     task_profile = state.get("task_profile", "general")
     capability_flags = list(state.get("capability_flags", []))
     ambiguity_flags = list(state.get("ambiguity_flags", []))
+    execution_template = state.get("execution_template", {}) or {}
+    template_id = str(execution_template.get("template_id", ""))
     route_path = list(dict.fromkeys(event.get("node", "") for event in workpad.get("events", []) if event.get("node")))
     tool_results = list(workpad.get("tool_results", []))
     review_results = list(workpad.get("review_results", []))
@@ -33,7 +35,7 @@ def _persist_run(state: AgentState, task_text: str, workpad: dict) -> None:
         task_summary=task_text[:160],
         semantic_text=normalize_memory_text(
             f"task: {task_text}\nprofile: {task_profile}\nflags: {' '.join(capability_flags)}\n"
-            f"ambiguity: {' '.join(ambiguity_flags)}\nroute: {' > '.join(route_path)}\n"
+            f"ambiguity: {' '.join(ambiguity_flags)}\ntemplate: {template_id}\nroute: {' > '.join(route_path)}\n"
             f"success: {state.get('solver_stage') == 'COMPLETE'}"
         ),
         task_profile=task_profile,
@@ -52,6 +54,7 @@ def _persist_run(state: AgentState, task_text: str, workpad: dict) -> None:
             "requires_adapter": bool((state.get("answer_contract") or {}).get("requires_adapter")),
             "final_stage": state.get("solver_stage", "PLAN"),
             "ambiguity_flags": ambiguity_flags,
+            "template_id": template_id,
         },
     )
     store.store_run(record)

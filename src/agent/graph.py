@@ -21,6 +21,7 @@ from agent.nodes.reflect import reflect
 from agent.nodes.reviewer import reviewer, route_from_reviewer
 from agent.nodes.solver import make_solver, route_from_solver
 from agent.nodes.task_profiler import task_profiler
+from agent.nodes.template_selector import template_selector
 from agent.nodes.tool_runner import make_tool_runner
 from agent.state import AgentState
 from tools import CALCULATOR_TOOL, SEARCH_TOOL
@@ -49,6 +50,7 @@ def build_agent_graph(external_tools: list | None = None):
     graph = StateGraph(AgentState)
     graph.add_node("intake", intake)
     graph.add_node("task_profiler", task_profiler)
+    graph.add_node("template_selector", template_selector)
     graph.add_node("context_builder", context_builder)
     graph.add_node("solver", make_solver(all_tools))
     graph.add_node("tool_runner", make_tool_runner(raw_tool_node))
@@ -58,7 +60,8 @@ def build_agent_graph(external_tools: list | None = None):
 
     graph.set_entry_point("intake")
     graph.add_edge("intake", "task_profiler")
-    graph.add_edge("task_profiler", "context_builder")
+    graph.add_edge("task_profiler", "template_selector")
+    graph.add_edge("template_selector", "context_builder")
     graph.add_edge("context_builder", "solver")
     graph.add_conditional_edges("solver", route_from_solver)
     graph.add_edge("tool_runner", "solver")
