@@ -12,7 +12,7 @@ import re
 import time
 from typing import Any
 
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
 from agent.contracts import ReviewResult
@@ -21,8 +21,14 @@ from agent.cost import CostTracker
 from agent.model_config import _extract_json_payload, get_client_kwargs, get_model_name
 from agent.profile_packs import get_profile_pack
 from agent.runtime_clock import increment_runtime_step
-from agent.runtime_support import latest_human_text, next_stage_after_review
-from agent.state import AgentState, ReplaceMessages
+from agent.runtime_support import (
+    artifact_checkpoint_from_state,
+    latest_human_text,
+    next_stage_after_review,
+    selective_backtracking_allowed,
+    should_checkpoint_stage,
+)
+from agent.state import AgentState
 from context_manager import count_tokens
 
 logger = logging.getLogger(__name__)
@@ -156,11 +162,33 @@ def _deterministic_review(state: AgentState, artifact: str, is_final: bool) -> R
     document_evidence = (state.get("evidence_pack") or {}).get("document_evidence", [])
 
     if review_stage == "GATHER" and last_tool_result.get("errors"):
+        if selective_backtracking_allowed(state.get("execution_template"), "GATHER"):
+            return ReviewResult(
+                verdict="backtrack",
+                reasoning="Gather stage produced invalid or unusable tool evidence.",
+                missing_dimensions=["valid evidence"],
+                repair_target="gather",
+            )
         return ReviewResult(
-            verdict="backtrack",
+            verdict="revise",
             reasoning="Gather stage produced invalid or unusable tool evidence.",
             missing_dimensions=["valid evidence"],
             repair_target="gather",
+        )
+
+    if review_stage == "COMPUTE" and last_tool_result.get("errors"):
+        if selective_backtracking_allowed(state.get("execution_template"), "COMPUTE"):
+            return ReviewResult(
+                verdict="backtrack",
+                reasoning="Compute stage is grounded in an invalid tool result and should revert to the last stable artifact state.",
+                missing_dimensions=["valid compute evidence"],
+                repair_target="compute",
+            )
+        return ReviewResult(
+            verdict="revise",
+            reasoning="Compute stage is grounded in an invalid tool result.",
+            missing_dimensions=["valid compute evidence"],
+            repair_target="compute",
         )
 
     if review_stage == "GATHER" and template_id in {"legal_with_document_evidence", "document_qa"}:
@@ -316,41 +344,29 @@ def _fallback_review_on_parse_failure(state: AgentState, artifact: str, is_final
     )
 
 
-def _snapshot_state(state: AgentState) -> dict[str, Any]:
-    return {
-        "messages": list(state.get("messages", [])),
-        "evidence_pack": dict(state.get("evidence_pack", {})),
-        "assumption_ledger": list(state.get("assumption_ledger", [])),
-        "provenance_map": dict(state.get("provenance_map", {})),
-        "workpad": dict(state.get("workpad", {})),
-        "solver_stage": state.get("solver_stage", "SYNTHESIZE"),
-        "last_tool_result": state.get("last_tool_result"),
-    }
-
-
 def _restore_checkpoint(state: AgentState) -> dict[str, Any]:
     stack = list(state.get("checkpoint_stack", []))
     if stack:
         checkpoint = stack[-1]
+        restored_workpad = dict(state.get("workpad", {}))
+        restored_workpad["stage_outputs"] = dict(checkpoint.get("stage_outputs", {}))
+        draft_answer = str(checkpoint.get("draft_answer", "")).strip()
+        if draft_answer:
+            restored_workpad["draft_answer"] = draft_answer
+        else:
+            restored_workpad.pop("draft_answer", None)
+        restored_workpad["review_ready"] = False
+        restored_workpad["review_stage"] = None
         return {
-            "messages": ReplaceMessages(checkpoint.get("messages", [])),
             "evidence_pack": checkpoint.get("evidence_pack", {}),
             "assumption_ledger": checkpoint.get("assumption_ledger", []),
             "provenance_map": checkpoint.get("provenance_map", {}),
-            "workpad": checkpoint.get("workpad", {}),
-            "solver_stage": checkpoint.get("solver_stage", "SYNTHESIZE"),
+            "workpad": restored_workpad,
             "last_tool_result": checkpoint.get("last_tool_result"),
+            "review_feedback": checkpoint.get("review_feedback"),
             "pending_tool_call": None,
         }
-
-    messages = list(state.get("messages", []))
-    baseline = messages[:]
-    for idx in range(len(messages) - 1, -1, -1):
-        if isinstance(messages[idx], HumanMessage):
-            baseline = messages[: idx + 1]
-            break
     return {
-        "messages": ReplaceMessages(baseline),
         "pending_tool_call": None,
     }
 
@@ -439,10 +455,14 @@ def reviewer(state: AgentState) -> dict:
         restored = _restore_checkpoint(state)
         workpad = _append_review_result(workpad, verdict, str(review_stage), is_final)
         workpad = _record_event(workpad, f"BACKTRACK: {verdict.reasoning}")
+        restored_workpad = dict(restored.get("workpad", {}))
+        merged_events = list(restored_workpad.get("events", [])) + list(workpad.get("events", []))
+        restored_workpad["events"] = merged_events
+        restored_workpad["review_results"] = list(workpad.get("review_results", []))
         logger.info("[Step %s] reviewer -> BACKTRACK", step)
         return {
             **restored,
-            "workpad": workpad,
+            "workpad": restored_workpad,
             "review_feedback": verdict.model_dump(),
             "solver_stage": "REVISE",
         }
@@ -461,7 +481,14 @@ def reviewer(state: AgentState) -> dict:
         }
 
     checkpoint_stack = list(state.get("checkpoint_stack", []))
-    checkpoint_stack.append(_snapshot_state(state))
+    if should_checkpoint_stage(state.get("execution_template"), str(review_stage)):
+        checkpoint_stack.append(
+            artifact_checkpoint_from_state(
+                state,
+                reason=f"stable_{str(review_stage).lower()}",
+                stage=str(review_stage),
+            )
+        )
     next_target = _next_target_for_pass(state)
     next_stage = next_stage_after_review(
         str(workpad.get("review_stage", state.get("solver_stage", "SYNTHESIZE"))),

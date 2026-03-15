@@ -12,10 +12,12 @@ from agent.contracts import AnswerContract, EvidencePack, ExecutionTemplate, Pro
 from agent.profile_packs import get_profile_pack
 from agent.runtime_clock import increment_runtime_step
 from agent.runtime_support import (
+    artifact_checkpoint_from_state,
     apply_profile_contract_rules,
     build_evidence_pack,
     initial_stage_for_template,
     latest_human_text,
+    selective_checkpoint_policy,
 )
 from agent.state import AgentState
 
@@ -86,17 +88,22 @@ def context_builder(state: AgentState) -> dict:
         }
     )
     checkpoint_stack = list(state.get("checkpoint_stack", []))
-    if not checkpoint_stack:
+    policy = selective_checkpoint_policy(execution_template)
+    if not checkpoint_stack and policy["enabled"]:
         checkpoint_stack.append(
-            {
-                "messages": list(state.get("messages", [])),
-                "evidence_pack": evidence.model_dump(),
-                "assumption_ledger": assumption_ledger,
-                "provenance_map": provenance_map,
-                "workpad": workpad,
-                "solver_stage": next_stage,
-                "last_tool_result": None,
-            }
+            artifact_checkpoint_from_state(
+                {
+                    **state,
+                    "evidence_pack": evidence.model_dump(),
+                    "assumption_ledger": assumption_ledger,
+                    "provenance_map": provenance_map,
+                    "workpad": workpad,
+                    "execution_template": execution_template.model_dump(),
+                    "last_tool_result": None,
+                },
+                reason="baseline_artifacts",
+                stage=next_stage,
+            )
         )
 
     logger.info(

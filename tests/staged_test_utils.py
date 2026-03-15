@@ -21,6 +21,7 @@ def make_state(
     pending_tool_call: dict | None = None,
     last_tool_result: dict | None = None,
     review_feedback: dict | None = None,
+    checkpoint_stack: list[dict] | None = None,
 ):
     return {
         "messages": [HumanMessage(content=prompt)],
@@ -38,7 +39,7 @@ def make_state(
         "pending_tool_call": pending_tool_call,
         "last_tool_result": last_tool_result,
         "review_feedback": review_feedback,
-        "checkpoint_stack": [],
+        "checkpoint_stack": checkpoint_stack or [],
         "tool_fail_count": 0,
         "last_tool_signature": "",
         "budget_tracker": BudgetTracker(),

@@ -96,3 +96,18 @@ class TestContextBuilder:
             value["source_class"] != "retrieved"
             for value in result["provenance_map"].values()
         )
+        assert result["checkpoint_stack"] == []
+
+    def test_document_template_seeds_selective_artifact_checkpoint(self):
+        prompt = "Read the attached report at https://example.com/report.pdf and summarize it."
+        state = make_state(prompt)
+        state.update(intake(state))
+        state.update(task_profiler(state))
+        state.update(template_selector(state))
+
+        result = context_builder(state)
+
+        assert len(result["checkpoint_stack"]) == 1
+        checkpoint = result["checkpoint_stack"][0]
+        assert checkpoint["template_id"] == "document_qa"
+        assert checkpoint["checkpoint_stage"] == "GATHER"

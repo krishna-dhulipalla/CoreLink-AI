@@ -14,6 +14,7 @@ from langchain_core.messages import BaseMessage, HumanMessage
 
 from agent.contracts import (
     AnswerContract,
+    ArtifactCheckpoint,
     AssumptionRecord,
     EvidencePack,
     ExecutionTemplate,
@@ -824,6 +825,72 @@ def initial_stage_for_template(
     if default_stage in allowed_stages or not allowed_stages:
         return default_stage
     return initial_solver_stage(task_profile, capability_flags, evidence_pack)
+
+
+def selective_checkpoint_policy(template: dict[str, Any] | ExecutionTemplate | None) -> dict[str, Any]:
+    if isinstance(template, dict):
+        template_id = str(template.get("template_id", ""))
+    elif isinstance(template, ExecutionTemplate):
+        template_id = template.template_id
+    else:
+        template_id = ""
+
+    if template_id == "quant_with_tool_compute":
+        return {
+            "enabled": True,
+            "checkpoint_stages": {"GATHER", "COMPUTE"},
+            "backtrack_stages": {"GATHER", "COMPUTE"},
+        }
+    if template_id == "options_tool_backed":
+        return {
+            "enabled": True,
+            "checkpoint_stages": {"COMPUTE"},
+            "backtrack_stages": {"COMPUTE"},
+        }
+    if template_id in {"document_qa", "legal_with_document_evidence"}:
+        return {
+            "enabled": True,
+            "checkpoint_stages": {"GATHER"},
+            "backtrack_stages": {"GATHER"},
+        }
+    return {
+        "enabled": False,
+        "checkpoint_stages": set(),
+        "backtrack_stages": set(),
+    }
+
+
+def selective_backtracking_allowed(template: dict[str, Any] | ExecutionTemplate | None, stage: str) -> bool:
+    policy = selective_checkpoint_policy(template)
+    return bool(policy["enabled"]) and stage in set(policy["backtrack_stages"])
+
+
+def should_checkpoint_stage(template: dict[str, Any] | ExecutionTemplate | None, stage: str) -> bool:
+    policy = selective_checkpoint_policy(template)
+    return bool(policy["enabled"]) and stage in set(policy["checkpoint_stages"])
+
+
+def artifact_checkpoint_from_state(
+    state: dict[str, Any],
+    *,
+    reason: str,
+    stage: str,
+) -> dict[str, Any]:
+    workpad = dict(state.get("workpad", {}))
+    template = state.get("execution_template", {}) or {}
+    checkpoint = ArtifactCheckpoint(
+        template_id=str(template.get("template_id", "")),
+        checkpoint_stage=stage,
+        reason=reason,
+        evidence_pack=dict(state.get("evidence_pack", {})),
+        assumption_ledger=list(state.get("assumption_ledger", [])),
+        provenance_map=dict(state.get("provenance_map", {})),
+        last_tool_result=state.get("last_tool_result"),
+        draft_answer=str(workpad.get("draft_answer", "")),
+        stage_outputs=dict(workpad.get("stage_outputs", {})),
+        review_feedback=state.get("review_feedback"),
+    )
+    return checkpoint.model_dump()
 
 
 def stage_is_review_milestone(template: dict[str, Any] | ExecutionTemplate | None, stage: str) -> bool:

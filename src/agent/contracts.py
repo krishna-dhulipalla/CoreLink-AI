@@ -166,3 +166,16 @@ class ReviewResult(BaseModel):
     reasoning: str = ""
     missing_dimensions: list[str] = Field(default_factory=list)
     repair_target: Literal["gather", "compute", "synthesize", "final"] = "final"
+
+
+class ArtifactCheckpoint(BaseModel):
+    template_id: str = ""
+    checkpoint_stage: str = ""
+    reason: str = ""
+    evidence_pack: dict[str, Any] = Field(default_factory=dict)
+    assumption_ledger: list[dict[str, Any]] = Field(default_factory=list)
+    provenance_map: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    last_tool_result: dict[str, Any] | None = None
+    draft_answer: str = ""
+    stage_outputs: dict[str, Any] = Field(default_factory=dict)
+    review_feedback: dict[str, Any] | None = None

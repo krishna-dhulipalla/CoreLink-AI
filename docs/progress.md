@@ -1212,6 +1212,73 @@ This file operates in a "Chat" structure. Whenever an agent finishes a major uni
      - no new unsafe tool drift was introduced by the document-evidence layer
 - **Handoff Notes:** Phase 4 is complete. Document tasks now carry structured evidence artifacts through the runtime instead of raw file blobs, and the live staged smoke proves the new document path on the active graph. The next phase should be `Selective Checkpoints and Backtracking`, not more document parsing expansion.
 
+### Chat 58: Architecture v3 Phase 5 - Selective Checkpoints and Backtracking
+
+- **Role:** Architect / Coder
+- **Date:** 2026-03-14
+- **Goal:** Execute Phase 5 of `docs/architecture_v3_implementation_plan.md` by adding artifact-level checkpoints and selective backtracking only where exactness and state consistency justify the cost.
+- **Actions Taken:**
+  1. Added an explicit checkpoint contract in `src/agent/contracts.py`:
+     - `ArtifactCheckpoint`
+  2. Added template-scoped checkpoint policy helpers in `src/agent/runtime_support.py`:
+     - `selective_checkpoint_policy()`
+     - `selective_backtracking_allowed()`
+     - `should_checkpoint_stage()`
+     - `artifact_checkpoint_from_state()`
+  3. Scoped checkpoint support to the intended templates only:
+     - `quant_with_tool_compute`
+     - `options_tool_backed`
+     - document gather templates (`document_qa`, `legal_with_document_evidence`)
+     - `quant_inline_exact` and `legal_reasoning_only` remain outside the heavy backtracking path
+  4. Reworked `src/agent/nodes/context_builder.py`:
+     - retired the old universal baseline checkpoint
+     - now seeds a baseline artifact checkpoint only when the selected template participates in Phase 5 checkpointing
+  5. Reworked `src/agent/nodes/reviewer.py`:
+     - retired the old message-history checkpoint/restore path
+     - backtracking now restores artifact state only:
+       - `EvidencePack`
+       - `AssumptionLedger`
+       - `ProvenanceMap`
+       - `last_tool_result`
+       - `draft_answer`
+       - `stage_outputs`
+       - `review_feedback`
+     - `backtrack` is now issued only when the template/stage policy allows it
+     - `legal_reasoning_only` no longer falls into the old heavy backtracking behavior
+     - stable checkpoints are recorded only on milestone PASS for allowed stages/templates
+  6. Updated test helpers and coverage:
+     - `tests/staged_test_utils.py`
+     - `tests/test_staged_context_builder.py`
+     - `tests/test_staged_reviewer.py`
+     - added targeted regressions for:
+       - options compute backtrack restore
+       - quant-with-tool-compute backtrack restore
+       - document gather backtrack restore
+       - legal-only no-heavy-backtrack behavior
+       - legal-only no-checkpoint-on-pass behavior
+- **Verification:**
+  - `python -m pytest tests/test_staged_context_builder.py tests/test_staged_reviewer.py -q` -> **18 passed**
+  - `python -m pytest tests -q` -> **55 passed, 2 skipped**
+  - `python scripts/run_staged_runtime_smoke.py` -> **ok: true**
+  - `python -m py_compile src/agent/contracts.py src/agent/runtime_support.py src/agent/nodes/context_builder.py src/agent/nodes/reviewer.py tests/staged_test_utils.py tests/test_staged_context_builder.py tests/test_staged_reviewer.py` -> **passed**
+  - `python scripts/run_live_staged_smoke.py` -> live staged smoke completed successfully
+- **Live Smoke Findings:**
+  1. `finance_quant`
+     - remained stable on `quant_inline_exact`
+     - no unintended heavy checkpoint path was introduced
+  2. `finance_options`
+     - remained stable on `options_tool_backed`
+     - completed with one tool-backed compute path and no regression in the active graph
+  3. `document_qa`
+     - remained stable on `document_qa`
+     - still followed the intended:
+       - `GATHER -> fetch_reference_file -> review -> SYNTHESIZE`
+     - no regression from the selective checkpoint layer
+  4. `legal_transactional`
+     - remained on `legal_reasoning_only`
+     - did not pick up the old global backtracking behavior
+- **Handoff Notes:** Phase 5 is complete. Backtracking is now local, template-scoped, and artifact-based instead of a universal reviewer ideology. The next phase should be `Offline Context Pack Curation`, not more online control complexity.
+
 ### Chat 55: Review of Phase 2 Implementation
 
 - **Role:** Reviewer
