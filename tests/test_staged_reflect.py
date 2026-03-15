@@ -97,3 +97,6 @@ def test_reflect_persists_run_tool_and_review_memory():
     assert stats["run_memory"] == 1
     assert stats["tool_memory"] == 1
     assert stats["review_memory"] == 1
+    assert stats["curation_memory"] == 1
+    signal = store.fetch_curation_signals(limit=10)[0]
+    assert signal["signal_type"] == "assumption_issue"

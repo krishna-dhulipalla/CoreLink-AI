@@ -1,7 +1,7 @@
 import sqlite3
 from pathlib import Path
 
-from agent.memory.schema import ReviewMemory, RunMemory, ToolMemory, task_signature
+from agent.memory.schema import CurationSignal, ReviewMemory, RunMemory, ToolMemory, task_signature
 from agent.memory.store import MemoryStore
 
 
@@ -22,10 +22,11 @@ def test_memory_store_resets_legacy_schema(tmp_path: Path):
     store = MemoryStore(str(db_path))
     stats = store.stats()
 
-    assert stats["schema_version"] == 2
+    assert stats["schema_version"] == 3
     assert stats["run_memory"] == 0
     assert stats["tool_memory"] == 0
     assert stats["review_memory"] == 0
+    assert stats["curation_memory"] == 0
 
 
 def test_memory_store_persists_staged_records(tmp_path: Path):
@@ -69,8 +70,24 @@ def test_memory_store_persists_staged_records(tmp_path: Path):
             success=True,
         )
     )
+    assert store.store_curation(
+        CurationSignal(
+            task_signature=sig,
+            task_profile="finance_quant",
+            task_family="finance",
+            template_id="quant_inline_exact",
+            signal_type="missing_dimension",
+            signal_key="scalar_answer",
+            summary="Final answer missed the scalar answer shape.",
+            stage="SYNTHESIZE",
+        )
+    )
 
     stats = store.stats()
     assert stats["run_memory"] == 1
     assert stats["tool_memory"] == 1
     assert stats["review_memory"] == 1
+    assert stats["curation_memory"] == 1
+
+    fetched = store.fetch_curation_signals(limit=10)
+    assert fetched[0]["signal_type"] == "missing_dimension"

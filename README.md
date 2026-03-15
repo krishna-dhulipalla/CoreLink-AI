@@ -12,6 +12,7 @@ The active request path is:
 A2A Request
   -> intake
   -> task_profiler
+  -> template_selector
   -> context_builder
   -> solver
        -> tool_runner -> solver
@@ -26,6 +27,7 @@ A2A Request
 | --- | --- |
 | `intake` | Normalizes the incoming request and extracts output-format requirements into an `AnswerContract`. |
 | `task_profiler` | Chooses a coarse `task_profile` and additive `capability_flags` without overcommitting to one brittle route. |
+| `template_selector` | Maps the profile decision to a static execution template with explicit stage, tool, and review policy. |
 | `context_builder` | Builds a typed `EvidencePack` from prompt facts, formulas, tables, file references, and derived domain signals. |
 | `solver` | Runs stage-based reasoning across `PLAN`, `GATHER`, `COMPUTE`, `SYNTHESIZE`, `REVISE`, and `COMPLETE`. |
 | `tool_runner` | Executes one allowed tool call and normalizes the result into a structured `ToolResult`. |
@@ -46,6 +48,10 @@ The runtime moves explicit artifacts between nodes:
 - `pending_tool_call`
 - `last_tool_result`
 - `review_feedback`
+- `profile_decision`
+- `execution_template`
+- `assumption_ledger`
+- `provenance_map`
 
 These contracts are defined in [src/agent/contracts.py](src/agent/contracts.py).
 
@@ -89,8 +95,11 @@ The active store is versioned and keeps staged-runtime records only:
 - `run_memory`
 - `tool_memory`
 - `review_memory`
+- `curation_memory`
 
 If the on-disk schema is incompatible with the current runtime, it is reset automatically. The store implementation is in [src/agent/memory/store.py](src/agent/memory/store.py).
+
+`curation_memory` is store-only. It exists to support offline profile-pack and template-policy curation and is not injected back into runtime prompts.
 
 ## Repository Layout
 
@@ -109,9 +118,13 @@ src/
     tool_normalization.py
     state.py
     memory/
+      curation.py
+      schema.py
+      store.py
     nodes/
       intake.py
       task_profiler.py
+      template_selector.py
       context_builder.py
       solver.py
       tool_runner.py

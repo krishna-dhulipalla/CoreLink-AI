@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 
+from agent.memory.curation import build_curation_signals
 from agent.memory.schema import ReviewMemory, RunMemory, ToolMemory, infer_memory_family, normalize_memory_text, task_signature
 from agent.runtime_clock import increment_runtime_step
 from agent.runtime_support import latest_human_text
@@ -130,6 +131,15 @@ def _persist_reviews(state: AgentState, task_text: str, workpad: dict) -> None:
         store.store_review(record)
 
 
+def _persist_curation(state: AgentState, task_text: str, workpad: dict) -> None:
+    store = state.get("memory_store")
+    if store is None:
+        return
+
+    for signal in build_curation_signals(state, task_text, workpad):
+        store.store_curation(signal)
+
+
 def reflect(state: AgentState) -> dict:
     step = increment_runtime_step()
     workpad = dict(state.get("workpad", {}))
@@ -140,6 +150,7 @@ def reflect(state: AgentState) -> dict:
         _persist_run(state, task_text, workpad)
         _persist_tools(state, task_text, workpad)
         _persist_reviews(state, task_text, workpad)
+        _persist_curation(state, task_text, workpad)
     except Exception as exc:
         logger.warning("[Memory] Failed to persist staged runtime memory: %s", exc)
 

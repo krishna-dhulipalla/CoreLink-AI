@@ -3,10 +3,11 @@ Memory Schemas
 ==============
 Versioned persistence records for the staged finance-first runtime.
 
-The active runtime persists three compact record types:
+The active runtime persists four compact record types:
   - RunMemory:    one record per completed graph run
   - ToolMemory:   one record per normalized tool execution
   - ReviewMemory: one record per reviewer verdict
+  - CurationSignal: one record per offline curation-worthy runtime signal
 
 These records are intentionally small and schema-versioned so future runtime
 changes can replace the on-disk format without inheriting stale coordinator-era
@@ -24,7 +25,7 @@ from pydantic import BaseModel, Field
 
 from agent.contracts import TaskProfile
 
-MEMORY_SCHEMA_VERSION = 2
+MEMORY_SCHEMA_VERSION = 3
 
 
 def task_signature(text: str) -> str:
@@ -116,5 +117,28 @@ class ReviewMemory(BaseModel):
     missing_dimensions: list[str] = Field(default_factory=list)
     reasoning: str = ""
     success: bool = True
+    timestamp: float = Field(default_factory=time.time)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class CurationSignal(BaseModel):
+    """Compact, store-only signal for offline context-pack curation."""
+
+    task_signature: str
+    task_profile: TaskProfile | str = "general"
+    task_family: str = "general"
+    template_id: str = ""
+    signal_type: Literal[
+        "missing_dimension",
+        "assumption_issue",
+        "missing_evidence",
+        "tool_failure",
+        "backtrack_pattern",
+    ]
+    signal_key: str
+    summary: str
+    stage: str = ""
+    success: bool = False
+    count_hint: int = 1
     timestamp: float = Field(default_factory=time.time)
     metadata: dict[str, Any] = Field(default_factory=dict)

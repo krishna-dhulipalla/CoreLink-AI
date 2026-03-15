@@ -1212,6 +1212,66 @@ This file operates in a "Chat" structure. Whenever an agent finishes a major uni
      - no new unsafe tool drift was introduced by the document-evidence layer
 - **Handoff Notes:** Phase 4 is complete. Document tasks now carry structured evidence artifacts through the runtime instead of raw file blobs, and the live staged smoke proves the new document path on the active graph. The next phase should be `Selective Checkpoints and Backtracking`, not more document parsing expansion.
 
+### Chat 59: Architecture v3 Phase 6 - Offline Context Pack Curation and Repo Cleanup
+
+- **Role:** Architect / Coder
+- **Date:** 2026-03-15
+- **Goal:** Execute Phase 6 of `docs/architecture_v3_implementation_plan.md` by adding store-only offline context-pack curation, cleaning stale v2-era artifacts, and documenting the current v3 checkpoint clearly.
+- **Actions Taken:**
+  1. Added a store-only curation layer to staged runtime persistence:
+     - introduced `CurationSignal` in `src/agent/memory/schema.py`
+     - bumped `MEMORY_SCHEMA_VERSION` to `3`
+     - added `curation_memory` table and grouped indexes in `src/agent/memory/store.py`
+     - added `store_curation()` and `fetch_curation_signals()` APIs
+  2. Added deterministic offline curation helpers in `src/agent/memory/curation.py`:
+     - `build_curation_signals()`
+     - `summarize_curation_signals()`
+     - signals now capture:
+       - repeated missing dimensions
+       - assumption disclosure issues
+       - missing evidence patterns
+       - tool failure patterns
+       - selective backtrack patterns
+  3. Wired `src/agent/nodes/reflect.py` to persist curation signals after each completed run without injecting any new runtime memory behavior.
+  4. Added offline curation runner:
+     - `scripts/run_context_pack_curation.py`
+  5. Fixed two Phase 6 signal-quality bugs discovered during live validation:
+     - pass-stage evidence notes were being misclassified as missing-evidence failures
+     - already-disclosed assumptions were being incorrectly counted as unresolved failures
+  6. Cleaned stale v2-era artifacts:
+     - removed `src/agent/pruning.py`
+     - removed outdated docs:
+       - `docs/core_foundations.md`
+       - `docs/semantic_memory_future_plan.md`
+     - removed stale `architecture_trace()` carryover from `src/agent/cost.py`
+  7. Updated public-facing architecture docs to match the active graph:
+     - refreshed `README.md`
+     - replaced `docs/architecture.svg`
+     - added `docs/v3_checkpoint.md`
+  8. Confirmed the memory reset path still works for future schema changes:
+     - incompatible on-disk DBs are auto-reset
+     - fresh runtime writes now use the new four-table staged schema only
+- **Verification:**
+  - `python -m pytest tests -q` -> **58 passed, 2 skipped**
+  - `python -m py_compile src/agent/memory/schema.py src/agent/memory/store.py src/agent/memory/curation.py src/agent/nodes/reflect.py src/agent/cost.py scripts/run_context_pack_curation.py` -> **passed**
+  - `python scripts/run_staged_runtime_smoke.py` -> **ok: true**
+  - `python scripts/run_context_pack_curation.py` -> produced deterministic offline curation summary from stored signals
+  - `python scripts/run_live_staged_smoke.py` -> live staged smoke completed successfully
+- **Live Smoke Findings:**
+  1. The active v3 graph remains stable across:
+     - `finance_quant`
+     - `finance_options`
+     - `legal_transactional`
+     - `mixed_legal_math`
+     - `document_qa`
+  2. Offline curation now behaves correctly:
+     - no false `missing_evidence` signal from successful gather-stage reviews
+     - disclosed options assumptions are observed but no longer promoted into false offline recommendations
+  3. One known live limitation remains:
+     - `task_profiler` and `reviewer` still sometimes miss strict JSON/schema output on the live Qwen/Nebius path and fall back to deterministic parsing logic
+     - this is now a model/runtime-quality issue, not a broken control-flow issue
+- **Handoff Notes:** Phase 6 is complete. The runtime now has a clean store-only offline curation loop, stale v2 artifacts are removed, and the repo has an explicit `v3` checkpoint document. This is a good stop point before any new architecture work.
+
 ### Chat 58: Architecture v3 Phase 5 - Selective Checkpoints and Backtracking
 
 - **Role:** Architect / Coder

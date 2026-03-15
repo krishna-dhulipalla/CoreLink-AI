@@ -19,7 +19,7 @@ import sqlite3
 import threading
 from pathlib import Path
 
-from agent.memory.schema import MEMORY_SCHEMA_VERSION, ReviewMemory, RunMemory, ToolMemory
+from agent.memory.schema import CurationSignal, MEMORY_SCHEMA_VERSION, ReviewMemory, RunMemory, ToolMemory
 
 logger = logging.getLogger(__name__)
 
@@ -88,9 +88,27 @@ CREATE TABLE IF NOT EXISTS review_memory (
     metadata_json      TEXT DEFAULT '{}'
 );
 
+CREATE TABLE IF NOT EXISTS curation_memory (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_sig       TEXT NOT NULL,
+    task_profile   TEXT NOT NULL,
+    task_family    TEXT DEFAULT 'general',
+    template_id    TEXT DEFAULT '',
+    signal_type    TEXT NOT NULL,
+    signal_key     TEXT NOT NULL,
+    summary        TEXT DEFAULT '',
+    stage          TEXT DEFAULT '',
+    success        INTEGER NOT NULL,
+    count_hint     INTEGER DEFAULT 1,
+    timestamp      REAL NOT NULL,
+    metadata_json  TEXT DEFAULT '{}'
+);
+
 CREATE INDEX IF NOT EXISTS idx_run_sig    ON run_memory(task_sig);
 CREATE INDEX IF NOT EXISTS idx_tool_sig   ON tool_memory(task_sig);
 CREATE INDEX IF NOT EXISTS idx_review_sig ON review_memory(task_sig);
+CREATE INDEX IF NOT EXISTS idx_curation_sig ON curation_memory(task_sig);
+CREATE INDEX IF NOT EXISTS idx_curation_group ON curation_memory(task_profile, template_id, signal_type, signal_key);
 """
 
 _EXPECTED_COLUMNS = {
@@ -142,6 +160,21 @@ _EXPECTED_COLUMNS = {
         "missing_dimensions",
         "reasoning",
         "success",
+        "timestamp",
+        "metadata_json",
+    },
+    "curation_memory": {
+        "id",
+        "task_sig",
+        "task_profile",
+        "task_family",
+        "template_id",
+        "signal_type",
+        "signal_key",
+        "summary",
+        "stage",
+        "success",
+        "count_hint",
         "timestamp",
         "metadata_json",
     },
@@ -204,6 +237,7 @@ class MemoryStore:
                 DROP TABLE IF EXISTS run_memory;
                 DROP TABLE IF EXISTS tool_memory;
                 DROP TABLE IF EXISTS review_memory;
+                DROP TABLE IF EXISTS curation_memory;
                 """
             )
             conn.executescript(_DDL)
@@ -324,6 +358,79 @@ class MemoryStore:
         conn.commit()
         return True
 
+    def store_curation(self, rec: CurationSignal) -> bool:
+        conn = self._get_conn()
+        self._evict_oldest("curation_memory")
+        conn.execute(
+            """
+            INSERT INTO curation_memory (
+                task_sig, task_profile, task_family, template_id, signal_type, signal_key,
+                summary, stage, success, count_hint, timestamp, metadata_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                rec.task_signature,
+                str(rec.task_profile),
+                rec.task_family,
+                rec.template_id,
+                rec.signal_type,
+                rec.signal_key,
+                rec.summary,
+                rec.stage,
+                int(rec.success),
+                rec.count_hint,
+                rec.timestamp,
+                json.dumps(rec.metadata),
+            ),
+        )
+        conn.commit()
+        return True
+
+    def fetch_curation_signals(self, *, task_profile: str | None = None, limit: int = 1000) -> list[dict]:
+        conn = self._get_conn()
+        if task_profile:
+            rows = conn.execute(
+                """
+                SELECT task_sig, task_profile, task_family, template_id, signal_type, signal_key,
+                       summary, stage, success, count_hint, timestamp, metadata_json
+                FROM curation_memory
+                WHERE task_profile = ?
+                ORDER BY timestamp ASC, id ASC
+                LIMIT ?
+                """,
+                (task_profile, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT task_sig, task_profile, task_family, template_id, signal_type, signal_key,
+                       summary, stage, success, count_hint, timestamp, metadata_json
+                FROM curation_memory
+                ORDER BY timestamp ASC, id ASC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        records: list[dict] = []
+        for row in rows:
+            records.append(
+                {
+                    "task_signature": row["task_sig"],
+                    "task_profile": row["task_profile"],
+                    "task_family": row["task_family"],
+                    "template_id": row["template_id"],
+                    "signal_type": row["signal_type"],
+                    "signal_key": row["signal_key"],
+                    "summary": row["summary"],
+                    "stage": row["stage"],
+                    "success": bool(row["success"]),
+                    "count_hint": int(row["count_hint"]),
+                    "timestamp": float(row["timestamp"]),
+                    "metadata": json.loads(row["metadata_json"] or "{}"),
+                }
+            )
+        return records
+
     def stats(self) -> dict[str, int]:
         conn = self._get_conn()
         return {
@@ -331,4 +438,5 @@ class MemoryStore:
             "run_memory": conn.execute("SELECT COUNT(*) FROM run_memory").fetchone()[0],
             "tool_memory": conn.execute("SELECT COUNT(*) FROM tool_memory").fetchone()[0],
             "review_memory": conn.execute("SELECT COUNT(*) FROM review_memory").fetchone()[0],
+            "curation_memory": conn.execute("SELECT COUNT(*) FROM curation_memory").fetchone()[0],
         }

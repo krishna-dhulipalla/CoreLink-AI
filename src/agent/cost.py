@@ -1,8 +1,7 @@
 """
 Cost Tracker: Per-Run Token, Latency & Cost Accounting
-========================================================
+======================================================
 Tracks every LLM call and MCP tool invocation during a graph run.
-Produces an architecture trace suitable for future controller learning.
 """
 
 import time
@@ -129,6 +128,3 @@ class CostTracker:
             "any_failure": any(not t.success for t in self.traces),
         }
 
-    def architecture_trace(self) -> list[dict]:
-        """Serialize all traces for state persistence."""
-        return [t.to_dict() for t in self.traces]

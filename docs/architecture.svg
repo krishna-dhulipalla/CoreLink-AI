@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760" width="100%" height="100%">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1300 760" width="100%" height="100%">
   <style>
     .bg { fill: #f8fafc; stroke: #dbe5ef; stroke-width: 1.5; rx: 18; }
     .box { fill: #ffffff; stroke: #94a3b8; stroke-width: 2; rx: 14; }
@@ -21,93 +21,108 @@
     </marker>
   </defs>
 
-  <rect x="60" y="70" width="810" height="560" class="bg"/>
-  <text x="465" y="100" class="text-small">Active Staged Runtime</text>
+  <rect x="60" y="70" width="900" height="600" class="bg"/>
+  <text x="510" y="102" class="text-small">Active v3 Staged Runtime</text>
 
-  <rect x="920" y="70" width="220" height="560" class="bg"/>
-  <text x="1030" y="100" class="text-small">Persistence</text>
+  <rect x="1000" y="70" width="240" height="600" class="bg"/>
+  <text x="1120" y="102" class="text-small">Persistence and Offline Curation</text>
 
-  <rect x="365" y="30" width="200" height="54" class="box-accent"/>
-  <text x="465" y="63" class="text-title">A2A Request</text>
+  <rect x="410" y="24" width="200" height="54" class="box-accent"/>
+  <text x="510" y="58" class="text-title">A2A Request</text>
 
-  <rect x="365" y="130" width="200" height="58" class="box"/>
-  <text x="465" y="164" class="text-title">Intake</text>
-  <text x="465" y="184" class="text-body">Normalize input + extract answer contract</text>
+  <rect x="410" y="115" width="200" height="58" class="box"/>
+  <text x="510" y="149" class="text-title">Intake</text>
+  <text x="510" y="169" class="text-body">Normalize request and answer contract</text>
 
-  <rect x="365" y="225" width="200" height="58" class="box"/>
-  <text x="465" y="258" class="text-title">Task Profiler</text>
-  <text x="465" y="278" class="text-body">Choose task profile + capability flags</text>
+  <rect x="410" y="205" width="200" height="58" class="box"/>
+  <text x="510" y="239" class="text-title">Task Profiler</text>
+  <text x="510" y="259" class="text-body">primary_profile + capability flags + ambiguity flags</text>
 
-  <rect x="365" y="320" width="200" height="72" class="box"/>
-  <text x="465" y="354" class="text-title">Context Builder</text>
-  <text x="465" y="376" class="text-body">Assemble evidence pack</text>
-  <text x="465" y="394" class="text-small">facts, formulas, tables, files, signals</text>
+  <rect x="410" y="295" width="200" height="58" class="box"/>
+  <text x="510" y="329" class="text-title">Template Selector</text>
+  <text x="510" y="349" class="text-body">Pick one static execution template</text>
 
-  <rect x="170" y="470" width="220" height="86" class="box"/>
-  <text x="280" y="504" class="text-title">Solver</text>
-  <text x="280" y="526" class="text-body">PLAN / GATHER / COMPUTE /</text>
-  <text x="280" y="544" class="text-body">SYNTHESIZE / REVISE / COMPLETE</text>
+  <rect x="410" y="385" width="200" height="74" class="box"/>
+  <text x="510" y="419" class="text-title">Context Builder</text>
+  <text x="510" y="441" class="text-body">Build EvidencePack, AssumptionLedger,</text>
+  <text x="510" y="459" class="text-small">ProvenanceMap, document evidence</text>
 
-  <rect x="465" y="470" width="220" height="86" class="box"/>
-  <text x="575" y="504" class="text-title">Tool Runner</text>
-  <text x="575" y="526" class="text-body">Execute one tool call</text>
-  <text x="575" y="544" class="text-body">Return normalized ToolResult</text>
+  <rect x="155" y="520" width="240" height="94" class="box"/>
+  <text x="275" y="554" class="text-title">Solver</text>
+  <text x="275" y="576" class="text-body">PLAN / GATHER / COMPUTE /</text>
+  <text x="275" y="594" class="text-body">SYNTHESIZE / REVISE / COMPLETE</text>
 
-  <rect x="170" y="590" width="220" height="86" class="box"/>
-  <text x="280" y="624" class="text-title">Reviewer</text>
-  <text x="280" y="646" class="text-body">Milestone + final review only</text>
-  <text x="280" y="664" class="text-small">pass / revise / backtrack</text>
+  <rect x="445" y="520" width="240" height="94" class="box"/>
+  <text x="565" y="554" class="text-title">Tool Runner</text>
+  <text x="565" y="576" class="text-body">One allowed tool call per step</text>
+  <text x="565" y="594" class="text-body">Normalized ToolResult -> solver</text>
 
-  <rect x="465" y="590" width="220" height="86" class="box"/>
-  <text x="575" y="624" class="text-title">Output Adapter</text>
-  <text x="575" y="646" class="text-body">Apply exact JSON / XML wrapping</text>
-  <text x="575" y="664" class="text-small">No substantive answer changes</text>
+  <rect x="155" y="640" width="240" height="94" class="box"/>
+  <text x="275" y="674" class="text-title">Reviewer</text>
+  <text x="275" y="696" class="text-body">Milestone and final review only</text>
+  <text x="275" y="714" class="text-small">pass / revise / selective backtrack</text>
 
-  <rect x="710" y="590" width="140" height="86" class="box-accent"/>
-  <text x="780" y="624" class="text-title">Reflect</text>
-  <text x="780" y="646" class="text-body">Finalize run</text>
-  <text x="780" y="664" class="text-body">Persist memory</text>
+  <rect x="445" y="640" width="240" height="94" class="box"/>
+  <text x="565" y="674" class="text-title">Output Adapter</text>
+  <text x="565" y="696" class="text-body">Apply exact JSON / XML wrapping</text>
+  <text x="565" y="714" class="text-small">No substantive answer edits</text>
 
-  <rect x="95" y="210" width="200" height="110" class="box-side"/>
-  <text x="195" y="238" class="text-title">Runtime Artifacts</text>
-  <text x="195" y="262" class="text-small">task_profile</text>
-  <text x="195" y="280" class="text-small">capability_flags</text>
-  <text x="195" y="298" class="text-small">answer_contract</text>
-  <text x="195" y="316" class="text-small">evidence_pack</text>
+  <rect x="735" y="640" width="150" height="94" class="box-accent"/>
+  <text x="810" y="674" class="text-title">Reflect</text>
+  <text x="810" y="696" class="text-body">Persist staged runtime records</text>
+  <text x="810" y="714" class="text-body">and offline curation signals</text>
 
-  <rect x="620" y="210" width="200" height="110" class="box-side"/>
-  <text x="720" y="238" class="text-title">Tool Contract</text>
-  <text x="720" y="262" class="text-small">type</text>
-  <text x="720" y="280" class="text-small">facts</text>
-  <text x="720" y="298" class="text-small">assumptions</text>
-  <text x="720" y="316" class="text-small">source / errors</text>
+  <rect x="105" y="205" width="230" height="158" class="box-side"/>
+  <text x="220" y="235" class="text-title">Runtime Artifacts</text>
+  <text x="220" y="262" class="text-small">ProfileDecision</text>
+  <text x="220" y="282" class="text-small">ExecutionTemplate</text>
+  <text x="220" y="302" class="text-small">AnswerContract</text>
+  <text x="220" y="322" class="text-small">EvidencePack</text>
+  <text x="220" y="342" class="text-small">AssumptionLedger</text>
+  <text x="220" y="362" class="text-small">ProvenanceMap</text>
 
-  <rect x="955" y="155" width="150" height="86" class="box-side"/>
-  <text x="1030" y="188" class="text-title">SQLite Memory</text>
-  <text x="1030" y="210" class="text-body">Versioned schema</text>
-  <text x="1030" y="228" class="text-small">auto-reset on mismatch</text>
+  <rect x="680" y="205" width="230" height="158" class="box-side"/>
+  <text x="795" y="235" class="text-title">Tool Contract</text>
+  <text x="795" y="262" class="text-small">type</text>
+  <text x="795" y="282" class="text-small">facts</text>
+  <text x="795" y="302" class="text-small">assumptions</text>
+  <text x="795" y="322" class="text-small">source</text>
+  <text x="795" y="342" class="text-small">errors</text>
 
-  <rect x="955" y="300" width="150" height="176" class="box-side"/>
-  <text x="1030" y="332" class="text-title">Stored Records</text>
-  <text x="1030" y="360" class="text-small">run_memory</text>
-  <text x="1030" y="382" class="text-small">tool_memory</text>
-  <text x="1030" y="404" class="text-small">review_memory</text>
-  <text x="1030" y="440" class="text-small">store-only in v1</text>
+  <rect x="1035" y="150" width="170" height="92" class="box-side"/>
+  <text x="1120" y="185" class="text-title">SQLite Memory</text>
+  <text x="1120" y="207" class="text-body">Versioned schema</text>
+  <text x="1120" y="225" class="text-small">auto-reset on mismatch</text>
 
-  <line x1="465" y1="84" x2="465" y2="128" class="line" marker-end="url(#arrow)"/>
-  <line x1="465" y1="188" x2="465" y2="223" class="line" marker-end="url(#arrow)"/>
-  <line x1="465" y1="283" x2="465" y2="318" class="line" marker-end="url(#arrow)"/>
-  <line x1="465" y1="392" x2="465" y2="432" class="line" marker-end="url(#arrow)"/>
+  <rect x="1035" y="285" width="170" height="206" class="box-side"/>
+  <text x="1120" y="320" class="text-title">Stored Records</text>
+  <text x="1120" y="350" class="text-small">run_memory</text>
+  <text x="1120" y="372" class="text-small">tool_memory</text>
+  <text x="1120" y="394" class="text-small">review_memory</text>
+  <text x="1120" y="416" class="text-small">curation_memory</text>
+  <text x="1120" y="452" class="text-small">store-only</text>
+  <text x="1120" y="470" class="text-small">offline curation only</text>
 
-  <path d="M 465 432 C 465 455 350 455 280 468" class="line" marker-end="url(#arrow)"/>
-  <path d="M 390 513 C 425 513 430 513 463 513" class="line" marker-end="url(#arrow)"/>
-  <path d="M 575 556 C 575 575 405 575 290 590" class="line" marker-end="url(#arrow)"/>
-  <path d="M 390 633 C 425 633 430 633 463 633" class="line" marker-end="url(#arrow)"/>
-  <line x1="685" y1="633" x2="708" y2="633" class="line" marker-end="url(#arrow)"/>
+  <rect x="1035" y="530" width="170" height="118" class="box-side"/>
+  <text x="1120" y="565" class="text-title">Offline Curation</text>
+  <text x="1120" y="590" class="text-small">profile pack updates</text>
+  <text x="1120" y="610" class="text-small">reviewer dimension updates</text>
+  <text x="1120" y="630" class="text-small">template policy updates</text>
 
-  <path d="M 280 590 C 280 570 280 560 280 558" class="line-soft" marker-end="url(#arrow-soft)"/>
-  <text x="215" y="572" class="text-small">revise / backtrack</text>
+  <line x1="510" y1="78" x2="510" y2="113" class="line" marker-end="url(#arrow)"/>
+  <line x1="510" y1="173" x2="510" y2="203" class="line" marker-end="url(#arrow)"/>
+  <line x1="510" y1="263" x2="510" y2="293" class="line" marker-end="url(#arrow)"/>
+  <line x1="510" y1="353" x2="510" y2="383" class="line" marker-end="url(#arrow)"/>
+  <path d="M 510 459 C 510 490 355 495 275 518" class="line" marker-end="url(#arrow)"/>
+  <path d="M 395 567 C 420 567 425 567 443 567" class="line" marker-end="url(#arrow)"/>
+  <path d="M 565 614 C 565 632 392 632 280 640" class="line" marker-end="url(#arrow)"/>
+  <path d="M 395 687 C 420 687 425 687 443 687" class="line" marker-end="url(#arrow)"/>
+  <line x1="685" y1="687" x2="733" y2="687" class="line" marker-end="url(#arrow)"/>
 
-  <path d="M 780 590 C 780 510 940 510 1030 478" class="line-soft" marker-end="url(#arrow-soft)"/>
-  <path d="M 1030 240 C 1030 265 1030 275 1030 298" class="line-soft" marker-end="url(#arrow-soft)"/>
+  <path d="M 275 640 C 275 620 275 615 275 614" class="line-soft" marker-end="url(#arrow-soft)"/>
+  <text x="210" y="624" class="text-small">revise / selective backtrack</text>
+
+  <path d="M 810 640 C 810 520 1025 520 1120 493" class="line-soft" marker-end="url(#arrow-soft)"/>
+  <path d="M 1120 242 C 1120 260 1120 274 1120 283" class="line-soft" marker-end="url(#arrow-soft)"/>
+  <path d="M 1120 491 C 1120 506 1120 516 1120 528" class="line-soft" marker-end="url(#arrow-soft)"/>
 </svg>
