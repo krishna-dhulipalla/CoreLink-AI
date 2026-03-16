@@ -41,6 +41,13 @@ def _tool_registry(tool_node: ToolNode) -> dict[str, Any]:
     return {getattr(tool, "name", ""): tool for tool in tools if getattr(tool, "name", "")}
 
 
+def _extract_tool_call_id(state: AgentState) -> str:
+    for msg in reversed(state.get("messages", [])):
+        if isinstance(msg, AIMessage) and msg.tool_calls:
+            return msg.tool_calls[-1].get("id", "unknown")
+    return "unknown"
+
+
 
 def make_tool_runner(tool_node: ToolNode):
     async def tool_runner(state: AgentState) -> dict:
@@ -63,6 +70,7 @@ def make_tool_runner(tool_node: ToolNode):
                 errors=["Missing pending tool call."],
             )
             return {
+                "messages": [ToolMessage(content=json.dumps(tool_result.model_dump(), ensure_ascii=True), name="unknown", tool_call_id=_extract_tool_call_id(state))],
                 "last_tool_result": tool_result.model_dump(),
                 "pending_tool_call": None,
                 "tool_fail_count": state.get("tool_fail_count", 0) + 1,
@@ -80,6 +88,7 @@ def make_tool_runner(tool_node: ToolNode):
             workpad.setdefault("tool_results", []).append(tool_result.model_dump())
             workpad.setdefault("events", []).append({"node": "tool_runner", "action": f"blocked {tool_name}"})
             return {
+                "messages": [ToolMessage(content=json.dumps(tool_result.model_dump(), ensure_ascii=True), name=tool_name, tool_call_id=_extract_tool_call_id(state))],
                 "last_tool_result": tool_result.model_dump(),
                 "pending_tool_call": None,
                 "tool_fail_count": state.get("tool_fail_count", 0) + 1,
@@ -98,6 +107,7 @@ def make_tool_runner(tool_node: ToolNode):
             workpad.setdefault("tool_results", []).append(tool_result.model_dump())
             workpad.setdefault("events", []).append({"node": "tool_runner", "action": f"missing tool {tool_name}"})
             return {
+                "messages": [ToolMessage(content=json.dumps(tool_result.model_dump(), ensure_ascii=True), name=tool_name, tool_call_id=_extract_tool_call_id(state))],
                 "last_tool_result": tool_result.model_dump(),
                 "pending_tool_call": None,
                 "tool_fail_count": state.get("tool_fail_count", 0) + 1,
