@@ -414,6 +414,94 @@ def test_solver_builds_deterministic_options_compute_summary_after_scenario_tool
     assert "max loss" in compute_text
 
 
+def test_solver_builds_deterministic_options_final_answer_after_risk_pass(monkeypatch):
+    monkeypatch.setattr("agent.nodes.solver.ChatOpenAI", lambda **kwargs: _FakeModel(AIMessage(content="unused")))
+    monkeypatch.setattr("agent.nodes.solver._tool_call_mode", lambda role: "prompt")
+
+    solver = make_solver([])
+    state = make_state(
+        "Should you be a net buyer or seller of options when IV is elevated?",
+        task_profile="finance_options",
+        capability_flags=["needs_options_engine"],
+        solver_stage="SYNTHESIZE",
+        evidence_pack={"derived_facts": {"vol_bias": "short_vol"}},
+        execution_template={
+            "template_id": "options_tool_backed",
+            "allowed_stages": ["COMPUTE", "SYNTHESIZE", "REVISE", "COMPLETE"],
+            "default_initial_stage": "COMPUTE",
+            "allowed_tool_names": ["analyze_strategy", "scenario_pnl"],
+            "review_stages": ["COMPUTE", "SYNTHESIZE"],
+            "review_cadence": "milestone_and_final",
+            "answer_focus": [],
+        },
+        assumption_ledger=[
+            {
+                "key": "spot_price",
+                "assumption": "Spot price was assumed as 300.0 from tool arguments because it was not explicit in prompt evidence.",
+                "source": "tool_arguments:analyze_strategy",
+                "confidence": "medium",
+                "requires_user_visible_disclosure": True,
+                "review_status": "pending",
+            }
+        ],
+        workpad={
+            "events": [],
+            "stage_outputs": {},
+            "tool_results": [
+                {
+                    "type": "analyze_strategy",
+                    "facts": {
+                        "net_premium": 15.33,
+                        "premium_direction": "CREDIT",
+                        "total_delta": -0.0729,
+                        "total_gamma": -0.025,
+                        "total_theta_per_day": 0.4177,
+                        "total_vega_per_vol_point": -0.6467,
+                    },
+                    "assumptions": {
+                        "legs": [
+                            {"option_type": "put", "action": "sell", "S": 300.0, "K": 290.0},
+                            {"option_type": "call", "action": "sell", "S": 300.0, "K": 310.0},
+                        ]
+                    },
+                    "source": {"tool": "analyze_strategy"},
+                    "errors": [],
+                },
+                {
+                    "type": "scenario_pnl",
+                    "facts": {"best_case_pnl": 0.42, "worst_case_pnl": -20.92},
+                    "assumptions": {"reference_price": 300.0},
+                    "source": {"tool": "scenario_pnl"},
+                    "errors": [],
+                },
+            ],
+            "risk_results": [{"verdict": "pass"}],
+            "risk_requirements": {
+                "required_disclosures": [
+                    "Explicitly disclose short-volatility / volatility-spike risk.",
+                    "Explicitly disclose potentially unbounded tail loss and gap risk.",
+                    "State downside scenario loss and the exit or sizing response.",
+                ],
+                "recommendation_class": "scenario_dependent_recommendation",
+            },
+        },
+    )
+
+    result = solver(state)
+
+    assert result["workpad"]["review_ready"] is True
+    assert result["workpad"]["review_stage"] == "SYNTHESIZE"
+    content = result["messages"][0].content.lower()
+    assert "recommendation" in content
+    assert "alternative strategy comparison" in content
+    assert "key greeks and breakevens" in content
+    assert "risk management" in content
+    assert "disclosures" in content
+    assert "short-volatility / volatility-spike risk" in content
+    assert "tail loss and gap risk" in content
+    assert "assumption" in content
+
+
 def test_solver_document_gather_prompt_requires_targeted_extraction(monkeypatch):
     fake_model = _FakeModel(AIMessage(content='{"name":"fetch_reference_file","arguments":{"url":"https://example.com/report.csv","row_limit":25}}'))
     monkeypatch.setattr("agent.nodes.solver.ChatOpenAI", lambda **kwargs: fake_model)

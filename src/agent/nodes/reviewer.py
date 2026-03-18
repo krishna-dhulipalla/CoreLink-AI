@@ -152,10 +152,12 @@ def _has_undisclosed_required_assumption(state: AgentState, answer_text: str) ->
 
 
 def _has_risk_required_disclosures(answer_text: str, disclosures: list[str]) -> bool:
-    normalized = re.sub(r"\s+", " ", (answer_text or "").lower()).strip()
+    normalized = re.sub(r"[-/]+", " ", (answer_text or "").lower())
+    normalized = re.sub(r"\s+", " ", normalized).strip()
     for disclosure in disclosures:
-        lowered = str(disclosure).lower()
-        if "short-volatility" in lowered or "volatility-spike" in lowered:
+        lowered = re.sub(r"[-/]+", " ", str(disclosure).lower())
+        lowered = re.sub(r"\s+", " ", lowered).strip()
+        if "short volatility" in lowered or "volatility spike" in lowered:
             if not any(token in normalized for token in ("short vol", "vol spike", "volatility spike")):
                 return False
         elif "tail loss" in lowered or "gap risk" in lowered or "unbounded" in lowered:

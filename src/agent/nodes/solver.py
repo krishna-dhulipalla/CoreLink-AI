@@ -446,6 +446,183 @@ def _deterministic_options_compute_summary(state: AgentState) -> str | None:
     return " ".join(summary_lines)
 
 
+def _infer_options_strategy_label(primary_tool: dict[str, Any]) -> str:
+    assumptions = primary_tool.get("assumptions", {}) if isinstance(primary_tool, dict) else {}
+    legs = assumptions.get("legs")
+    if isinstance(legs, list) and legs:
+        short_calls: list[float] = []
+        short_puts: list[float] = []
+        long_calls = 0
+        long_puts = 0
+        for leg in legs:
+            if not isinstance(leg, dict):
+                continue
+            option_type = str(leg.get("option_type", "")).lower()
+            action = str(leg.get("action", "")).lower()
+            strike = leg.get("K")
+            if action == "sell" and option_type == "call" and isinstance(strike, (int, float)):
+                short_calls.append(float(strike))
+            elif action == "sell" and option_type == "put" and isinstance(strike, (int, float)):
+                short_puts.append(float(strike))
+            elif action == "buy" and option_type == "call":
+                long_calls += 1
+            elif action == "buy" and option_type == "put":
+                long_puts += 1
+        if short_calls and short_puts and long_calls and long_puts:
+            return "iron condor"
+        if short_calls and short_puts:
+            if len(short_calls) == 1 and len(short_puts) == 1 and abs(short_calls[0] - short_puts[0]) < 1e-9:
+                return "short straddle"
+            return "short strangle"
+    if str(primary_tool.get("type", "")) == "black_scholes_price":
+        return "single-option premium sale"
+    return "options premium strategy"
+
+
+def _infer_breakeven_text(primary_tool: dict[str, Any]) -> str:
+    facts = primary_tool.get("facts", {}) if isinstance(primary_tool, dict) else {}
+    assumptions = primary_tool.get("assumptions", {}) if isinstance(primary_tool, dict) else {}
+    if isinstance(facts.get("breakeven"), (int, float)):
+        return f"{float(facts['breakeven']):.2f}"
+    net_premium = facts.get("net_premium")
+    legs = assumptions.get("legs")
+    if isinstance(net_premium, (int, float)) and isinstance(legs, list):
+        short_calls: list[float] = []
+        short_puts: list[float] = []
+        for leg in legs:
+            if not isinstance(leg, dict) or str(leg.get("action", "")).lower() != "sell":
+                continue
+            strike = leg.get("K")
+            if not isinstance(strike, (int, float)):
+                continue
+            option_type = str(leg.get("option_type", "")).lower()
+            if option_type == "call":
+                short_calls.append(float(strike))
+            elif option_type == "put":
+                short_puts.append(float(strike))
+        if short_calls and short_puts:
+            lower = min(short_puts) - float(net_premium)
+            upper = max(short_calls) + float(net_premium)
+            return f"{lower:.2f} / {upper:.2f}"
+    return "manage around the short strikes adjusted by collected premium"
+
+
+def _deterministic_options_final_answer(state: AgentState) -> str | None:
+    workpad = state.get("workpad", {}) or {}
+    risk_results = list(workpad.get("risk_results", []))
+    if not risk_results or str(risk_results[-1].get("verdict", "")) != "pass":
+        return None
+
+    primary_tool = _latest_successful_tool_result(
+        list(workpad.get("tool_results", [])),
+        {"analyze_strategy", "black_scholes_price", "option_greeks", "mispricing_analysis"},
+    )
+    scenario_result = _latest_successful_tool_result(
+        list(workpad.get("tool_results", [])),
+        {"scenario_pnl", "run_stress_test", "calculate_var", "portfolio_limit_check", "concentration_check", "calculate_portfolio_greeks"},
+    )
+    if primary_tool is None or scenario_result is None:
+        return None
+
+    primary_facts = primary_tool.get("facts", {}) if isinstance(primary_tool, dict) else {}
+    primary_assumptions = primary_tool.get("assumptions", {}) if isinstance(primary_tool, dict) else {}
+    scenario_facts = scenario_result.get("facts", {}) if isinstance(scenario_result, dict) else {}
+    derived_facts = (state.get("evidence_pack", {}) or {}).get("derived_facts", {}) or {}
+    risk_requirements = workpad.get("risk_requirements") or {}
+    strategy_label = _infer_options_strategy_label(primary_tool)
+    recommendation = "net seller of options" if derived_facts.get("vol_bias") == "short_vol" else "options seller with scenario-dependent conviction"
+    net_premium = primary_facts.get("net_premium")
+    premium_direction = str(primary_facts.get("premium_direction", "credit")).upper()
+    delta = primary_facts.get("total_delta", primary_facts.get("delta"))
+    gamma = primary_facts.get("total_gamma", primary_facts.get("gamma"))
+    theta = primary_facts.get("total_theta_per_day", primary_facts.get("theta"))
+    vega = primary_facts.get("total_vega_per_vol_point", primary_facts.get("vega"))
+    max_loss = primary_facts.get("max_loss")
+    breakevens = _infer_breakeven_text(primary_tool)
+    worst_case_pnl = scenario_facts.get("worst_case_pnl")
+    best_case_pnl = scenario_facts.get("best_case_pnl")
+    reference_price = _reference_price_from_tool(primary_tool)
+
+    alternative = "iron condor with defined wings" if strategy_label in {"short straddle", "short strangle"} else "defined-risk spread"
+    tradeoff = "lower premium but better tail-risk control" if alternative == "iron condor with defined wings" else "more controlled downside at the cost of smaller carry"
+
+    disclosures: list[str] = []
+    for item in risk_requirements.get("required_disclosures", []):
+        normalized = str(item).lower()
+        if "short-volatility" in normalized or "volatility-spike" in normalized:
+            disclosures.append("Short-volatility / volatility-spike risk is material: losses can accelerate if implied volatility expands.")
+        elif "tail loss" in normalized or "gap risk" in normalized or "unbounded" in normalized:
+            disclosures.append("Tail loss and gap risk are material, especially if the underlying gaps through the short strikes.")
+        elif "downside scenario loss" in normalized:
+            if isinstance(worst_case_pnl, (int, float)):
+                disclosures.append(f"Downside scenario loss is approximately {float(worst_case_pnl):.2f}; the exit / sizing response is to keep exposure at 1-2% of capital and cut risk on a breach.")
+            else:
+                disclosures.append("Downside scenario loss should be treated as the hard sizing and exit reference.")
+    if not disclosures and isinstance(worst_case_pnl, (int, float)):
+        disclosures.append(f"Downside scenario loss is approximately {float(worst_case_pnl):.2f}.")
+
+    assumption_lines: list[str] = []
+    for record in state.get("assumption_ledger", []):
+        if not isinstance(record, dict) or not record.get("requires_user_visible_disclosure"):
+            continue
+        assumption_lines.append(str(record.get("assumption", "")))
+
+    lines = [
+        "**Recommendation**",
+        f"Be a {recommendation}.",
+        "",
+        "**Primary Strategy**",
+        f"{strategy_label.title()} with {premium_direction.lower()} premium"
+        + (f" of {float(net_premium):.2f}." if isinstance(net_premium, (int, float)) else "."),
+        "",
+        "**Alternative Strategy Comparison**",
+        f"{alternative.title()} is the cleaner alternative when you want {tradeoff}.",
+        "",
+        "**Key Greeks and Breakevens**",
+    ]
+    greeks_line = []
+    if isinstance(delta, (int, float)):
+        greeks_line.append(f"delta {float(delta):.3f}")
+    if isinstance(gamma, (int, float)):
+        greeks_line.append(f"gamma {float(gamma):.3f}")
+    if isinstance(theta, (int, float)):
+        greeks_line.append(f"theta {float(theta):.3f}/day")
+    if isinstance(vega, (int, float)):
+        greeks_line.append(f"vega {float(vega):.3f} per vol point")
+    if greeks_line:
+        lines.append(", ".join(greeks_line) + ".")
+    lines.append(f"Breakevens: {breakevens}.")
+    if isinstance(max_loss, (int, float)):
+        lines.append(f"Max loss reference: {float(max_loss):.2f}.")
+    lines.extend(
+        [
+            "",
+            "**Risk Management**",
+            "Use 1-2% position sizing, predefine a stop-loss at a breakeven breach or roughly a 1x premium loss, and hedge or reduce exposure if delta/gamma expands.",
+        ]
+    )
+    if isinstance(best_case_pnl, (int, float)) or isinstance(worst_case_pnl, (int, float)):
+        parts = []
+        if isinstance(best_case_pnl, (int, float)):
+            parts.append(f"base-case P&L about {float(best_case_pnl):.2f}")
+        if isinstance(worst_case_pnl, (int, float)):
+            parts.append(f"stress downside about {float(worst_case_pnl):.2f}")
+        lines.append("Scenario summary: " + "; ".join(parts) + ".")
+    lines.extend(["", "**Disclosures**"])
+    if assumption_lines:
+        for item in assumption_lines[:3]:
+            lines.append(f"- Assumption: {item}")
+    elif isinstance(reference_price, (int, float)):
+        lines.append(f"- Assumption: spot/reference price treated as {float(reference_price):.2f}.")
+    for item in disclosures:
+        lines.append(f"- {item}")
+    if risk_requirements.get("recommendation_class"):
+        lines.append("")
+        lines.append(f"Recommendation class: {risk_requirements.get('recommendation_class')}.")
+
+    return "\n".join(lines)
+
+
 def _build_tool_call_message(tool_name: str, tool_args: dict[str, Any]) -> AIMessage:
     return AIMessage(
         content="",
@@ -691,6 +868,23 @@ def make_solver(tools: list):
                     "pending_tool_call": None,
                     "risk_feedback": None,
                 }
+
+        deterministic_final_text = None
+        if profile == "finance_options" and effective_stage == "SYNTHESIZE":
+            deterministic_final_text = _deterministic_options_final_answer(state)
+        if deterministic_final_text:
+            final_message = AIMessage(content=deterministic_final_text)
+            workpad["draft_answer"] = deterministic_final_text
+            workpad["review_ready"] = True
+            workpad["review_stage"] = "SYNTHESIZE"
+            workpad = _record_event(workpad, "solver", f"{stage}: deterministic final draft ready")
+            logger.info("[Step %s] solver(%s) -> deterministic final draft", step, stage)
+            return {
+                "messages": [final_message],
+                "workpad": workpad,
+                "pending_tool_call": None,
+                "risk_feedback": None,
+            }
 
         messages = [
             SystemMessage(content=SOLVER_PROMPT),

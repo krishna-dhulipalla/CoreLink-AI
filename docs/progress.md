@@ -113,10 +113,11 @@ Rules:
   - deterministic bridges to reduce options churn:
     - derive `scenario_pnl` from more primary options tool results
     - deterministic compute-stage risk summary after scenario tool execution
+    - deterministic final options synthesis after risk pass
 - **Critical Bug Found During Testing:** Live `finance_options` kept failing or looping because weak `scenario_pnl` tool-call payloads and repair-time stage handling left the risk path unstable.
-- **Fix:** Hardened [tool_runner](../src/agent/nodes/tool_runner.py) to backfill scenario arguments from prior strategy facts and return to `COMPUTE` after repair-time tool success; hardened [solver](../src/agent/nodes/solver.py) to produce deterministic risk-satisfaction steps instead of repeated model retries.
-- **Current Status:** Live `finance_options` now completes end-to-end on the active graph with far fewer compute/risk loops.
-- **Remaining Blockers:** One live options revise cycle can still happen at final synthesis when the model truncates or misses a required disclosure. Reviewer/task-profiler JSON fallback warnings also still occur on the current backend.
+- **Fix:** Hardened [tool_runner](../src/agent/nodes/tool_runner.py) to backfill scenario arguments from prior strategy facts and return to `COMPUTE` after repair-time tool success; hardened [solver](../src/agent/nodes/solver.py) to produce deterministic risk-satisfaction steps and a deterministic final options answer after risk pass; hardened [reviewer](../src/agent/nodes/reviewer.py) disclosure matching so hyphenated phrases like `short-volatility / volatility-spike` no longer trigger false final-review loops.
+- **Current Status:** Live `finance_options` now completes end-to-end on the active graph with a stable path: primary strategy tool -> scenario tool -> deterministic compute milestone -> risk pass -> deterministic final synthesis -> reviewer pass.
+- **Remaining Blockers:** Reviewer/task-profiler JSON fallback warnings still occur on the current backend.
 - **Handoff Notes:** Next finance work should target:
-  1. tighter final options synthesis so truncation/disclosure misses happen less often
-  2. richer finance-hands coverage for uncertainty, scenario planning, and compliance without falling back into prompt-heavy control
+  1. richer finance-hands coverage for uncertainty, scenario planning, and compliance without falling back into prompt-heavy control
+  2. reducing residual reviewer/task-profiler schema-fallback dependence on the current backend
