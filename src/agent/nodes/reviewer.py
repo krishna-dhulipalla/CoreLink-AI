@@ -160,6 +160,8 @@ def _deterministic_review(state: AgentState, artifact: str, is_final: bool) -> R
     tool_results = workpad.get("tool_results", [])
     template_id = str((state.get("execution_template") or {}).get("template_id", ""))
     document_evidence = (state.get("evidence_pack") or {}).get("document_evidence", [])
+    capability_flags = set(state.get("capability_flags", []))
+    has_structured_tool = any(result.get("facts") and not result.get("errors") for result in tool_results)
 
     if review_stage == "GATHER" and last_tool_result.get("errors"):
         if selective_backtracking_allowed(state.get("execution_template"), "GATHER"):
@@ -200,6 +202,15 @@ def _deterministic_review(state: AgentState, artifact: str, is_final: bool) -> R
                 repair_target="gather",
             )
 
+    if review_stage == "GATHER" and profile == "finance_quant" and "needs_live_data" in capability_flags:
+        if not (last_tool_result.get("facts") and not last_tool_result.get("errors")):
+            return ReviewResult(
+                verdict="revise",
+                reasoning="Live-data finance gather stage requires a retrieval-backed tool result before synthesis.",
+                missing_dimensions=["retrieval-backed finance evidence"],
+                repair_target="gather",
+            )
+
     if review_stage == "COMPUTE" and not re.search(r"\d", artifact or ""):
         return ReviewResult(
             verdict="revise",
@@ -208,8 +219,16 @@ def _deterministic_review(state: AgentState, artifact: str, is_final: bool) -> R
             repair_target="compute",
         )
 
+    if review_stage == "COMPUTE" and profile == "finance_quant" and "needs_live_data" in capability_flags:
+        if not has_structured_tool:
+            return ReviewResult(
+                verdict="revise",
+                reasoning="Finance compute stage with live-data needs requires structured retrieval evidence before synthesis.",
+                missing_dimensions=["tool-backed finance evidence"],
+                repair_target="gather",
+            )
+
     if review_stage == "COMPUTE" and profile == "finance_options":
-        has_structured_tool = any(result.get("facts") and not result.get("errors") for result in tool_results)
         if not has_structured_tool:
             return ReviewResult(
                 verdict="revise",
@@ -228,6 +247,13 @@ def _deterministic_review(state: AgentState, artifact: str, is_final: bool) -> R
 
     if is_final and profile == "finance_quant":
         answer_contract = state.get("answer_contract", {})
+        if "needs_live_data" in capability_flags and not has_structured_tool:
+            return ReviewResult(
+                verdict="revise",
+                reasoning="Final finance answer with live-data needs must stay grounded in structured retrieval evidence.",
+                missing_dimensions=["retrieval-backed finance evidence"],
+                repair_target="gather",
+            )
         if answer_contract.get("requires_adapter") and answer_contract.get("format") == "json":
             if not _matches_exact_json_contract(artifact, answer_contract):
                 return ReviewResult(
@@ -248,7 +274,6 @@ def _deterministic_review(state: AgentState, artifact: str, is_final: bool) -> R
             )
 
     if is_final and profile == "finance_options":
-        has_structured_tool = any(result.get("facts") and not result.get("errors") for result in tool_results)
         if not has_structured_tool:
             return ReviewResult(
                 verdict="revise",

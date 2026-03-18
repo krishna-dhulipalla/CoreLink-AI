@@ -1417,3 +1417,51 @@ This file operates in a "Chat" structure. Whenever an agent finishes a major uni
      - after the fix, it classified correctly as `finance_quant`
      - the configured live MCP environment still did **not** expose the new finance evidence tools, so the live run terminated honestly with missing-tool limitations instead of hallucinating market data
 - **Handoff Notes:** Phase A is complete at the code and deterministic test level. The next finance-hands phase should be risk control, but before that the live MCP environment needs to expose the new market-data / finance-analytics servers or live finance-evidence prompts will remain underpowered.
+
+### Finance Hands Follow-Up: Live MCP Exposure and Retrieval-First Quant Fix
+- **What changed:**
+  1. Exposed the new finance MCP servers in `.env` so the live runtime now loads:
+     - `resolve_financial_entity`
+     - `get_price_history`
+     - `get_company_fundamentals`
+     - `get_corporate_actions`
+     - `get_yield_curve`
+     - `get_returns`
+     - `get_financial_statements`
+     - `get_statement_line_items`
+     - `du_pont_analysis`
+     - `liquidity_ratio_pack`
+     - `valuation_multiples_compare`
+     - `dcf_sensitivity_grid`
+  2. Fixed finance argument aliasing in `src/agent/nodes/tool_runner.py`:
+     - normalized market-data aliases like `entity` / `symbol` -> `ticker`
+     - normalized retrieval period aliases like `1M` -> `1mo`
+     - normalized analytics aliases like `start` / `end` -> `old_value` / `new_value`
+     - rewrote both `pending_tool_call` and the latest AI message `tool_calls` before `ToolNode` invocation so native tool-call paths use the normalized schema too
+  3. Fixed retrieval-first control for live-data finance quant in:
+     - `src/agent/runtime_support.py`
+       - `quant_with_tool_compute` now starts in `GATHER` when `needs_live_data` or file-backed evidence is present
+     - `src/agent/nodes/solver.py`
+       - live-data `finance_quant` gather stage now explicitly pushes one finance evidence tool call before narrative
+     - `src/agent/nodes/reviewer.py`
+       - deterministic review now rejects live-data finance gather/compute/final artifacts that are not grounded in structured retrieval evidence
+  4. Added regressions in:
+     - `tests/test_staged_context_builder.py`
+     - `tests/test_staged_solver.py`
+     - `tests/test_staged_reviewer.py`
+     - `tests/test_staged_tool_runner.py`
+- **Verification:**
+  - `pytest tests/test_staged_tool_runner.py tests/test_staged_context_builder.py tests/test_staged_solver.py tests/test_staged_reviewer.py -q` -> **40 passed**
+  - `python -m py_compile src/agent/runtime_support.py src/agent/nodes/solver.py src/agent/nodes/reviewer.py src/agent/nodes/tool_runner.py tests/test_staged_context_builder.py tests/test_staged_solver.py tests/test_staged_reviewer.py tests/test_staged_tool_runner.py` -> **passed**
+  - `python scripts/run_live_staged_smoke.py` -> live staged smoke completed successfully
+- **Live Smoke Findings:**
+  1. `finance_evidence`
+     - now follows the intended path:
+       - `GATHER -> get_price_history -> pct_change -> COMPUTE -> SYNTHESIZE`
+     - produced a grounded final answer with:
+       - source timestamp
+       - explicit price window
+       - no missing-data caveats hallucinated
+  2. `finance_options`
+     - recovered to the intended tool-backed path after the finance-evidence control fix
+  3. Reviewer / profiler JSON parse warnings still appear live with Qwen/Nebius, but deterministic fallback kept the staged runtime stable

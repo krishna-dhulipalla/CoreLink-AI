@@ -229,6 +229,37 @@ def test_reviewer_revises_quant_final_that_is_not_scalar_for_json_contract():
     assert "scalar answer matching output contract" in [gap.lower() for gap in result["review_feedback"]["missing_dimensions"]]
 
 
+def test_reviewer_revises_live_data_quant_gather_without_tool_evidence():
+    state = make_state(
+        "As of 2024-10-14, retrieve MSFT price history and 1-month return.",
+        task_profile="finance_quant",
+        capability_flags=["needs_live_data"],
+        execution_template={
+            "template_id": "quant_with_tool_compute",
+            "allowed_stages": ["GATHER", "COMPUTE", "SYNTHESIZE", "REVISE", "COMPLETE"],
+            "default_initial_stage": "GATHER",
+            "allowed_tool_names": ["get_price_history", "get_returns"],
+            "review_stages": ["GATHER", "COMPUTE", "SYNTHESIZE"],
+            "review_cadence": "milestone_and_final",
+            "answer_focus": [],
+        },
+        solver_stage="GATHER",
+        workpad={
+            "events": [],
+            "stage_outputs": {"GATHER": "Need MSFT price history and return data."},
+            "tool_results": [],
+            "review_ready": True,
+            "review_stage": "GATHER",
+        },
+        last_tool_result=None,
+    )
+
+    result = reviewer(state)
+
+    assert result["solver_stage"] == "REVISE"
+    assert "retrieval-backed finance evidence" in [gap.lower() for gap in result["review_feedback"]["missing_dimensions"]]
+
+
 def test_reviewer_pass_from_document_gather_moves_to_synthesize_for_document_template():
     state = make_state(
         "Read the attached report and summarize the covenant breach.",

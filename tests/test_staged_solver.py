@@ -206,6 +206,41 @@ def test_solver_document_gather_prompt_requires_targeted_extraction(monkeypatch)
     assert "narrow page/row window first" in fake_model.last_messages[1].content
 
 
+def test_solver_live_data_quant_gather_prompts_for_finance_evidence_tool(monkeypatch):
+    fake_model = _FakeModel(AIMessage(content='{"name":"get_price_history","arguments":{"entity":"MSFT","time_frame":"1M","as_of":"2024-10-14"}}'))
+    monkeypatch.setattr("agent.nodes.solver.ChatOpenAI", lambda **kwargs: fake_model)
+    monkeypatch.setattr("agent.nodes.solver._tool_call_mode", lambda role: "prompt")
+
+    solver = make_solver([_DummyTool("get_price_history", "Retrieve market price history")])
+    state = make_state(
+        "As of 2024-10-14, use finance evidence tools to retrieve MSFT price history and 1-month return.",
+        task_profile="finance_quant",
+        capability_flags=["needs_live_data"],
+        execution_template={
+            "template_id": "quant_with_tool_compute",
+            "allowed_stages": ["GATHER", "COMPUTE", "SYNTHESIZE", "REVISE", "COMPLETE"],
+            "default_initial_stage": "GATHER",
+            "allowed_tool_names": ["get_price_history", "get_returns"],
+            "review_stages": ["GATHER", "COMPUTE", "SYNTHESIZE"],
+            "review_cadence": "milestone_and_final",
+            "answer_focus": [],
+        },
+        solver_stage="GATHER",
+        evidence_pack={
+            "prompt_facts": {"as_of_date": "2024-10-14"},
+            "retrieved_facts": {},
+            "derived_facts": {"time_sensitive": True},
+            "document_evidence": [],
+            "citations": [],
+        },
+    )
+
+    result = solver(state)
+
+    assert result["pending_tool_call"]["name"] == "get_price_history"
+    assert "emit one finance evidence tool call before any narrative" in fake_model.last_messages[1].content
+
+
 def test_solver_compact_evidence_uses_document_summary_not_raw_blob(monkeypatch):
     long_text = "alpha beta gamma " * 200
     fake_model = _FakeModel(AIMessage(content="Answer: the document shows the covenant threshold in the extracted table."))

@@ -357,6 +357,17 @@ def make_solver(tools: list):
                     "\nDocument evidence already exists. Gather only one additional targeted window if the current "
                     "evidence still leaves a material question unanswered."
                 )
+        if (
+            profile == "finance_quant"
+            and "needs_live_data" in set(state.get("capability_flags", []))
+            and effective_stage == "GATHER"
+            and not state.get("last_tool_result")
+        ):
+            stage_prompt += (
+                "\nFor finance_quant gather stage with live-data needs, emit one finance evidence tool call before "
+                "any narrative. Prefer get_price_history, get_returns, get_company_fundamentals, get_yield_curve, "
+                "or get_statement_line_items depending on the request."
+            )
         if profile == "finance_options" and effective_stage == "COMPUTE" and not state.get("last_tool_result"):
             stage_prompt += (
                 "\nFor finance_options compute stage, emit one options-analysis tool call before narrative "

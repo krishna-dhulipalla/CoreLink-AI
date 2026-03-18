@@ -868,6 +868,8 @@ def initial_stage_for_template(
     if template_id in {"options_tool_backed", "quant_inline_exact"}:
         return "COMPUTE"
     if template_id == "quant_with_tool_compute":
+        if "needs_live_data" in flags or "needs_files" in flags:
+            return "GATHER"
         if evidence_pack.get("citations") and ("needs_files" in flags or task_profile in {"document_qa", "external_retrieval"}):
             return "GATHER"
         return "COMPUTE"

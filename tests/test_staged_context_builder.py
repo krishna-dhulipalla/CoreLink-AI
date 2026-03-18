@@ -79,6 +79,23 @@ class TestContextBuilder:
         assert evidence["prompt_facts"]["market_snapshot"]["as_of_date"] == "2022-10-14"
         assert evidence["derived_facts"]["time_sensitive"] is True
 
+    def test_live_data_finance_quant_starts_in_gather(self):
+        prompt = (
+            "As of 2024-10-14, use finance evidence tools to retrieve MSFT price history and 1-month return, "
+            "then summarize the result with the source timestamp and any missing-data caveats."
+        )
+        state = make_state(prompt)
+        state.update(intake(state))
+        state.update(task_profiler(state))
+        state.update(template_selector(state))
+
+        result = context_builder(state)
+
+        assert result["task_profile"] == "finance_quant"
+        assert "needs_live_data" in result["capability_flags"]
+        assert result["execution_template"]["template_id"] == "quant_with_tool_compute"
+        assert result["solver_stage"] == "GATHER"
+
     def test_ambiguous_profile_adds_conservative_constraint(self):
         prompt = (
             "We need acquisition structure advice and also a quick valuation ratio calculation from a file "

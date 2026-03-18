@@ -27,6 +27,100 @@ from agent.tool_normalization import normalize_tool_output
 
 logger = logging.getLogger(__name__)
 
+_FINANCE_ARG_ALIASES: dict[str, dict[str, list[str]]] = {
+    "resolve_financial_entity": {
+        "identifier": ["entity", "ticker", "symbol", "security"],
+        "as_of_date": ["as_of", "date"],
+    },
+    "get_price_history": {
+        "ticker": ["entity", "symbol", "security", "underlying"],
+        "period": ["time_frame", "window", "lookback"],
+        "as_of_date": ["as_of", "date", "end_date"],
+    },
+    "get_company_fundamentals": {
+        "ticker": ["entity", "symbol", "security"],
+        "as_of_date": ["as_of", "date"],
+    },
+    "get_corporate_actions": {
+        "ticker": ["entity", "symbol", "security"],
+        "as_of_date": ["as_of", "date"],
+    },
+    "get_returns": {
+        "ticker": ["entity", "symbol", "security", "underlying"],
+        "period": ["time_frame", "window", "lookback"],
+        "as_of_date": ["as_of", "date", "end_date"],
+    },
+    "get_financial_statements": {
+        "ticker": ["entity", "symbol", "security"],
+        "statement_type": ["statement", "statement_kind", "financial_statement"],
+        "frequency": ["cadence"],
+        "limit": ["period_limit", "num_periods"],
+        "as_of_date": ["as_of", "date", "end_date"],
+    },
+    "get_statement_line_items": {
+        "ticker": ["entity", "symbol", "security"],
+        "line_items": ["metrics", "fields", "line_item_names"],
+        "statement_type": ["statement", "statement_kind", "financial_statement"],
+        "frequency": ["cadence"],
+        "limit": ["period_limit", "num_periods"],
+        "as_of_date": ["as_of", "date", "end_date"],
+    },
+    "get_yield_curve": {
+        "as_of_date": ["as_of", "date", "end_date"],
+    },
+    "sum_values": {
+        "values": ["numbers", "series", "items"],
+    },
+    "weighted_average": {
+        "values": ["numbers", "series", "items"],
+        "weights": ["weightings", "allocation_weights"],
+    },
+    "pct_change": {
+        "old_value": ["start", "start_value", "start_price", "initial_value", "base"],
+        "new_value": ["end", "end_value", "end_price", "final_value", "current"],
+    },
+    "annualize_return": {
+        "period_return_decimal": ["return_decimal", "raw_return", "period_return", "return_value"],
+        "days_held": ["holding_period_days", "days", "holding_days"],
+    },
+    "annualize_volatility": {
+        "period_volatility_decimal": ["volatility", "vol", "sigma"],
+        "periods_per_year": ["frequency", "freq", "observations_per_year"],
+    },
+    "bond_price_yield": {
+        "face_value": ["par_value", "principal"],
+        "coupon_rate_decimal": ["coupon_rate", "coupon"],
+        "periods_to_maturity": ["maturity_periods", "n_periods"],
+        "yield_to_maturity_decimal": ["ytm", "yield_rate"],
+    },
+    "duration_convexity": {
+        "face_value": ["par_value", "principal"],
+        "coupon_rate_decimal": ["coupon_rate", "coupon"],
+        "periods_to_maturity": ["maturity_periods", "n_periods"],
+        "yield_to_maturity_decimal": ["ytm", "yield_rate"],
+    },
+}
+
+_STATEMENT_TYPE_ALIASES = {
+    "income_statement": "income",
+    "income": "income",
+    "pnl": "income",
+    "profit_and_loss": "income",
+    "balance_sheet": "balance_sheet",
+    "balance": "balance_sheet",
+    "cashflow": "cash_flow",
+    "cash_flow": "cash_flow",
+    "cash_flow_statement": "cash_flow",
+}
+
+_FREQUENCY_ALIASES = {
+    "annual": "annual",
+    "yearly": "annual",
+    "quarterly": "quarterly",
+    "quarter": "quarterly",
+    "q": "quarterly",
+}
+
 
 def _tool_signature(state: AgentState) -> str:
     pending = state.get("pending_tool_call") or {}
@@ -48,6 +142,102 @@ def _extract_tool_call_id(state: AgentState) -> str:
     return "unknown"
 
 
+def _rewrite_messages_with_normalized_tool_args(
+    messages: list[Any],
+    *,
+    tool_name: str,
+    tool_args: dict[str, Any],
+) -> list[Any]:
+    updated_messages = list(messages or [])
+    for index in range(len(updated_messages) - 1, -1, -1):
+        message = updated_messages[index]
+        if not isinstance(message, AIMessage) or not message.tool_calls:
+            continue
+        rewritten = []
+        changed = False
+        for tool_call in message.tool_calls:
+            if str(tool_call.get("name", "")).strip() == tool_name:
+                rewritten.append(
+                    {
+                        **tool_call,
+                        "args": dict(tool_args),
+                    }
+                )
+                changed = True
+            else:
+                rewritten.append(tool_call)
+        if changed:
+            updated_messages[index] = AIMessage(
+                content=message.content,
+                additional_kwargs=message.additional_kwargs,
+                response_metadata=message.response_metadata,
+                tool_calls=rewritten,
+                id=message.id,
+            )
+            break
+    return updated_messages
+
+
+def _normalize_period_alias(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    normalized = value.strip().lower()
+    mapping = {
+        "1m": "1mo",
+        "1mo": "1mo",
+        "3m": "3mo",
+        "3mo": "3mo",
+        "6m": "6mo",
+        "6mo": "6mo",
+        "1y": "1y",
+        "12m": "1y",
+        "2y": "2y",
+        "5y": "5y",
+        "10y": "10y",
+        "ytd": "ytd",
+        "max": "max",
+    }
+    return mapping.get(normalized, value)
+
+
+def _normalize_finance_tool_args(tool_name: str, tool_args: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(tool_args, dict):
+        return {}
+
+    normalized = dict(tool_args)
+    alias_map = _FINANCE_ARG_ALIASES.get(tool_name, {})
+    for canonical, aliases in alias_map.items():
+        if canonical in normalized:
+            continue
+        for alias in aliases:
+            if alias in normalized:
+                normalized[canonical] = normalized[alias]
+                break
+
+    if tool_name in {"get_price_history", "get_returns"} and "period" in normalized:
+        normalized["period"] = _normalize_period_alias(normalized["period"])
+
+    if tool_name in {"get_financial_statements", "get_statement_line_items"}:
+        statement_type = normalized.get("statement_type")
+        if isinstance(statement_type, str):
+            normalized["statement_type"] = _STATEMENT_TYPE_ALIASES.get(
+                statement_type.strip().lower(),
+                statement_type,
+            )
+        frequency = normalized.get("frequency")
+        if isinstance(frequency, str):
+            normalized["frequency"] = _FREQUENCY_ALIASES.get(
+                frequency.strip().lower(),
+                frequency,
+            )
+        if tool_name == "get_statement_line_items":
+            line_items = normalized.get("line_items")
+            if isinstance(line_items, str):
+                normalized["line_items"] = [line_items]
+
+    return normalized
+
+
 
 def make_tool_runner(tool_node: ToolNode):
     async def tool_runner(state: AgentState) -> dict:
@@ -55,10 +245,14 @@ def make_tool_runner(tool_node: ToolNode):
         profile = state.get("task_profile", "general")
         pending = state.get("pending_tool_call") or {}
         tool_name = str(pending.get("name", "")).strip()
-        tool_args = pending.get("arguments", {})
+        tool_args = _normalize_finance_tool_args(
+            tool_name,
+            pending.get("arguments", {}) if isinstance(pending.get("arguments", {}), dict) else {},
+        )
         allowed = allowed_tools_for_template(state.get("execution_template"), profile)
         registry = _tool_registry(tool_node)
         workpad = dict(state.get("workpad", {}))
+        normalized_pending = {"name": tool_name, "arguments": tool_args}
 
         if not tool_name:
             logger.warning("[Step %s] tool_runner -> missing pending tool call", step)
@@ -115,7 +309,16 @@ def make_tool_runner(tool_node: ToolNode):
                 "workpad": workpad,
             }
 
-        result = await tool_node.ainvoke(state)
+        invoke_state = {
+            **state,
+            "pending_tool_call": normalized_pending,
+            "messages": _rewrite_messages_with_normalized_tool_args(
+                list(state.get("messages", [])),
+                tool_name=tool_name,
+                tool_args=tool_args,
+            ),
+        }
+        result = await tool_node.ainvoke(invoke_state)
         messages = result.get("messages", [])
         tool_message = next((msg for msg in reversed(messages) if isinstance(msg, ToolMessage)), None)
         tool_result = normalize_tool_output(

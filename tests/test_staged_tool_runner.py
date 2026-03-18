@@ -1,7 +1,7 @@
 import json
 import asyncio
 
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import AIMessage, ToolMessage
 
 from agent.nodes.tool_runner import make_tool_runner
 from staged_test_utils import make_state
@@ -26,6 +26,45 @@ class _DummyToolNode:
                     content=self._content,
                     tool_call_id="call_123",
                     name=pending["name"],
+                )
+            ]
+        }
+
+
+class _CapturingToolNode:
+    def __init__(self, tool_name, content):
+        self.tools_by_name = {tool_name: _DummyTool(tool_name)}
+        self.seen_pending = None
+        self._content = content
+
+    async def ainvoke(self, state):
+        self.seen_pending = state["pending_tool_call"]
+        return {
+            "messages": [
+                ToolMessage(
+                    content=self._content,
+                    tool_call_id="call_123",
+                    name=self.seen_pending["name"],
+                )
+            ]
+        }
+
+
+class _CapturingMessageToolNode:
+    def __init__(self, tool_name, content):
+        self.tools_by_name = {tool_name: _DummyTool(tool_name)}
+        self.seen_tool_call = None
+        self._content = content
+
+    async def ainvoke(self, state):
+        last_ai = next(msg for msg in reversed(state["messages"]) if isinstance(msg, AIMessage))
+        self.seen_tool_call = last_ai.tool_calls[-1]
+        return {
+            "messages": [
+                ToolMessage(
+                    content=self._content,
+                    tool_call_id=self.seen_tool_call["id"],
+                    name=self.seen_tool_call["name"],
                 )
             ]
         }
@@ -212,3 +251,126 @@ def test_tool_runner_normalizes_expiration_schedule():
 
     assert normalized["facts"]["expirations"][0]["days"] == 7
     assert normalized["facts"]["expirations"][1]["label"] == "Monthly"
+
+
+def test_tool_runner_normalizes_finance_argument_aliases_before_invoke():
+    node = _CapturingToolNode(
+        "get_price_history",
+        {
+            "type": "get_price_history",
+            "facts": {"ticker": "MSFT", "period": "1mo"},
+            "source": {"tool": "get_price_history", "provider": "yfinance"},
+            "quality": {"cache_hit": False, "is_synthetic": False, "is_estimated": False, "missing_fields": []},
+            "errors": [],
+        },
+    )
+    runner = make_tool_runner(node)
+    state = make_state(
+        "As of 2024-10-14, retrieve MSFT price history.",
+        task_profile="finance_quant",
+        execution_template={
+            "template_id": "quant_with_tool_compute",
+            "allowed_tool_names": ["get_price_history"],
+            "allowed_stages": ["GATHER", "COMPUTE", "SYNTHESIZE", "REVISE", "COMPLETE"],
+            "default_initial_stage": "COMPUTE",
+            "review_stages": ["COMPUTE", "SYNTHESIZE"],
+            "review_cadence": "milestone_and_final",
+            "answer_focus": [],
+        },
+        pending_tool_call={
+            "name": "get_price_history",
+            "arguments": {"entity": "MSFT", "time_frame": "1M", "as_of": "2024-10-14"},
+        },
+    )
+
+    result = asyncio.run(runner(state))
+
+    assert node.seen_pending["arguments"]["ticker"] == "MSFT"
+    assert node.seen_pending["arguments"]["period"] == "1mo"
+    assert node.seen_pending["arguments"]["as_of_date"] == "2024-10-14"
+
+
+def test_tool_runner_rewrites_native_message_tool_args_before_invoke():
+    node = _CapturingMessageToolNode(
+        "get_price_history",
+        {
+            "type": "get_price_history",
+            "facts": {"ticker": "MSFT", "period": "1mo"},
+            "source": {"tool": "get_price_history", "provider": "yfinance"},
+            "quality": {"cache_hit": False, "is_synthetic": False, "is_estimated": False, "missing_fields": []},
+            "errors": [],
+        },
+    )
+    runner = make_tool_runner(node)
+    state = make_state(
+        "As of 2024-10-14, retrieve MSFT price history.",
+        task_profile="finance_quant",
+        execution_template={
+            "template_id": "quant_with_tool_compute",
+            "allowed_tool_names": ["get_price_history"],
+            "allowed_stages": ["GATHER", "COMPUTE", "SYNTHESIZE", "REVISE", "COMPLETE"],
+            "default_initial_stage": "GATHER",
+            "review_stages": ["GATHER", "COMPUTE", "SYNTHESIZE"],
+            "review_cadence": "milestone_and_final",
+            "answer_focus": [],
+        },
+        pending_tool_call={
+            "name": "get_price_history",
+            "arguments": {"symbol": "MSFT", "as_of": "2024-10-14", "time_frame": "1M"},
+        },
+    )
+    state["messages"].append(
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "get_price_history",
+                    "args": {"symbol": "MSFT", "as_of": "2024-10-14", "time_frame": "1M"},
+                    "id": "call_123",
+                    "type": "tool_call",
+                }
+            ],
+        )
+    )
+
+    asyncio.run(runner(state))
+
+    assert node.seen_tool_call["args"]["ticker"] == "MSFT"
+    assert node.seen_tool_call["args"]["period"] == "1mo"
+    assert node.seen_tool_call["args"]["as_of_date"] == "2024-10-14"
+
+
+def test_tool_runner_normalizes_pct_change_aliases_before_invoke():
+    node = _CapturingToolNode(
+        "pct_change",
+        {
+            "type": "pct_change",
+            "facts": {"percentage_change": -2.82},
+            "source": {"tool": "pct_change", "provider": "local_analytics"},
+            "quality": {"cache_hit": False, "is_synthetic": False, "is_estimated": False, "missing_fields": []},
+            "errors": [],
+        },
+    )
+    runner = make_tool_runner(node)
+    state = make_state(
+        "Compute the change between start and end price.",
+        task_profile="finance_quant",
+        execution_template={
+            "template_id": "quant_with_tool_compute",
+            "allowed_tool_names": ["pct_change"],
+            "allowed_stages": ["GATHER", "COMPUTE", "SYNTHESIZE", "REVISE", "COMPLETE"],
+            "default_initial_stage": "COMPUTE",
+            "review_stages": ["COMPUTE", "SYNTHESIZE"],
+            "review_cadence": "milestone_and_final",
+            "answer_focus": [],
+        },
+        pending_tool_call={
+            "name": "pct_change",
+            "arguments": {"start": 426.35, "end": 414.29},
+        },
+    )
+
+    asyncio.run(runner(state))
+
+    assert node.seen_pending["arguments"]["old_value"] == 426.35
+    assert node.seen_pending["arguments"]["new_value"] == 414.29
