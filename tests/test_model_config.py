@@ -1,6 +1,7 @@
 import importlib
 import os
 import sys
+from pydantic import BaseModel
 
 # Ensure src/ is importable
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -13,6 +14,9 @@ def _reload_model_config():
 
 
 class TestModelConfig:
+    class _TinySchema(BaseModel):
+        task_profile: str = "general"
+
     def test_custom_role_override_wins(self, monkeypatch):
         monkeypatch.setenv("MODEL_PROFILE", "score_max")
         monkeypatch.setenv("EXECUTOR_MODEL", "custom-executor-model")
@@ -61,3 +65,70 @@ class TestModelConfig:
             '<think>\nplanning...\n{"layers":["react_reason"],"task_type":"legal"}'
         )
         assert '"task_type":"legal"' in payload
+
+    def test_invoke_structured_output_uses_json_mode_and_disables_thinking_for_nebius(self, monkeypatch):
+        model_config = _reload_model_config()
+        monkeypatch.setenv("COORDINATOR_OPENAI_BASE_URL", "https://api.studio.nebius.ai/v1/")
+
+        captured = {}
+
+        class _FakeResponse:
+            content = '{"task_profile":"finance_options"}'
+
+        class _FakeChatOpenAI:
+            def __init__(self, **kwargs):
+                captured["kwargs"] = kwargs
+
+            def invoke(self, messages):
+                captured["messages"] = messages
+                return _FakeResponse()
+
+            def with_structured_output(self, schema):
+                raise AssertionError("native structured output should not be used for Nebius local_json mode")
+
+        monkeypatch.setattr(model_config, "ChatOpenAI", _FakeChatOpenAI)
+
+        parsed, _ = model_config.invoke_structured_output(
+            "coordinator",
+            self._TinySchema,
+            [],
+            temperature=0,
+            max_tokens=10,
+        )
+
+        assert parsed.task_profile == "finance_options"
+        assert captured["kwargs"]["model_kwargs"]["response_format"] == {"type": "json_object"}
+        assert captured["kwargs"]["extra_body"]["chat_template_kwargs"]["enable_thinking"] is False
+
+    def test_invoke_structured_output_keeps_plain_local_json_for_localhost(self, monkeypatch):
+        model_config = _reload_model_config()
+        monkeypatch.setenv("COORDINATOR_OPENAI_BASE_URL", "http://127.0.0.1:8000/v1")
+
+        captured = {}
+
+        class _FakeResponse:
+            content = '{"task_profile":"finance_quant"}'
+
+        class _FakeChatOpenAI:
+            def __init__(self, **kwargs):
+                captured["kwargs"] = kwargs
+
+            def invoke(self, messages):
+                return _FakeResponse()
+
+            def with_structured_output(self, schema):
+                raise AssertionError("native structured output should not be used for localhost local_json mode")
+
+        monkeypatch.setattr(model_config, "ChatOpenAI", _FakeChatOpenAI)
+
+        parsed, _ = model_config.invoke_structured_output(
+            "coordinator",
+            self._TinySchema,
+            [],
+            temperature=0,
+            max_tokens=10,
+        )
+
+        assert parsed.task_profile == "finance_quant"
+        assert "model_kwargs" not in captured["kwargs"]
+        assert "extra_body" not in captured["kwargs"]

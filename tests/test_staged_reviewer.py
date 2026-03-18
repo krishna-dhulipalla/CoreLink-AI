@@ -1,5 +1,6 @@
 from langchain_core.messages import AIMessage
 
+import agent.nodes.reviewer as reviewer_module
 from agent.nodes.reviewer import reviewer
 from staged_test_utils import make_state
 
@@ -303,6 +304,158 @@ def test_reviewer_passes_deterministic_options_final_with_hyphenated_disclosures
             )
         )
     )
+
+    result = reviewer(state)
+
+    assert result["solver_stage"] == "COMPLETE"
+    assert result["review_feedback"] is None
+
+
+def test_reviewer_skips_llm_for_gather_stage_when_deterministic_checks_pass(monkeypatch):
+    state = make_state(
+        "Read the attached file and summarize the extracted evidence.",
+        task_profile="document_qa",
+        capability_flags=["needs_files"],
+        execution_template={
+            "template_id": "document_qa",
+            "allowed_stages": ["GATHER", "SYNTHESIZE", "REVISE", "COMPLETE"],
+            "default_initial_stage": "GATHER",
+            "allowed_tool_names": ["fetch_reference_file"],
+            "review_stages": ["GATHER", "SYNTHESIZE"],
+            "review_cadence": "milestone_and_final",
+            "answer_focus": [],
+        },
+        evidence_pack={
+            "document_evidence": [
+                {
+                    "document_id": "countries_csv",
+                    "status": "extracted",
+                    "chunks": [{"locator": "Rows 0-5", "text": "Country,Region"}],
+                    "tables": [{"headers": ["Country", "Region"], "rows": [["Algeria", "AFRICA"]]}],
+                    "citation": "https://example.test/countries.csv",
+                }
+            ]
+        },
+        solver_stage="GATHER",
+        workpad={
+            "events": [],
+            "stage_outputs": {},
+            "tool_results": [
+                {
+                    "type": "fetch_reference_file",
+                    "facts": {"document_id": "countries_csv"},
+                    "assumptions": {},
+                    "source": {"tool": "fetch_reference_file"},
+                    "errors": [],
+                }
+            ],
+            "review_ready": True,
+            "review_stage": "GATHER",
+        },
+        last_tool_result={
+            "type": "fetch_reference_file",
+            "facts": {"document_id": "countries_csv"},
+            "assumptions": {},
+            "source": {"tool": "fetch_reference_file"},
+            "errors": [],
+        },
+    )
+
+    def _should_not_run(*args, **kwargs):
+        raise AssertionError("reviewer LLM should not run for deterministic gather pass")
+
+    monkeypatch.setattr(reviewer_module, "invoke_structured_output", _should_not_run)
+
+    result = reviewer(state)
+
+    assert result["solver_stage"] == "SYNTHESIZE"
+    assert result["review_feedback"] is None
+
+
+def test_reviewer_skips_llm_for_deterministic_options_final_pass(monkeypatch):
+    state = make_state(
+        "Should I be a net buyer or seller of options?",
+        task_profile="finance_options",
+        capability_flags=["needs_options_engine"],
+        solver_stage="SYNTHESIZE",
+        workpad={
+            "events": [],
+            "stage_outputs": {},
+            "tool_results": [
+                {
+                    "type": "analyze_strategy",
+                    "facts": {
+                        "net_premium": 15.33,
+                        "premium_direction": "CREDIT",
+                        "total_delta": -0.0729,
+                        "total_gamma": -0.025,
+                        "total_theta_per_day": 0.4177,
+                        "total_vega_per_vol_point": -0.6467,
+                    },
+                    "assumptions": {"legs": [{"S": 300.0}]},
+                    "source": {"tool": "analyze_strategy"},
+                    "errors": [],
+                },
+                {
+                    "type": "scenario_pnl",
+                    "facts": {"best_case_pnl": 0.42, "worst_case_pnl": -20.92},
+                    "assumptions": {"reference_price": 300.0},
+                    "source": {"tool": "scenario_pnl"},
+                    "errors": [],
+                },
+            ],
+            "risk_results": [{"verdict": "pass"}],
+            "risk_requirements": {
+                "required_disclosures": [
+                    "Explicitly disclose short-volatility / volatility-spike risk.",
+                    "Explicitly disclose potentially unbounded tail loss and gap risk.",
+                    "State downside scenario loss and the exit / sizing response.",
+                ],
+                "recommendation_class": "scenario_dependent_recommendation",
+            },
+            "review_ready": True,
+            "review_stage": "SYNTHESIZE",
+        },
+        assumption_ledger=[
+            {
+                "key": "spot_price",
+                "assumption": "Spot price was assumed as 300.0 from tool arguments because it was not explicit in prompt evidence.",
+                "source": "tool_arguments:analyze_strategy",
+                "confidence": "medium",
+                "requires_user_visible_disclosure": True,
+                "review_status": "pending",
+            }
+        ],
+    )
+    state["messages"].append(
+        AIMessage(
+            content=(
+                "**Recommendation**\n"
+                "Be a net seller of options.\n\n"
+                "**Primary Strategy**\n"
+                "Short strangle with credit premium of 15.33.\n\n"
+                "**Alternative Strategy Comparison**\n"
+                "Iron condor with defined wings is the cleaner alternative when you want lower premium but better tail-risk control.\n\n"
+                "**Key Greeks and Breakevens**\n"
+                "delta -0.073, gamma -0.025, theta 0.418/day, vega -0.647 per vol point.\n"
+                "Breakevens: 274.67 / 325.33.\n\n"
+                "**Risk Management**\n"
+                "Use 1-2% position sizing, predefine a stop-loss at a breakeven breach or roughly a 1x premium loss, and hedge or reduce exposure if delta/gamma expands.\n"
+                "Scenario summary: base-case P&L about 0.42; stress downside about -20.92.\n\n"
+                "**Disclosures**\n"
+                "- Assumption: Spot price was assumed as 300.0 from tool arguments because it was not explicit in prompt evidence.\n"
+                "- Short-volatility / volatility-spike risk is material: losses can accelerate if implied volatility expands.\n"
+                "- Tail loss and gap risk are material, especially if the underlying gaps through the short strikes.\n"
+                "- Downside scenario loss is approximately -20.92; the exit / sizing response is to keep exposure at 1-2% of capital and cut risk on a breach.\n\n"
+                "Recommendation class: scenario_dependent_recommendation."
+            )
+        )
+    )
+
+    def _should_not_run(*args, **kwargs):
+        raise AssertionError("reviewer LLM should not run for deterministic options final pass")
+
+    monkeypatch.setattr(reviewer_module, "invoke_structured_output", _should_not_run)
 
     result = reviewer(state)
 

@@ -13,13 +13,12 @@ import time
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
 
 from agent.contracts import ReviewResult
 from agent.document_evidence import has_extracted_document_evidence
 from agent.cost import CostTracker
 from agent.nodes.compliance_guard import requires_compliance_guard
-from agent.model_config import _extract_json_payload, get_client_kwargs, get_model_name
+from agent.model_config import get_model_name, invoke_structured_output
 from agent.profile_packs import get_profile_pack
 from agent.runtime_clock import increment_runtime_step
 from agent.runtime_support import (
@@ -45,6 +44,22 @@ Return ONLY one JSON object with:
 Do not answer the task.
 Do not produce user-facing prose.
 """
+
+
+def _should_try_llm_review(state: AgentState, review_stage: str, is_final: bool) -> bool:
+    profile = str(state.get("task_profile", "general"))
+    ambiguity_flags = set(state.get("ambiguity_flags", []))
+
+    # Intermediate gather/compute milestones are now primarily deterministic.
+    # This keeps the reviewer focused on ambiguous final quality judgments
+    # instead of adding churn to evidence and compute loops.
+    if review_stage in {"GATHER", "COMPUTE"}:
+        return False
+    if not is_final:
+        return False
+    if ambiguity_flags:
+        return True
+    return profile in {"legal_transactional", "general", "external_retrieval"}
 
 def _record_event(workpad: dict[str, Any], action: str) -> dict[str, Any]:
     updated = dict(workpad)
@@ -512,23 +527,28 @@ def reviewer(state: AgentState) -> dict:
         ),
     ]
 
-    if verdict is None:
+    if verdict is None and _should_try_llm_review(state, str(review_stage), is_final):
         used_llm = True
-        llm = ChatOpenAI(
-            model=model_name,
-            **get_client_kwargs("verifier"),
-            temperature=0,
-            max_tokens=240,
-        )
         t0 = time.monotonic()
         try:
-            raw = llm.invoke(invocation_messages)
+            verdict, _ = invoke_structured_output(
+                "verifier",
+                ReviewResult,
+                invocation_messages,
+                temperature=0,
+                max_tokens=240,
+            )
             latency = (time.monotonic() - t0) * 1000
-            payload = json.loads(_extract_json_payload(str(raw.content or "")))
-            verdict = ReviewResult.model_validate(payload)
         except Exception as exc:
             latency = (time.monotonic() - t0) * 1000
             verdict = _fallback_review_on_parse_failure(state, artifact, is_final, exc)
+    elif verdict is None:
+        verdict = ReviewResult(
+            verdict="pass",
+            reasoning="Deterministic reviewer accepted the artifact without LLM escalation.",
+            missing_dimensions=[],
+            repair_target=_next_target_for_pass(state),
+        )
 
     if tracker and used_llm:
         tracker.record(

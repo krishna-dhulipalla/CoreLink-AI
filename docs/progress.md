@@ -9,7 +9,7 @@ Rules:
 - Keep the log useful, not exhaustive.
 - Capture major decisions, real blockers, and current direction.
 - Do not dump routine test output unless testing exposed a critical bug and the fix matters for future work.
-- Keep only the last 10 meaningful chats here. Older history belongs in long-term memory.
+- Keep only the last 25 meaningful chats here. Older history belongs in long-term memory.
 
 ---
 
@@ -107,3 +107,11 @@ Rules:
 - **Fix:** Hardened [solver](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\solver.py) to force a defined-risk primary strategy under mandate constraints and to synthesize a policy-compliant deterministic final carrying recommendation class, mandate, risk cap, and risk-controller disclosures.
 - **Current Status:** Live `finance_options_policy` now completes cleanly on the active graph.
 - **Remaining Blockers:** `task_profiler` and `reviewer` still sometimes fall back to deterministic parsing on the current backend.
+
+### Chat 11: Structured Output Stabilization
+
+- **Role:** Coder
+- **Actions Taken:** Fixed strict JSON reliability for `task_profiler` and `reviewer` on the Nebius/Qwen backend by moving both onto `invoke_structured_output()` with backend-aware JSON-object mode and thinking disabled. Then narrowed reviewer LLM usage so gather/compute milestones and deterministic options/document passes do not bounce through the LLM reviewer unnecessarily.
+- **Critical Bug Solved:** Once JSON transport started working consistently, reviewer began overreaching on gather/compute-heavy paths and caused live recursion on `finance_options`, `finance_options_policy`, `document_qa`, and `finance_evidence`.
+- **Fix:** Kept the transport fix, but made reviewer escalation selective: deterministic review first, LLM review only for ambiguous or final judgment cases where it adds value.
+- **Handoff Notes:** Live staged smoke is stable again and no longer emits the old reviewer/task-profiler JSON parse warnings on the current backend.

@@ -6,16 +6,15 @@ Profiles the task into a coarse task profile plus additive capability flags.
 
 from __future__ import annotations
 
-import json
 import logging
 import time
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
+from pydantic import BaseModel, Field
 
 from agent.contracts import AnswerContract, ProfileDecision, TaskProfile
 from agent.cost import CostTracker
-from agent.model_config import _extract_json_payload, get_client_kwargs, get_model_name
+from agent.model_config import get_model_name, invoke_structured_output
 from agent.runtime_clock import increment_runtime_step
 from agent.runtime_support import (
     build_profile_decision,
@@ -59,6 +58,12 @@ Valid ambiguity_flags values:
 Do not answer the task. Do not add any other keys."""
 
 
+class _ProfileDecisionPayload(BaseModel):
+    task_profile: TaskProfile = "general"
+    capability_flags: list[str] = Field(default_factory=list)
+    ambiguity_flags: list[str] = Field(default_factory=list)
+
+
 def _should_try_llm_profile(profile_decision: ProfileDecision) -> bool:
     flags = set(profile_decision.capability_flags)
     ambiguity = set(profile_decision.ambiguity_flags)
@@ -74,21 +79,17 @@ def _should_try_llm_profile(profile_decision: ProfileDecision) -> bool:
 
 
 def _llm_profile(task_text: str) -> tuple[TaskProfile, list[str], list[str]] | None:
-    model_name = get_model_name("coordinator")
-    llm = ChatOpenAI(
-        model=model_name,
-        **get_client_kwargs("coordinator"),
-        temperature=0,
-        max_tokens=120,
-    )
-    raw = llm.invoke(
+    parsed, _ = invoke_structured_output(
+        "coordinator",
+        _ProfileDecisionPayload,
         [
             SystemMessage(content=_PROFILE_SCHEMA_PROMPT),
             HumanMessage(content=task_text),
-        ]
+        ],
+        temperature=0,
+        max_tokens=120,
     )
-    payload = json.loads(_extract_json_payload(str(raw.content or "")))
-    task_profile = str(payload.get("task_profile", "general"))
+    task_profile = str(parsed.task_profile or "general")
     valid_profiles = {
         "finance_quant",
         "finance_options",
@@ -99,12 +100,8 @@ def _llm_profile(task_text: str) -> tuple[TaskProfile, list[str], list[str]] | N
     }
     if task_profile not in valid_profiles:
         task_profile = "general"
-    flags = payload.get("capability_flags", [])
-    ambiguity = payload.get("ambiguity_flags", [])
-    if not isinstance(flags, list):
-        flags = []
-    if not isinstance(ambiguity, list):
-        ambiguity = []
+    flags = parsed.capability_flags if isinstance(parsed.capability_flags, list) else []
+    ambiguity = parsed.ambiguity_flags if isinstance(parsed.ambiguity_flags, list) else []
     return task_profile, sorted({str(flag) for flag in flags}), sorted({str(flag) for flag in ambiguity})
 
 

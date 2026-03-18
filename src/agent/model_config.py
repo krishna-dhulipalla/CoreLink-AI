@@ -194,6 +194,25 @@ def _structured_output_mode(role: str) -> str:
     return "native"
 
 
+def _supports_json_object_mode(role: str) -> bool:
+    host = _base_url_host(role)
+    return host in _PROMPT_TOOL_HOSTS
+
+
+def _merge_model_init_kwargs(base: dict[str, Any], extra: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in extra.items():
+        if key in {"model_kwargs", "extra_body"} and isinstance(value, dict):
+            current = merged.get(key, {})
+            if isinstance(current, dict):
+                merged[key] = {**current, **value}
+            else:
+                merged[key] = dict(value)
+        else:
+            merged[key] = value
+    return merged
+
+
 def _tool_call_mode(role: str) -> str:
     """Choose how tool calling should work for a role.
 
@@ -263,13 +282,14 @@ def invoke_structured_output(
     endpoints, this falls back to explicit JSON prompting plus local parsing.
     """
     model_name = get_model_name(role)
-    llm = ChatOpenAI(
-        model=model_name,
+    model_init_kwargs: dict[str, Any] = {
+        "model": model_name,
         **get_client_kwargs(role),
         **kwargs,
-    )
+    }
 
     if _structured_output_mode(role) == "native":
+        llm = ChatOpenAI(**model_init_kwargs)
         parsed = llm.with_structured_output(schema).invoke(messages)
         return parsed, model_name
 
@@ -280,6 +300,15 @@ def invoke_structured_output(
         f"JSON_SCHEMA={schema_json}"
     )
     fallback_messages = [SystemMessage(content=json_instruction)] + messages
+    if _supports_json_object_mode(role):
+        model_init_kwargs = _merge_model_init_kwargs(
+            model_init_kwargs,
+            {
+                "model_kwargs": {"response_format": {"type": "json_object"}},
+                "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
+            },
+        )
+    llm = ChatOpenAI(**model_init_kwargs)
     response = llm.invoke(fallback_messages)
     payload = _extract_json_payload(str(response.content or ""))
     parsed = schema.model_validate_json(payload)
