@@ -289,6 +289,131 @@ def test_solver_deterministically_seeds_scenario_pnl_from_risk_feedback(monkeypa
     assert result["pending_tool_call"]["arguments"]["reference_price"] == 300.0
 
 
+def test_solver_deterministically_seeds_scenario_pnl_from_black_scholes_result(monkeypatch):
+    monkeypatch.setattr("agent.nodes.solver.ChatOpenAI", lambda **kwargs: _FakeModel(AIMessage(content="unused")))
+    monkeypatch.setattr("agent.nodes.solver._tool_call_mode", lambda role: "prompt")
+
+    solver = make_solver([_DummyTool("scenario_pnl", "Run scenario P&L analysis")])
+    state = make_state(
+        "Should you be a net buyer or seller of options when IV is elevated?",
+        task_profile="finance_options",
+        capability_flags=["needs_options_engine"],
+        execution_template={
+            "template_id": "options_tool_backed",
+            "allowed_stages": ["COMPUTE", "SYNTHESIZE", "REVISE", "COMPLETE"],
+            "default_initial_stage": "COMPUTE",
+            "allowed_tool_names": ["scenario_pnl"],
+            "review_stages": ["COMPUTE", "SYNTHESIZE"],
+            "review_cadence": "milestone_and_final",
+            "answer_focus": [],
+        },
+        solver_stage="REVISE",
+        risk_feedback={
+            "repair_target": "compute",
+            "violation_codes": ["MISSING_SCENARIO_ANALYSIS"],
+            "risk_findings": [],
+            "required_disclosures": [],
+        },
+        last_tool_result={
+            "type": "black_scholes_price",
+            "facts": {
+                "call_price": 12.6,
+                "put_price": 11.37,
+                "delta": 0.536,
+                "gamma": 0.013,
+                "theta": -0.22,
+                "vega": 0.342,
+                "max_loss": 12.6,
+            },
+            "assumptions": {"S": 300.0, "K": 300.0, "option_type": "call"},
+            "source": {"tool": "black_scholes_price"},
+            "errors": [],
+        },
+    )
+
+    result = solver(state)
+
+    assert result["pending_tool_call"]["name"] == "scenario_pnl"
+    assert result["pending_tool_call"]["arguments"]["net_premium"] == 12.6
+    assert result["pending_tool_call"]["arguments"]["total_delta"] == 0.536
+    assert result["pending_tool_call"]["arguments"]["reference_price"] == 300.0
+
+
+def test_solver_builds_deterministic_options_compute_summary_after_scenario_tool(monkeypatch):
+    monkeypatch.setattr("agent.nodes.solver.ChatOpenAI", lambda **kwargs: _FakeModel(AIMessage(content="unused")))
+    monkeypatch.setattr("agent.nodes.solver._tool_call_mode", lambda role: "prompt")
+
+    solver = make_solver([])
+    state = make_state(
+        "Should you be a net buyer or seller of options when IV is elevated?",
+        task_profile="finance_options",
+        capability_flags=["needs_options_engine"],
+        execution_template={
+            "template_id": "options_tool_backed",
+            "allowed_stages": ["COMPUTE", "SYNTHESIZE", "REVISE", "COMPLETE"],
+            "default_initial_stage": "COMPUTE",
+            "allowed_tool_names": ["scenario_pnl"],
+            "review_stages": ["COMPUTE", "SYNTHESIZE"],
+            "review_cadence": "milestone_and_final",
+            "answer_focus": [],
+        },
+        solver_stage="COMPUTE",
+        last_tool_result={
+            "type": "scenario_pnl",
+            "facts": {
+                "worst_case_pnl": -18.4,
+                "best_case_pnl": 0.44,
+            },
+            "assumptions": {"reference_price": 300.0},
+            "source": {"tool": "scenario_pnl"},
+            "errors": [],
+        },
+        workpad={
+            "events": [],
+            "stage_outputs": {},
+            "tool_results": [
+                {
+                    "type": "black_scholes_price",
+                    "facts": {
+                        "call_price": 12.6,
+                        "delta": 0.536,
+                        "gamma": 0.013,
+                        "theta": -0.22,
+                        "vega": 0.342,
+                        "max_loss": 12.6,
+                    },
+                    "assumptions": {"S": 300.0, "K": 300.0, "option_type": "call"},
+                    "source": {"tool": "black_scholes_price"},
+                    "errors": [],
+                },
+                {
+                    "type": "scenario_pnl",
+                    "facts": {"worst_case_pnl": -18.4, "best_case_pnl": 0.44},
+                    "assumptions": {"reference_price": 300.0},
+                    "source": {"tool": "scenario_pnl"},
+                    "errors": [],
+                },
+            ],
+            "risk_results": [
+                {
+                    "verdict": "revise",
+                    "violation_codes": ["MISSING_RISK_CONTROLS"],
+                    "repair_target": "compute",
+                }
+            ],
+        },
+    )
+
+    result = solver(state)
+
+    assert result["workpad"]["review_ready"] is True
+    assert result["workpad"]["review_stage"] == "COMPUTE"
+    compute_text = result["workpad"]["stage_outputs"]["COMPUTE"].lower()
+    assert "position sizing" in compute_text
+    assert "stop-loss" in compute_text
+    assert "max loss" in compute_text
+
+
 def test_solver_document_gather_prompt_requires_targeted_extraction(monkeypatch):
     fake_model = _FakeModel(AIMessage(content='{"name":"fetch_reference_file","arguments":{"url":"https://example.com/report.csv","row_limit":25}}'))
     monkeypatch.setattr("agent.nodes.solver.ChatOpenAI", lambda **kwargs: fake_model)

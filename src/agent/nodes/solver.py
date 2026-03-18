@@ -320,6 +320,132 @@ def _reference_price_from_tool(tool_result: dict[str, Any]) -> float | None:
     return None
 
 
+def _latest_successful_tool_result(
+    tool_results: list[dict[str, Any]],
+    tool_names: set[str],
+) -> dict[str, Any] | None:
+    for result in reversed(tool_results):
+        if not isinstance(result, dict):
+            continue
+        if str(result.get("type", "")) not in tool_names:
+            continue
+        if result.get("errors"):
+            continue
+        if isinstance(result.get("facts"), dict) and result.get("facts"):
+            return result
+    return None
+
+
+def _scenario_args_from_primary_tool(tool_result: dict[str, Any]) -> dict[str, Any] | None:
+    tool_type = str(tool_result.get("type", ""))
+    facts = tool_result.get("facts", {}) if isinstance(tool_result, dict) else {}
+    assumptions = tool_result.get("assumptions", {}) if isinstance(tool_result, dict) else {}
+
+    if tool_type == "analyze_strategy":
+        net_premium = facts.get("net_premium")
+        total_delta = facts.get("total_delta")
+        if not isinstance(net_premium, (int, float)) or not isinstance(total_delta, (int, float)):
+            return None
+        args = {
+            "net_premium": float(net_premium),
+            "total_delta": float(total_delta),
+            "total_gamma": float(facts.get("total_gamma", 0.0) or 0.0),
+            "total_theta_per_day": float(facts.get("total_theta_per_day", 0.0) or 0.0),
+            "total_vega_per_vol_point": float(facts.get("total_vega_per_vol_point", 0.0) or 0.0),
+        }
+        reference_price = _reference_price_from_tool(tool_result)
+        if isinstance(reference_price, (int, float)):
+            args["reference_price"] = float(reference_price)
+        return args
+
+    if tool_type in {"black_scholes_price", "mispricing_analysis"}:
+        option_type = str(assumptions.get("option_type", "call")).lower()
+        premium = facts.get("market_price")
+        if not isinstance(premium, (int, float)):
+            if option_type == "put" and isinstance(facts.get("put_price"), (int, float)):
+                premium = facts.get("put_price")
+            elif isinstance(facts.get("call_price"), (int, float)):
+                premium = facts.get("call_price")
+            elif isinstance(facts.get("theoretical_price"), (int, float)):
+                premium = facts.get("theoretical_price")
+        delta = facts.get("delta")
+        if not isinstance(premium, (int, float)) or not isinstance(delta, (int, float)):
+            return None
+        args = {
+            "net_premium": float(premium),
+            "total_delta": float(delta),
+            "total_gamma": float(facts.get("gamma", 0.0) or 0.0),
+            "total_theta_per_day": float(facts.get("theta", 0.0) or 0.0),
+            "total_vega_per_vol_point": float(facts.get("vega", 0.0) or 0.0),
+        }
+        reference_price = _reference_price_from_tool(tool_result)
+        if isinstance(reference_price, (int, float)):
+            args["reference_price"] = float(reference_price)
+        return args
+
+    return None
+
+
+def _deterministic_options_compute_summary(state: AgentState) -> str | None:
+    workpad = state.get("workpad", {}) or {}
+    tool_results = list(workpad.get("tool_results", []))
+    latest_risk_result = (workpad.get("risk_results") or [])[-1] if workpad.get("risk_results") else {}
+    if str(latest_risk_result.get("verdict", "")) == "pass":
+        return None
+
+    scenario_result = state.get("last_tool_result") or {}
+    if str(scenario_result.get("type", "")) != "scenario_pnl" or scenario_result.get("errors"):
+        return None
+
+    primary_tool = _latest_successful_tool_result(
+        tool_results,
+        {"analyze_strategy", "black_scholes_price", "option_greeks", "mispricing_analysis"},
+    )
+    primary_facts = primary_tool.get("facts", {}) if isinstance(primary_tool, dict) else {}
+    scenario_facts = scenario_result.get("facts", {}) if isinstance(scenario_result, dict) else {}
+    scenario_assumptions = scenario_result.get("assumptions", {}) if isinstance(scenario_result, dict) else {}
+
+    max_loss = primary_facts.get("max_loss")
+    delta = primary_facts.get("total_delta", primary_facts.get("delta"))
+    gamma = primary_facts.get("total_gamma", primary_facts.get("gamma"))
+    theta = primary_facts.get("total_theta_per_day", primary_facts.get("theta"))
+    vega = primary_facts.get("total_vega_per_vol_point", primary_facts.get("vega"))
+    worst_case_pnl = scenario_facts.get("worst_case_pnl")
+    best_case_pnl = scenario_facts.get("best_case_pnl")
+
+    summary_lines = [
+        "Primary risk summary is now tool-backed and ready for review.",
+    ]
+    greeks_bits: list[str] = []
+    if isinstance(delta, (int, float)):
+        greeks_bits.append(f"delta {float(delta):.3f}")
+    if isinstance(gamma, (int, float)):
+        greeks_bits.append(f"gamma {float(gamma):.3f}")
+    if isinstance(theta, (int, float)):
+        greeks_bits.append(f"theta {float(theta):.3f}/day")
+    if isinstance(vega, (int, float)):
+        greeks_bits.append(f"vega {float(vega):.3f} per vol point")
+    if greeks_bits:
+        summary_lines.append("Key Greeks: " + ", ".join(greeks_bits) + ".")
+    if isinstance(max_loss, (int, float)):
+        summary_lines.append(f"Max loss is approximately {float(max_loss):.2f}.")
+    if isinstance(worst_case_pnl, (int, float)):
+        summary_lines.append(f"Downside scenario loss is approximately {float(worst_case_pnl):.2f}.")
+    if isinstance(best_case_pnl, (int, float)):
+        summary_lines.append(f"Base or favorable scenario P&L is approximately {float(best_case_pnl):.2f}.")
+
+    summary_lines.append(
+        "Risk controls: use 1-2% position sizing, place a stop-loss near a 1x premium loss or a breakeven breach, "
+        "and hedge or reduce exposure if delta or gamma expands materially."
+    )
+
+    reference_price = scenario_assumptions.get("reference_price")
+    if isinstance(reference_price, (int, float)):
+        summary_lines.append(f"Reference spot for the scenario grid is {float(reference_price):.2f}.")
+
+    return " ".join(summary_lines)
+
+
 def _build_tool_call_message(tool_name: str, tool_args: dict[str, Any]) -> AIMessage:
     return AIMessage(
         content="",
@@ -382,22 +508,9 @@ def _deterministic_finance_tool_call(
         and effective_stage == "COMPUTE"
         and "scenario_pnl" in allowed_tool_names
         and "MISSING_SCENARIO_ANALYSIS" in set(risk_feedback.get("violation_codes", []))
-        and str(last_tool_result.get("type", "")) == "analyze_strategy"
     ):
-        facts = last_tool_result.get("facts", {}) if isinstance(last_tool_result, dict) else {}
-        net_premium = facts.get("net_premium")
-        total_delta = facts.get("total_delta")
-        if isinstance(net_premium, (int, float)) and isinstance(total_delta, (int, float)):
-            args = {
-                "net_premium": float(net_premium),
-                "total_delta": float(total_delta),
-                "total_gamma": float(facts.get("total_gamma", 0.0) or 0.0),
-                "total_theta_per_day": float(facts.get("total_theta_per_day", 0.0) or 0.0),
-                "total_vega_per_vol_point": float(facts.get("total_vega_per_vol_point", 0.0) or 0.0),
-            }
-            reference_price = _reference_price_from_tool(last_tool_result)
-            if isinstance(reference_price, (int, float)):
-                args["reference_price"] = float(reference_price)
+        args = _scenario_args_from_primary_tool(last_tool_result)
+        if args:
             return {"name": "scenario_pnl", "arguments": args}
 
     return None
@@ -562,6 +675,22 @@ def make_solver(tools: list):
                 "pending_tool_call": pending,
                 "workpad": workpad,
             }
+
+        deterministic_compute_text = None
+        if profile == "finance_options" and effective_stage == "COMPUTE":
+            deterministic_compute_text = _deterministic_options_compute_summary(state)
+        if deterministic_compute_text:
+            workpad = _merge_stage_output(workpad, effective_stage, deterministic_compute_text)
+            if stage_is_review_milestone(execution_template, effective_stage):
+                workpad["review_ready"] = True
+                workpad["review_stage"] = effective_stage
+                workpad = _record_event(workpad, "solver", f"{effective_stage}: deterministic milestone draft ready")
+                logger.info("[Step %s] solver(%s) -> deterministic milestone ready", step, effective_stage)
+                return {
+                    "workpad": workpad,
+                    "pending_tool_call": None,
+                    "risk_feedback": None,
+                }
 
         messages = [
             SystemMessage(content=SOLVER_PROMPT),
