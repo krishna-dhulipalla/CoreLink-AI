@@ -455,5 +455,107 @@ def portfolio_limit_check(metrics: dict[str, Any], limits: dict[str, Any]) -> di
         return _error("portfolio_limit_check", f"Error running portfolio limit check: {exc}", assumptions=assumptions)
 
 
+@mcp.tool()
+def factor_exposure_summary(
+    exposures: list[dict[str, Any]],
+    factor_map: dict[str, list[str]] | None = None,
+) -> dict[str, Any]:
+    assumptions = {"factor_map": factor_map or {}, "position_count": len(exposures or [])}
+    try:
+        factors = factor_map or {
+            "technology": ["software", "semiconductor", "internet"],
+            "financials": ["bank", "insurance", "financial"],
+            "energy": ["energy", "oil", "gas"],
+            "defensive": ["healthcare", "utilities", "consumer staples"],
+        }
+        totals: dict[str, float] = {}
+        unexplained = 0.0
+        for item in exposures:
+            weight = float(item.get("weight", 0.0))
+            sector_text = str(item.get("sector", "")).lower()
+            matched = False
+            for factor, sector_tokens in factors.items():
+                if any(token in sector_text for token in sector_tokens):
+                    totals[factor] = totals.get(factor, 0.0) + weight
+                    matched = True
+            if not matched:
+                totals["other"] = totals.get("other", 0.0) + weight
+                unexplained += weight
+        ranked = sorted(
+            [{"factor": key, "weight": round(value, 6)} for key, value in totals.items()],
+            key=lambda item: item["weight"],
+            reverse=True,
+        )
+        facts = {
+            "factor_exposures": ranked,
+            "largest_factor": ranked[0]["factor"] if ranked else None,
+            "largest_factor_weight": ranked[0]["weight"] if ranked else 0.0,
+            "unexplained_weight": round(unexplained, 6),
+        }
+        return _envelope("factor_exposure_summary", facts=facts, assumptions=assumptions)
+    except Exception as exc:
+        return _error("factor_exposure_summary", f"Error computing factor exposures: {exc}", assumptions=assumptions)
+
+
+@mcp.tool()
+def drawdown_risk_profile(returns: list[float]) -> dict[str, Any]:
+    assumptions = {"period_count": len(returns or [])}
+    try:
+        if len(returns) < 2:
+            return _error("drawdown_risk_profile", "Provide at least 2 return observations.", assumptions=assumptions)
+        max_dd_result = calculate_max_drawdown(returns)
+        if max_dd_result.get("errors"):
+            return _error("drawdown_risk_profile", max_dd_result["errors"][0], assumptions=assumptions)
+        dd = float(max_dd_result["facts"]["max_drawdown_decimal"])
+        duration = int(max_dd_result["facts"]["drawdown_duration_periods"])
+        recovery = int(max_dd_result["facts"]["recovery_periods"])
+        severity = "elevated" if dd >= 0.20 else "moderate" if dd >= 0.10 else "contained"
+        facts = {
+            "max_drawdown_decimal": dd,
+            "drawdown_duration_periods": duration,
+            "recovery_periods": recovery,
+            "drawdown_severity": severity,
+        }
+        return _envelope("drawdown_risk_profile", facts=facts, assumptions=assumptions)
+    except Exception as exc:
+        return _error("drawdown_risk_profile", f"Error computing drawdown risk profile: {exc}", assumptions=assumptions)
+
+
+@mcp.tool()
+def liquidity_stress(
+    positions: list[dict[str, Any]],
+    redemption_pct: float = 0.10,
+) -> dict[str, Any]:
+    assumptions = {"position_count": len(positions or []), "redemption_pct": redemption_pct}
+    try:
+        if redemption_pct < 0:
+            return _error("liquidity_stress", "redemption_pct must be non-negative.", assumptions=assumptions)
+        stressed_days = 0.0
+        illiquid_weight = 0.0
+        weighted_days = 0.0
+        for item in positions:
+            weight = float(item.get("weight", 0.0))
+            adv = float(item.get("avg_daily_volume_weight", item.get("adv_weight", 0.2)) or 0.2)
+            liquidation_days = float(item.get("liquidation_days", 0.0) or 0.0)
+            if liquidation_days <= 0.0:
+                liquidation_days = weight / max(adv, 1e-6)
+            weighted_days += weight * liquidation_days
+            stressed_days = max(stressed_days, liquidation_days)
+            if liquidation_days > 5:
+                illiquid_weight += weight
+        liquidity_gap = redemption_pct - max(0.0, 1.0 - illiquid_weight)
+        facts = {
+            "weighted_liquidation_days": round(weighted_days, 4),
+            "worst_position_liquidation_days": round(stressed_days, 4),
+            "illiquid_weight": round(illiquid_weight, 6),
+            "redemption_pct": float(redemption_pct),
+            "liquidity_gap": round(liquidity_gap, 6),
+            "stress_assessment": "tight" if liquidity_gap > 0 else "manageable",
+        }
+        return _envelope("liquidity_stress", facts=facts, assumptions=assumptions, is_estimated=True)
+    except Exception as exc:
+        return _error("liquidity_stress", f"Error computing liquidity stress: {exc}", assumptions=assumptions)
+
+
 if __name__ == "__main__":
     mcp.run()

@@ -68,6 +68,25 @@ PROMPTS = [
         "As of 2024-10-14, use finance evidence tools to retrieve MSFT price history and 1-month return, "
         "then summarize the result with the source timestamp and any missing-data caveats.",
     ),
+    (
+        "equity_research",
+        "Write an equity research report on MSFT as of 2024-10-14. Include thesis, evidence, valuation framing, and key risks.",
+    ),
+    (
+        "portfolio_risk_review",
+        "Review this portfolio risk and recommend actions.\n"
+        'Portfolio JSON: [{"ticker":"AAPL","weight":0.35,"sector":"Technology","liquidation_days":6},'
+        '{"ticker":"MSFT","weight":0.30,"sector":"Technology","liquidation_days":4},'
+        '{"ticker":"XOM","weight":0.20,"sector":"Energy","liquidation_days":2},'
+        '{"ticker":"JNJ","weight":0.15,"sector":"Healthcare","liquidation_days":3}]\n'
+        'Returns JSON: [0.012,-0.018,0.009,-0.021,0.011,-0.007,0.006,-0.013,0.008,-0.005]\n'
+        'Limits JSON: {"max_loss_pct":0.12,"max_var_pct":0.05}',
+    ),
+    (
+        "event_driven_finance",
+        "Evaluate the event-driven setup for MSFT around its next earnings catalyst as of 2024-10-14. "
+        "Explain the catalyst, market context, scenario framing, and risk factors.",
+    ),
 ]
 
 

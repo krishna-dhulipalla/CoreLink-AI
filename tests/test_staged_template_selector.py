@@ -56,3 +56,39 @@ class TestTemplateSelector:
 
         assert "legal_finance_overlap" in state["ambiguity_flags"]
         assert result["execution_template"]["template_id"] == "legal_reasoning_only"
+
+    def test_selects_equity_research_template_for_research_note_prompt(self):
+        prompt = (
+            "Write an equity research report on MSFT with investment thesis, valuation framing, "
+            "bull and bear case, and key risks as of 2024-10-14."
+        )
+        state = make_state(prompt)
+        state.update(intake(state))
+        state.update(task_profiler(state))
+
+        result = template_selector(state)
+
+        assert result["execution_template"]["template_id"] == "equity_research_report"
+
+    def test_selects_portfolio_risk_template_for_portfolio_review_prompt(self):
+        prompt = (
+            "Review this portfolio risk, concentration, factor exposure, and rebalance actions.\n"
+            'Portfolio JSON: [{"ticker":"AAPL","weight":0.35,"sector":"Technology"}]'
+        )
+        state = make_state(prompt)
+        state.update(intake(state))
+        state.update(task_profiler(state))
+
+        result = template_selector(state)
+
+        assert result["execution_template"]["template_id"] == "portfolio_risk_review"
+
+    def test_selects_event_driven_template_for_catalyst_prompt(self):
+        prompt = "Evaluate the earnings catalyst trade for MSFT ahead of the next guidance update."
+        state = make_state(prompt)
+        state.update(intake(state))
+        state.update(task_profiler(state))
+
+        result = template_selector(state)
+
+        assert result["execution_template"]["template_id"] == "event_driven_finance"

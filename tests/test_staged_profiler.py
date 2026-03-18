@@ -90,6 +90,43 @@ class TestStagedProfiler:
         assert "legal_finance_overlap" in result["ambiguity_flags"]
         assert result["profile_decision"]["ambiguity_flags"]
 
+    def test_equity_research_prompt_sets_equity_research_flag(self):
+        prompt = (
+            "Write an equity research report on MSFT with investment thesis, valuation framing, "
+            "bull and bear case, and key risks as of 2024-10-14."
+        )
+        state = make_state(prompt)
+        state.update(intake(state))
+
+        result = task_profiler(state)
+
+        assert result["task_profile"] == "finance_quant"
+        assert "needs_equity_research" in result["capability_flags"]
+        assert "needs_live_data" in result["capability_flags"]
+
+    def test_portfolio_risk_prompt_sets_portfolio_flag(self):
+        prompt = (
+            "Review this portfolio risk, concentration, factor exposure, and rebalance actions.\n"
+            'Portfolio JSON: [{"ticker":"AAPL","weight":0.35,"sector":"Technology"}]'
+        )
+        state = make_state(prompt)
+        state.update(intake(state))
+
+        result = task_profiler(state)
+
+        assert result["task_profile"] == "finance_quant"
+        assert "needs_portfolio_risk" in result["capability_flags"]
+
+    def test_event_driven_prompt_sets_event_flag(self):
+        prompt = "Evaluate the earnings catalyst trade for MSFT ahead of the next guidance update."
+        state = make_state(prompt)
+        state.update(intake(state))
+
+        result = task_profiler(state)
+
+        assert result["task_profile"] == "finance_quant"
+        assert "needs_event_analysis" in result["capability_flags"]
+
     def test_legal_options_overlap_falls_back_to_general_profile(self):
         prompt = (
             "Our merger counsel wants structure options, but also asks whether an iron condor is a valid "

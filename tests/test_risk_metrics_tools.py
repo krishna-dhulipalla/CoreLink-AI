@@ -52,3 +52,39 @@ def test_calculate_portfolio_greeks_returns_machine_usable_facts():
     assert result["errors"] == []
     assert "total_delta" in result["facts"]
     assert result["facts"]["volatility_exposure"] in {"long_vol", "short_vol", "flat"}
+
+
+def test_factor_exposure_summary_groups_sector_risk():
+    result = risk_server.factor_exposure_summary(
+        [
+            {"ticker": "AAPL", "weight": 0.35, "sector": "Technology"},
+            {"ticker": "MSFT", "weight": 0.30, "sector": "Technology"},
+            {"ticker": "XOM", "weight": 0.20, "sector": "Energy"},
+        ]
+    )
+
+    assert result["errors"] == []
+    assert result["facts"]["largest_factor"] in {"technology", "energy", "other"}
+    assert result["facts"]["largest_factor_weight"] > 0
+
+
+def test_drawdown_risk_profile_summarizes_drawdown_severity():
+    result = risk_server.drawdown_risk_profile([0.02, -0.03, -0.04, 0.01, -0.02, 0.03])
+
+    assert result["errors"] == []
+    assert result["facts"]["drawdown_severity"] in {"contained", "moderate", "elevated"}
+    assert result["facts"]["max_drawdown_decimal"] >= 0
+
+
+def test_liquidity_stress_flags_tight_portfolio():
+    result = risk_server.liquidity_stress(
+        [
+            {"ticker": "SMALL", "weight": 0.25, "liquidation_days": 8},
+            {"ticker": "MID", "weight": 0.25, "liquidation_days": 6},
+            {"ticker": "LARGE", "weight": 0.50, "liquidation_days": 2},
+        ],
+        redemption_pct=0.30,
+    )
+
+    assert result["errors"] == []
+    assert result["facts"]["stress_assessment"] in {"manageable", "tight"}

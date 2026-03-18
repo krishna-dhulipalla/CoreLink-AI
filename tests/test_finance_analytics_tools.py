@@ -3,6 +3,8 @@ import pytest
 pytest.importorskip("mcp.server.fastmcp")
 
 from mcp_servers.finance_analytics.server import (
+    bond_spread_duration,
+    cashflow_waterfall,
     dcf_sensitivity_grid,
     du_pont_analysis,
     liquidity_ratio_pack,
@@ -70,3 +72,31 @@ def test_dcf_sensitivity_grid_marks_estimated_outputs():
     assert result["quality"]["is_estimated"] is True
     assert len(result["facts"]["grid"]) == 2
     assert len(result["facts"]["grid"][0]["values"]) == 2
+
+
+def test_cashflow_waterfall_returns_structured_cash_bridge():
+    result = cashflow_waterfall(
+        operating_cash_flow=220.0,
+        capex=80.0,
+        taxes=20.0,
+        debt_service=15.0,
+        working_capital_change=10.0,
+        dividends=25.0,
+    )
+
+    assert result["errors"] == []
+    assert result["facts"]["free_cash_flow"] == pytest.approx(95.0)
+    assert result["facts"]["residual_cash"] == pytest.approx(70.0)
+
+
+def test_bond_spread_duration_decomposes_rate_and_spread_impact():
+    result = bond_spread_duration(
+        modified_duration=4.8,
+        spread_duration=4.2,
+        spread_change_bps=35,
+        benchmark_yield_change_bps=-10,
+    )
+
+    assert result["errors"] == []
+    assert result["quality"]["is_estimated"] is True
+    assert result["facts"]["spread_price_impact_decimal"] < 0

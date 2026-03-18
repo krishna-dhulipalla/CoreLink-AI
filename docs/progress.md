@@ -28,8 +28,7 @@ Rules:
   - structured evidence and provenance
   - store-only offline curation
 - Finance is now the main product direction. Legal and document paths still exist, but current architecture decisions should prioritize finance-first reliability.
-- Known live limitation that still remains:
-  - `task_profiler` and `reviewer` sometimes fail strict JSON/schema output on the current Qwen/Nebius path and fall back to deterministic parsing.
+- Structured-output fallback still exists as a safeguard, but it is no longer the normal path on the current live backend.
 
 ---
 
@@ -115,3 +114,11 @@ Rules:
 - **Critical Bug Solved:** Once JSON transport started working consistently, reviewer began overreaching on gather/compute-heavy paths and caused live recursion on `finance_options`, `finance_options_policy`, `document_qa`, and `finance_evidence`.
 - **Fix:** Kept the transport fix, but made reviewer escalation selective: deterministic review first, LLM review only for ambiguous or final judgment cases where it adds value.
 - **Handoff Notes:** Live staged smoke is stable again and no longer emits the old reviewer/task-profiler JSON parse warnings on the current backend.
+
+### Chat 12: Finance Hands Phase D - Template Expansion
+
+- **Role:** Architect / Coder
+- **Actions Taken:** Added `equity_research_report`, `portfolio_risk_review`, and `event_driven_finance` templates; expanded finance analytics and risk operators; extended reviewer completeness checks and live smoke coverage for the new finance templates.
+- **Critical Bugs Solved:** `quant_inline_exact` still recursed on terse live finance prompts, and `get_corporate_actions(as_of_date=...)` failed on tz-aware indexes during event-driven runs.
+- **Fix:** Added a deterministic inline-formula path in [solver](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\solver.py) for exact finance quant tasks, and fixed timezone-safe `as_of_date` filtering in [market_data/server.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\mcp_servers\market_data\server.py).
+- **Handoff Notes:** Live staged smoke now passes for the expanded finance suite, including `finance_quant`, equity research, portfolio risk review, and event-driven finance.

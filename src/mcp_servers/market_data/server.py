@@ -51,6 +51,14 @@ def _normalize_as_of_or_error(as_of_date: str | None) -> tuple[str | None, str |
         return None, str(exc)
 
 
+def _index_mask_at_or_before(index: Any, as_of_date: str | None) -> Any:
+    if not as_of_date:
+        return slice(None)
+    normalized = pd.to_datetime(index, errors="coerce", utc=True)
+    cutoff = pd.Timestamp(as_of_date)
+    return normalized.tz_localize(None).normalize() <= cutoff.normalize()
+
+
 def _history_end_kwargs(as_of_date: str | None) -> dict[str, Any]:
     normalized = _normalize_as_of_date(as_of_date)
     if not normalized:
@@ -474,13 +482,12 @@ def get_corporate_actions(ticker: str, as_of_date: str | None = None) -> dict:
     try:
         yf = _get_yfinance()
         stock = yf.Ticker(ticker)
-        cutoff = pd.Timestamp(normalized_as_of) if normalized_as_of else None
         dividends = stock.dividends
         splits = stock.splits
-        if cutoff is not None and not dividends.empty:
-            dividends = dividends[dividends.index.normalize() <= cutoff.normalize()]
-        if cutoff is not None and not splits.empty:
-            splits = splits[splits.index.normalize() <= cutoff.normalize()]
+        if normalized_as_of and not dividends.empty:
+            dividends = dividends[_index_mask_at_or_before(dividends.index, normalized_as_of)]
+        if normalized_as_of and not splits.empty:
+            splits = splits[_index_mask_at_or_before(splits.index, normalized_as_of)]
 
         recent_dividends = []
         if not dividends.empty:

@@ -473,5 +473,71 @@ def dcf_sensitivity_grid(
         return _error_result("dcf_sensitivity_grid", str(exc), assumptions=assumptions)
 
 
+@mcp.tool()
+def cashflow_waterfall(
+    operating_cash_flow: float,
+    capex: float,
+    taxes: float = 0.0,
+    debt_service: float = 0.0,
+    working_capital_change: float = 0.0,
+    dividends: float = 0.0,
+) -> dict:
+    assumptions = {
+        "operating_cash_flow": operating_cash_flow,
+        "capex": capex,
+        "taxes": taxes,
+        "debt_service": debt_service,
+        "working_capital_change": working_capital_change,
+        "dividends": dividends,
+    }
+    try:
+        free_cash_flow = operating_cash_flow - capex - taxes - debt_service - working_capital_change
+        residual_cash = free_cash_flow - dividends
+        facts = {
+            "operating_cash_flow": round(float(operating_cash_flow), 4),
+            "capex": round(float(capex), 4),
+            "taxes": round(float(taxes), 4),
+            "debt_service": round(float(debt_service), 4),
+            "working_capital_change": round(float(working_capital_change), 4),
+            "free_cash_flow": round(float(free_cash_flow), 4),
+            "dividends": round(float(dividends), 4),
+            "residual_cash": round(float(residual_cash), 4),
+            "coverage_ratio": round(float(free_cash_flow) / max(abs(float(dividends)), 1e-6), 6) if dividends else None,
+        }
+        return _result_envelope("cashflow_waterfall", facts=facts, assumptions=assumptions)
+    except Exception as exc:
+        logger.error("Error in cashflow_waterfall: %s", exc)
+        return _error_result("cashflow_waterfall", str(exc), assumptions=assumptions)
+
+
+@mcp.tool()
+def bond_spread_duration(
+    modified_duration: float,
+    spread_duration: float,
+    spread_change_bps: float,
+    benchmark_yield_change_bps: float = 0.0,
+) -> dict:
+    assumptions = {
+        "modified_duration": modified_duration,
+        "spread_duration": spread_duration,
+        "spread_change_bps": spread_change_bps,
+        "benchmark_yield_change_bps": benchmark_yield_change_bps,
+    }
+    try:
+        rate_impact = -float(modified_duration) * (float(benchmark_yield_change_bps) / 10000.0)
+        spread_impact = -float(spread_duration) * (float(spread_change_bps) / 10000.0)
+        total_impact = rate_impact + spread_impact
+        facts = {
+            "rate_price_impact_decimal": round(rate_impact, 6),
+            "spread_price_impact_decimal": round(spread_impact, 6),
+            "total_price_impact_decimal": round(total_impact, 6),
+            "total_price_impact_percent": round(total_impact * 100, 4),
+        }
+        return _result_envelope("bond_spread_duration", facts=facts, assumptions=assumptions, quality={"is_estimated": True})
+    except Exception as exc:
+        logger.error("Error in bond_spread_duration: %s", exc)
+        return _error_result("bond_spread_duration", str(exc), assumptions=assumptions)
+
+
 if __name__ == "__main__":
     mcp.run()

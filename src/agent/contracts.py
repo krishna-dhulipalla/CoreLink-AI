@@ -19,6 +19,9 @@ CapabilityFlag = Literal[
     "needs_options_engine",
     "needs_legal_reasoning",
     "requires_exact_format",
+    "needs_equity_research",
+    "needs_portfolio_risk",
+    "needs_event_analysis",
 ]
 
 AmbiguityFlag = Literal[
@@ -62,6 +65,10 @@ ExecutionTemplateId = Literal[
     "quant_inline_exact",
     "quant_with_tool_compute",
     "options_tool_backed",
+    "regulated_actionable_finance",
+    "equity_research_report",
+    "portfolio_risk_review",
+    "event_driven_finance",
     "legal_reasoning_only",
     "legal_with_document_evidence",
     "document_qa",

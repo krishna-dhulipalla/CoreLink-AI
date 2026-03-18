@@ -154,6 +154,41 @@ def _options_gaps(answer_text: str) -> list[str]:
     return _keyword_gaps(answer_text, get_profile_pack("finance_options").reviewer_dimensions)
 
 
+_TEMPLATE_REVIEW_DIMENSIONS: dict[str, dict[str, list[str]]] = {
+    "equity_research_report": {
+        "thesis": ["thesis", "view", "recommendation"],
+        "evidence": ["evidence", "fundamental", "revenue", "margin", "cash", "price"],
+        "valuation": ["valuation", "multiple", "dcf", "upside", "downside", "target"],
+        "risks": ["risk", "downside", "uncertainty", "watch"],
+    },
+    "portfolio_risk_review": {
+        "exposures": ["exposure", "concentration", "factor", "sector", "weight"],
+        "stress": ["stress", "scenario", "var", "drawdown", "liquidity"],
+        "limits": ["limit", "breach", "cap", "budget"],
+        "actions": ["rebalance", "trim", "hedge", "reduce", "hold", "action"],
+    },
+    "event_driven_finance": {
+        "catalyst": ["event", "catalyst", "earnings", "guidance", "corporate action", "fed", "cpi"],
+        "market context": ["price", "return", "volatility", "market", "timestamp", "as of"],
+        "scenarios": ["base", "upside", "downside", "stress", "scenario"],
+        "risk": ["risk", "uncertainty", "watch", "disclosure"],
+    },
+    "regulated_actionable_finance": {
+        "recommendation": ["recommend", "buy", "sell", "hold", "overweight", "underweight"],
+        "evidence": ["source", "timestamp", "as of", "evidence"],
+        "risk": ["risk", "downside", "uncertainty", "limit"],
+        "disclosures": ["recommendation class", "assumption", "disclosure"],
+    },
+}
+
+
+def _template_gaps(template_id: str, answer_text: str) -> list[str]:
+    dimensions = _TEMPLATE_REVIEW_DIMENSIONS.get(template_id, {})
+    if not dimensions:
+        return []
+    return _keyword_gaps(answer_text, dimensions)
+
+
 def _has_undisclosed_required_assumption(state: AgentState, answer_text: str) -> bool:
     normalized = re.sub(r"\s+", " ", (answer_text or "").lower()).strip()
     for record in state.get("assumption_ledger", []):
@@ -290,6 +325,14 @@ def _deterministic_review(state: AgentState, artifact: str, is_final: bool) -> R
 
     if is_final and profile == "finance_quant":
         answer_contract = state.get("answer_contract", {})
+        template_gaps = _template_gaps(template_id, artifact)
+        if template_gaps:
+            return ReviewResult(
+                verdict="revise",
+                reasoning="Final finance answer is incomplete relative to the selected execution template.",
+                missing_dimensions=template_gaps,
+                repair_target="final",
+            )
         if "needs_live_data" in capability_flags and not has_structured_tool:
             return ReviewResult(
                 verdict="revise",

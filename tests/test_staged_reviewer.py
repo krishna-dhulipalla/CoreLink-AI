@@ -463,6 +463,45 @@ def test_reviewer_skips_llm_for_deterministic_options_final_pass(monkeypatch):
     assert result["review_feedback"] is None
 
 
+def test_reviewer_revises_equity_research_final_missing_template_dimensions():
+    state = make_state(
+        "Write an equity research report on MSFT.",
+        task_profile="finance_quant",
+        capability_flags=["needs_equity_research"],
+        execution_template={
+            "template_id": "equity_research_report",
+            "allowed_stages": ["GATHER", "COMPUTE", "SYNTHESIZE", "REVISE", "COMPLETE"],
+            "default_initial_stage": "GATHER",
+            "allowed_tool_names": ["get_company_fundamentals", "get_price_history"],
+            "review_stages": ["GATHER", "COMPUTE", "SYNTHESIZE"],
+            "review_cadence": "milestone_and_final",
+            "answer_focus": [],
+        },
+        solver_stage="SYNTHESIZE",
+        workpad={
+            "events": [],
+            "stage_outputs": {},
+            "tool_results": [
+                {
+                    "type": "get_company_fundamentals",
+                    "facts": {"fundamentals": {"trailingPE": 25.0, "revenueGrowth": 0.12}},
+                    "assumptions": {"ticker": "MSFT"},
+                    "source": {"tool": "get_company_fundamentals", "timestamp": "2024-10-14"},
+                    "errors": [],
+                }
+            ],
+            "review_ready": True,
+            "review_stage": "SYNTHESIZE",
+        },
+    )
+    state["messages"].append(AIMessage(content="Thesis: business quality remains solid. Evidence: revenue growth is healthy."))
+
+    result = reviewer(state)
+
+    assert result["solver_stage"] == "REVISE"
+    assert "valuation" in [gap.lower() for gap in result["review_feedback"]["missing_dimensions"]]
+
+
 def test_reviewer_backtracks_bad_gather_result():
     state = make_state(
         "Read the attached file.",

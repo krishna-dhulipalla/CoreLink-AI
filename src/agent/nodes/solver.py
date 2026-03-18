@@ -6,8 +6,10 @@ Stage-based solver for the finance-first runtime.
 
 from __future__ import annotations
 
+import ast
 import json
 import logging
+import operator as _op
 import re
 import time
 import uuid
@@ -36,6 +38,19 @@ from context_manager import count_tokens
 logger = logging.getLogger(__name__)
 
 _THINK_BLOCK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
+_ASSIGNMENT_RE = re.compile(r"\b([A-Za-z][A-Za-z0-9_]*)\s*=\s*(-?\d+(?:\.\d+)?)\s*(%)?")
+_FORMULA_RE = re.compile(r"\b([A-Za-z][A-Za-z0-9_ ]{1,80})\s*=\s*([^\n.;]+)")
+_SAFE_OPERATORS = {
+    ast.Add: _op.add,
+    ast.Sub: _op.sub,
+    ast.Mult: _op.mul,
+    ast.Div: _op.truediv,
+    ast.Pow: _op.pow,
+    ast.USub: _op.neg,
+    ast.UAdd: _op.pos,
+    ast.Mod: _op.mod,
+    ast.FloorDiv: _op.floordiv,
+}
 
 SOLVER_PROMPT = """You are the staged solver in a finance-first runtime.
 Work only on the current stage.
@@ -270,6 +285,72 @@ def _solver_max_tokens(stage: str, profile: str) -> int:
     return 700
 
 
+def _safe_arithmetic_eval(expression: str) -> float | None:
+    def _eval(node: ast.AST) -> float:
+        if isinstance(node, ast.Expression):
+            return _eval(node.body)
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+            return float(node.value)
+        if isinstance(node, ast.BinOp) and type(node.op) in _SAFE_OPERATORS:
+            return float(_SAFE_OPERATORS[type(node.op)](_eval(node.left), _eval(node.right)))
+        if isinstance(node, ast.UnaryOp) and type(node.op) in _SAFE_OPERATORS:
+            return float(_SAFE_OPERATORS[type(node.op)](_eval(node.operand)))
+        raise ValueError(f"Unsupported expression node: {type(node).__name__}")
+
+    try:
+        parsed = ast.parse(expression.strip(), mode="eval")
+        return _eval(parsed)
+    except Exception:
+        return None
+
+
+def _extract_inline_assignments(text: str) -> dict[str, float]:
+    assignments: dict[str, float] = {}
+    for match in _ASSIGNMENT_RE.finditer(text or ""):
+        key = match.group(1).strip()
+        value = float(match.group(2))
+        assignments[key] = value
+        assignments[key.upper()] = value
+    return assignments
+
+
+def _deterministic_inline_quant_value(state: AgentState) -> float | None:
+    template_id = str((state.get("execution_template") or {}).get("template_id", ""))
+    if template_id != "quant_inline_exact":
+        return None
+
+    task_text = latest_human_text(state.get("messages", []))
+    evidence_pack = state.get("evidence_pack", {}) or {}
+    formulas = list(evidence_pack.get("formulas", []))
+    assignments = _extract_inline_assignments(task_text)
+    if not assignments:
+        return None
+
+    candidates: list[str] = []
+    for source in [*formulas, task_text]:
+        for match in _FORMULA_RE.finditer(source or ""):
+            rhs = match.group(2).strip()
+            if re.fullmatch(r"-?\d+(?:\.\d+)?%?", rhs):
+                continue
+            if any(ch.isalpha() for ch in rhs) or any(op in rhs for op in "+-*/"):
+                candidates.append(rhs)
+
+    for expression in candidates:
+        rewritten = expression.replace("^", "**")
+        for name in sorted(assignments, key=len, reverse=True):
+            rewritten = re.sub(rf"\b{re.escape(name)}\b", str(assignments[name]), rewritten)
+        if re.search(r"[A-Za-z]", rewritten):
+            continue
+        value = _safe_arithmetic_eval(rewritten)
+        if value is not None:
+            return float(value)
+    return None
+
+
+def _format_scalar_number(value: float) -> str:
+    return f"{float(value):.10g}"
+
+
 def _record_event(workpad: dict[str, Any], node: str, action: str) -> dict[str, Any]:
     updated = dict(workpad)
     events = list(updated.get("events", []))
@@ -446,6 +527,455 @@ def _deterministic_options_compute_summary(state: AgentState) -> str | None:
         summary_lines.append(f"Reference spot for the scenario grid is {float(reference_price):.2f}.")
 
     return " ".join(summary_lines)
+
+
+def _deterministic_quant_compute_summary(state: AgentState) -> str | None:
+    value = _deterministic_inline_quant_value(state)
+    if value is None:
+        return None
+    return f"Exact inline computation result: {_format_scalar_number(value)}"
+
+
+def _deterministic_quant_final_answer(state: AgentState) -> str | None:
+    value = _deterministic_inline_quant_value(state)
+    if value is None:
+        return None
+    return _format_scalar_number(value)
+
+
+def _table_positions_from_evidence(evidence_pack: dict[str, Any]) -> list[dict[str, Any]]:
+    exposures: list[dict[str, Any]] = []
+    for table in (evidence_pack.get("tables", []) or []):
+        rows = table.get("rows", []) if isinstance(table, dict) else []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            normalized = {str(key).strip().lower(): value for key, value in row.items()}
+            weight_value = None
+            for key in ("weight", "portfolio weight", "position weight", "% weight", "pct weight"):
+                if key in normalized:
+                    weight_value = normalized[key]
+                    break
+            if weight_value is None:
+                continue
+            try:
+                if isinstance(weight_value, str) and weight_value.strip().endswith("%"):
+                    weight = float(weight_value.strip().rstrip("%")) / 100.0
+                else:
+                    weight = float(weight_value)
+                    if weight > 1.0:
+                        weight /= 100.0
+            except Exception:
+                continue
+            exposures.append(
+                {
+                    "ticker": str(normalized.get("ticker", normalized.get("name", normalized.get("asset", "unknown")))),
+                    "name": str(normalized.get("name", normalized.get("ticker", normalized.get("asset", "unknown")))),
+                    "sector": str(normalized.get("sector", normalized.get("industry", "unknown"))),
+                    "weight": weight,
+                    "avg_daily_volume_weight": float(normalized.get("adv_weight", normalized.get("avg daily volume weight", 0.2)) or 0.2),
+                }
+            )
+    return exposures
+
+
+def _portfolio_positions_from_evidence(evidence_pack: dict[str, Any]) -> list[dict[str, Any]]:
+    prompt_facts = (evidence_pack or {}).get("prompt_facts", {}) or {}
+    positions = prompt_facts.get("portfolio_positions")
+    if isinstance(positions, list) and positions and all(isinstance(item, dict) for item in positions):
+        return [dict(item) for item in positions]
+    return _table_positions_from_evidence(evidence_pack or {})
+
+
+def _returns_series_from_evidence(evidence_pack: dict[str, Any]) -> list[float]:
+    prompt_facts = (evidence_pack or {}).get("prompt_facts", {}) or {}
+    returns = prompt_facts.get("returns_series")
+    if isinstance(returns, list):
+        parsed: list[float] = []
+        for item in returns:
+            try:
+                parsed.append(float(item))
+            except Exception:
+                continue
+        if parsed:
+            return parsed
+    values: list[float] = []
+    for table in (evidence_pack.get("tables", []) or []):
+        rows = table.get("rows", []) if isinstance(table, dict) else []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            normalized = {str(key).strip().lower(): value for key, value in row.items()}
+            for key in ("return", "returns", "daily return", "monthly return"):
+                if key not in normalized:
+                    continue
+                raw = normalized[key]
+                try:
+                    if isinstance(raw, str) and raw.strip().endswith("%"):
+                        values.append(float(raw.strip().rstrip("%")) / 100.0)
+                    else:
+                        values.append(float(raw))
+                except Exception:
+                    pass
+    return values
+
+
+def _limit_constraints_from_evidence(evidence_pack: dict[str, Any], policy_context: dict[str, Any]) -> dict[str, Any]:
+    prompt_facts = (evidence_pack or {}).get("prompt_facts", {}) or {}
+    limits = prompt_facts.get("limit_constraints")
+    if isinstance(limits, dict):
+        return dict(limits)
+    derived: dict[str, Any] = {}
+    if isinstance(policy_context.get("max_position_risk_pct"), (int, float)):
+        derived["max_loss_pct"] = float(policy_context["max_position_risk_pct"]) / 100.0
+    return derived
+
+
+def _portfolio_limit_metrics(tool_results: list[dict[str, Any]]) -> dict[str, Any]:
+    metrics: dict[str, Any] = {}
+    var_result = _latest_successful_tool_result(tool_results, {"calculate_var"})
+    if var_result:
+        facts = var_result.get("facts", {})
+        if isinstance(facts.get("var_decimal"), (int, float)):
+            metrics["var_decimal"] = float(facts["var_decimal"])
+        if isinstance(facts.get("var_amount"), (int, float)):
+            metrics["var_amount"] = float(facts["var_amount"])
+    drawdown_result = _latest_successful_tool_result(tool_results, {"drawdown_risk_profile"})
+    if drawdown_result:
+        facts = drawdown_result.get("facts", {})
+        if isinstance(facts.get("max_drawdown_decimal"), (int, float)):
+            metrics["worst_case_pnl_pct"] = -abs(float(facts["max_drawdown_decimal"]))
+    factor_result = _latest_successful_tool_result(tool_results, {"factor_exposure_summary"})
+    if factor_result:
+        facts = factor_result.get("facts", {})
+        if isinstance(facts.get("largest_factor_weight"), (int, float)):
+            metrics["largest_factor_weight"] = float(facts["largest_factor_weight"])
+    return metrics
+
+
+def _deterministic_portfolio_compute_summary(state: AgentState) -> str | None:
+    workpad = state.get("workpad", {}) or {}
+    tool_results = list(workpad.get("tool_results", []))
+    findings: list[str] = []
+    actions: list[str] = []
+
+    concentration = _latest_successful_tool_result(tool_results, {"concentration_check"})
+    factor = _latest_successful_tool_result(tool_results, {"factor_exposure_summary"})
+    drawdown = _latest_successful_tool_result(tool_results, {"drawdown_risk_profile"})
+    var_result = _latest_successful_tool_result(tool_results, {"calculate_var"})
+    liquidity = _latest_successful_tool_result(tool_results, {"liquidity_stress"})
+    limits = _latest_successful_tool_result(tool_results, {"portfolio_limit_check"})
+
+    if concentration:
+        facts = concentration.get("facts", {})
+        if facts.get("name_breaches"):
+            top = facts["name_breaches"][0]
+            findings.append(f"Single-name concentration breach in {top.get('name')} at {float(top.get('weight', 0.0)) * 100:.1f}%.")
+            actions.append("Trim the oversized name exposure toward the portfolio cap.")
+        if facts.get("sector_breaches"):
+            top = facts["sector_breaches"][0]
+            findings.append(f"Sector concentration breach in {top.get('sector')} at {float(top.get('weight', 0.0)) * 100:.1f}%.")
+            actions.append("Rebalance sector weight or offset it with lower-correlated positions.")
+
+    if factor:
+        facts = factor.get("facts", {})
+        if facts.get("largest_factor"):
+            findings.append(
+                f"Largest factor exposure is {facts.get('largest_factor')} at about {float(facts.get('largest_factor_weight', 0.0)) * 100:.1f}%."
+            )
+
+    if drawdown:
+        facts = drawdown.get("facts", {})
+        if isinstance(facts.get("max_drawdown_decimal"), (int, float)):
+            findings.append(f"Historical max drawdown is approximately {float(facts['max_drawdown_decimal']) * 100:.2f}%.")
+            actions.append("Set rebalance thresholds and reduce risk if drawdown tolerance is exceeded.")
+
+    if var_result:
+        facts = var_result.get("facts", {})
+        if isinstance(facts.get("var_amount"), (int, float)):
+            findings.append(f"Estimated VaR is approximately {float(facts['var_amount']):.2f}.")
+
+    if liquidity:
+        facts = liquidity.get("facts", {})
+        if str(facts.get("stress_assessment", "")) == "tight":
+            findings.append("Liquidity stress is tight under the current redemption assumption.")
+            actions.append("Stage reductions and avoid forced liquidation in the least-liquid positions.")
+
+    if limits:
+        facts = limits.get("facts", {})
+        if facts.get("hard_limit_breached"):
+            findings.append("At least one hard portfolio limit is breached.")
+            actions.append("Do not increase risk until the limit breach is remediated.")
+
+    if not findings:
+        return None
+
+    unique_actions = list(dict.fromkeys(actions or ["Maintain current sizing and continue monitoring key limits."]))
+    summary = ["Portfolio risk review is now grounded in structured risk evidence."]
+    summary.extend(findings[:4])
+    summary.append("Recommended actions: " + " ".join(unique_actions[:3]))
+    return " ".join(summary)
+
+
+def _deterministic_portfolio_final_answer(state: AgentState) -> str | None:
+    workpad = state.get("workpad", {}) or {}
+    risk_results = list(workpad.get("risk_results", []))
+    if not risk_results or str(risk_results[-1].get("verdict", "")) != "pass":
+        return None
+
+    tool_results = list(workpad.get("tool_results", []))
+    concentration = _latest_successful_tool_result(tool_results, {"concentration_check"})
+    factor = _latest_successful_tool_result(tool_results, {"factor_exposure_summary"})
+    drawdown = _latest_successful_tool_result(tool_results, {"drawdown_risk_profile"})
+    var_result = _latest_successful_tool_result(tool_results, {"calculate_var"})
+    liquidity = _latest_successful_tool_result(tool_results, {"liquidity_stress"})
+    limits = _latest_successful_tool_result(tool_results, {"portfolio_limit_check"})
+    risk_requirements = workpad.get("risk_requirements") or {}
+
+    lines = [
+        "**Portfolio Risk Summary**",
+    ]
+    if factor:
+        facts = factor.get("facts", {})
+        lines.append(
+            f"Largest factor exposure: {facts.get('largest_factor', 'n/a')} "
+            f"at about {float(facts.get('largest_factor_weight', 0.0)) * 100:.1f}%."
+        )
+    if concentration:
+        facts = concentration.get("facts", {})
+        lines.append(
+            f"Concentration check: {'breach detected' if facts.get('has_breach') else 'within stated limits on the available evidence'}."
+        )
+
+    lines.extend(["", "**Stress and Scenario Evidence**"])
+    if var_result:
+        facts = var_result.get("facts", {})
+        if isinstance(facts.get("var_amount"), (int, float)):
+            lines.append(f"Estimated VaR: {float(facts['var_amount']):.2f} ({float(facts.get('var_decimal', 0.0)) * 100:.2f}% of portfolio).")
+    if drawdown:
+        facts = drawdown.get("facts", {})
+        if isinstance(facts.get("max_drawdown_decimal"), (int, float)):
+            lines.append(f"Historical max drawdown: {float(facts['max_drawdown_decimal']) * 100:.2f}%.")
+    if liquidity:
+        facts = liquidity.get("facts", {})
+        lines.append(f"Liquidity stress: {facts.get('stress_assessment', 'n/a')}.")
+
+    lines.extend(["", "**Limit Status**"])
+    if limits:
+        facts = limits.get("facts", {})
+        lines.append("Hard limit breached." if facts.get("hard_limit_breached") else "No hard limit breach detected from current limit checks.")
+    else:
+        lines.append("No explicit hard-limit check was available.")
+
+    lines.extend(["", "**Recommended Actions**"])
+    if concentration and concentration.get("facts", {}).get("has_breach"):
+        lines.append("- Trim the breached name or sector concentration toward policy limits.")
+    if liquidity and str(liquidity.get("facts", {}).get("stress_assessment", "")) == "tight":
+        lines.append("- Stage reductions in the least-liquid positions before adding new risk.")
+    if drawdown:
+        lines.append("- Tie rebalance and hedge actions to drawdown or VaR thresholds rather than discretionary timing.")
+    if len(lines) <= 9:
+        lines.append("- Maintain current positioning but keep the main risk indicators on a tighter monitoring cadence.")
+
+    lines.extend(["", "**Disclosures**"])
+    for item in risk_requirements.get("required_disclosures", []):
+        lines.append(f"- {item}")
+    lines.append("")
+    lines.append(f"Recommendation class: {risk_requirements.get('recommendation_class', 'scenario_dependent_recommendation')}.")
+    return "\n".join(lines)
+
+
+def _fmt_pct(value: Any) -> str | None:
+    if isinstance(value, (int, float)):
+        return f"{float(value) * 100:.2f}%"
+    return None
+
+
+def _price_change_from_history(result: dict[str, Any] | None) -> float | None:
+    if not isinstance(result, dict):
+        return None
+    facts = result.get("facts", {}) if isinstance(result.get("facts", {}), dict) else {}
+    start_close = facts.get("start_close")
+    end_close = facts.get("end_close")
+    if isinstance(start_close, (int, float)) and isinstance(end_close, (int, float)) and start_close:
+        return (float(end_close) - float(start_close)) / float(start_close)
+    return None
+
+
+def _deterministic_research_compute_summary(state: AgentState) -> str | None:
+    workpad = state.get("workpad", {}) or {}
+    tool_results = list(workpad.get("tool_results", []))
+    fundamentals = _latest_successful_tool_result(tool_results, {"get_company_fundamentals"})
+    history = _latest_successful_tool_result(tool_results, {"get_price_history", "get_returns"})
+    if fundamentals is None and history is None:
+        return None
+    parts = ["Research evidence pack is now grounded in structured finance data."]
+    if fundamentals:
+        facts = fundamentals.get("facts", {}).get("fundamentals", {})
+        revenue_growth = _fmt_pct(facts.get("revenueGrowth"))
+        operating_margin = _fmt_pct(facts.get("operatingMargins"))
+        trailing_pe = facts.get("trailingPE")
+        if revenue_growth:
+            parts.append(f"Revenue growth is approximately {revenue_growth}.")
+        if operating_margin:
+            parts.append(f"Operating margin is approximately {operating_margin}.")
+        if isinstance(trailing_pe, (int, float)):
+            parts.append(f"Trailing P/E is about {float(trailing_pe):.2f}.")
+    change = _price_change_from_history(history)
+    if isinstance(change, float):
+        parts.append(f"Observed price change over the retrieved window is {change * 100:.2f}%.")
+    return " ".join(parts)
+
+
+def _deterministic_research_final_answer(state: AgentState) -> str | None:
+    workpad = state.get("workpad", {}) or {}
+    tool_results = list(workpad.get("tool_results", []))
+    fundamentals = _latest_successful_tool_result(tool_results, {"get_company_fundamentals"})
+    history = _latest_successful_tool_result(tool_results, {"get_price_history", "get_returns"})
+    if fundamentals is None and history is None:
+        return None
+    facts = fundamentals.get("facts", {}).get("fundamentals", {}) if fundamentals else {}
+    timestamp = _best_available_timestamp(state)
+    revenue_growth = _fmt_pct(facts.get("revenueGrowth"))
+    operating_margin = _fmt_pct(facts.get("operatingMargins"))
+    roe = _fmt_pct(facts.get("returnOnEquity"))
+    trailing_pe = facts.get("trailingPE")
+    forward_pe = facts.get("forwardPE")
+    change = _price_change_from_history(history)
+    lines = [
+        "**Thesis**",
+        (
+            "The name screens as a fundamentally supported candidate, but the conclusion remains scenario-dependent until valuation and catalyst follow-through are confirmed."
+        ),
+        "",
+        "**Evidence**",
+    ]
+    if revenue_growth:
+        lines.append(f"- Revenue growth: {revenue_growth}.")
+    if operating_margin:
+        lines.append(f"- Operating margin: {operating_margin}.")
+    if roe:
+        lines.append(f"- Return on equity: {roe}.")
+    if isinstance(change, float):
+        lines.append(f"- Retrieved price performance over the evidence window: {change * 100:.2f}%.")
+    if timestamp:
+        lines.append(f"- Source timestamp: {timestamp}.")
+    lines.extend(["", "**Valuation**"])
+    if isinstance(trailing_pe, (int, float)) or isinstance(forward_pe, (int, float)):
+        lines.append(
+            f"- Multiples framing: trailing P/E {float(trailing_pe):.2f} and forward P/E {float(forward_pe):.2f}."
+            if isinstance(trailing_pe, (int, float)) and isinstance(forward_pe, (int, float))
+            else f"- Multiples framing: trailing P/E {float(trailing_pe):.2f}."
+            if isinstance(trailing_pe, (int, float))
+            else f"- Multiples framing: forward P/E {float(forward_pe):.2f}."
+        )
+    else:
+        lines.append("- Valuation framing is limited on the current evidence and should be expanded with peer or DCF work.")
+    lines.extend(
+        [
+            "",
+            "**Risks**",
+            "- Thesis risk increases if growth decelerates faster than margins can absorb.",
+            "- Market multiple compression can dominate even if the fundamental trend remains stable.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _deterministic_event_compute_summary(state: AgentState) -> str | None:
+    workpad = state.get("workpad", {}) or {}
+    tool_results = list(workpad.get("tool_results", []))
+    actions = _latest_successful_tool_result(tool_results, {"get_corporate_actions"})
+    history = _latest_successful_tool_result(tool_results, {"get_price_history", "get_returns"})
+    if actions is None and history is None:
+        return None
+    parts = ["Event-driven finance evidence is now grounded in structured catalyst and market context."]
+    if actions:
+        facts = actions.get("facts", {})
+        if facts.get("events"):
+            parts.append(f"Retrieved {len(facts['events'])} recent corporate-action events.")
+    change = _price_change_from_history(history)
+    if isinstance(change, float):
+        parts.append(f"Observed market move over the evidence window is {change * 100:.2f}%.")
+    return " ".join(parts)
+
+
+def _deterministic_event_final_answer(state: AgentState) -> str | None:
+    workpad = state.get("workpad", {}) or {}
+    tool_results = list(workpad.get("tool_results", []))
+    actions = _latest_successful_tool_result(tool_results, {"get_corporate_actions"})
+    history = _latest_successful_tool_result(tool_results, {"get_price_history", "get_returns"})
+    if actions is None and history is None:
+        return None
+    change = _price_change_from_history(history)
+    timestamp = _best_available_timestamp(state)
+    lines = [
+        "**Catalyst**",
+        "The setup is event-driven and should be evaluated through explicit catalyst scenarios rather than a static valuation-only lens.",
+        "",
+        "**Market Context**",
+    ]
+    if isinstance(change, float):
+        lines.append(f"- Retrieved price move over the evidence window: {change * 100:.2f}%.")
+    if timestamp:
+        lines.append(f"- Source timestamp: {timestamp}.")
+    lines.extend(
+        [
+            "",
+            "**Scenarios**",
+            "- Base case: the event lands near consensus and price reaction stays contained.",
+            "- Upside case: the catalyst improves guidance or sentiment and supports upside follow-through.",
+            "- Downside case: the event disappoints and reprices the name sharply lower.",
+            "- Stress case: the catalyst coincides with a broader market or volatility shock.",
+            "",
+            "**Risk**",
+            "- Event timing, guidance uncertainty, and gap risk should be treated as the main risk drivers.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _deterministic_actionable_finance_final_answer(state: AgentState) -> str | None:
+    workpad = state.get("workpad", {}) or {}
+    tool_results = list(workpad.get("tool_results", []))
+    history = _latest_successful_tool_result(tool_results, {"get_price_history", "get_returns"})
+    fundamentals = _latest_successful_tool_result(tool_results, {"get_company_fundamentals"})
+    if history is None and fundamentals is None:
+        return None
+    timestamp = _best_available_timestamp(state)
+    policy_context = (state.get("evidence_pack", {}) or {}).get("policy_context", {}) or {}
+    price_change = _price_change_from_history(history)
+    lines = [
+        "**Recommendation**",
+        "Recommendation is scenario-dependent on the current retrieved evidence and should not be treated as a blind high-conviction action.",
+        "",
+        "**Evidence**",
+    ]
+    if timestamp:
+        lines.append(f"- Source timestamp: {timestamp}.")
+    if isinstance(price_change, float):
+        lines.append(f"- Observed price move over the retrieved window: {price_change * 100:.2f}%.")
+    if fundamentals:
+        facts = fundamentals.get("facts", {}).get("fundamentals", {})
+        margin = _fmt_pct(facts.get("operatingMargins"))
+        growth = _fmt_pct(facts.get("revenueGrowth"))
+        if margin:
+            lines.append(f"- Operating margin: {margin}.")
+        if growth:
+            lines.append(f"- Revenue growth: {growth}.")
+    lines.extend(
+        [
+            "",
+            "**Risk**",
+            "- Action remains sensitive to fresh evidence, market regime, and headline risk.",
+            "",
+            "**Disclosures**",
+            "- Recommendation class: scenario_dependent_recommendation.",
+        ]
+    )
+    if policy_context.get("requires_recommendation_class"):
+        lines.append("- Recommendation class is explicit because this is an actionable finance path.")
+    return "\n".join(lines)
 
 
 def _infer_options_strategy_label(primary_tool: dict[str, Any]) -> str:
@@ -922,6 +1452,7 @@ def _deterministic_finance_tool_call(
     last_tool_result = state.get("last_tool_result") or {}
     workpad = state.get("workpad", {}) or {}
     tool_results = list(workpad.get("tool_results", []))
+    template_id = str((state.get("execution_template") or {}).get("template_id", ""))
 
     if profile == "finance_quant" and effective_stage == "GATHER" and "needs_live_data" in set(state.get("capability_flags", [])):
         if (
@@ -969,6 +1500,88 @@ def _deterministic_finance_tool_call(
         args = _scenario_args_from_primary_tool(last_tool_result)
         if args:
             return {"name": "scenario_pnl", "arguments": args}
+
+    if template_id == "equity_research_report" and effective_stage == "GATHER":
+        ticker = _first_ticker_entity(evidence_pack.get("entities", []))
+        as_of_date = prompt_facts.get("as_of_date")
+        tool_types = {str(result.get("type", "")) for result in tool_results if isinstance(result, dict)}
+        if ticker and "get_company_fundamentals" in allowed_tool_names and "get_company_fundamentals" not in tool_types:
+            args = {"ticker": ticker}
+            if isinstance(as_of_date, str) and as_of_date:
+                args["as_of_date"] = as_of_date
+            return {"name": "get_company_fundamentals", "arguments": args}
+        if ticker and "get_price_history" in allowed_tool_names and "get_price_history" not in tool_types:
+            args = {"ticker": ticker, "period": "6mo"}
+            if isinstance(as_of_date, str) and as_of_date:
+                args["as_of_date"] = as_of_date
+            return {"name": "get_price_history", "arguments": args}
+
+    if template_id == "event_driven_finance" and effective_stage == "GATHER":
+        ticker = _first_ticker_entity(evidence_pack.get("entities", []))
+        as_of_date = prompt_facts.get("as_of_date")
+        tool_types = {str(result.get("type", "")) for result in tool_results if isinstance(result, dict)}
+        if ticker and "get_corporate_actions" in allowed_tool_names and "get_corporate_actions" not in tool_types:
+            args = {"ticker": ticker}
+            if isinstance(as_of_date, str) and as_of_date:
+                args["as_of_date"] = as_of_date
+            return {"name": "get_corporate_actions", "arguments": args}
+        if ticker and "get_price_history" in allowed_tool_names and "get_price_history" not in tool_types:
+            args = {"ticker": ticker, "period": "3mo"}
+            if isinstance(as_of_date, str) and as_of_date:
+                args["as_of_date"] = as_of_date
+            return {"name": "get_price_history", "arguments": args}
+
+    if template_id == "regulated_actionable_finance" and effective_stage == "GATHER":
+        ticker = _first_ticker_entity(evidence_pack.get("entities", []))
+        as_of_date = prompt_facts.get("as_of_date")
+        tool_types = {str(result.get("type", "")) for result in tool_results if isinstance(result, dict)}
+        if ticker and "get_company_fundamentals" in allowed_tool_names and "get_company_fundamentals" not in tool_types:
+            args = {"ticker": ticker}
+            if isinstance(as_of_date, str) and as_of_date:
+                args["as_of_date"] = as_of_date
+            return {"name": "get_company_fundamentals", "arguments": args}
+        if ticker and "get_price_history" in allowed_tool_names and "get_price_history" not in tool_types:
+            args = {"ticker": ticker, "period": _infer_period_from_text(task_text)}
+            if isinstance(as_of_date, str) and as_of_date:
+                args["as_of_date"] = as_of_date
+            return {"name": "get_price_history", "arguments": args}
+
+    if template_id == "portfolio_risk_review" and effective_stage == "COMPUTE":
+        positions = _portfolio_positions_from_evidence(evidence_pack)
+        returns_series = _returns_series_from_evidence(evidence_pack)
+        limits = _limit_constraints_from_evidence(
+            evidence_pack,
+            (evidence_pack.get("policy_context", {}) if isinstance(evidence_pack.get("policy_context", {}), dict) else {}),
+        )
+        tool_types = {str(result.get("type", "")) for result in tool_results if isinstance(result, dict)}
+        if positions and "concentration_check" in allowed_tool_names and "concentration_check" not in tool_types:
+            return {"name": "concentration_check", "arguments": {"exposures": positions}}
+        if positions and "factor_exposure_summary" in allowed_tool_names and "factor_exposure_summary" not in tool_types:
+            factor_map = prompt_facts.get("factor_map")
+            args = {"exposures": positions}
+            if isinstance(factor_map, dict) and factor_map:
+                args["factor_map"] = factor_map
+            return {"name": "factor_exposure_summary", "arguments": args}
+        if returns_series and "drawdown_risk_profile" in allowed_tool_names and "drawdown_risk_profile" not in tool_types:
+            return {"name": "drawdown_risk_profile", "arguments": {"returns": returns_series}}
+        if returns_series and "calculate_var" in allowed_tool_names and "calculate_var" not in tool_types:
+            daily_vol = 0.0
+            if len(returns_series) >= 2:
+                mean_r = sum(returns_series) / len(returns_series)
+                variance = sum((item - mean_r) ** 2 for item in returns_series) / max(len(returns_series) - 1, 1)
+                daily_vol = max(variance, 0.0) ** 0.5
+            portfolio_value = float(prompt_facts.get("portfolio_value", 1_000_000.0) or 1_000_000.0)
+            return {
+                "name": "calculate_var",
+                "arguments": {"portfolio_value": portfolio_value, "daily_vol": daily_vol, "confidence_level": 0.95},
+            }
+        if positions and "liquidity_stress" in allowed_tool_names and "liquidity_stress" not in tool_types:
+            redemption_pct = float(prompt_facts.get("redemption_pct", 0.10) or 0.10)
+            return {"name": "liquidity_stress", "arguments": {"positions": positions, "redemption_pct": redemption_pct}}
+        if limits and "portfolio_limit_check" in allowed_tool_names and "portfolio_limit_check" not in tool_types:
+            metrics = _portfolio_limit_metrics(tool_results)
+            if metrics:
+                return {"name": "portfolio_limit_check", "arguments": {"metrics": metrics, "limits": limits}}
 
     return None
 
@@ -1166,8 +1779,16 @@ def make_solver(tools: list):
             }
 
         deterministic_compute_text = None
-        if profile == "finance_options" and effective_stage == "COMPUTE":
+        if execution_template.get("template_id") == "quant_inline_exact" and effective_stage == "COMPUTE":
+            deterministic_compute_text = _deterministic_quant_compute_summary(state)
+        elif profile == "finance_options" and effective_stage == "COMPUTE":
             deterministic_compute_text = _deterministic_options_compute_summary(state)
+        elif execution_template.get("template_id") == "portfolio_risk_review" and effective_stage == "COMPUTE":
+            deterministic_compute_text = _deterministic_portfolio_compute_summary(state)
+        elif execution_template.get("template_id") == "equity_research_report" and effective_stage == "COMPUTE":
+            deterministic_compute_text = _deterministic_research_compute_summary(state)
+        elif execution_template.get("template_id") in {"event_driven_finance", "regulated_actionable_finance"} and effective_stage == "COMPUTE":
+            deterministic_compute_text = _deterministic_event_compute_summary(state)
         if deterministic_compute_text:
             workpad = _merge_stage_output(workpad, effective_stage, deterministic_compute_text)
             if stage_is_review_milestone(execution_template, effective_stage):
@@ -1182,11 +1803,21 @@ def make_solver(tools: list):
                 }
 
         deterministic_final_text = None
-        if profile == "finance_options" and effective_stage == "SYNTHESIZE" and not compliance_feedback:
+        if execution_template.get("template_id") == "quant_inline_exact" and effective_stage == "SYNTHESIZE":
+            deterministic_final_text = _deterministic_quant_final_answer(state)
+        elif profile == "finance_options" and effective_stage == "SYNTHESIZE" and not compliance_feedback:
             if policy_context.get("defined_risk_only") or policy_context.get("no_naked_options"):
                 deterministic_final_text = _deterministic_policy_options_final_answer(state)
             else:
                 deterministic_final_text = _deterministic_options_final_answer(state)
+        elif execution_template.get("template_id") == "portfolio_risk_review" and effective_stage == "SYNTHESIZE":
+            deterministic_final_text = _deterministic_portfolio_final_answer(state)
+        elif execution_template.get("template_id") == "equity_research_report" and effective_stage == "SYNTHESIZE":
+            deterministic_final_text = _deterministic_research_final_answer(state)
+        elif execution_template.get("template_id") == "event_driven_finance" and effective_stage == "SYNTHESIZE":
+            deterministic_final_text = _deterministic_event_final_answer(state)
+        elif execution_template.get("template_id") == "regulated_actionable_finance" and effective_stage == "SYNTHESIZE":
+            deterministic_final_text = _deterministic_actionable_finance_final_answer(state)
         if deterministic_final_text:
             final_message = AIMessage(content=deterministic_final_text)
             workpad["draft_answer"] = deterministic_final_text

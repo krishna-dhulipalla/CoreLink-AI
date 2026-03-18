@@ -49,6 +49,21 @@ _RISK_CAP_RE = re.compile(
     re.IGNORECASE,
 )
 
+
+def _extract_labeled_json_block(text: str, label: str) -> Any | None:
+    pattern = re.compile(rf"{re.escape(label)}\s*:\s*", re.IGNORECASE)
+    match = pattern.search(text or "")
+    if not match:
+        return None
+    tail = (text or "")[match.end():].lstrip()
+    if not tail or tail[0] not in "[{":
+        return None
+    try:
+        parsed, _ = json.JSONDecoder().raw_decode(tail)
+        return parsed
+    except Exception:
+        return None
+
 def allowed_tools_for_profile(profile: str) -> set[str]:
     return set(get_profile_pack(profile).allowed_tools)
 
@@ -256,6 +271,51 @@ def detect_capability_flags(task_text: str, answer_contract: AnswerContract) -> 
         )
     ):
         flags.add("needs_legal_reasoning")
+    if any(
+        token in normalized
+        for token in (
+            "equity research",
+            "research note",
+            "investment thesis",
+            "target price",
+            "bull case",
+            "bear case",
+            "catalyst",
+            "research report",
+        )
+    ):
+        flags.add("needs_equity_research")
+    if any(
+        token in normalized
+        for token in (
+            "portfolio risk",
+            "risk review",
+            "concentration",
+            "risk budget",
+            "drawdown",
+            "exposure review",
+            "factor exposure",
+            "var limit",
+            "portfolio exposures",
+            "position weights",
+        )
+    ):
+        flags.add("needs_portfolio_risk")
+    if any(
+        token in normalized
+        for token in (
+            "event-driven",
+            "earnings",
+            "guidance",
+            "macro event",
+            "cpi release",
+            "fed meeting",
+            "corporate action",
+            "catalyst trade",
+            "merger arb",
+        )
+    ):
+        flags.add("needs_event_analysis")
     if answer_contract.requires_adapter:
         flags.add("requires_exact_format")
 
@@ -320,6 +380,8 @@ def infer_task_profile(task_text: str, capability_flags: list[str]) -> TaskProfi
         return "finance_options"
     if "needs_legal_reasoning" in flags:
         return "legal_transactional"
+    if {"needs_equity_research", "needs_portfolio_risk", "needs_event_analysis"} & flags:
+        return "finance_quant"
     if any(marker in normalized for marker in finance_data_markers):
         return "finance_quant"
     if "needs_math" in flags and any(
@@ -366,6 +428,10 @@ def select_execution_template(
     exact_contract = answer_contract.requires_adapter and answer_contract.format in {"json", "xml"}
     lowered = (task_text or "").lower()
     has_inline_quant_evidence = any(token in lowered for token in ("=", "|---", "roe", "roa", "ebitda", "yield"))
+    action_orientation = any(
+        token in lowered
+        for token in ("should i", "should we", "recommend", "buy or sell", "allocate", "overweight", "underweight", "action")
+    )
 
     template_id = "legal_reasoning_only"
 
@@ -378,7 +444,15 @@ def select_execution_template(
     elif profile == "external_retrieval":
         template_id = "live_retrieval"
     elif profile == "finance_quant":
-        if has_files or has_live:
+        if "needs_portfolio_risk" in flags:
+            template_id = "portfolio_risk_review"
+        elif "needs_event_analysis" in flags:
+            template_id = "event_driven_finance"
+        elif "needs_equity_research" in flags:
+            template_id = "equity_research_report"
+        elif action_orientation and (has_live or "needs_live_data" in flags):
+            template_id = "regulated_actionable_finance"
+        elif has_files or has_live:
             template_id = "quant_with_tool_compute"
         elif exact_contract or has_inline_quant_evidence:
             template_id = "quant_inline_exact"
@@ -391,8 +465,16 @@ def select_execution_template(
             template_id = "legal_with_document_evidence"
         elif has_files:
             template_id = "document_qa"
+        elif "needs_portfolio_risk" in flags:
+            template_id = "portfolio_risk_review"
+        elif "needs_event_analysis" in flags:
+            template_id = "event_driven_finance"
+        elif "needs_equity_research" in flags:
+            template_id = "equity_research_report"
         elif "needs_options_engine" in flags and "legal_options_overlap" not in ambiguity:
             template_id = "options_tool_backed"
+        elif action_orientation and ("needs_live_data" in flags or "needs_math" in flags):
+            template_id = "regulated_actionable_finance"
         elif "needs_legal_reasoning" in flags:
             template_id = "legal_reasoning_only"
         elif "needs_math" in flags:
@@ -516,6 +598,18 @@ def extract_inline_facts(text: str) -> dict[str, Any]:
         facts["implied_volatility"] = float(iv_match.group(1)) / 100.0
     if hv_match:
         facts["historical_volatility"] = float(hv_match.group(1)) / 100.0
+
+    for label, key in (
+        ("Portfolio JSON", "portfolio_positions"),
+        ("Returns JSON", "returns_series"),
+        ("Metrics JSON", "risk_metrics_input"),
+        ("Limits JSON", "limit_constraints"),
+        ("Factors JSON", "factor_map"),
+        ("Peers JSON", "peer_set"),
+    ):
+        parsed = _extract_labeled_json_block(text, label)
+        if parsed is not None:
+            facts[key] = parsed
 
     return facts
 
@@ -954,10 +1048,19 @@ def initial_stage_for_template(
         template_id = ""
 
     flags = set(capability_flags)
-    if template_id in {"legal_with_document_evidence", "document_qa", "live_retrieval"}:
+    if template_id in {
+        "legal_with_document_evidence",
+        "document_qa",
+        "live_retrieval",
+        "regulated_actionable_finance",
+        "equity_research_report",
+        "event_driven_finance",
+    }:
         return "GATHER"
     if template_id in {"options_tool_backed", "quant_inline_exact"}:
         return "COMPUTE"
+    if template_id == "portfolio_risk_review":
+        return "GATHER" if ("needs_live_data" in flags or "needs_files" in flags) else "COMPUTE"
     if template_id == "quant_with_tool_compute":
         if "needs_live_data" in flags or "needs_files" in flags:
             return "GATHER"
@@ -988,6 +1091,18 @@ def selective_checkpoint_policy(template: dict[str, Any] | ExecutionTemplate | N
             "enabled": True,
             "checkpoint_stages": {"COMPUTE"},
             "backtrack_stages": {"COMPUTE"},
+        }
+    if template_id == "portfolio_risk_review":
+        return {
+            "enabled": True,
+            "checkpoint_stages": {"COMPUTE"},
+            "backtrack_stages": {"COMPUTE"},
+        }
+    if template_id in {"equity_research_report", "event_driven_finance", "regulated_actionable_finance"}:
+        return {
+            "enabled": True,
+            "checkpoint_stages": {"GATHER", "COMPUTE"},
+            "backtrack_stages": {"GATHER", "COMPUTE"},
         }
     if template_id in {"document_qa", "legal_with_document_evidence"}:
         return {

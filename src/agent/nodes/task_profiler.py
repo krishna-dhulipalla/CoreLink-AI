@@ -47,6 +47,9 @@ Valid capability_flags values:
 - needs_options_engine
 - needs_legal_reasoning
 - requires_exact_format
+- needs_equity_research
+- needs_portfolio_risk
+- needs_event_analysis
 
 Valid ambiguity_flags values:
 - legal_finance_overlap

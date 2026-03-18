@@ -45,6 +45,36 @@ def test_solver_emits_one_tool_call_in_compute_stage(monkeypatch):
     assert result["messages"][0].tool_calls[0]["name"] == "calculator"
 
 
+def test_solver_deterministically_computes_inline_quant_formula(monkeypatch):
+    monkeypatch.setattr("agent.nodes.solver.ChatOpenAI", lambda **kwargs: _FakeModel(AIMessage(content="unused")))
+    monkeypatch.setattr("agent.nodes.solver._tool_call_mode", lambda role: "prompt")
+
+    solver = make_solver([])
+    state = make_state(
+        'Financial Leverage Effect = (ROE - ROA) / ROA. Calculate it with ROE = 3.0433%, ROA = 1.579%. Output Format: {"answer": <value>}',
+        task_profile="finance_quant",
+        capability_flags=["needs_math", "requires_exact_format"],
+        execution_template={
+            "template_id": "quant_inline_exact",
+            "allowed_stages": ["COMPUTE", "SYNTHESIZE", "REVISE", "COMPLETE"],
+            "default_initial_stage": "COMPUTE",
+            "allowed_tool_names": ["calculator"],
+            "review_stages": ["COMPUTE", "SYNTHESIZE"],
+            "review_cadence": "milestone_and_final",
+            "answer_focus": [],
+        },
+        solver_stage="COMPUTE",
+        answer_contract={"format": "json", "requires_adapter": True, "wrapper_key": "answer"},
+        evidence_pack={"formulas": ["Financial Leverage Effect = (ROE - ROA) / ROA"]},
+    )
+
+    result = solver(state)
+
+    assert result["pending_tool_call"] is None
+    assert result["workpad"]["review_stage"] == "COMPUTE"
+    assert "0.9273" in result["workpad"]["stage_outputs"]["COMPUTE"]
+
+
 def test_solver_deterministically_seeds_live_data_price_history_call(monkeypatch):
     monkeypatch.setattr("agent.nodes.solver.ChatOpenAI", lambda **kwargs: _FakeModel(AIMessage(content="unused")))
     monkeypatch.setattr("agent.nodes.solver._tool_call_mode", lambda role: "prompt")
@@ -149,6 +179,35 @@ def test_solver_synthesize_generates_final_draft(monkeypatch):
 
     assert result["workpad"]["review_ready"] is True
     assert result["messages"][0].content.startswith("Use an asset purchase")
+
+
+def test_solver_deterministically_synthesizes_inline_quant_scalar(monkeypatch):
+    monkeypatch.setattr("agent.nodes.solver.ChatOpenAI", lambda **kwargs: _FakeModel(AIMessage(content="unused")))
+    monkeypatch.setattr("agent.nodes.solver._tool_call_mode", lambda role: "prompt")
+
+    solver = make_solver([])
+    state = make_state(
+        'Financial Leverage Effect = (ROE - ROA) / ROA. Calculate it with ROE = 3.0433%, ROA = 1.579%. Output Format: {"answer": <value>}',
+        task_profile="finance_quant",
+        capability_flags=["needs_math", "requires_exact_format"],
+        execution_template={
+            "template_id": "quant_inline_exact",
+            "allowed_stages": ["COMPUTE", "SYNTHESIZE", "REVISE", "COMPLETE"],
+            "default_initial_stage": "COMPUTE",
+            "allowed_tool_names": ["calculator"],
+            "review_stages": ["COMPUTE", "SYNTHESIZE"],
+            "review_cadence": "milestone_and_final",
+            "answer_focus": [],
+        },
+        solver_stage="SYNTHESIZE",
+        answer_contract={"format": "json", "requires_adapter": True, "wrapper_key": "answer"},
+        evidence_pack={"formulas": ["Financial Leverage Effect = (ROE - ROA) / ROA"]},
+    )
+
+    result = solver(state)
+
+    assert result["workpad"]["review_stage"] == "SYNTHESIZE"
+    assert result["messages"][0].content.startswith("0.9273")
 
 
 def test_solver_revise_compute_uses_existing_tool_result_before_more_tools(monkeypatch):
@@ -789,3 +848,67 @@ def test_solver_compact_evidence_uses_document_summary_not_raw_blob(monkeypatch)
     assert '"document_evidence"' in evidence_message
     assert long_text[:400] not in evidence_message
     assert '"chunk_count": 1' in evidence_message
+
+
+def test_solver_deterministically_seeds_equity_research_gather(monkeypatch):
+    monkeypatch.setattr("agent.nodes.solver.ChatOpenAI", lambda **kwargs: _FakeModel(AIMessage(content="unused")))
+    monkeypatch.setattr("agent.nodes.solver._tool_call_mode", lambda role: "prompt")
+
+    solver = make_solver([_DummyTool("get_company_fundamentals", "Retrieve company fundamentals")])
+    state = make_state(
+        "Write an equity research report on MSFT as of 2024-10-14 with thesis and valuation framing.",
+        task_profile="finance_quant",
+        capability_flags=["needs_equity_research", "needs_live_data"],
+        execution_template={
+            "template_id": "equity_research_report",
+            "allowed_stages": ["GATHER", "COMPUTE", "SYNTHESIZE", "REVISE", "COMPLETE"],
+            "default_initial_stage": "GATHER",
+            "allowed_tool_names": ["get_company_fundamentals"],
+            "review_stages": ["GATHER", "COMPUTE", "SYNTHESIZE"],
+            "review_cadence": "milestone_and_final",
+            "answer_focus": [],
+        },
+        solver_stage="GATHER",
+        evidence_pack={"entities": ["MSFT"], "prompt_facts": {"as_of_date": "2024-10-14"}},
+    )
+
+    result = solver(state)
+
+    assert result["pending_tool_call"]["name"] == "get_company_fundamentals"
+    assert result["pending_tool_call"]["arguments"]["ticker"] == "MSFT"
+
+
+def test_solver_deterministically_seeds_portfolio_risk_concentration_check(monkeypatch):
+    monkeypatch.setattr("agent.nodes.solver.ChatOpenAI", lambda **kwargs: _FakeModel(AIMessage(content="unused")))
+    monkeypatch.setattr("agent.nodes.solver._tool_call_mode", lambda role: "prompt")
+
+    solver = make_solver([_DummyTool("concentration_check", "Check concentration")])
+    state = make_state(
+        "Review this portfolio risk and recommend actions.",
+        task_profile="finance_quant",
+        capability_flags=["needs_portfolio_risk"],
+        execution_template={
+            "template_id": "portfolio_risk_review",
+            "allowed_stages": ["COMPUTE", "SYNTHESIZE", "REVISE", "COMPLETE"],
+            "default_initial_stage": "COMPUTE",
+            "allowed_tool_names": ["concentration_check"],
+            "review_stages": ["COMPUTE", "SYNTHESIZE"],
+            "review_cadence": "milestone_and_final",
+            "answer_focus": [],
+        },
+        solver_stage="COMPUTE",
+        evidence_pack={
+            "prompt_facts": {
+                "portfolio_positions": [
+                    {"ticker": "AAPL", "weight": 0.35, "sector": "Technology"},
+                    {"ticker": "MSFT", "weight": 0.30, "sector": "Technology"},
+                    {"ticker": "XOM", "weight": 0.20, "sector": "Energy"},
+                ]
+            }
+        },
+    )
+
+    result = solver(state)
+
+    assert result["pending_tool_call"]["name"] == "concentration_check"
+    assert len(result["pending_tool_call"]["arguments"]["exposures"]) == 3

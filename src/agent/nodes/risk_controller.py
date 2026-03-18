@@ -17,7 +17,7 @@ from agent.state import AgentState
 
 logger = logging.getLogger(__name__)
 
-_RISK_CONTROLLED_TEMPLATES = {"options_tool_backed"}
+_RISK_CONTROLLED_TEMPLATES = {"options_tool_backed", "portfolio_risk_review"}
 _PRIMARY_OPTIONS_TOOLS = {"analyze_strategy", "black_scholes_price", "option_greeks", "mispricing_analysis"}
 _RISK_TOOLS = {
     "scenario_pnl",
@@ -26,6 +26,16 @@ _RISK_TOOLS = {
     "portfolio_limit_check",
     "concentration_check",
     "calculate_portfolio_greeks",
+}
+_PORTFOLIO_RISK_TOOLS = {
+    "factor_exposure_summary",
+    "drawdown_risk_profile",
+    "liquidity_stress",
+    "calculate_risk_metrics",
+    "calculate_var",
+    "portfolio_limit_check",
+    "concentration_check",
+    "run_stress_test",
 }
 
 
@@ -112,9 +122,15 @@ def _has_required_disclosure(answer_text: str, disclosure: str) -> bool:
     return False
 
 
+def _has_portfolio_actions(text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", (text or "").lower()).strip()
+    return any(token in normalized for token in ("rebalance", "trim", "reduce", "hedge", "hold", "increase", "decrease", "limit"))
+
+
 def risk_controller(state: AgentState) -> dict[str, Any]:
     step = increment_runtime_step()
     workpad = dict(state.get("workpad", {}))
+    template_id = str((state.get("execution_template") or {}).get("template_id", ""))
 
     if not requires_risk_control(state):
         workpad = _record_event(workpad, "skipped")
@@ -123,6 +139,128 @@ def risk_controller(state: AgentState) -> dict[str, Any]:
 
     compute_artifact = str((workpad.get("stage_outputs") or {}).get("COMPUTE", ""))
     tool_results = list(workpad.get("tool_results", []))
+
+    if template_id == "portfolio_risk_review":
+        portfolio_tool = _latest_successful_tool(tool_results, _PORTFOLIO_RISK_TOOLS)
+        limit_tool = _latest_successful_tool(tool_results, {"portfolio_limit_check"})
+        concentration_tool = _latest_successful_tool(tool_results, {"concentration_check"})
+        var_tool = _latest_successful_tool(tool_results, {"calculate_var"})
+        drawdown_tool = _latest_successful_tool(tool_results, {"drawdown_risk_profile"})
+        liquidity_tool = _latest_successful_tool(tool_results, {"liquidity_stress"})
+
+        violation_codes: list[str] = []
+        risk_findings: list[str] = []
+        required_disclosures: list[str] = []
+
+        if portfolio_tool is None:
+            violation_codes.append("MISSING_PORTFOLIO_RISK_EVIDENCE")
+            risk_findings.append("No structured portfolio risk evidence was available for review.")
+
+        if concentration_tool:
+            facts = concentration_tool.get("facts", {})
+            if facts.get("has_breach"):
+                risk_findings.append("Concentration limits are breached for at least one name or sector.")
+                required_disclosures.append("Explicitly state the concentration breach and the trim or rebalance response.")
+
+        if limit_tool:
+            facts = limit_tool.get("facts", {})
+            if facts.get("hard_limit_breached"):
+                result = RiskResult(
+                    verdict="blocked",
+                    reasoning="Portfolio risk review found a hard risk-limit breach.",
+                    violation_codes=[
+                        str(item.get("code", "LIMIT_BREACH"))
+                        for item in facts.get("breaches", [])
+                        if isinstance(item, dict)
+                    ] or ["LIMIT_BREACH"],
+                    risk_findings=risk_findings + ["Portfolio limit breach detected."],
+                    required_disclosures=list(dict.fromkeys(required_disclosures)),
+                    recommendation_class="insufficient_evidence_no_action",
+                    repair_target="compute",
+                )
+                workpad = _append_risk_result(workpad, result)
+                workpad = _record_event(workpad, f"BLOCKED: {', '.join(result.violation_codes)}")
+                workpad["review_ready"] = False
+                workpad["review_stage"] = None
+                logger.info("[Step %s] risk_controller -> BLOCKED", step)
+                return {
+                    "solver_stage": "REVISE",
+                    "risk_feedback": result.model_dump(),
+                    "review_feedback": None,
+                    "workpad": workpad,
+                    "pending_tool_call": None,
+                }
+
+        if var_tool:
+            var_facts = var_tool.get("facts", {})
+            if isinstance(var_facts.get("var_amount"), (int, float)):
+                risk_findings.append(f"Estimated VaR is approximately {float(var_facts['var_amount']):.2f}.")
+                required_disclosures.append("State the estimated VaR or worst-case loss reference.")
+
+        if drawdown_tool:
+            dd_facts = drawdown_tool.get("facts", {})
+            if isinstance(dd_facts.get("max_drawdown_decimal"), (int, float)):
+                risk_findings.append(
+                    f"Historical max drawdown is approximately {float(dd_facts['max_drawdown_decimal']) * 100:.2f}%."
+                )
+
+        if liquidity_tool:
+            liq_facts = liquidity_tool.get("facts", {})
+            if str(liq_facts.get("stress_assessment", "")) == "tight":
+                risk_findings.append("Liquidity stress indicates the portfolio could struggle to meet a redemption or rebalance demand cleanly.")
+                required_disclosures.append("State the liquidity constraint and the staged reduction plan.")
+
+        if not _has_portfolio_actions(compute_artifact):
+            violation_codes.append("MISSING_PORTFOLIO_ACTIONS")
+            risk_findings.append("Compute artifact does not yet translate risk findings into concrete portfolio actions.")
+            required_disclosures.append("Include specific trim, hedge, rebalance, or hold actions tied to the risk evidence.")
+
+        deduped_disclosures = list(dict.fromkeys(required_disclosures))
+        if violation_codes:
+            result = RiskResult(
+                verdict="revise",
+                reasoning="Portfolio risk review needs clearer risk evidence or concrete mitigation actions before synthesis.",
+                violation_codes=violation_codes,
+                risk_findings=risk_findings,
+                required_disclosures=deduped_disclosures,
+                recommendation_class="scenario_dependent_recommendation",
+                repair_target="compute",
+            )
+            workpad = _append_risk_result(workpad, result)
+            workpad = _record_event(workpad, f"REVISE: {', '.join(violation_codes)}")
+            workpad["review_ready"] = False
+            workpad["review_stage"] = None
+            logger.info("[Step %s] risk_controller -> REVISE", step)
+            return {
+                "solver_stage": "REVISE",
+                "risk_feedback": result.model_dump(),
+                "review_feedback": None,
+                "workpad": workpad,
+                "pending_tool_call": None,
+            }
+
+        result = RiskResult(
+            verdict="pass",
+            reasoning="Portfolio risk review accepted the compute branch.",
+            violation_codes=[],
+            risk_findings=risk_findings,
+            required_disclosures=deduped_disclosures,
+            recommendation_class="scenario_dependent_recommendation",
+            repair_target="final",
+        )
+        workpad = _append_risk_result(workpad, result)
+        workpad["risk_requirements"] = {
+            "required_disclosures": deduped_disclosures,
+            "risk_findings": risk_findings,
+            "recommendation_class": "scenario_dependent_recommendation",
+        }
+        workpad = _record_event(workpad, "PASS")
+        logger.info("[Step %s] risk_controller -> PASS", step)
+        return {
+            "workpad": workpad,
+            "risk_feedback": None,
+        }
+
     primary_tool = _latest_successful_tool(tool_results, _PRIMARY_OPTIONS_TOOLS)
     risk_tool = _latest_successful_tool(tool_results, _RISK_TOOLS)
 

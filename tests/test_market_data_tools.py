@@ -154,3 +154,17 @@ def test_invalid_as_of_date_returns_structured_error():
 
     assert result["errors"]
     assert "Invalid as_of_date" in result["errors"][0]
+
+
+def test_get_corporate_actions_handles_tz_aware_indexes(monkeypatch):
+    provider = _DummyYFinance()
+    ticker = provider.Ticker("MSFT")
+    ticker.dividends.index = ticker.dividends.index.tz_localize("America/New_York")
+    ticker.splits.index = ticker.splits.index.tz_localize("America/New_York")
+    monkeypatch.setattr(market_server, "_get_yfinance", lambda: provider)
+
+    result = market_server.get_corporate_actions("MSFT", as_of_date="2024-10-14")
+
+    assert result["errors"] == []
+    assert result["facts"]["as_of_date"] == "2024-10-14"
+    assert result["facts"]["recent_dividends"][-1]["Date"] == "2024-09-30"

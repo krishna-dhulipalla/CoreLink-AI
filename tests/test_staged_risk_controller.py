@@ -14,6 +14,18 @@ def _options_template():
     }
 
 
+def _portfolio_template():
+    return {
+        "template_id": "portfolio_risk_review",
+        "allowed_stages": ["COMPUTE", "SYNTHESIZE", "REVISE", "COMPLETE"],
+        "default_initial_stage": "COMPUTE",
+        "allowed_tool_names": ["concentration_check", "drawdown_risk_profile", "portfolio_limit_check"],
+        "review_stages": ["COMPUTE", "SYNTHESIZE"],
+        "review_cadence": "milestone_and_final",
+        "answer_focus": [],
+    }
+
+
 def test_risk_controller_revises_options_compute_without_scenario_coverage():
     state = make_state(
         "Compare volatility-selling strategies for META.",
@@ -177,3 +189,105 @@ def test_risk_controller_blocks_limit_breach():
     assert result["solver_stage"] == "REVISE"
     assert result["risk_feedback"]["verdict"] == "blocked"
     assert "LIMIT_BREACH_MAX_LOSS_PCT" in result["risk_feedback"]["violation_codes"]
+
+
+def test_risk_controller_revises_portfolio_review_without_actions():
+    state = make_state(
+        "Review portfolio concentration and recommend actions.",
+        task_profile="finance_quant",
+        capability_flags=["needs_portfolio_risk"],
+        execution_template=_portfolio_template(),
+        solver_stage="COMPUTE",
+        workpad={
+            "events": [],
+            "stage_outputs": {"COMPUTE": "Concentration and drawdown metrics were computed."},
+            "tool_results": [
+                {
+                    "type": "concentration_check",
+                    "facts": {
+                        "has_breach": True,
+                        "name_breaches": [{"name": "AAPL", "weight": 0.35}],
+                        "sector_breaches": [],
+                    },
+                    "assumptions": {},
+                    "source": {"tool": "concentration_check"},
+                    "errors": [],
+                }
+            ],
+            "review_ready": True,
+            "review_stage": "COMPUTE",
+        },
+        last_tool_result={
+            "type": "concentration_check",
+            "facts": {"has_breach": True},
+            "assumptions": {},
+            "source": {"tool": "concentration_check"},
+            "errors": [],
+        },
+    )
+
+    result = risk_controller(state)
+
+    assert result["solver_stage"] == "REVISE"
+    assert result["risk_feedback"]["verdict"] == "revise"
+    assert "MISSING_PORTFOLIO_ACTIONS" in result["risk_feedback"]["violation_codes"]
+
+
+def test_risk_controller_passes_portfolio_review_with_actions_and_limits_clear():
+    state = make_state(
+        "Review portfolio concentration and recommend actions.",
+        task_profile="finance_quant",
+        capability_flags=["needs_portfolio_risk"],
+        execution_template=_portfolio_template(),
+        solver_stage="COMPUTE",
+        workpad={
+            "events": [],
+            "stage_outputs": {
+                "COMPUTE": (
+                    "Main risk is technology concentration. Recommended actions: trim AAPL, rebalance sector weights, "
+                    "and keep a drawdown-based hedge trigger."
+                )
+            },
+            "tool_results": [
+                {
+                    "type": "concentration_check",
+                    "facts": {
+                        "has_breach": True,
+                        "name_breaches": [{"name": "AAPL", "weight": 0.35}],
+                        "sector_breaches": [{"sector": "Technology", "weight": 0.65}],
+                    },
+                    "assumptions": {},
+                    "source": {"tool": "concentration_check"},
+                    "errors": [],
+                },
+                {
+                    "type": "drawdown_risk_profile",
+                    "facts": {"max_drawdown_decimal": 0.12, "drawdown_severity": "moderate"},
+                    "assumptions": {},
+                    "source": {"tool": "drawdown_risk_profile"},
+                    "errors": [],
+                },
+                {
+                    "type": "portfolio_limit_check",
+                    "facts": {"hard_limit_breached": False, "breaches": [], "warnings": []},
+                    "assumptions": {},
+                    "source": {"tool": "portfolio_limit_check"},
+                    "errors": [],
+                },
+            ],
+            "review_ready": True,
+            "review_stage": "COMPUTE",
+        },
+        last_tool_result={
+            "type": "portfolio_limit_check",
+            "facts": {"hard_limit_breached": False, "breaches": [], "warnings": []},
+            "assumptions": {},
+            "source": {"tool": "portfolio_limit_check"},
+            "errors": [],
+        },
+    )
+
+    result = risk_controller(state)
+
+    assert result["risk_feedback"] is None
+    assert result["workpad"]["risk_results"][-1]["verdict"] == "pass"
