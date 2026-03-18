@@ -122,3 +122,11 @@ Rules:
 - **Critical Bugs Solved:** `quant_inline_exact` still recursed on terse live finance prompts, and `get_corporate_actions(as_of_date=...)` failed on tz-aware indexes during event-driven runs.
 - **Fix:** Added a deterministic inline-formula path in [solver](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\solver.py) for exact finance quant tasks, and fixed timezone-safe `as_of_date` filtering in [market_data/server.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\mcp_servers\market_data\server.py).
 - **Handoff Notes:** Live staged smoke now passes for the expanded finance suite, including `finance_quant`, equity research, portfolio risk review, and event-driven finance.
+
+### Chat 13: Options Primary Compute Cleanup
+
+- **Role:** Coder
+- **Actions Taken:** Removed the remaining wasted first-step churn on the standard `finance_options` path by adding a deterministic primary `analyze_strategy` seed for non-policy options prompts.
+- **Critical Bug Solved:** Standard options used to emit an empty compute milestone first, then let `risk_controller` force the real strategy tool call on revise. That path was stable but inefficient and obscured the intended graph behavior.
+- **Fix:** Narrowed the new deterministic options seed to the initial compute turn only, so ordinary options prompts now go straight to `analyze_strategy`, while non-risk revise paths keep their old behavior.
+- **Handoff Notes:** Live `finance_options` now starts `COMPUTE -> analyze_strategy -> scenario_pnl -> deterministic compute -> risk pass -> deterministic final`, which is the intended clean path.

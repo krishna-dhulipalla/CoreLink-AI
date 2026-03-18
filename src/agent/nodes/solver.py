@@ -1130,6 +1130,40 @@ def _deterministic_policy_options_tool_call(state: AgentState) -> dict[str, Any]
     return {"name": "analyze_strategy", "arguments": {"legs": legs}}
 
 
+def _deterministic_standard_options_tool_call(state: AgentState) -> dict[str, Any] | None:
+    evidence_pack = state.get("evidence_pack", {}) or {}
+    prompt_facts = evidence_pack.get("prompt_facts", {}) or {}
+    derived_facts = evidence_pack.get("derived_facts", {}) or {}
+
+    spot = 300.0
+    for candidate in (
+        prompt_facts.get("spot"),
+        prompt_facts.get("spot_price"),
+        prompt_facts.get("reference_price"),
+    ):
+        if isinstance(candidate, (int, float)):
+            spot = float(candidate)
+            break
+
+    sigma = float(prompt_facts.get("implied_volatility", 0.35) or 0.35)
+    r = float(prompt_facts.get("risk_free_rate", 0.05) or 0.05)
+    t_days = int(prompt_facts.get("days_to_expiry", 30) or 30)
+    vol_bias = str(derived_facts.get("vol_bias", "short_vol"))
+    atm = round(spot / 5.0) * 5.0
+
+    if vol_bias == "short_vol":
+        legs = [
+            {"option_type": "call", "action": "sell", "S": spot, "K": atm, "T_days": t_days, "r": r, "sigma": sigma, "contracts": 1},
+            {"option_type": "put", "action": "sell", "S": spot, "K": atm, "T_days": t_days, "r": r, "sigma": sigma, "contracts": 1},
+        ]
+    else:
+        legs = [
+            {"option_type": "call", "action": "buy", "S": spot, "K": atm, "T_days": t_days, "r": r, "sigma": sigma, "contracts": 1},
+            {"option_type": "put", "action": "buy", "S": spot, "K": atm, "T_days": t_days, "r": r, "sigma": sigma, "contracts": 1},
+        ]
+    return {"name": "analyze_strategy", "arguments": {"legs": legs}}
+
+
 def _deterministic_options_final_answer(state: AgentState) -> str | None:
     workpad = state.get("workpad", {}) or {}
     risk_results = list(workpad.get("risk_results", []))
@@ -1486,10 +1520,13 @@ def _deterministic_finance_tool_call(
         and effective_stage == "COMPUTE"
         and "analyze_strategy" in allowed_tool_names
         and not state.get("last_tool_result")
+        and not state.get("review_feedback")
+        and not risk_feedback
     ):
         policy_call = _deterministic_policy_options_tool_call(state)
         if policy_call:
             return policy_call
+        return _deterministic_standard_options_tool_call(state)
 
     if (
         profile == "finance_options"
