@@ -948,3 +948,189 @@ def test_solver_deterministically_seeds_portfolio_risk_concentration_check(monke
 
     assert result["pending_tool_call"]["name"] == "concentration_check"
     assert len(result["pending_tool_call"]["arguments"]["exposures"]) == 3
+
+
+def test_solver_builds_richer_equity_research_final(monkeypatch):
+    monkeypatch.setattr("agent.nodes.solver.ChatOpenAI", lambda **kwargs: _FakeModel(AIMessage(content="unused")))
+    monkeypatch.setattr("agent.nodes.solver._tool_call_mode", lambda role: "prompt")
+
+    solver = make_solver([])
+    state = make_state(
+        "Write an equity research report on MSFT.",
+        task_profile="finance_quant",
+        capability_flags=["needs_equity_research", "needs_live_data"],
+        execution_template={
+            "template_id": "equity_research_report",
+            "allowed_stages": ["GATHER", "COMPUTE", "SYNTHESIZE", "REVISE", "COMPLETE"],
+            "default_initial_stage": "GATHER",
+            "allowed_tool_names": ["get_company_fundamentals", "get_price_history"],
+            "review_stages": ["GATHER", "COMPUTE", "SYNTHESIZE"],
+            "review_cadence": "milestone_and_final",
+            "answer_focus": [],
+        },
+        solver_stage="SYNTHESIZE",
+        workpad={
+            "events": [],
+            "stage_outputs": {},
+            "tool_results": [
+                {
+                    "type": "get_company_fundamentals",
+                    "facts": {
+                        "fundamentals": {
+                            "revenueGrowth": 0.12,
+                            "operatingMargins": 0.31,
+                            "returnOnEquity": 0.28,
+                            "trailingPE": 29.4,
+                            "forwardPE": 27.1,
+                        }
+                    },
+                    "assumptions": {"ticker": "MSFT"},
+                    "source": {"tool": "get_company_fundamentals", "timestamp": "2024-10-14"},
+                    "errors": [],
+                },
+                {
+                    "type": "get_price_history",
+                    "facts": {"start_close": 410.0, "end_close": 432.0},
+                    "assumptions": {"ticker": "MSFT", "period": "6mo"},
+                    "source": {"tool": "get_price_history", "timestamp": "2024-10-14"},
+                    "errors": [],
+                },
+            ],
+        },
+    )
+
+    result = solver(state)
+
+    content = result["messages"][0].content
+    assert "**Recommendation**" in content
+    assert "**What Would Change The View**" in content
+    assert "**Catalysts and Watchpoints**" in content
+    assert "Source timestamp: 2024-10-14." in content
+    assert "Recommendation Class" in content
+
+
+def test_solver_builds_richer_portfolio_risk_final(monkeypatch):
+    monkeypatch.setattr("agent.nodes.solver.ChatOpenAI", lambda **kwargs: _FakeModel(AIMessage(content="unused")))
+    monkeypatch.setattr("agent.nodes.solver._tool_call_mode", lambda role: "prompt")
+
+    solver = make_solver([])
+    state = make_state(
+        "Review this portfolio risk and recommend actions.",
+        task_profile="finance_quant",
+        capability_flags=["needs_portfolio_risk"],
+        execution_template={
+            "template_id": "portfolio_risk_review",
+            "allowed_stages": ["COMPUTE", "SYNTHESIZE", "REVISE", "COMPLETE"],
+            "default_initial_stage": "COMPUTE",
+            "allowed_tool_names": ["concentration_check", "calculate_var", "portfolio_limit_check"],
+            "review_stages": ["COMPUTE", "SYNTHESIZE"],
+            "review_cadence": "milestone_and_final",
+            "answer_focus": [],
+        },
+        solver_stage="SYNTHESIZE",
+        workpad={
+            "events": [],
+            "stage_outputs": {},
+            "tool_results": [
+                {
+                    "type": "concentration_check",
+                    "facts": {
+                        "has_breach": True,
+                        "name_breaches": [{"name": "AAPL", "weight": 0.35}],
+                        "sector_breaches": [{"sector": "Technology", "weight": 0.65}],
+                    },
+                    "assumptions": {},
+                    "source": {"tool": "concentration_check", "timestamp": "2024-10-14"},
+                    "errors": [],
+                },
+                {
+                    "type": "factor_exposure_summary",
+                    "facts": {"largest_factor": "technology_beta", "largest_factor_weight": 0.42},
+                    "assumptions": {},
+                    "source": {"tool": "factor_exposure_summary", "timestamp": "2024-10-14"},
+                    "errors": [],
+                },
+                {
+                    "type": "calculate_var",
+                    "facts": {"var_amount": 125000.0, "var_decimal": 0.067},
+                    "assumptions": {},
+                    "source": {"tool": "calculate_var", "timestamp": "2024-10-14"},
+                    "errors": [],
+                },
+                {
+                    "type": "portfolio_limit_check",
+                    "facts": {"hard_limit_breached": True},
+                    "assumptions": {},
+                    "source": {"tool": "portfolio_limit_check", "timestamp": "2024-10-14"},
+                    "errors": [],
+                },
+            ],
+            "risk_results": [{"verdict": "pass"}],
+            "risk_requirements": {
+                "required_disclosures": ["State downside scenario loss and the exit or sizing response."],
+                "risk_findings": ["Portfolio limit breach detected."],
+                "recommendation_class": "scenario_dependent_recommendation",
+            },
+        },
+    )
+
+    result = solver(state)
+
+    content = result["messages"][0].content
+    assert "**Recommendation**" in content
+    assert "Source timestamp: 2024-10-14." in content
+    assert "**Immediate Actions**" in content
+    assert "**Hedging / Rebalance Alternatives**" in content
+    assert "**Monitoring Triggers**" in content
+    assert "Portfolio limit breach detected." in content
+
+
+def test_solver_builds_richer_event_driven_final(monkeypatch):
+    monkeypatch.setattr("agent.nodes.solver.ChatOpenAI", lambda **kwargs: _FakeModel(AIMessage(content="unused")))
+    monkeypatch.setattr("agent.nodes.solver._tool_call_mode", lambda role: "prompt")
+
+    solver = make_solver([])
+    state = make_state(
+        "Assess this event-driven setup.",
+        task_profile="finance_quant",
+        capability_flags=["needs_event_driven_finance", "needs_live_data"],
+        execution_template={
+            "template_id": "event_driven_finance",
+            "allowed_stages": ["GATHER", "COMPUTE", "SYNTHESIZE", "REVISE", "COMPLETE"],
+            "default_initial_stage": "GATHER",
+            "allowed_tool_names": ["get_price_history", "get_corporate_actions"],
+            "review_stages": ["GATHER", "COMPUTE", "SYNTHESIZE"],
+            "review_cadence": "milestone_and_final",
+            "answer_focus": [],
+        },
+        solver_stage="SYNTHESIZE",
+        workpad={
+            "events": [],
+            "stage_outputs": {},
+            "tool_results": [
+                {
+                    "type": "get_corporate_actions",
+                    "facts": {"recent_dividends": [{"date": "2024-09-01", "amount": 0.75}], "recent_splits": []},
+                    "assumptions": {"ticker": "MSFT"},
+                    "source": {"tool": "get_corporate_actions", "timestamp": "2024-10-14"},
+                    "errors": [],
+                },
+                {
+                    "type": "get_price_history",
+                    "facts": {"start_close": 410.0, "end_close": 447.0},
+                    "assumptions": {"ticker": "MSFT", "period": "3mo"},
+                    "source": {"tool": "get_price_history", "timestamp": "2024-10-14"},
+                    "errors": [],
+                },
+            ],
+        },
+    )
+
+    result = solver(state)
+
+    content = result["messages"][0].content
+    assert "**Recommendation**" in content
+    assert "**Execution Discipline**" in content
+    assert "**Scenarios**" in content
+    assert "**What Would Change The View**" in content
+    assert "Source timestamp: 2024-10-14." in content

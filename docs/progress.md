@@ -130,3 +130,10 @@ Rules:
 - **Critical Bug Solved:** Standard options used to emit an empty compute milestone first, then let `risk_controller` force the real strategy tool call on revise. That path was stable but inefficient and obscured the intended graph behavior.
 - **Fix:** Narrowed the new deterministic options seed to the initial compute turn only, so ordinary options prompts now go straight to `analyze_strategy`, while non-risk revise paths keep their old behavior.
 - **Handoff Notes:** Live `finance_options` now starts `COMPUTE -> analyze_strategy -> scenario_pnl -> deterministic compute -> risk pass -> deterministic final`, which is the intended clean path.
+
+### Chat 14: Finance Template Quality and Checkpoint
+
+- **Role:** Coder
+- **Actions Taken:** Strengthened the deterministic finals for `equity_research_report`, `portfolio_risk_review`, and `event_driven_finance` so those templates now finish with fuller recommendation, action, catalyst, and watchpoint sections without adding more LLM churn. Added the detailed architecture checkpoint in [finance_hands_checkpoint.md](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\docs\finance_hands_checkpoint.md).
+- **Blockers:** None.
+- **Handoff Notes:** The main finance paths are now structurally complete enough to document as the current checkpoint. Further work should target depth of evidence and domain breadth, not another control-flow rewrite.
