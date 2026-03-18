@@ -6,6 +6,7 @@ Shared helpers for profiling, intake, context assembly, and structured output.
 
 from __future__ import annotations
 
+from datetime import datetime
 import json
 import re
 from typing import Any
@@ -37,6 +38,12 @@ _JSON_WRAPPER_RE = re.compile(r"\{\s*\"([A-Za-z0-9_]+)\"\s*:\s*<")
 _XML_TAG_RE = re.compile(r"<([A-Za-z][A-Za-z0-9_\-]*)>")
 _PERCENT_RE = re.compile(r"(-?\d+(?:\.\d+)?)\s*%")
 _NUMBER_RE = re.compile(r"(?<![A-Za-z0-9])(-?\d+(?:\.\d+)?)(?![A-Za-z0-9])")
+_MONTH_NAME_DATE_RE = re.compile(
+    r"\b(?:as of|on|dated?|for)\s+"
+    r"((?:Jan|January|Feb|February|Mar|March|Apr|April|May|Jun|June|Jul|July|Aug|August|Sep|Sept|September|Oct|October|Nov|November|Dec|December)\s+\d{1,2},?\s+\d{4})",
+    re.IGNORECASE,
+)
+_ISO_DATE_RE = re.compile(r"\b(?:as of|on|dated?|for)\s+(\d{4}-\d{2}-\d{2})\b", re.IGNORECASE)
 
 def allowed_tools_for_profile(profile: str) -> set[str]:
     return set(get_profile_pack(profile).allowed_tools)
@@ -289,11 +296,28 @@ def detect_ambiguity_flags(task_text: str, capability_flags: list[str]) -> list[
 def infer_task_profile(task_text: str, capability_flags: list[str]) -> TaskProfile:
     normalized = (task_text or "").lower()
     flags = set(capability_flags)
+    finance_data_markers = (
+        "price history",
+        "historical prices",
+        "1-month return",
+        "monthly return",
+        "return over",
+        "fundamentals",
+        "yield curve",
+        "income statement",
+        "balance sheet",
+        "cash flow",
+        "financial statements",
+        "statement line item",
+        "corporate actions",
+    )
 
     if "needs_options_engine" in flags:
         return "finance_options"
     if "needs_legal_reasoning" in flags:
         return "legal_transactional"
+    if any(marker in normalized for marker in finance_data_markers):
+        return "finance_quant"
     if "needs_math" in flags and any(
         token in normalized
         for token in ("annual report", "roe", "roa", "financial leverage", "inventory turnover", "equity multiplier", "valuation", "yield", "p&l")
@@ -388,6 +412,24 @@ def extract_urls(text: str) -> list[str]:
     return urls
 
 
+def extract_as_of_date(text: str) -> str | None:
+    match = _ISO_DATE_RE.search(text or "")
+    if match:
+        return match.group(1)
+
+    match = _MONTH_NAME_DATE_RE.search(text or "")
+    if not match:
+        return None
+
+    raw = match.group(1).strip()
+    for fmt in ("%b %d, %Y", "%B %d, %Y", "%b %d %Y", "%B %d %Y"):
+        try:
+            return datetime.strptime(raw, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return None
+
+
 def extract_formulas(text: str) -> list[str]:
     formulas: list[str] = []
     for line in (text or "").splitlines():
@@ -447,6 +489,9 @@ def extract_entities(text: str) -> list[str]:
 def extract_inline_facts(text: str) -> dict[str, Any]:
     lowered = (text or "").lower()
     facts: dict[str, Any] = {}
+    as_of_date = extract_as_of_date(text)
+    if as_of_date:
+        facts["as_of_date"] = as_of_date
 
     if "iv percentile" in lowered:
         match = re.search(r"iv percentile[^0-9]*(\d+(?:\.\d+)?)", lowered)
@@ -481,6 +526,8 @@ def derive_market_snapshot(task_text: str, inline_facts: dict[str, Any]) -> tupl
         snapshot["historical_volatility"] = inline_facts["historical_volatility"]
     if "iv_percentile" in inline_facts:
         snapshot["iv_percentile"] = inline_facts["iv_percentile"]
+    if "as_of_date" in inline_facts:
+        snapshot["as_of_date"] = inline_facts["as_of_date"]
 
     if "implied_volatility" in snapshot and "historical_volatility" in snapshot:
         derived["iv_premium"] = round(
@@ -494,7 +541,9 @@ def derive_market_snapshot(task_text: str, inline_facts: dict[str, Any]) -> tupl
         )
 
     lowered = (task_text or "").lower()
-    if any(
+    if inline_facts.get("as_of_date"):
+        derived["time_sensitive"] = True
+    elif any(
         token in lowered
         for token in (
             "latest",

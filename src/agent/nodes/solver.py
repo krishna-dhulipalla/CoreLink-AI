@@ -329,8 +329,18 @@ def make_solver(tools: list):
             for entry in state.get("assumption_ledger", [])
             if isinstance(entry, dict) and entry.get("requires_user_visible_disclosure")
         ]
+        as_of_date = (
+            (state.get("evidence_pack", {}) or {})
+            .get("prompt_facts", {})
+            .get("as_of_date")
+        )
         if effective_stage in {"SYNTHESIZE", "COMPUTE"} and disclosure_assumptions:
             stage_prompt += "\nDisclose these assumptions if they affect the answer:\n- " + "\n- ".join(disclosure_assumptions[:4])
+        if as_of_date and effective_stage in {"GATHER", "COMPUTE"}:
+            stage_prompt += (
+                f"\nIf you use market or statement tools, pass as_of_date=\"{as_of_date}\" "
+                "unless the task explicitly asks for current data instead."
+            )
         document_evidence = state.get("evidence_pack", {}).get("document_evidence", [])
         if effective_stage == "GATHER" and execution_template.get("template_id") in {
             "legal_with_document_evidence",

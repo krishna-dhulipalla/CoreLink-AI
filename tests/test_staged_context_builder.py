@@ -62,6 +62,23 @@ class TestContextBuilder:
         assert any("Spot price is not explicit" in question for question in evidence["open_questions"])
         assert "Recommendation" in result["answer_contract"]["section_requirements"]
 
+    def test_extracts_as_of_date_into_prompt_facts(self):
+        prompt = (
+            "As of Oct 14, 2022, compare the implied volatility setup for META and keep any "
+            "market-data tool usage bound to that date."
+        )
+        state = make_state(prompt)
+        state.update(intake(state))
+        state.update(task_profiler(state))
+        state.update(template_selector(state))
+
+        result = context_builder(state)
+        evidence = result["evidence_pack"]
+
+        assert evidence["prompt_facts"]["as_of_date"] == "2022-10-14"
+        assert evidence["prompt_facts"]["market_snapshot"]["as_of_date"] == "2022-10-14"
+        assert evidence["derived_facts"]["time_sensitive"] is True
+
     def test_ambiguous_profile_adds_conservative_constraint(self):
         prompt = (
             "We need acquisition structure advice and also a quick valuation ratio calculation from a file "

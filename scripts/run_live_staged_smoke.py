@@ -56,6 +56,11 @@ PROMPTS = [
         "Read the reference file at https://raw.githubusercontent.com/cs109/2014_data/master/countries.csv. "
         "Summarize what structured evidence you extracted from it and include the source reference.",
     ),
+    (
+        "finance_evidence",
+        "As of 2024-10-14, use finance evidence tools to retrieve MSFT price history and 1-month return, "
+        "then summarize the result with the source timestamp and any missing-data caveats.",
+    ),
 ]
 
 
@@ -87,7 +92,16 @@ async def main() -> None:
             results.append({"label": label, **_summarize(trace)})
         except Exception as exc:
             results.append({"label": label, "error": str(exc)})
-    print(json.dumps({"ok": True, "results": results}, ensure_ascii=True))
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "loaded_tools": sorted(getattr(tool, "name", "") for tool in tools if getattr(tool, "name", "")),
+                "results": results,
+            },
+            ensure_ascii=True,
+        )
+    )
 
 
 if __name__ == "__main__":

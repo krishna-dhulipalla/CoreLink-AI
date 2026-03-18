@@ -153,11 +153,19 @@ class ToolCallEnvelope(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
 
 
+class ToolQuality(BaseModel):
+    is_synthetic: bool = False
+    is_estimated: bool = False
+    cache_hit: bool = False
+    missing_fields: list[str] = Field(default_factory=list)
+
+
 class ToolResult(BaseModel):
     type: str
     facts: dict[str, Any] = Field(default_factory=dict)
     assumptions: dict[str, Any] = Field(default_factory=dict)
     source: dict[str, Any] = Field(default_factory=dict)
+    quality: ToolQuality = Field(default_factory=ToolQuality)
     errors: list[str] = Field(default_factory=list)
 
 

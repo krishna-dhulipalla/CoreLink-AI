@@ -10,7 +10,7 @@ import json
 import re
 from typing import Any
 
-from agent.contracts import ToolResult
+from agent.contracts import ToolQuality, ToolResult
 
 _STRUCTURED_RESULTS_RE = re.compile(r"STRUCTURED_RESULTS:\s*(.+?)(?:\n---|\Z)", re.DOTALL)
 _SEARCH_RESULT_RE = re.compile(
@@ -324,6 +324,27 @@ def _parse_json_payload(text: str) -> dict[str, Any]:
     return {}
 
 
+def _default_quality(
+    *,
+    is_synthetic: bool = False,
+    is_estimated: bool = False,
+    cache_hit: bool = False,
+    missing_fields: list[str] | None = None,
+) -> ToolQuality:
+    return ToolQuality(
+        is_synthetic=is_synthetic,
+        is_estimated=is_estimated,
+        cache_hit=cache_hit,
+        missing_fields=list(missing_fields or []),
+    )
+
+
+def _looks_like_tool_envelope(payload: dict[str, Any]) -> bool:
+    return "facts" in payload and (
+        "source" in payload or "quality" in payload or "errors" in payload
+    )
+
+
 def normalize_tool_output(tool_name: str, raw_content: Any, args: dict[str, Any]) -> ToolResult:
     if isinstance(raw_content, list):
         raw_content = "\n".join(
@@ -331,11 +352,30 @@ def normalize_tool_output(tool_name: str, raw_content: Any, args: dict[str, Any]
             for item in raw_content
         )
     if isinstance(raw_content, dict):
+        if _looks_like_tool_envelope(raw_content):
+            payload = dict(raw_content)
+            payload.setdefault("type", tool_name)
+            payload.setdefault("facts", {})
+            payload.setdefault("assumptions", args)
+            payload.setdefault("source", {"tool": tool_name})
+            payload.setdefault("quality", _default_quality().model_dump())
+            payload.setdefault("errors", [])
+            return ToolResult.model_validate(payload)
+        if raw_content.get("error"):
+            return ToolResult(
+                type=tool_name,
+                facts={},
+                assumptions=args,
+                source={"tool": tool_name},
+                quality=_default_quality(),
+                errors=[str(raw_content["error"])],
+            )
         return ToolResult(
             type=tool_name,
             facts=raw_content,
             assumptions=args,
             source={"tool": tool_name},
+            quality=_default_quality(),
             errors=[],
         )
 
@@ -346,6 +386,7 @@ def normalize_tool_output(tool_name: str, raw_content: Any, args: dict[str, Any]
             facts={},
             assumptions=args,
             source={"tool": tool_name},
+            quality=_default_quality(),
             errors=["Empty tool output."],
         )
     if text.startswith("Error") or text.startswith("[HTTP") or text.startswith("[Network error]") or text.startswith("[Unexpected error"):
@@ -354,10 +395,21 @@ def normalize_tool_output(tool_name: str, raw_content: Any, args: dict[str, Any]
             facts={},
             assumptions=args,
             source={"tool": tool_name},
+            quality=_default_quality(),
             errors=[text],
         )
 
-    facts = _parse_json_payload(text)
+    parsed_payload = _parse_json_payload(text)
+    if parsed_payload and _looks_like_tool_envelope(parsed_payload):
+        parsed_payload.setdefault("type", tool_name)
+        parsed_payload.setdefault("facts", {})
+        parsed_payload.setdefault("assumptions", args)
+        parsed_payload.setdefault("source", {"tool": tool_name})
+        parsed_payload.setdefault("quality", _default_quality().model_dump())
+        parsed_payload.setdefault("errors", [])
+        return ToolResult.model_validate(parsed_payload)
+
+    facts = parsed_payload
     if not facts:
         facts = _parse_structured_results(text)
     if not facts and tool_name == "analyze_strategy":
@@ -397,5 +449,6 @@ def normalize_tool_output(tool_name: str, raw_content: Any, args: dict[str, Any]
         facts=facts,
         assumptions=args,
         source={"tool": tool_name, "raw_preview": text[:240]},
+        quality=_default_quality(),
         errors=errors,
     )

@@ -1012,7 +1012,7 @@ This file operates in a "Chat" structure. Whenever an agent finishes a major uni
   11. Updated staged smoke scripts:
       - `scripts/run_staged_runtime_smoke.py`
       - `scripts/run_live_staged_smoke.py`
-      They now surface the selected execution template in their summaries.
+        They now surface the selected execution template in their summaries.
   12. Added/updated behavior-first tests:
       - new `tests/test_staged_template_selector.py`
       - updated `tests/test_staged_context_builder.py`
@@ -1351,3 +1351,69 @@ This file operates in a "Chat" structure. Whenever an agent finishes a major uni
   4. Unnecessary historical planning docs (architecture_v2_plan.md, architecture_v3_proposal.md, architecture_v3_review.md) have been removed to reduce documentation noise, leaving architecture_v3_implementation_plan.md as the active reference source of truth.
 - **Handoff Notes:** The architecture cleanly fulfills its goal of deterministic structural assignment before reaching any LLM generation. Phase 2 properly completed the workflow mapping. Ready for moving on to Phase 3 (EvidencePack v2) when appropriate.
 
+### Chat 59: Finance Hands Phase A - Real Evidence and Exact Operators
+
+- **Role:** Architect / Coder
+- **Date:** 2026-03-17
+- **Goal:** Execute Phase A of `docs/finance_hands.md` by upgrading the finance hands layer with real evidence contracts, entity resolution, temporal discipline, and exact finance operators before adding any risk/compliance gates.
+- **Actions Taken:**
+  1. Extended the staged tool contract in `src/agent/contracts.py`:
+     - added `ToolQuality`
+     - added `quality` to `ToolResult`
+     - explicit support for:
+       - `is_synthetic`
+       - `is_estimated`
+       - `cache_hit`
+       - `missing_fields`
+  2. Hardened tool normalization in `src/agent/tool_normalization.py`:
+     - preserved full structured tool envelopes instead of flattening them into generic facts
+     - preserved `quality` and `source`
+     - converted plain `{error: ...}` dict outputs into structured tool failures
+  3. Rebuilt `src/mcp_servers/market_data/server.py` as a finance evidence service:
+     - added `resolve_financial_entity`
+     - upgraded:
+       - `get_price_history`
+       - `get_company_fundamentals`
+       - `get_corporate_actions`
+       - `get_yield_curve`
+       - `get_returns`
+     - added:
+       - `get_financial_statements`
+       - `get_statement_line_items`
+     - added in-process evidence caching with `cache_hit`
+     - enforced `as_of_date` handling and historical rejection where the provider cannot support accurate backfilled fundamentals
+     - normalized all market-data outputs into staged-runtime envelopes
+  4. Rebuilt `src/mcp_servers/finance_analytics/server.py` as an exact operator layer:
+     - upgraded the existing utility operators to structured envelopes
+     - added:
+       - `du_pont_analysis`
+       - `liquidity_ratio_pack`
+       - `valuation_multiples_compare`
+       - `dcf_sensitivity_grid`
+  5. Improved finance routing and context in the v3 runtime:
+     - `src/agent/runtime_support.py`
+       - added prompt `as_of_date` extraction
+       - carried `as_of_date` into `EvidencePack`
+       - tightened finance profile inference so market-data prompts do not collapse into generic retrieval
+     - `src/agent/nodes/solver.py`
+       - added explicit `as_of_date` guidance for market/statement tool calls during `GATHER` / `COMPUTE`
+  6. Expanded finance tool availability in:
+     - `src/agent/profile_packs.py`
+     - `src/agent/template_library.py`
+  7. Extended live smoke coverage in `scripts/run_live_staged_smoke.py` with a finance-evidence prompt.
+- **Verification:**
+  - `pytest tests/test_market_data_tools.py tests/test_finance_analytics_tools.py tests/test_tool_normalization.py tests/test_staged_context_builder.py tests/test_staged_tool_runner.py tests/test_staged_profiler.py -q` -> **22 passed, 2 skipped**
+  - `pytest tests -q` -> **63 passed, 4 skipped**
+  - `python scripts/run_staged_runtime_smoke.py` -> **ok: true**
+  - `python -m py_compile src/agent/contracts.py src/agent/tool_normalization.py src/agent/runtime_support.py src/agent/nodes/solver.py src/mcp_servers/market_data/server.py src/mcp_servers/finance_analytics/server.py` -> **passed**
+  - `python scripts/run_live_staged_smoke.py` -> live staged smoke completed successfully
+- **Live Smoke Findings:**
+  1. `finance_quant`
+     - remained stable on `quant_inline_exact`
+  2. `finance_options`
+     - remained stable on the intended tool-backed path
+  3. `finance_evidence`
+     - initially collapsed into generic retrieval; fixed by tightening finance market-data profiling
+     - after the fix, it classified correctly as `finance_quant`
+     - the configured live MCP environment still did **not** expose the new finance evidence tools, so the live run terminated honestly with missing-tool limitations instead of hallucinating market data
+- **Handoff Notes:** Phase A is complete at the code and deterministic test level. The next finance-hands phase should be risk control, but before that the live MCP environment needs to expose the new market-data / finance-analytics servers or live finance-evidence prompts will remain underpowered.

@@ -44,6 +44,18 @@ class TestStagedProfiler:
         assert result["task_profile"] == "external_retrieval"
         assert "needs_live_data" in result["capability_flags"]
 
+    def test_finance_market_data_prompt_maps_to_finance_quant_not_generic_retrieval(self):
+        prompt = (
+            "As of 2024-10-14, retrieve MSFT price history and 1-month return, then summarize the evidence."
+        )
+        state = make_state(prompt)
+        state.update(intake(state))
+
+        result = task_profiler(state)
+
+        assert result["task_profile"] == "finance_quant"
+        assert "needs_live_data" in result["capability_flags"]
+
     def test_quant_tables_do_not_false_positive_as_legal_or_live_data(self):
         prompt = (
             "Financial Leverage Effect = (ROE - ROA) / ROA\n"
