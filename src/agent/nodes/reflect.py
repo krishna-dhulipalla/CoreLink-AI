@@ -34,6 +34,7 @@ def _persist_run(state: AgentState, task_text: str, workpad: dict) -> None:
     tool_results = list(workpad.get("tool_results", []))
     review_results = list(workpad.get("review_results", []))
     risk_results = list(workpad.get("risk_results", []))
+    compliance_results = list(workpad.get("compliance_results", []))
     record = RunMemory(
         task_signature=task_signature(task_text),
         task_summary=task_text[:160],
@@ -62,6 +63,7 @@ def _persist_run(state: AgentState, task_text: str, workpad: dict) -> None:
             "assumption_count": len(assumption_ledger),
             "provenance_count": len(provenance_map),
             "risk_result_count": len(risk_results),
+            "compliance_result_count": len(compliance_results),
             "recommendation_class": str((workpad.get("risk_requirements") or {}).get("recommendation_class", "")),
         },
     )

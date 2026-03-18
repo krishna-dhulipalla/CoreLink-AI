@@ -19,6 +19,7 @@ from langchain_openai import ChatOpenAI
 from agent.contracts import ReviewResult, ToolCallEnvelope, ToolResult
 from agent.document_evidence import has_extracted_document_evidence, summarize_document_evidence
 from agent.cost import CostTracker
+from agent.nodes.compliance_guard import requires_compliance_guard
 from agent.model_config import _extract_json_payload, _tool_call_mode, get_client_kwargs, get_model_name
 from agent.nodes.risk_controller import requires_risk_control
 from agent.profile_packs import get_profile_pack
@@ -235,6 +236,7 @@ def _compact_evidence_block(state: AgentState) -> str:
                 if key not in {"fetch_reference_file"}
             },
             "derived_facts": evidence.get("derived_facts", {}),
+            "policy_context": evidence.get("policy_context", {}),
             "document_evidence": summarize_document_evidence(evidence.get("document_evidence", [])),
             "tables": evidence.get("tables", []),
             "formulas": evidence.get("formulas", []),
@@ -507,6 +509,97 @@ def _infer_breakeven_text(primary_tool: dict[str, Any]) -> str:
     return "manage around the short strikes adjusted by collected premium"
 
 
+def _primary_tool_is_policy_compliant(primary_tool: dict[str, Any], policy_context: dict[str, Any]) -> bool:
+    if not primary_tool:
+        return False
+    strategy_label = _infer_options_strategy_label(primary_tool)
+    assumptions = primary_tool.get("assumptions", {}) if isinstance(primary_tool, dict) else {}
+    legs = assumptions.get("legs")
+    if policy_context.get("defined_risk_only"):
+        if strategy_label == "iron condor":
+            pass
+        elif isinstance(legs, list):
+            has_buy = any(isinstance(leg, dict) and str(leg.get("action", "")).lower() == "buy" for leg in legs)
+            has_sell = any(isinstance(leg, dict) and str(leg.get("action", "")).lower() == "sell" for leg in legs)
+            if not (has_buy and has_sell):
+                return False
+        else:
+            return False
+    if policy_context.get("no_naked_options"):
+        normalized_label = strategy_label.lower()
+        if normalized_label in {"short straddle", "short strangle", "single-option premium sale"}:
+            return False
+        if isinstance(legs, list):
+            has_long_call = any(
+                isinstance(leg, dict)
+                and str(leg.get("action", "")).lower() == "buy"
+                and str(leg.get("option_type", "")).lower() == "call"
+                for leg in legs
+            )
+            has_long_put = any(
+                isinstance(leg, dict)
+                and str(leg.get("action", "")).lower() == "buy"
+                and str(leg.get("option_type", "")).lower() == "put"
+                for leg in legs
+            )
+            short_calls = any(
+                isinstance(leg, dict)
+                and str(leg.get("action", "")).lower() == "sell"
+                and str(leg.get("option_type", "")).lower() == "call"
+                for leg in legs
+            )
+            short_puts = any(
+                isinstance(leg, dict)
+                and str(leg.get("action", "")).lower() == "sell"
+                and str(leg.get("option_type", "")).lower() == "put"
+                for leg in legs
+            )
+            if short_calls and not has_long_call:
+                return False
+            if short_puts and not has_long_put:
+                return False
+    return True
+
+
+def _deterministic_policy_options_tool_call(state: AgentState) -> dict[str, Any] | None:
+    evidence_pack = state.get("evidence_pack", {}) or {}
+    prompt_facts = evidence_pack.get("prompt_facts", {}) or {}
+    derived_facts = evidence_pack.get("derived_facts", {}) or {}
+    policy_context = evidence_pack.get("policy_context", {}) or {}
+    if not (policy_context.get("defined_risk_only") or policy_context.get("no_naked_options")):
+        return None
+
+    spot = 300.0
+    for candidate in (
+        prompt_facts.get("spot"),
+        prompt_facts.get("spot_price"),
+        prompt_facts.get("reference_price"),
+    ):
+        if isinstance(candidate, (int, float)):
+            spot = float(candidate)
+            break
+    sigma = float(prompt_facts.get("implied_volatility", 0.35) or 0.35)
+    r = float(prompt_facts.get("risk_free_rate", 0.05) or 0.05)
+    t_days = int(prompt_facts.get("days_to_expiry", 30) or 30)
+    width = max(5.0, round(spot * 0.03 / 5.0) * 5.0)
+    inner = max(5.0, round(spot * 0.015 / 5.0) * 5.0)
+    vol_bias = str(derived_facts.get("vol_bias", "short_vol"))
+
+    if vol_bias == "short_vol":
+        legs = [
+            {"option_type": "put", "action": "buy", "S": spot, "K": spot - inner - width, "T_days": t_days, "r": r, "sigma": sigma, "contracts": 1},
+            {"option_type": "put", "action": "sell", "S": spot, "K": spot - inner, "T_days": t_days, "r": r, "sigma": sigma, "contracts": 1},
+            {"option_type": "call", "action": "sell", "S": spot, "K": spot + inner, "T_days": t_days, "r": r, "sigma": sigma, "contracts": 1},
+            {"option_type": "call", "action": "buy", "S": spot, "K": spot + inner + width, "T_days": t_days, "r": r, "sigma": sigma, "contracts": 1},
+        ]
+    else:
+        legs = [
+            {"option_type": "call", "action": "buy", "S": spot, "K": spot, "T_days": t_days, "r": r, "sigma": sigma, "contracts": 1},
+            {"option_type": "call", "action": "sell", "S": spot, "K": spot + width, "T_days": t_days, "r": r, "sigma": sigma, "contracts": 1},
+        ]
+    return {"name": "analyze_strategy", "arguments": {"legs": legs}}
+
+
 def _deterministic_options_final_answer(state: AgentState) -> str | None:
     workpad = state.get("workpad", {}) or {}
     risk_results = list(workpad.get("risk_results", []))
@@ -623,6 +716,183 @@ def _deterministic_options_final_answer(state: AgentState) -> str | None:
     return "\n".join(lines)
 
 
+def _deterministic_policy_options_final_answer(state: AgentState) -> str | None:
+    workpad = state.get("workpad", {}) or {}
+    risk_results = list(workpad.get("risk_results", []))
+    if not risk_results or str(risk_results[-1].get("verdict", "")) != "pass":
+        return None
+
+    policy_context = (state.get("evidence_pack", {}) or {}).get("policy_context", {}) or {}
+    primary_tool = _latest_successful_tool_result(
+        list(workpad.get("tool_results", [])),
+        {"analyze_strategy", "black_scholes_price", "option_greeks", "mispricing_analysis"},
+    )
+    scenario_result = _latest_successful_tool_result(
+        list(workpad.get("tool_results", [])),
+        {"scenario_pnl", "run_stress_test", "calculate_var", "portfolio_limit_check", "concentration_check", "calculate_portfolio_greeks"},
+    )
+    if primary_tool is None or scenario_result is None:
+        return None
+    if not _primary_tool_is_policy_compliant(primary_tool, policy_context):
+        return None
+
+    primary_facts = primary_tool.get("facts", {}) if isinstance(primary_tool, dict) else {}
+    scenario_facts = scenario_result.get("facts", {}) if isinstance(scenario_result, dict) else {}
+    risk_requirements = workpad.get("risk_requirements") or {}
+    strategy_label = _infer_options_strategy_label(primary_tool)
+    short_vol = str((state.get("evidence_pack", {}) or {}).get("derived_facts", {}).get("vol_bias", "")) == "short_vol"
+    recommendation = (
+        "Be a net seller of options through a defined-risk structure"
+        if short_vol
+        else "Be a net buyer of options through a defined-risk spread"
+    )
+    alternative = "put credit spread" if strategy_label == "iron condor" else "iron condor"
+    tradeoff = "retains short-vol carry with simpler one-sided management" if alternative == "put credit spread" else "diversifies tail exposure across both sides at the cost of more moving parts"
+    net_premium = primary_facts.get("net_premium")
+    premium_direction = str(primary_facts.get("premium_direction", "credit")).upper()
+    delta = primary_facts.get("total_delta", primary_facts.get("delta"))
+    gamma = primary_facts.get("total_gamma", primary_facts.get("gamma"))
+    theta = primary_facts.get("total_theta_per_day", primary_facts.get("theta"))
+    vega = primary_facts.get("total_vega_per_vol_point", primary_facts.get("vega"))
+    breakevens = _infer_breakeven_text(primary_tool)
+    worst_case_pnl = scenario_facts.get("worst_case_pnl")
+    best_case_pnl = scenario_facts.get("best_case_pnl")
+    risk_cap = policy_context.get("max_position_risk_pct")
+    disclosures: list[str] = []
+    for item in risk_requirements.get("required_disclosures", []):
+        normalized = str(item).lower()
+        if "short-volatility" in normalized or "volatility-spike" in normalized:
+            disclosures.append("Short-volatility / volatility-spike risk is still material even with defined wings.")
+        elif "tail loss" in normalized or "gap risk" in normalized or "unbounded" in normalized:
+            disclosures.append("Tail loss is capped by the long wings, but gap risk into the short strikes still matters.")
+        elif "downside scenario loss" in normalized:
+            if isinstance(worst_case_pnl, (int, float)):
+                disclosures.append(f"Stress downside scenario loss is approximately {float(worst_case_pnl):.2f}, which defines the sizing and exit response.")
+        elif "max loss" in normalized:
+            max_loss = primary_facts.get("max_loss")
+            if isinstance(max_loss, (int, float)):
+                disclosures.append(f"Max loss reference is approximately {float(max_loss):.2f}.")
+
+    lines = [
+        "**Recommendation**",
+        f"{recommendation}. This mandate requires defined-risk only and prohibits naked options.",
+        "",
+        "**Primary Strategy**",
+        f"Defined-risk {strategy_label} with {premium_direction.lower()} premium"
+        + (f" of {float(net_premium):.2f}." if isinstance(net_premium, (int, float)) else "."),
+        "",
+        "**Alternative Strategy Comparison**",
+        f"{alternative.title()} is the cleaner backup when you want {tradeoff}.",
+        "",
+        "**Key Greeks and Breakevens**",
+    ]
+    greeks_line = []
+    if isinstance(delta, (int, float)):
+        greeks_line.append(f"delta {float(delta):.3f}")
+    if isinstance(gamma, (int, float)):
+        greeks_line.append(f"gamma {float(gamma):.3f}")
+    if isinstance(theta, (int, float)):
+        greeks_line.append(f"theta {float(theta):.3f}/day")
+    if isinstance(vega, (int, float)):
+        greeks_line.append(f"vega {float(vega):.3f} per vol point")
+    if greeks_line:
+        lines.append(", ".join(greeks_line) + ".")
+    lines.append(f"Breakevens: {breakevens}.")
+    lines.extend(
+        [
+            "",
+            "**Risk Management**",
+            (
+                f"Cap position risk at about {float(risk_cap):g}% of capital, use defined exit points near the short strikes "
+                "or at roughly a 1x premium-loss threshold, and reduce exposure if gamma or vol expands sharply."
+            )
+            if isinstance(risk_cap, (int, float))
+            else "Use defined exit points near the short strikes or at roughly a 1x premium-loss threshold, and reduce exposure if gamma or vol expands sharply."
+        ]
+    )
+    if isinstance(best_case_pnl, (int, float)) or isinstance(worst_case_pnl, (int, float)):
+        parts = []
+        if isinstance(best_case_pnl, (int, float)):
+            parts.append(f"base-case P&L about {float(best_case_pnl):.2f}")
+        if isinstance(worst_case_pnl, (int, float)):
+            parts.append(f"stress downside about {float(worst_case_pnl):.2f}")
+        lines.append("Scenario summary: " + "; ".join(parts) + ".")
+    lines.extend(["", "**Disclosures**"])
+    lines.append("- Mandate: defined-risk only; naked options are not permitted in this account.")
+    if isinstance(risk_cap, (int, float)):
+        lines.append(f"- Position-risk cap: keep exposure around {float(risk_cap):g}% of capital or lower.")
+    for item in disclosures:
+        lines.append(f"- {item}")
+    if isinstance(worst_case_pnl, (int, float)) and not disclosures:
+        lines.append(f"- Stress downside scenario loss is approximately {float(worst_case_pnl):.2f}.")
+    for record in state.get("assumption_ledger", []):
+        if isinstance(record, dict) and record.get("requires_user_visible_disclosure"):
+            lines.append(f"- Assumption: {record.get('assumption', '')}")
+    lines.append("")
+    lines.append(f"Recommendation class: {risk_requirements.get('recommendation_class', 'scenario_dependent_recommendation')}.")
+    return "\n".join(lines)
+
+
+def _best_available_timestamp(state: AgentState) -> str | None:
+    tool_results = list((state.get("workpad") or {}).get("tool_results", []))
+    for result in reversed(tool_results):
+        if not isinstance(result, dict) or result.get("errors"):
+            continue
+        source = result.get("source", {}) if isinstance(result.get("source", {}), dict) else {}
+        facts = result.get("facts", {}) if isinstance(result.get("facts", {}), dict) else {}
+        assumptions = result.get("assumptions", {}) if isinstance(result.get("assumptions", {}), dict) else {}
+        for candidate in (
+            source.get("timestamp"),
+            source.get("as_of_date"),
+            facts.get("as_of_date"),
+            facts.get("window_end"),
+            assumptions.get("as_of_date"),
+        ):
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate.strip()
+    return None
+
+
+def _apply_compliance_final_fixes(
+    text: str,
+    *,
+    state: AgentState,
+    compliance_feedback: dict[str, Any],
+    policy_context: dict[str, Any],
+    risk_requirements: dict[str, Any],
+) -> str:
+    content = (text or "").strip()
+    if not content:
+        return content
+
+    normalized = re.sub(r"\s+", " ", content.lower()).strip()
+    append_lines: list[str] = []
+    required_disclosures = list(compliance_feedback.get("required_disclosures", []))
+
+    if (
+        (policy_context.get("requires_recommendation_class") or any("recommendation class" in str(item).lower() for item in required_disclosures))
+        and "recommendation class" not in normalized
+    ):
+        append_lines.append(
+            f"Recommendation class: {risk_requirements.get('recommendation_class', 'scenario_dependent_recommendation')}."
+        )
+
+    if (
+        (policy_context.get("requires_timestamped_evidence") or any("timestamp" in str(item).lower() for item in required_disclosures))
+        and "timestamp" not in normalized
+        and "as of" not in normalized
+    ):
+        timestamp = _best_available_timestamp(state)
+        if timestamp:
+            append_lines.append(f"Source timestamp: {timestamp}.")
+
+    if not append_lines:
+        return content
+
+    separator = "\n\n" if "\n" in content else " "
+    return content + separator + "\n".join(append_lines)
+
+
 def _build_tool_call_message(tool_name: str, tool_args: dict[str, Any]) -> AIMessage:
     return AIMessage(
         content="",
@@ -683,6 +953,16 @@ def _deterministic_finance_tool_call(
     if (
         profile == "finance_options"
         and effective_stage == "COMPUTE"
+        and "analyze_strategy" in allowed_tool_names
+        and not state.get("last_tool_result")
+    ):
+        policy_call = _deterministic_policy_options_tool_call(state)
+        if policy_call:
+            return policy_call
+
+    if (
+        profile == "finance_options"
+        and effective_stage == "COMPUTE"
         and "scenario_pnl" in allowed_tool_names
         and "MISSING_SCENARIO_ANALYSIS" in set(risk_feedback.get("violation_codes", []))
     ):
@@ -700,6 +980,8 @@ def route_from_solver(state: AgentState) -> str:
     if workpad.get("review_ready"):
         if requires_risk_control(state):
             return "risk_controller"
+        if requires_compliance_guard(state):
+            return "compliance_guard"
         return "reviewer"
     if state.get("solver_stage") == "COMPLETE":
         if state.get("answer_contract", {}).get("requires_adapter"):
@@ -719,6 +1001,7 @@ def make_solver(tools: list):
         workpad = dict(state.get("workpad", {}))
         review_feedback = state.get("review_feedback") or {}
         risk_feedback = state.get("risk_feedback") or {}
+        compliance_feedback = state.get("compliance_feedback") or {}
         profile_pack = workpad.get("profile_pack") or get_profile_pack(profile).model_dump()
         execution_template = state.get("execution_template", {}) or workpad.get("execution_template", {})
         allowed_stages = set(execution_template.get("allowed_stages", []))
@@ -735,6 +1018,8 @@ def make_solver(tools: list):
             repair_target = str(review_feedback.get("repair_target", "final"))
             if risk_feedback:
                 repair_target = str(risk_feedback.get("repair_target", repair_target))
+            if compliance_feedback:
+                repair_target = str(compliance_feedback.get("repair_target", repair_target))
             if repair_target == "gather":
                 effective_stage = "GATHER"
             elif repair_target == "compute":
@@ -765,6 +1050,8 @@ def make_solver(tools: list):
         if effective_stage in {"SYNTHESIZE", "COMPUTE"} and disclosure_assumptions:
             stage_prompt += "\nDisclose these assumptions if they affect the answer:\n- " + "\n- ".join(disclosure_assumptions[:4])
         risk_requirements = workpad.get("risk_requirements") or {}
+        compliance_requirements = workpad.get("compliance_requirements") or {}
+        policy_context = (state.get("evidence_pack", {}) or {}).get("policy_context", {}) or {}
         if effective_stage == "SYNTHESIZE" and risk_requirements.get("required_disclosures"):
             stage_prompt += "\nRisk-required disclosures:\n- " + "\n- ".join(
                 str(item) for item in risk_requirements.get("required_disclosures", [])[:5]
@@ -774,6 +1061,23 @@ def make_solver(tools: list):
                 "\nRecommendation class for this finance answer: "
                 f"{risk_requirements.get('recommendation_class')}. "
                 "Make the answer explicitly reflect this confidence posture."
+            )
+        policy_lines: list[str] = []
+        if policy_context.get("defined_risk_only"):
+            policy_lines.append("Use a defined-risk structure only.")
+        if policy_context.get("no_naked_options"):
+            policy_lines.append("Do not recommend naked options.")
+        if isinstance(policy_context.get("max_position_risk_pct"), (int, float)):
+            policy_lines.append(
+                f"Carry a max position-risk cap of about {float(policy_context['max_position_risk_pct']):g}% of capital."
+            )
+        if policy_context.get("requires_recommendation_class"):
+            policy_lines.append("State the recommendation class explicitly.")
+        if policy_lines and effective_stage == "SYNTHESIZE":
+            stage_prompt += "\nPolicy constraints:\n- " + "\n- ".join(policy_lines)
+        if effective_stage == "SYNTHESIZE" and compliance_requirements.get("required_disclosures"):
+            stage_prompt += "\nCompliance-required disclosures:\n- " + "\n- ".join(
+                str(item) for item in compliance_requirements.get("required_disclosures", [])[:5]
             )
         if as_of_date and effective_stage in {"GATHER", "COMPUTE"}:
             stage_prompt += (
@@ -831,6 +1135,14 @@ def make_solver(tools: list):
                 f"{json.dumps(risk_feedback, ensure_ascii=True)}\n"
                 f"Repair target stage: {effective_stage}."
             )
+        if stage == "REVISE" and compliance_feedback:
+            stage_prompt += (
+                "\nCompliance guard feedback:\n"
+                f"{json.dumps(compliance_feedback, ensure_ascii=True)}\n"
+                f"Repair target stage: {effective_stage}. "
+                "If the current recommendation violates mandate or product constraints, rewrite it into a compliant alternative "
+                "or explicitly recommend no action."
+            )
         allowed_tools = _allowed_tools_for_state(tools, state)
         allowed_tool_names = {getattr(tool, "name", "") for tool in allowed_tools}
         deterministic_call = _deterministic_finance_tool_call(
@@ -870,8 +1182,11 @@ def make_solver(tools: list):
                 }
 
         deterministic_final_text = None
-        if profile == "finance_options" and effective_stage == "SYNTHESIZE":
-            deterministic_final_text = _deterministic_options_final_answer(state)
+        if profile == "finance_options" and effective_stage == "SYNTHESIZE" and not compliance_feedback:
+            if policy_context.get("defined_risk_only") or policy_context.get("no_naked_options"):
+                deterministic_final_text = _deterministic_policy_options_final_answer(state)
+            else:
+                deterministic_final_text = _deterministic_options_final_answer(state)
         if deterministic_final_text:
             final_message = AIMessage(content=deterministic_final_text)
             workpad["draft_answer"] = deterministic_final_text
@@ -940,6 +1255,14 @@ def make_solver(tools: list):
             }
 
         content = _strip_think_markup(str(response.content or ""))
+        if effective_stage == "SYNTHESIZE":
+            content = _apply_compliance_final_fixes(
+                content,
+                state=state,
+                compliance_feedback=compliance_feedback,
+                policy_context=policy_context,
+                risk_requirements=risk_requirements,
+            )
         workpad = _merge_stage_output(workpad, effective_stage, content)
 
         if effective_stage in {"GATHER", "COMPUTE"}:

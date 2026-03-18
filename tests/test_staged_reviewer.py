@@ -166,6 +166,59 @@ def test_reviewer_revises_options_final_missing_risk_required_disclosures():
     assert "required risk disclosures" in [gap.lower() for gap in result["review_feedback"]["missing_dimensions"]]
 
 
+def test_reviewer_requires_compliance_guard_pass_for_options_final():
+    state = make_state(
+        "This is a defined-risk-only options mandate.",
+        task_profile="finance_options",
+        capability_flags=["needs_options_engine"],
+        execution_template={
+            "template_id": "options_tool_backed",
+            "allowed_stages": ["COMPUTE", "SYNTHESIZE", "REVISE", "COMPLETE"],
+            "default_initial_stage": "COMPUTE",
+            "allowed_tool_names": ["analyze_strategy", "scenario_pnl"],
+            "review_stages": ["COMPUTE", "SYNTHESIZE"],
+            "review_cadence": "milestone_and_final",
+            "answer_focus": [],
+        },
+        evidence_pack={"policy_context": {"defined_risk_only": True, "action_orientation": True}},
+        solver_stage="SYNTHESIZE",
+        workpad={
+            "events": [],
+            "stage_outputs": {},
+            "tool_results": [
+                {
+                    "type": "analyze_strategy",
+                    "facts": {"net_premium": 12.0},
+                    "assumptions": {},
+                    "source": {"tool": "analyze_strategy"},
+                    "errors": [],
+                }
+            ],
+            "risk_results": [{"verdict": "pass"}],
+            "risk_requirements": {"required_disclosures": [], "recommendation_class": "scenario_dependent_recommendation"},
+            "review_ready": True,
+            "review_stage": "SYNTHESIZE",
+        },
+    )
+    state["messages"].append(
+        AIMessage(
+            content=(
+                "Recommendation: use a defined-risk iron condor.\n"
+                "Primary strategy: iron condor.\n"
+                "Alternative strategy comparison: vertical spread.\n"
+                "Key Greeks and breakevens: delta, theta, vega, breakeven.\n"
+                "Risk management: 1% position sizing and stop-loss.\n"
+                "Recommendation class: scenario_dependent_recommendation."
+            )
+        )
+    )
+
+    result = reviewer(state)
+
+    assert result["solver_stage"] == "REVISE"
+    assert "compliance-guard validation" in [gap.lower() for gap in result["review_feedback"]["missing_dimensions"]]
+
+
 def test_reviewer_passes_deterministic_options_final_with_hyphenated_disclosures():
     state = make_state(
         "Should I be a net buyer or seller of options?",

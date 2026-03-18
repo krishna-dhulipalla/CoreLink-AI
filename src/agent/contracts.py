@@ -49,6 +49,7 @@ SolverStage = Literal[
 
 ReviewVerdict = Literal["pass", "revise", "backtrack"]
 RiskVerdict = Literal["pass", "revise", "blocked"]
+ComplianceVerdict = Literal["pass", "revise", "blocked"]
 SourceClass = Literal["prompt", "retrieved", "derived", "assumption"]
 AssumptionConfidence = Literal["low", "medium", "high"]
 AssumptionReviewStatus = Literal["pending", "accepted", "rejected", "disclosed"]
@@ -147,6 +148,7 @@ class EvidencePack(BaseModel):
     prompt_facts: dict[str, Any] = Field(default_factory=dict)
     retrieved_facts: dict[str, Any] = Field(default_factory=dict)
     derived_facts: dict[str, Any] = Field(default_factory=dict)
+    policy_context: dict[str, Any] = Field(default_factory=dict)
     document_evidence: list[dict[str, Any]] = Field(default_factory=list)
     tables: list[dict[str, Any]] = Field(default_factory=list)
     formulas: list[str] = Field(default_factory=list)
@@ -190,6 +192,15 @@ class RiskResult(BaseModel):
     required_disclosures: list[str] = Field(default_factory=list)
     recommendation_class: RecommendationClass = "scenario_dependent_recommendation"
     repair_target: Literal["compute", "final"] = "compute"
+
+
+class ComplianceResult(BaseModel):
+    verdict: ComplianceVerdict = "revise"
+    reasoning: str = ""
+    violation_codes: list[str] = Field(default_factory=list)
+    policy_findings: list[str] = Field(default_factory=list)
+    required_disclosures: list[str] = Field(default_factory=list)
+    repair_target: Literal["final"] = "final"
 
 
 class ArtifactCheckpoint(BaseModel):

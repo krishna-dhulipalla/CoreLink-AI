@@ -96,6 +96,7 @@ TEMPLATE_LIBRARY: dict[ExecutionTemplateId, ExecutionTemplate] = {
             "Add at least one scenario or stress analysis before final synthesis.",
             "Compare at least one alternative with concrete tradeoffs.",
             "Keep Greeks, premium direction, breakevens, risk controls, and required disclosures explicit.",
+            "Respect any explicit mandate constraints from the prompt before the final answer is accepted.",
         ],
     ),
     "legal_reasoning_only": ExecutionTemplate(

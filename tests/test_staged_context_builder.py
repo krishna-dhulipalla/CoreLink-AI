@@ -62,6 +62,29 @@ class TestContextBuilder:
         assert any("Spot price is not explicit" in question for question in evidence["open_questions"])
         assert "Recommendation" in result["answer_contract"]["section_requirements"]
 
+    def test_extracts_finance_policy_context_from_prompt(self):
+        prompt = (
+            "META's current IV is 35% while its 30-day historical volatility is 28%. "
+            "The IV percentile is 75%. This is a retirement account mandate: defined-risk only, "
+            "no naked options, and keep position risk to 2% of capital. "
+            "Should you be a net buyer or seller of options? Design a compliant strategy accordingly."
+        )
+        state = make_state(prompt)
+        state.update(intake(state))
+        state.update(task_profiler(state))
+        state.update(template_selector(state))
+
+        result = context_builder(state)
+        policy = result["evidence_pack"]["policy_context"]
+
+        assert policy["action_orientation"] is True
+        assert policy["defined_risk_only"] is True
+        assert policy["no_naked_options"] is True
+        assert policy["retail_or_retirement_account"] is True
+        assert policy["max_position_risk_pct"] == 2.0
+        assert "requires_timestamped_evidence" not in policy
+        assert "policy_context.defined_risk_only" in result["provenance_map"]
+
     def test_extracts_as_of_date_into_prompt_facts(self):
         prompt = (
             "As of Oct 14, 2022, compare the implied volatility setup for META and keep any "

@@ -15,6 +15,7 @@ from langgraph.graph import END, StateGraph
 from langgraph.prebuilt import ToolNode
 
 from agent.nodes.context_builder import context_builder
+from agent.nodes.compliance_guard import compliance_guard, route_from_compliance_guard
 from agent.nodes.intake import intake
 from agent.nodes.output_adapter import output_adapter
 from agent.nodes.reflect import reflect
@@ -56,6 +57,7 @@ def build_agent_graph(external_tools: list | None = None):
     graph.add_node("solver", make_solver(all_tools))
     graph.add_node("tool_runner", make_tool_runner(raw_tool_node))
     graph.add_node("risk_controller", risk_controller)
+    graph.add_node("compliance_guard", compliance_guard)
     graph.add_node("reviewer", reviewer)
     graph.add_node("output_adapter", output_adapter)
     graph.add_node("reflect", reflect)
@@ -68,6 +70,7 @@ def build_agent_graph(external_tools: list | None = None):
     graph.add_conditional_edges("solver", route_from_solver)
     graph.add_edge("tool_runner", "solver")
     graph.add_conditional_edges("risk_controller", route_from_risk_controller)
+    graph.add_conditional_edges("compliance_guard", route_from_compliance_guard)
     graph.add_conditional_edges("reviewer", route_from_reviewer)
     graph.add_edge("output_adapter", "reflect")
     graph.add_edge("reflect", END)

@@ -40,6 +40,13 @@ PROMPTS = [
         "The IV percentile is 75%. Should you be a net buyer or seller of options? Design a strategy accordingly.",
     ),
     (
+        "finance_options_policy",
+        "META's current IV is 35% while its 30-day historical volatility is 28%. "
+        "The IV percentile is 75%. This is a retirement account mandate: defined-risk only, "
+        "no naked options, and keep position risk to 2% of capital. "
+        "Should you be a net buyer or seller of options? Design a compliant strategy accordingly.",
+    ),
+    (
         "legal_transactional",
         "Target company we're acquiring has clean IP but regulatory compliance gaps in EU and US. "
         "Board wants stock consideration for tax reasons but we cannot inherit the compliance liabilities. "
@@ -80,6 +87,8 @@ def _summarize(trace: dict) -> dict:
         "tool_results": workpad.get("tool_results", []),
         "risk_results": workpad.get("risk_results", []),
         "risk_requirements": workpad.get("risk_requirements", {}),
+        "compliance_results": workpad.get("compliance_results", []),
+        "compliance_requirements": workpad.get("compliance_requirements", {}),
         "cost_summary": state.get("cost_tracker").summary() if state.get("cost_tracker") else {},
     }
 

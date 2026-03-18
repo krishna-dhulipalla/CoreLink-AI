@@ -44,6 +44,10 @@ _MONTH_NAME_DATE_RE = re.compile(
     re.IGNORECASE,
 )
 _ISO_DATE_RE = re.compile(r"\b(?:as of|on|dated?|for)\s+(\d{4}-\d{2}-\d{2})\b", re.IGNORECASE)
+_RISK_CAP_RE = re.compile(
+    r"(?:(?:max(?:imum)?|keep|cap(?:ped)?|limit(?:ed)?)\s+)?(?:position\s+)?risk(?:\s+(?:to|at|under))?(?:\s+of)?\s+(\d+(?:\.\d+)?)\s*%",
+    re.IGNORECASE,
+)
 
 def allowed_tools_for_profile(profile: str) -> set[str]:
     return set(get_profile_pack(profile).allowed_tools)
@@ -583,6 +587,70 @@ def _initial_assumption_ledger(
     return assumptions
 
 
+def _extract_policy_context(
+    task_text: str,
+    task_profile: str,
+    capability_flags: list[str],
+) -> dict[str, Any]:
+    normalized = (task_text or "").lower()
+    policy: dict[str, Any] = {}
+
+    action_orientation = any(
+        token in normalized
+        for token in (
+            "should i",
+            "should we",
+            "recommend",
+            "design a strategy",
+            "net buyer or seller",
+            "buy or sell",
+            "allocate",
+            "position",
+            "trade",
+            "execute",
+        )
+    )
+    if action_orientation:
+        policy["action_orientation"] = True
+
+    if any(token in normalized for token in ("defined-risk only", "defined risk only", "defined-risk", "defined risk")):
+        policy["defined_risk_only"] = True
+
+    if any(token in normalized for token in ("no naked options", "no naked option", "no naked short", "avoid naked options")):
+        policy["no_naked_options"] = True
+
+    if any(token in normalized for token in ("retirement account", "ira", "401k", "retail account")):
+        policy["retail_or_retirement_account"] = True
+
+    match = _RISK_CAP_RE.search(task_text or "")
+    if match:
+        try:
+            policy["max_position_risk_pct"] = float(match.group(1))
+        except ValueError:
+            pass
+
+    jurisdictions = []
+    if re.search(r"\busa?\b|\bunited states\b", normalized):
+        jurisdictions.append("US")
+    if re.search(r"\beu\b|\beuropean union\b", normalized):
+        jurisdictions.append("EU")
+    if re.search(r"\buk\b|\bunited kingdom\b", normalized):
+        jurisdictions.append("UK")
+    if jurisdictions:
+        policy["jurisdictions"] = sorted(set(jurisdictions))
+
+    if action_orientation and (
+        "needs_live_data" in set(capability_flags)
+        or any(token in normalized for token in ("today", "latest", "as of", "source-backed"))
+    ):
+        policy["requires_timestamped_evidence"] = True
+
+    if task_profile in {"finance_quant", "finance_options"} and action_orientation:
+        policy["requires_recommendation_class"] = True
+
+    return policy
+
+
 def build_evidence_pack(
     task_text: str,
     answer_contract: AnswerContract,
@@ -595,9 +663,12 @@ def build_evidence_pack(
     document_placeholders = build_document_placeholders(urls) if "needs_files" in capability_flags else []
     inline_facts = extract_inline_facts(task_text)
     market_snapshot, derived = derive_market_snapshot(task_text, inline_facts)
+    policy_context = _extract_policy_context(task_text, task_profile, capability_flags)
     prompt_facts: dict[str, Any] = dict(inline_facts)
     if market_snapshot:
         prompt_facts["market_snapshot"] = market_snapshot
+        if task_profile == "finance_options":
+            policy_context.pop("requires_timestamped_evidence", None)
 
     constraints: list[str] = []
     if "requires_exact_format" in capability_flags:
@@ -608,12 +679,22 @@ def build_evidence_pack(
         constraints.append("Task profile is partially ambiguous; avoid unsupported domain assumptions or premature tool use.")
     if document_placeholders:
         constraints.append("For file-backed tasks, gather document metadata or a narrow page/row window first; do not dump raw document bodies.")
+    if policy_context.get("defined_risk_only"):
+        constraints.append("Recommendations must respect a defined-risk-only mandate.")
+    if policy_context.get("no_naked_options"):
+        constraints.append("Recommendations must not use naked options.")
+    if policy_context.get("max_position_risk_pct") is not None:
+        constraints.append(
+            f"Position risk must stay within approximately {policy_context['max_position_risk_pct']}% of capital."
+        )
     for rule in pack.content_rules[:3]:
         constraints.append(rule)
 
     open_questions: list[str] = []
     if task_profile == "finance_options" and not _has_prompt_fact(prompt_facts, "spot", "spot_price", '"spot"'):
         open_questions.append("Spot price is not explicit in the prompt; any strategy pricing may require a stated assumption.")
+    if policy_context.get("defined_risk_only") and task_profile == "finance_options":
+        open_questions.append("A defined-risk alternative may be required even if the first tool-backed strategy is naked short premium.")
     if document_placeholders:
         open_questions.append("Document evidence has not been extracted yet; start with metadata or a targeted fetch before answering.")
 
@@ -625,6 +706,7 @@ def build_evidence_pack(
         prompt_facts=prompt_facts,
         retrieved_facts={},
         derived_facts=derived,
+        policy_context=policy_context,
         document_evidence=document_placeholders,
         tables=parse_markdown_tables(task_text),
         formulas=extract_formulas(task_text),
@@ -648,6 +730,15 @@ def build_evidence_pack(
             source_class="derived",
             source_id="context_builder",
             extraction_method="derive_market_snapshot",
+        )
+    )
+    provenance_map.update(
+        _flatten_provenance(
+            "policy_context",
+            policy_context,
+            source_class="prompt",
+            source_id="user_prompt",
+            extraction_method="policy_extraction",
         )
     )
     for record in document_placeholders:

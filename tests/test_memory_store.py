@@ -1,12 +1,17 @@
 import sqlite3
+import uuid
 from pathlib import Path
 
 from agent.memory.schema import CurationSignal, ReviewMemory, RunMemory, ToolMemory, task_signature
 from agent.memory.store import MemoryStore
 
 
-def test_memory_store_resets_legacy_schema(tmp_path: Path):
-    db_path = tmp_path / "agent_memory.db"
+def _workspace_temp_db_path() -> Path:
+    return Path.cwd() / f".tmp_memory_store_{uuid.uuid4().hex}.db"
+
+
+def test_memory_store_resets_legacy_schema():
+    db_path = _workspace_temp_db_path()
     conn = sqlite3.connect(db_path)
     conn.executescript(
         """
@@ -29,8 +34,8 @@ def test_memory_store_resets_legacy_schema(tmp_path: Path):
     assert stats["curation_memory"] == 0
 
 
-def test_memory_store_persists_staged_records(tmp_path: Path):
-    store = MemoryStore(str(tmp_path / "agent_memory.db"))
+def test_memory_store_persists_staged_records():
+    store = MemoryStore(str(_workspace_temp_db_path()))
     sig = task_signature("test prompt")
 
     assert store.store_run(

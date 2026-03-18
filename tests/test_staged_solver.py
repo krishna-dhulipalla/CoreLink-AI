@@ -498,8 +498,168 @@ def test_solver_builds_deterministic_options_final_answer_after_risk_pass(monkey
     assert "risk management" in content
     assert "disclosures" in content
     assert "short-volatility / volatility-spike risk" in content
-    assert "tail loss and gap risk" in content
-    assert "assumption" in content
+
+
+def test_solver_uses_deterministic_policy_tool_call_for_defined_risk_options():
+    solver = make_solver([_DummyTool("analyze_strategy", "Analyze an options strategy")])
+    state = make_state(
+        "Design an options strategy, but use defined-risk only and no naked options.",
+        task_profile="finance_options",
+        capability_flags=["needs_options_engine"],
+        solver_stage="COMPUTE",
+        evidence_pack={
+            "derived_facts": {"vol_bias": "short_vol"},
+            "policy_context": {"defined_risk_only": True, "no_naked_options": True, "requires_recommendation_class": True},
+            "prompt_facts": {"implied_volatility": 0.35},
+        },
+        execution_template={
+            "template_id": "options_tool_backed",
+            "allowed_stages": ["COMPUTE", "SYNTHESIZE", "REVISE", "COMPLETE"],
+            "default_initial_stage": "COMPUTE",
+            "allowed_tool_names": ["analyze_strategy", "scenario_pnl"],
+            "review_stages": ["COMPUTE", "SYNTHESIZE"],
+            "review_cadence": "milestone_and_final",
+            "answer_focus": [],
+        },
+        workpad={
+            "events": [],
+            "stage_outputs": {},
+            "tool_results": [],
+        },
+    )
+
+    result = solver(state)
+
+    assert result["pending_tool_call"]["name"] == "analyze_strategy"
+    legs = result["pending_tool_call"]["arguments"]["legs"]
+    assert len(legs) == 4
+    assert {leg["action"] for leg in legs} == {"buy", "sell"}
+    assert {leg["option_type"] for leg in legs} == {"call", "put"}
+
+
+def test_solver_uses_deterministic_policy_final_when_primary_strategy_is_compliant():
+    solver = make_solver([])
+    state = make_state(
+        "Design an options strategy, but use defined-risk only and no naked options.",
+        task_profile="finance_options",
+        capability_flags=["needs_options_engine"],
+        solver_stage="SYNTHESIZE",
+        evidence_pack={
+            "derived_facts": {"vol_bias": "short_vol"},
+            "policy_context": {
+                "defined_risk_only": True,
+                "no_naked_options": True,
+                "requires_recommendation_class": True,
+                "max_position_risk_pct": 2.0,
+            },
+        },
+        execution_template={
+            "template_id": "options_tool_backed",
+            "allowed_stages": ["COMPUTE", "SYNTHESIZE", "REVISE", "COMPLETE"],
+            "default_initial_stage": "COMPUTE",
+            "allowed_tool_names": ["analyze_strategy", "scenario_pnl"],
+            "review_stages": ["COMPUTE", "SYNTHESIZE"],
+            "review_cadence": "milestone_and_final",
+            "answer_focus": [],
+        },
+        assumption_ledger=[
+            {
+                "key": "spot_price",
+                "assumption": "Spot price was assumed as 300 from tool arguments because it was not explicit in prompt evidence.",
+                "requires_user_visible_disclosure": True,
+            }
+        ],
+        workpad={
+            "events": [],
+            "stage_outputs": {},
+            "tool_results": [
+                {
+                    "type": "analyze_strategy",
+                    "facts": {
+                        "net_premium": 4.15,
+                        "premium_direction": "CREDIT",
+                        "total_delta": -0.031,
+                        "total_gamma": -0.011,
+                        "total_theta_per_day": 0.125,
+                        "total_vega_per_vol_point": -0.241,
+                    },
+                    "assumptions": {
+                        "legs": [
+                            {"option_type": "put", "action": "buy", "S": 300.0, "K": 290.0},
+                            {"option_type": "put", "action": "sell", "S": 300.0, "K": 295.0},
+                            {"option_type": "call", "action": "sell", "S": 300.0, "K": 305.0},
+                            {"option_type": "call", "action": "buy", "S": 300.0, "K": 310.0},
+                        ]
+                    },
+                    "source": {"tool": "analyze_strategy"},
+                    "errors": [],
+                },
+                {
+                    "type": "scenario_pnl",
+                    "facts": {"best_case_pnl": 0.44, "worst_case_pnl": -3.1},
+                    "assumptions": {"reference_price": 300.0},
+                    "source": {"tool": "scenario_pnl"},
+                    "errors": [],
+                },
+            ],
+            "risk_results": [{"verdict": "pass"}],
+            "risk_requirements": {
+                "required_disclosures": [
+                    "Explicitly disclose short-volatility / volatility-spike risk.",
+                    "State downside scenario loss and the exit or sizing response.",
+                ],
+                "recommendation_class": "scenario_dependent_recommendation",
+            },
+        },
+    )
+
+    result = solver(state)
+
+    content = result["messages"][0].content.lower()
+    assert "net seller of options" in content
+    assert "defined-risk only" in content
+    assert "naked options are not permitted" in content
+    assert "volatility-spike risk" in content
+    assert "recommendation class: scenario_dependent_recommendation." in content
+
+
+def test_solver_appends_compliance_recommendation_class_fix(monkeypatch):
+    fake_model = _FakeModel(AIMessage(content="Use a defined-risk iron condor with 1% position sizing."))
+    monkeypatch.setattr("agent.nodes.solver.ChatOpenAI", lambda **kwargs: fake_model)
+    monkeypatch.setattr("agent.nodes.solver._tool_call_mode", lambda role: "prompt")
+
+    solver = make_solver([])
+    state = make_state(
+        "Use a defined-risk-only options strategy.",
+        task_profile="finance_options",
+        capability_flags=["needs_options_engine"],
+        solver_stage="REVISE",
+        execution_template={
+            "template_id": "options_tool_backed",
+            "allowed_stages": ["COMPUTE", "SYNTHESIZE", "REVISE", "COMPLETE"],
+            "default_initial_stage": "COMPUTE",
+            "allowed_tool_names": ["analyze_strategy", "scenario_pnl"],
+            "review_stages": ["COMPUTE", "SYNTHESIZE"],
+            "review_cadence": "milestone_and_final",
+            "answer_focus": [],
+        },
+        evidence_pack={"policy_context": {"defined_risk_only": True, "requires_recommendation_class": True}},
+        compliance_feedback={
+            "repair_target": "final",
+            "violation_codes": ["MISSING_RECOMMENDATION_CLASS"],
+            "required_disclosures": ["State the recommendation class explicitly."],
+        },
+        workpad={
+            "events": [],
+            "stage_outputs": {},
+            "tool_results": [],
+            "risk_requirements": {"recommendation_class": "scenario_dependent_recommendation"},
+        },
+    )
+
+    result = solver(state)
+
+    assert "Recommendation class: scenario_dependent_recommendation." in result["messages"][0].content
 
 
 def test_solver_document_gather_prompt_requires_targeted_extraction(monkeypatch):

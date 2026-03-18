@@ -18,6 +18,7 @@ from langchain_openai import ChatOpenAI
 from agent.contracts import ReviewResult
 from agent.document_evidence import has_extracted_document_evidence
 from agent.cost import CostTracker
+from agent.nodes.compliance_guard import requires_compliance_guard
 from agent.model_config import _extract_json_payload, get_client_kwargs, get_model_name
 from agent.profile_packs import get_profile_pack
 from agent.runtime_clock import increment_runtime_step
@@ -188,6 +189,7 @@ def _deterministic_review(state: AgentState, artifact: str, is_final: bool) -> R
     has_structured_tool = any(result.get("facts") and not result.get("errors") for result in tool_results)
     risk_results = list(workpad.get("risk_results", []))
     risk_requirements = workpad.get("risk_requirements") or {}
+    compliance_results = list(workpad.get("compliance_results", []))
 
     if review_stage == "GATHER" and last_tool_result.get("errors"):
         if selective_backtracking_allowed(state.get("execution_template"), "GATHER"):
@@ -314,6 +316,21 @@ def _deterministic_review(state: AgentState, artifact: str, is_final: bool) -> R
                 missing_dimensions=["resolved risk-controller findings"],
                 repair_target="compute",
             )
+        if requires_compliance_guard(state):
+            if not compliance_results:
+                return ReviewResult(
+                    verdict="revise",
+                    reasoning="Final options answer requires a compliance-guard pass before acceptance.",
+                    missing_dimensions=["compliance-guard validation"],
+                    repair_target="final",
+                )
+            if str(compliance_results[-1].get("verdict", "pass")) != "pass":
+                return ReviewResult(
+                    verdict="revise",
+                    reasoning="Final options answer cannot be accepted while the latest compliance-guard result is unresolved.",
+                    missing_dimensions=["resolved compliance findings"],
+                    repair_target="final",
+                )
         if not has_structured_tool:
             return ReviewResult(
                 verdict="revise",

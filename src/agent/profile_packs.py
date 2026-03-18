@@ -62,6 +62,7 @@ PROFILE_PACKS: dict[TaskProfile, ProfileContextPack] = {
             "Use tool-backed calculations for the primary strategy whenever the needed parameters are available.",
             "Compare at least one alternative strategy with concrete tradeoffs, not just name-dropping.",
             "Keep credit/debit direction, breakevens, and risk controls explicit.",
+            "Respect explicit mandate constraints from the prompt, such as defined-risk-only or no-naked-options requirements.",
         ],
         section_requirements=[
             "Recommendation",
