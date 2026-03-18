@@ -1465,3 +1465,109 @@ This file operates in a "Chat" structure. Whenever an agent finishes a major uni
   2. `finance_options`
      - recovered to the intended tool-backed path after the finance-evidence control fix
   3. Reviewer / profiler JSON parse warnings still appear live with Qwen/Nebius, but deterministic fallback kept the staged runtime stable
+
+### Finance Hands Phase B: Risk Controller, Scenario Operators, and Disclosure Rules
+- **Role:** Architect / Coder
+- **Date:** 2026-03-18
+- **Goal:** Execute Phase B of `docs/finance_hands.md` by adding template-scoped risk control, scenario tooling, disclosure enforcement, and live runtime hardening for finance options workflows.
+- **Actions Taken:**
+  1. Added explicit risk contracts and runtime state:
+     - `src/agent/contracts.py`
+       - added `RiskVerdict`
+       - added `RecommendationClass`
+       - added `RiskResult`
+     - `src/agent/state.py`
+       - added `risk_feedback`
+     - `src/agent/runner.py`
+       - initialized `risk_feedback` in staged runtime state
+  2. Rebuilt the risk MCP surface in `src/mcp_servers/risk_metrics/server.py`:
+     - upgraded existing risk tools to structured envelopes
+     - added:
+       - `scenario_pnl`
+       - `concentration_check`
+       - `portfolio_limit_check`
+     - standardized outputs around:
+       - `type`
+       - `facts`
+       - `assumptions`
+       - `source`
+       - `quality`
+       - `errors`
+  3. Expanded finance-options tool policy:
+     - `src/agent/profile_packs.py`
+     - `src/agent/template_library.py`
+     - finance options now explicitly allow structured risk/scenario tools and carry risk/disclosure expectations in the profile/template guidance
+  4. Added a dedicated `risk_controller` node in `src/agent/nodes/risk_controller.py`:
+     - runs only for `options_tool_backed`
+     - checks:
+       - missing scenario coverage
+       - missing risk controls
+       - short-vol and tail-risk disclosures
+       - hard portfolio-limit breaches
+     - returns only:
+       - `pass`
+       - `revise`
+       - `blocked`
+  5. Wired the active graph through the risk gate:
+     - `src/agent/graph.py`
+       - added `risk_controller`
+     - `src/agent/nodes/solver.py`
+       - routes compute milestones through risk control before reviewer
+       - added deterministic finance tool seeding for:
+         - live-data quant gather
+         - options scenario repair
+  6. Hardened tool-call normalization and repair-time control in `src/agent/nodes/tool_runner.py`:
+     - normalized aliases for:
+       - `scenario_pnl`
+       - `calculate_var`
+       - `run_stress_test`
+     - rewrote native AI tool-call payloads before invocation
+     - enriched weak `scenario_pnl` calls from:
+       - nested `strategy_facts`
+       - the latest `analyze_strategy` result
+     - after a successful repair-time tool call, the runtime now returns to:
+       - `COMPUTE`
+       - or `GATHER`
+       instead of skipping directly into synthesis
+     - clears stale `risk_feedback` after successful tool execution to avoid duplicate scenario loops
+  7. Tightened reviewer rules in `src/agent/nodes/reviewer.py`:
+     - final options answers now require:
+       - a passed risk result
+       - required risk disclosures
+       - material assumption disclosure when introduced during compute
+  8. Extended reflect metadata in `src/agent/nodes/reflect.py`:
+     - stores `risk_result_count`
+     - stores `recommendation_class`
+  9. Extended deterministic and live smoke coverage:
+     - `scripts/run_staged_runtime_smoke.py`
+     - `scripts/run_live_staged_smoke.py`
+  10. Added/updated regressions:
+      - `tests/test_risk_metrics_tools.py`
+      - `tests/test_staged_risk_controller.py`
+      - `tests/test_staged_solver.py`
+      - `tests/test_staged_reviewer.py`
+      - `tests/test_staged_tool_runner.py`
+- **Verification:**
+  - `pytest tests/test_risk_metrics_tools.py tests/test_staged_risk_controller.py tests/test_staged_solver.py tests/test_staged_reviewer.py tests/test_staged_tool_runner.py -q` -> **43 passed, 1 skipped**
+  - `pytest tests -q` -> **79 passed, 5 skipped**
+  - `python scripts/run_staged_runtime_smoke.py` -> **ok: true**
+  - `python scripts/run_live_staged_smoke.py` -> live staged smoke completed successfully
+  - `python -m py_compile src/agent/contracts.py src/agent/state.py src/agent/runner.py src/agent/graph.py src/agent/profile_packs.py src/agent/template_library.py src/agent/nodes/solver.py src/agent/nodes/tool_runner.py src/agent/nodes/reviewer.py src/agent/nodes/reflect.py src/agent/nodes/risk_controller.py src/mcp_servers/risk_metrics/server.py scripts/run_live_staged_smoke.py scripts/run_staged_runtime_smoke.py tests/test_risk_metrics_tools.py tests/test_staged_risk_controller.py tests/test_staged_solver.py tests/test_staged_reviewer.py tests/test_staged_tool_runner.py` -> **passed**
+- **Live Smoke Findings:**
+  1. `finance_quant`
+     - remained stable
+     - exact-format path still works
+  2. `finance_evidence`
+     - remained stable on:
+       - `GATHER -> get_price_history -> pct_change -> COMPUTE -> SYNTHESIZE`
+  3. `document_qa`
+     - remained stable
+  4. `legal_transactional`
+     - remained stable
+  5. `finance_options`
+     - now completes end-to-end instead of failing at `scenario_pnl` argument validation
+     - risk/scenario tool calls are now normalized and recoverable even when the live model emits weak argument shapes
+     - the path is still too revise-heavy in live use, but it is no longer structurally broken
+- **Handoff Notes:** Phase B is complete. The next useful finance-hands step is not more generic prompting. It is either:
+  1. reducing options risk-review churn with stronger deterministic control over primary options compute selection and risk-control satisfaction, or
+  2. moving to the next finance-hands phase if the current risk gate is considered good enough as a stable baseline.

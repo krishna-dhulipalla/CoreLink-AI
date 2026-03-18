@@ -20,6 +20,7 @@ from agent.contracts import ReviewResult, ToolCallEnvelope, ToolResult
 from agent.document_evidence import has_extracted_document_evidence, summarize_document_evidence
 from agent.cost import CostTracker
 from agent.model_config import _extract_json_payload, _tool_call_mode, get_client_kwargs, get_model_name
+from agent.nodes.risk_controller import requires_risk_control
 from agent.profile_packs import get_profile_pack
 from agent.runtime_clock import increment_runtime_step
 from agent.runtime_support import (
@@ -100,7 +101,8 @@ def _allowed_tools_for_state(all_tools: list, state: AgentState) -> list:
         allowed_names &= {"fetch_reference_file", "list_reference_files"}
 
     review_feedback = state.get("review_feedback") or {}
-    repair_target = str(review_feedback.get("repair_target", "final"))
+    risk_feedback = state.get("risk_feedback") or {}
+    repair_target = str(review_feedback.get("repair_target", risk_feedback.get("repair_target", "final")))
     if stage == "REVISE" and repair_target not in {"gather", "compute"}:
         allowed_names = set()
     if (
@@ -108,6 +110,18 @@ def _allowed_tools_for_state(all_tools: list, state: AgentState) -> list:
         and repair_target == "compute"
         and (state.get("last_tool_result") or {}).get("facts")
         and not (state.get("last_tool_result") or {}).get("errors")
+        and not any(
+            token in " ".join(
+                [
+                    str(risk_feedback.get("reasoning", "")),
+                    " ".join(str(item) for item in risk_feedback.get("violation_codes", [])),
+                    " ".join(str(item) for item in risk_feedback.get("risk_findings", [])),
+                    " ".join(str(item) for item in risk_feedback.get("required_disclosures", [])),
+                    " ".join(str(item) for item in review_feedback.get("missing_dimensions", [])),
+                ]
+            ).lower()
+            for token in ("scenario", "stress", "var", "risk", "limit", "exposure")
+        )
     ):
         allowed_names = set()
 
@@ -270,11 +284,132 @@ def _merge_stage_output(workpad: dict[str, Any], stage: str, text: str) -> dict[
     return updated
 
 
+def _first_ticker_entity(entities: list[Any]) -> str | None:
+    for entity in entities or []:
+        token = str(entity).strip().upper()
+        if re.fullmatch(r"[A-Z]{1,5}", token):
+            return token
+    return None
+
+
+def _infer_period_from_text(task_text: str) -> str:
+    normalized = (task_text or "").lower()
+    if any(token in normalized for token in ("1-month", "1 month", "1mo", "one month")):
+        return "1mo"
+    if any(token in normalized for token in ("3-month", "3 month", "3mo")):
+        return "3mo"
+    if any(token in normalized for token in ("6-month", "6 month", "6mo")):
+        return "6mo"
+    if any(token in normalized for token in ("1-year", "1 year", "12 month", "12-month", "1y")):
+        return "1y"
+    return "1mo"
+
+
+def _reference_price_from_tool(tool_result: dict[str, Any]) -> float | None:
+    assumptions = tool_result.get("assumptions", {}) if isinstance(tool_result, dict) else {}
+    if isinstance(assumptions, dict):
+        for key in ("reference_price", "spot", "spot_price", "S"):
+            value = assumptions.get(key)
+            if isinstance(value, (int, float)):
+                return float(value)
+        legs = assumptions.get("legs")
+        if isinstance(legs, list):
+            for leg in legs:
+                if isinstance(leg, dict) and isinstance(leg.get("S"), (int, float)):
+                    return float(leg["S"])
+    return None
+
+
+def _build_tool_call_message(tool_name: str, tool_args: dict[str, Any]) -> AIMessage:
+    return AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": tool_name,
+                "args": tool_args,
+                "id": f"call_{uuid.uuid4().hex[:10]}",
+                "type": "tool_call",
+            }
+        ],
+    )
+
+
+def _deterministic_finance_tool_call(
+    state: AgentState,
+    *,
+    profile: str,
+    effective_stage: str,
+    allowed_tool_names: set[str],
+    risk_feedback: dict[str, Any],
+) -> dict[str, Any] | None:
+    task_text = latest_human_text(state["messages"])
+    normalized = task_text.lower()
+    evidence_pack = state.get("evidence_pack", {}) or {}
+    prompt_facts = evidence_pack.get("prompt_facts", {}) or {}
+    last_tool_result = state.get("last_tool_result") or {}
+    workpad = state.get("workpad", {}) or {}
+    tool_results = list(workpad.get("tool_results", []))
+
+    if profile == "finance_quant" and effective_stage == "GATHER" and "needs_live_data" in set(state.get("capability_flags", [])):
+        if (
+            str(last_tool_result.get("type", "")) == "get_price_history"
+            and "return" in normalized
+            and "pct_change" in allowed_tool_names
+            and not any(str(result.get("type", "")) == "pct_change" for result in tool_results if isinstance(result, dict))
+        ):
+            facts = last_tool_result.get("facts", {}) if isinstance(last_tool_result, dict) else {}
+            start_close = facts.get("start_close")
+            end_close = facts.get("end_close")
+            if isinstance(start_close, (int, float)) and isinstance(end_close, (int, float)):
+                return {
+                    "name": "pct_change",
+                    "arguments": {"old_value": float(start_close), "new_value": float(end_close)},
+                }
+
+        if not last_tool_result and "get_price_history" in allowed_tool_names and any(
+            token in normalized for token in ("price history", "historical prices", "return", "monthly return", "1-month")
+        ):
+            ticker = _first_ticker_entity(evidence_pack.get("entities", []))
+            if ticker:
+                args = {"ticker": ticker, "period": _infer_period_from_text(task_text)}
+                as_of_date = prompt_facts.get("as_of_date")
+                if isinstance(as_of_date, str) and as_of_date:
+                    args["as_of_date"] = as_of_date
+                return {"name": "get_price_history", "arguments": args}
+
+    if (
+        profile == "finance_options"
+        and effective_stage == "COMPUTE"
+        and "scenario_pnl" in allowed_tool_names
+        and "MISSING_SCENARIO_ANALYSIS" in set(risk_feedback.get("violation_codes", []))
+        and str(last_tool_result.get("type", "")) == "analyze_strategy"
+    ):
+        facts = last_tool_result.get("facts", {}) if isinstance(last_tool_result, dict) else {}
+        net_premium = facts.get("net_premium")
+        total_delta = facts.get("total_delta")
+        if isinstance(net_premium, (int, float)) and isinstance(total_delta, (int, float)):
+            args = {
+                "net_premium": float(net_premium),
+                "total_delta": float(total_delta),
+                "total_gamma": float(facts.get("total_gamma", 0.0) or 0.0),
+                "total_theta_per_day": float(facts.get("total_theta_per_day", 0.0) or 0.0),
+                "total_vega_per_vol_point": float(facts.get("total_vega_per_vol_point", 0.0) or 0.0),
+            }
+            reference_price = _reference_price_from_tool(last_tool_result)
+            if isinstance(reference_price, (int, float)):
+                args["reference_price"] = float(reference_price)
+            return {"name": "scenario_pnl", "arguments": args}
+
+    return None
+
+
 def route_from_solver(state: AgentState) -> str:
     if state.get("pending_tool_call"):
         return "tool_runner"
     workpad = state.get("workpad", {})
     if workpad.get("review_ready"):
+        if requires_risk_control(state):
+            return "risk_controller"
         return "reviewer"
     if state.get("solver_stage") == "COMPLETE":
         if state.get("answer_contract", {}).get("requires_adapter"):
@@ -293,6 +428,7 @@ def make_solver(tools: list):
         stage = state.get("solver_stage", "SYNTHESIZE")
         workpad = dict(state.get("workpad", {}))
         review_feedback = state.get("review_feedback") or {}
+        risk_feedback = state.get("risk_feedback") or {}
         profile_pack = workpad.get("profile_pack") or get_profile_pack(profile).model_dump()
         execution_template = state.get("execution_template", {}) or workpad.get("execution_template", {})
         allowed_stages = set(execution_template.get("allowed_stages", []))
@@ -307,6 +443,8 @@ def make_solver(tools: list):
         effective_stage = stage
         if stage == "REVISE":
             repair_target = str(review_feedback.get("repair_target", "final"))
+            if risk_feedback:
+                repair_target = str(risk_feedback.get("repair_target", repair_target))
             if repair_target == "gather":
                 effective_stage = "GATHER"
             elif repair_target == "compute":
@@ -336,6 +474,17 @@ def make_solver(tools: list):
         )
         if effective_stage in {"SYNTHESIZE", "COMPUTE"} and disclosure_assumptions:
             stage_prompt += "\nDisclose these assumptions if they affect the answer:\n- " + "\n- ".join(disclosure_assumptions[:4])
+        risk_requirements = workpad.get("risk_requirements") or {}
+        if effective_stage == "SYNTHESIZE" and risk_requirements.get("required_disclosures"):
+            stage_prompt += "\nRisk-required disclosures:\n- " + "\n- ".join(
+                str(item) for item in risk_requirements.get("required_disclosures", [])[:5]
+            )
+        if effective_stage == "SYNTHESIZE" and risk_requirements.get("recommendation_class"):
+            stage_prompt += (
+                "\nRecommendation class for this finance answer: "
+                f"{risk_requirements.get('recommendation_class')}. "
+                "Make the answer explicitly reflect this confidence posture."
+            )
         if as_of_date and effective_stage in {"GATHER", "COMPUTE"}:
             stage_prompt += (
                 f"\nIf you use market or statement tools, pass as_of_date=\"{as_of_date}\" "
@@ -373,13 +522,46 @@ def make_solver(tools: list):
                 "\nFor finance_options compute stage, emit one options-analysis tool call before narrative "
                 "unless the evidence pack already contains concrete tool-backed strategy facts."
             )
+        if profile == "finance_options" and effective_stage == "COMPUTE" and risk_feedback:
+            stage_prompt += (
+                "\nRisk controller feedback is active. If structured primary strategy facts already exist, "
+                "emit one risk/scenario tool call next, preferably scenario_pnl. "
+                "Use the latest strategy facts for net_premium, delta, gamma, theta, vega, and reference spot "
+                "before writing more narrative."
+            )
         if stage == "REVISE" and review_feedback:
             stage_prompt += (
                 "\nReviewer feedback:\n"
                 f"{json.dumps(review_feedback, ensure_ascii=True)}\n"
                 f"Repair target stage: {effective_stage}."
             )
+        if stage == "REVISE" and risk_feedback:
+            stage_prompt += (
+                "\nRisk controller feedback:\n"
+                f"{json.dumps(risk_feedback, ensure_ascii=True)}\n"
+                f"Repair target stage: {effective_stage}."
+            )
         allowed_tools = _allowed_tools_for_state(tools, state)
+        allowed_tool_names = {getattr(tool, "name", "") for tool in allowed_tools}
+        deterministic_call = _deterministic_finance_tool_call(
+            state,
+            profile=profile,
+            effective_stage=effective_stage,
+            allowed_tool_names=allowed_tool_names,
+            risk_feedback=risk_feedback,
+        )
+        if deterministic_call:
+            tool_name = str(deterministic_call["name"])
+            tool_args = dict(deterministic_call.get("arguments", {}))
+            message = _build_tool_call_message(tool_name, tool_args)
+            pending = ToolCallEnvelope(name=tool_name, arguments=tool_args).model_dump()
+            workpad = _record_event(workpad, "solver", f"{stage}: tool_call {tool_name}")
+            logger.info("[Step %s] solver(%s) -> deterministic tool_call %s", step, stage, tool_name)
+            return {
+                "messages": [message],
+                "pending_tool_call": pending,
+                "workpad": workpad,
+            }
 
         messages = [
             SystemMessage(content=SOLVER_PROMPT),
@@ -446,6 +628,7 @@ def make_solver(tools: list):
                 return {
                     "workpad": workpad,
                     "pending_tool_call": None,
+                    "risk_feedback": None,
                 }
             next_target = "compute"
             if effective_stage == "COMPUTE":
@@ -460,6 +643,7 @@ def make_solver(tools: list):
                 "solver_stage": next_stage,
                 "workpad": workpad,
                 "pending_tool_call": None,
+                "risk_feedback": None,
             }
 
         final_message = AIMessage(content=content)
@@ -472,6 +656,7 @@ def make_solver(tools: list):
             "messages": [final_message],
             "workpad": workpad,
             "pending_tool_call": None,
+            "risk_feedback": None,
         }
 
     return solver

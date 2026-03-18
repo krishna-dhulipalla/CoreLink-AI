@@ -33,6 +33,7 @@ def _persist_run(state: AgentState, task_text: str, workpad: dict) -> None:
     route_path = list(dict.fromkeys(event.get("node", "") for event in workpad.get("events", []) if event.get("node")))
     tool_results = list(workpad.get("tool_results", []))
     review_results = list(workpad.get("review_results", []))
+    risk_results = list(workpad.get("risk_results", []))
     record = RunMemory(
         task_signature=task_signature(task_text),
         task_summary=task_text[:160],
@@ -60,6 +61,8 @@ def _persist_run(state: AgentState, task_text: str, workpad: dict) -> None:
             "template_id": template_id,
             "assumption_count": len(assumption_ledger),
             "provenance_count": len(provenance_map),
+            "risk_result_count": len(risk_results),
+            "recommendation_class": str((workpad.get("risk_requirements") or {}).get("recommendation_class", "")),
         },
     )
     store.store_run(record)

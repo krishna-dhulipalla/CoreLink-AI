@@ -74,6 +74,12 @@ TEMPLATE_LIBRARY: dict[ExecutionTemplateId, ExecutionTemplate] = {
             "option_greeks",
             "mispricing_analysis",
             "analyze_strategy",
+            "scenario_pnl",
+            "calculate_var",
+            "run_stress_test",
+            "portfolio_limit_check",
+            "concentration_check",
+            "calculate_portfolio_greeks",
             "get_options_chain",
             "get_iv_surface",
             "get_expirations",
@@ -87,8 +93,9 @@ TEMPLATE_LIBRARY: dict[ExecutionTemplateId, ExecutionTemplate] = {
         review_cadence="milestone_and_final",
         answer_focus=[
             "Ground the primary strategy in structured tool results.",
+            "Add at least one scenario or stress analysis before final synthesis.",
             "Compare at least one alternative with concrete tradeoffs.",
-            "Keep Greeks, premium direction, breakevens, and risk controls explicit.",
+            "Keep Greeks, premium direction, breakevens, risk controls, and required disclosures explicit.",
         ],
     ),
     "legal_reasoning_only": ExecutionTemplate(

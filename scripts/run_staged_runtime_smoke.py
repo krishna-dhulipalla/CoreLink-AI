@@ -76,6 +76,41 @@ def analyze_strategy(legs: list[dict]) -> str:
 
 
 @tool
+def scenario_pnl(
+    net_premium: float,
+    total_delta: float,
+    total_gamma: float = 0.0,
+    total_theta_per_day: float = 0.0,
+    total_vega_per_vol_point: float = 0.0,
+    reference_price: float = 100.0,
+) -> dict:
+    """Return a deterministic scenario P&L bundle for smoke testing."""
+    return {
+        "type": "scenario_pnl",
+        "facts": {
+            "scenarios": [
+                {"name": "base", "approx_pnl": 2.5},
+                {"name": "stress", "approx_pnl": -18.4},
+            ],
+            "worst_case_pnl": -18.4,
+            "worst_case_scenario": "stress",
+            "stress_loss_ratio": 2.0,
+        },
+        "assumptions": {
+            "net_premium": net_premium,
+            "total_delta": total_delta,
+            "total_gamma": total_gamma,
+            "total_theta_per_day": total_theta_per_day,
+            "total_vega_per_vol_point": total_vega_per_vol_point,
+            "reference_price": reference_price,
+        },
+        "source": {"tool": "scenario_pnl", "provider": "local_risk"},
+        "quality": {"is_synthetic": False, "is_estimated": True, "cache_hit": False, "missing_fields": []},
+        "errors": [],
+    }
+
+
+@tool
 def fetch_reference_file(url: str, row_limit: int = 25, page_limit: int = 2) -> str:
     """Return a deterministic document preview for smoke testing."""
     if url.endswith(".csv"):
@@ -136,7 +171,8 @@ async def run_options_scenario():
                 }
             )
         ),
-        AIMessage(content="Primary analysis: net premium +9.16 credit, delta -0.12, theta +0.04/day, and vega -0.06 support a short-volatility bias."),
+        AIMessage(content="Primary analysis: net premium +9.16 credit, delta -0.12, theta +0.04/day, and vega -0.06 support a short-volatility bias. Use 1% position sizing and a stop-loss outside the breakeven range."),
+        AIMessage(content="Updated risk analysis: stress scenario P&L is -18.4, so keep 1% position sizing, explicit stop-loss, and disclose short-volatility gap risk."),
         AIMessage(
             content=(
                 "Recommendation: be a net seller of options.\n"
@@ -144,15 +180,29 @@ async def run_options_scenario():
                 "Alternative strategy: iron condor for lower tail risk at the cost of lower premium.\n"
                 "Key Greeks: delta near flat, negative gamma, positive theta, negative vega.\n"
                 "Breakevens: manage around the short strikes plus or minus collected credit.\n"
-                "Risk management: small sizing, defined stop-loss on large underlying moves, and max-loss awareness."
+                "Risk management: small sizing, defined stop-loss on large underlying moves, and max-loss awareness.\n"
+                "Short vol disclosure: short-volatility exposure can lose sharply in a vol spike and carries gap risk."
+            )
+        ),
+        AIMessage(
+            content=(
+                "Recommendation: be a net seller of options.\n"
+                "Primary strategy: short strangle with net credit and positive theta, assuming spot is 300.\n"
+                "Alternative strategy: iron condor for lower tail risk at the cost of lower premium.\n"
+                "Key Greeks: delta near flat, negative gamma, positive theta, negative vega.\n"
+                "Breakevens: manage around the short strikes plus or minus collected credit.\n"
+                "Risk management: 1% position sizing, defined stop-loss on large underlying moves, and max-loss awareness.\n"
+                "Downside scenario: the stress scenario loses about $18.4, so this is a scenario-dependent recommendation.\n"
+                "Short vol disclosure: short-volatility exposure can lose sharply in a vol spike and carries gap risk."
             )
         ),
     ]
     reviewer_queue = [
         AIMessage(content='{"verdict":"pass","reasoning":"Compute output is concrete.","missing_dimensions":[],"repair_target":"synthesize"}'),
         AIMessage(content='{"verdict":"pass","reasoning":"Final answer is complete.","missing_dimensions":[],"repair_target":"final"}'),
+        AIMessage(content='{"verdict":"pass","reasoning":"Revised final answer is complete.","missing_dimensions":[],"repair_target":"final"}'),
     ]
-    graph = build_agent_graph(external_tools=[analyze_strategy])
+    graph = build_agent_graph(external_tools=[analyze_strategy, scenario_pnl])
     prompt = (
         "META's current IV is 35% while its 30-day historical volatility is 28%. "
         "The IV percentile is 75%. Should you be a net buyer or seller of options?"

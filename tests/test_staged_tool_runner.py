@@ -374,3 +374,229 @@ def test_tool_runner_normalizes_pct_change_aliases_before_invoke():
 
     assert node.seen_pending["arguments"]["old_value"] == 426.35
     assert node.seen_pending["arguments"]["new_value"] == 414.29
+
+
+def test_tool_runner_clears_risk_feedback_after_successful_tool_run():
+    node = _DummyToolNode(
+        "scenario_pnl",
+        json.dumps(
+            {
+                "type": "scenario_pnl",
+                "facts": {"worst_case_pnl": -1250.0},
+                "assumptions": {"reference_price": 300.0},
+                "source": {"tool": "scenario_pnl", "provider": "local_risk"},
+                "quality": {
+                    "cache_hit": False,
+                    "is_synthetic": False,
+                    "is_estimated": True,
+                    "missing_fields": [],
+                },
+                "errors": [],
+            }
+        ),
+    )
+    runner = make_tool_runner(node)
+    state = make_state(
+        "Stress-test the short-vol setup.",
+        task_profile="finance_options",
+        solver_stage="REVISE",
+        execution_template={
+            "template_id": "options_tool_backed",
+            "allowed_tool_names": ["scenario_pnl"],
+            "allowed_stages": ["COMPUTE", "SYNTHESIZE", "REVISE", "COMPLETE"],
+            "default_initial_stage": "COMPUTE",
+            "review_stages": ["COMPUTE", "SYNTHESIZE"],
+            "review_cadence": "milestone_and_final",
+            "answer_focus": [],
+        },
+        pending_tool_call={
+            "name": "scenario_pnl",
+            "arguments": {
+                "net_premium": 9.16,
+                "total_delta": -0.12,
+                "total_gamma": -0.001,
+                "total_theta_per_day": 0.04,
+                "total_vega_per_vol_point": -0.06,
+                "reference_price": 300.0,
+            },
+        },
+        risk_feedback={
+            "verdict": "revise",
+            "violation_codes": ["MISSING_SCENARIO_ANALYSIS"],
+            "repair_target": "compute",
+        },
+    )
+    state["messages"].append(
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "scenario_pnl",
+                    "args": state["pending_tool_call"]["arguments"],
+                    "id": "call_123",
+                    "type": "tool_call",
+                }
+            ],
+        )
+    )
+
+    result = asyncio.run(runner(state))
+
+    assert result["risk_feedback"] is None
+    assert result["solver_stage"] == "COMPUTE"
+    assert result["last_tool_result"]["type"] == "scenario_pnl"
+
+
+def test_tool_runner_backfills_scenario_pnl_args_from_last_strategy_result():
+    node = _CapturingToolNode(
+        "scenario_pnl",
+        json.dumps(
+            {
+                "type": "scenario_pnl",
+                "facts": {"worst_case_pnl": -18.4},
+                "assumptions": {"reference_price": 300.0},
+                "source": {"tool": "scenario_pnl", "provider": "local_risk"},
+                "quality": {
+                    "cache_hit": False,
+                    "is_synthetic": False,
+                    "is_estimated": True,
+                    "missing_fields": [],
+                },
+                "errors": [],
+            }
+        ),
+    )
+    runner = make_tool_runner(node)
+    state = make_state(
+        "Stress-test the short straddle.",
+        task_profile="finance_options",
+        solver_stage="REVISE",
+        execution_template={
+            "template_id": "options_tool_backed",
+            "allowed_tool_names": ["scenario_pnl"],
+            "allowed_stages": ["COMPUTE", "SYNTHESIZE", "REVISE", "COMPLETE"],
+            "default_initial_stage": "COMPUTE",
+            "review_stages": ["COMPUTE", "SYNTHESIZE"],
+            "review_cadence": "milestone_and_final",
+            "answer_focus": [],
+        },
+        pending_tool_call={
+            "name": "scenario_pnl",
+            "arguments": {"strategy": "short_straddle", "reference_price": 300.0},
+        },
+        last_tool_result={
+            "type": "analyze_strategy",
+            "facts": {
+                "net_premium": 9.16,
+                "total_delta": -0.12,
+                "total_gamma": -0.001,
+                "total_theta_per_day": 0.04,
+                "total_vega_per_vol_point": -0.06,
+            },
+            "assumptions": {
+                "legs": [
+                    {"option_type": "call", "action": "sell", "S": 300.0, "K": 310.0},
+                    {"option_type": "put", "action": "sell", "S": 300.0, "K": 290.0},
+                ]
+            },
+        },
+        risk_feedback={
+            "verdict": "revise",
+            "violation_codes": ["MISSING_SCENARIO_ANALYSIS"],
+            "repair_target": "compute",
+        },
+    )
+    state["messages"].append(
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "scenario_pnl",
+                    "args": state["pending_tool_call"]["arguments"],
+                    "id": "call_123",
+                    "type": "tool_call",
+                }
+            ],
+        )
+    )
+
+    asyncio.run(runner(state))
+
+    assert node.seen_pending["arguments"]["net_premium"] == 9.16
+    assert node.seen_pending["arguments"]["total_delta"] == -0.12
+    assert node.seen_pending["arguments"]["reference_price"] == 300.0
+
+
+def test_tool_runner_normalizes_nested_strategy_fact_aliases_for_scenario_pnl():
+    node = _CapturingToolNode(
+        "scenario_pnl",
+        json.dumps(
+            {
+                "type": "scenario_pnl",
+                "facts": {"worst_case_pnl": -18.4},
+                "assumptions": {"reference_price": 300.0},
+                "source": {"tool": "scenario_pnl", "provider": "local_risk"},
+                "quality": {
+                    "cache_hit": False,
+                    "is_synthetic": False,
+                    "is_estimated": True,
+                    "missing_fields": [],
+                },
+                "errors": [],
+            }
+        ),
+    )
+    runner = make_tool_runner(node)
+    state = make_state(
+        "Stress-test the short straddle.",
+        task_profile="finance_options",
+        solver_stage="REVISE",
+        execution_template={
+            "template_id": "options_tool_backed",
+            "allowed_tool_names": ["scenario_pnl"],
+            "allowed_stages": ["COMPUTE", "SYNTHESIZE", "REVISE", "COMPLETE"],
+            "default_initial_stage": "COMPUTE",
+            "review_stages": ["COMPUTE", "SYNTHESIZE"],
+            "review_cadence": "milestone_and_final",
+            "answer_focus": [],
+        },
+        pending_tool_call={
+            "name": "scenario_pnl",
+            "arguments": {
+                "strategy_facts": {
+                    "net_premium": 12.6,
+                    "delta": -0.08,
+                    "gamma": -0.002,
+                    "theta": 0.05,
+                    "vega": -0.07,
+                    "spot": 300.0,
+                }
+            },
+        },
+        risk_feedback={
+            "verdict": "revise",
+            "violation_codes": ["MISSING_SCENARIO_ANALYSIS"],
+            "repair_target": "compute",
+        },
+    )
+    state["messages"].append(
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "scenario_pnl",
+                    "args": state["pending_tool_call"]["arguments"],
+                    "id": "call_123",
+                    "type": "tool_call",
+                }
+            ],
+        )
+    )
+
+    asyncio.run(runner(state))
+
+    assert node.seen_pending["arguments"]["net_premium"] == 12.6
+    assert node.seen_pending["arguments"]["total_delta"] == -0.08
+    assert node.seen_pending["arguments"]["total_gamma"] == -0.002
+    assert node.seen_pending["arguments"]["total_theta_per_day"] == 0.05
+    assert node.seen_pending["arguments"]["total_vega_per_vol_point"] == -0.07

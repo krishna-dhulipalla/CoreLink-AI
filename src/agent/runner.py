@@ -91,6 +91,7 @@ async def run_agent_trace(
         "workpad": {"events": [], "stage_outputs": {}, "tool_results": []},
         "pending_tool_call": None,
         "last_tool_result": None,
+        "risk_feedback": None,
         "review_feedback": None,
         "checkpoint_stack": [],
         "tool_fail_count": 0,

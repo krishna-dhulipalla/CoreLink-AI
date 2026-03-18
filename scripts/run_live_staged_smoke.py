@@ -78,6 +78,8 @@ def _summarize(trace: dict) -> dict:
         "solver_stage": state.get("solver_stage"),
         "events": workpad.get("events", []),
         "tool_results": workpad.get("tool_results", []),
+        "risk_results": workpad.get("risk_results", []),
+        "risk_requirements": workpad.get("risk_requirements", {}),
         "cost_summary": state.get("cost_tracker").summary() if state.get("cost_tracker") else {},
     }
 

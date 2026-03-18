@@ -18,6 +18,7 @@ from agent.nodes.context_builder import context_builder
 from agent.nodes.intake import intake
 from agent.nodes.output_adapter import output_adapter
 from agent.nodes.reflect import reflect
+from agent.nodes.risk_controller import risk_controller, route_from_risk_controller
 from agent.nodes.reviewer import reviewer, route_from_reviewer
 from agent.nodes.solver import make_solver, route_from_solver
 from agent.nodes.task_profiler import task_profiler
@@ -54,6 +55,7 @@ def build_agent_graph(external_tools: list | None = None):
     graph.add_node("context_builder", context_builder)
     graph.add_node("solver", make_solver(all_tools))
     graph.add_node("tool_runner", make_tool_runner(raw_tool_node))
+    graph.add_node("risk_controller", risk_controller)
     graph.add_node("reviewer", reviewer)
     graph.add_node("output_adapter", output_adapter)
     graph.add_node("reflect", reflect)
@@ -65,6 +67,7 @@ def build_agent_graph(external_tools: list | None = None):
     graph.add_edge("context_builder", "solver")
     graph.add_conditional_edges("solver", route_from_solver)
     graph.add_edge("tool_runner", "solver")
+    graph.add_conditional_edges("risk_controller", route_from_risk_controller)
     graph.add_conditional_edges("reviewer", route_from_reviewer)
     graph.add_edge("output_adapter", "reflect")
     graph.add_edge("reflect", END)

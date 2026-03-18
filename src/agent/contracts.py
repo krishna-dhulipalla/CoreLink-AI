@@ -48,9 +48,15 @@ SolverStage = Literal[
 ]
 
 ReviewVerdict = Literal["pass", "revise", "backtrack"]
+RiskVerdict = Literal["pass", "revise", "blocked"]
 SourceClass = Literal["prompt", "retrieved", "derived", "assumption"]
 AssumptionConfidence = Literal["low", "medium", "high"]
 AssumptionReviewStatus = Literal["pending", "accepted", "rejected", "disclosed"]
+RecommendationClass = Literal[
+    "high_confidence_analytical_result",
+    "scenario_dependent_recommendation",
+    "insufficient_evidence_no_action",
+]
 ExecutionTemplateId = Literal[
     "quant_inline_exact",
     "quant_with_tool_compute",
@@ -174,6 +180,16 @@ class ReviewResult(BaseModel):
     reasoning: str = ""
     missing_dimensions: list[str] = Field(default_factory=list)
     repair_target: Literal["gather", "compute", "synthesize", "final"] = "final"
+
+
+class RiskResult(BaseModel):
+    verdict: RiskVerdict = "revise"
+    reasoning: str = ""
+    violation_codes: list[str] = Field(default_factory=list)
+    risk_findings: list[str] = Field(default_factory=list)
+    required_disclosures: list[str] = Field(default_factory=list)
+    recommendation_class: RecommendationClass = "scenario_dependent_recommendation"
+    repair_target: Literal["compute", "final"] = "compute"
 
 
 class ArtifactCheckpoint(BaseModel):

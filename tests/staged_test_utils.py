@@ -20,6 +20,7 @@ def make_state(
     workpad: dict | None = None,
     pending_tool_call: dict | None = None,
     last_tool_result: dict | None = None,
+    risk_feedback: dict | None = None,
     review_feedback: dict | None = None,
     checkpoint_stack: list[dict] | None = None,
 ):
@@ -38,6 +39,7 @@ def make_state(
         "workpad": workpad or {"events": [], "stage_outputs": {}, "tool_results": []},
         "pending_tool_call": pending_tool_call,
         "last_tool_result": last_tool_result,
+        "risk_feedback": risk_feedback,
         "review_feedback": review_feedback,
         "checkpoint_stack": checkpoint_stack or [],
         "tool_fail_count": 0,

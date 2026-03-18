@@ -47,6 +47,7 @@ class AgentState(TypedDict):
     workpad: dict[str, Any]
     pending_tool_call: dict[str, Any] | None
     last_tool_result: dict[str, Any] | None
+    risk_feedback: dict[str, Any] | None
     review_feedback: dict[str, Any] | None
     checkpoint_stack: list[dict]
     tool_fail_count: int

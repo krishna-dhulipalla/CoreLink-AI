@@ -77,6 +77,12 @@ PROFILE_PACKS: dict[TaskProfile, ProfileContextPack] = {
             "option_greeks",
             "mispricing_analysis",
             "analyze_strategy",
+            "scenario_pnl",
+            "calculate_var",
+            "run_stress_test",
+            "portfolio_limit_check",
+            "concentration_check",
+            "calculate_portfolio_greeks",
             "get_options_chain",
             "get_iv_surface",
             "get_expirations",
@@ -89,6 +95,7 @@ PROFILE_PACKS: dict[TaskProfile, ProfileContextPack] = {
         failure_modes=[
             "Pure prose comparison without tool-backed quantitative analysis.",
             "Missing Greeks, breakevens, or risk management.",
+            "Missing scenario or stress coverage for a risk-bearing options recommendation.",
             "Using an options tool with hidden assumptions that are not disclosed.",
         ],
         reviewer_dimensions={

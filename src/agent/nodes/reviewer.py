@@ -151,6 +151,28 @@ def _has_undisclosed_required_assumption(state: AgentState, answer_text: str) ->
     return False
 
 
+def _has_risk_required_disclosures(answer_text: str, disclosures: list[str]) -> bool:
+    normalized = re.sub(r"\s+", " ", (answer_text or "").lower()).strip()
+    for disclosure in disclosures:
+        lowered = str(disclosure).lower()
+        if "short-volatility" in lowered or "volatility-spike" in lowered:
+            if not any(token in normalized for token in ("short vol", "vol spike", "volatility spike")):
+                return False
+        elif "tail loss" in lowered or "gap risk" in lowered or "unbounded" in lowered:
+            if not any(token in normalized for token in ("tail risk", "tail loss", "gap risk", "unbounded")):
+                return False
+        elif "max loss" in lowered:
+            if "max loss" not in normalized:
+                return False
+        elif "position sizing" in lowered:
+            if not any(token in normalized for token in ("position size", "sizing")):
+                return False
+        elif "downside scenario loss" in lowered:
+            if not any(token in normalized for token in ("scenario", "stress", "downside")):
+                return False
+    return True
+
+
 def _deterministic_review(state: AgentState, artifact: str, is_final: bool) -> ReviewResult | None:
     profile = state.get("task_profile", "general")
     workpad = state.get("workpad", {})
@@ -162,6 +184,8 @@ def _deterministic_review(state: AgentState, artifact: str, is_final: bool) -> R
     document_evidence = (state.get("evidence_pack") or {}).get("document_evidence", [])
     capability_flags = set(state.get("capability_flags", []))
     has_structured_tool = any(result.get("facts") and not result.get("errors") for result in tool_results)
+    risk_results = list(workpad.get("risk_results", []))
+    risk_requirements = workpad.get("risk_requirements") or {}
 
     if review_stage == "GATHER" and last_tool_result.get("errors"):
         if selective_backtracking_allowed(state.get("execution_template"), "GATHER"):
@@ -274,12 +298,36 @@ def _deterministic_review(state: AgentState, artifact: str, is_final: bool) -> R
             )
 
     if is_final and profile == "finance_options":
+        if not risk_results:
+            return ReviewResult(
+                verdict="revise",
+                reasoning="Final options answer requires a risk-controller pass before acceptance.",
+                missing_dimensions=["risk-controller validation"],
+                repair_target="compute",
+            )
+        if str(risk_results[-1].get("verdict", "pass")) != "pass":
+            return ReviewResult(
+                verdict="revise",
+                reasoning="Final options answer cannot be accepted while the latest risk-controller result is unresolved.",
+                missing_dimensions=["resolved risk-controller findings"],
+                repair_target="compute",
+            )
         if not has_structured_tool:
             return ReviewResult(
                 verdict="revise",
                 reasoning="Final options answer must be grounded in at least one structured tool result.",
                 missing_dimensions=["tool-backed strategy analysis"],
                 repair_target="compute",
+            )
+        if risk_requirements.get("required_disclosures") and not _has_risk_required_disclosures(
+            artifact,
+            list(risk_requirements.get("required_disclosures", [])),
+        ):
+            return ReviewResult(
+                verdict="revise",
+                reasoning="Final options answer is missing one or more risk-controller-required disclosures.",
+                missing_dimensions=["required risk disclosures"],
+                repair_target="final",
             )
         gaps = _options_gaps(artifact)
         if gaps:

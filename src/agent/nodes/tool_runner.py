@@ -99,6 +99,25 @@ _FINANCE_ARG_ALIASES: dict[str, dict[str, list[str]]] = {
         "periods_to_maturity": ["maturity_periods", "n_periods"],
         "yield_to_maturity_decimal": ["ytm", "yield_rate"],
     },
+    "scenario_pnl": {
+        "net_premium": ["premium", "credit", "debit"],
+        "total_delta": ["delta"],
+        "total_gamma": ["gamma"],
+        "total_theta_per_day": ["theta", "theta_per_day"],
+        "total_vega_per_vol_point": ["vega", "vega_per_vol_point"],
+        "reference_price": ["spot", "spot_price", "underlying_price", "S"],
+    },
+    "calculate_var": {
+        "portfolio_value": ["notional", "notional_value", "exposure"],
+        "daily_vol": ["daily_volatility", "volatility", "vol", "sigma"],
+        "holding_period_days": ["days", "horizon_days"],
+    },
+    "run_stress_test": {
+        "portfolio_value": ["notional", "notional_value", "exposure"],
+        "portfolio_delta": ["delta"],
+        "portfolio_vega": ["vega"],
+        "portfolio_theta": ["theta", "theta_per_day"],
+    },
 }
 
 _STATEMENT_TYPE_ALIASES = {
@@ -140,6 +159,19 @@ def _extract_tool_call_id(state: AgentState) -> str:
         if isinstance(msg, AIMessage) and msg.tool_calls:
             return msg.tool_calls[-1].get("id", "unknown")
     return "unknown"
+
+
+def _next_solver_stage_after_tool(state: AgentState) -> str | None:
+    if str(state.get("solver_stage", "")).upper() != "REVISE":
+        return None
+    review_feedback = state.get("review_feedback") or {}
+    risk_feedback = state.get("risk_feedback") or {}
+    repair_target = str(risk_feedback.get("repair_target", review_feedback.get("repair_target", ""))).lower()
+    if repair_target == "compute":
+        return "COMPUTE"
+    if repair_target == "gather":
+        return "GATHER"
+    return None
 
 
 def _rewrite_messages_with_normalized_tool_args(
@@ -214,6 +246,29 @@ def _normalize_finance_tool_args(tool_name: str, tool_args: dict[str, Any]) -> d
                 normalized[canonical] = normalized[alias]
                 break
 
+    if tool_name == "scenario_pnl" and isinstance(normalized.get("strategy_facts"), dict):
+        strategy_facts = normalized["strategy_facts"]
+        for canonical in (
+            "net_premium",
+            "total_delta",
+            "total_gamma",
+            "total_theta_per_day",
+            "total_vega_per_vol_point",
+            "reference_price",
+        ):
+            if canonical in normalized:
+                continue
+            candidate_keys = [canonical] + list(_FINANCE_ARG_ALIASES.get("scenario_pnl", {}).get(canonical, []))
+            for candidate in candidate_keys:
+                if candidate in strategy_facts:
+                    normalized[canonical] = strategy_facts[candidate]
+                    break
+        if "reference_price" not in normalized:
+            for alias in ("spot", "spot_price", "S"):
+                if alias in strategy_facts:
+                    normalized["reference_price"] = strategy_facts[alias]
+                    break
+
     if tool_name in {"get_price_history", "get_returns"} and "period" in normalized:
         normalized["period"] = _normalize_period_alias(normalized["period"])
 
@@ -238,6 +293,49 @@ def _normalize_finance_tool_args(tool_name: str, tool_args: dict[str, Any]) -> d
     return normalized
 
 
+def _reference_price_from_tool_result(tool_result: dict[str, Any]) -> float | None:
+    assumptions = tool_result.get("assumptions", {}) if isinstance(tool_result, dict) else {}
+    if isinstance(assumptions, dict):
+        for key in ("reference_price", "spot", "spot_price", "S"):
+            value = assumptions.get(key)
+            if isinstance(value, (int, float)):
+                return float(value)
+        legs = assumptions.get("legs")
+        if isinstance(legs, list):
+            for leg in legs:
+                if isinstance(leg, dict) and isinstance(leg.get("S"), (int, float)):
+                    return float(leg["S"])
+    return None
+
+
+def _enrich_finance_tool_args_from_state(
+    tool_name: str,
+    tool_args: dict[str, Any],
+    state: AgentState,
+) -> dict[str, Any]:
+    normalized = dict(tool_args)
+    last_tool_result = state.get("last_tool_result") or {}
+
+    if tool_name == "scenario_pnl" and str(last_tool_result.get("type", "")) == "analyze_strategy":
+        facts = last_tool_result.get("facts", {}) if isinstance(last_tool_result, dict) else {}
+        fallback_fields = {
+            "net_premium": "net_premium",
+            "total_delta": "total_delta",
+            "total_gamma": "total_gamma",
+            "total_theta_per_day": "total_theta_per_day",
+            "total_vega_per_vol_point": "total_vega_per_vol_point",
+        }
+        for canonical, fact_key in fallback_fields.items():
+            if canonical not in normalized and isinstance(facts.get(fact_key), (int, float)):
+                normalized[canonical] = float(facts[fact_key])
+        if "reference_price" not in normalized:
+            reference_price = _reference_price_from_tool_result(last_tool_result)
+            if isinstance(reference_price, (int, float)):
+                normalized["reference_price"] = float(reference_price)
+
+    return normalized
+
+
 
 def make_tool_runner(tool_node: ToolNode):
     async def tool_runner(state: AgentState) -> dict:
@@ -249,6 +347,7 @@ def make_tool_runner(tool_node: ToolNode):
             tool_name,
             pending.get("arguments", {}) if isinstance(pending.get("arguments", {}), dict) else {},
         )
+        tool_args = _enrich_finance_tool_args_from_state(tool_name, tool_args, state)
         allowed = allowed_tools_for_template(state.get("execution_template"), profile)
         registry = _tool_registry(tool_node)
         workpad = dict(state.get("workpad", {}))
@@ -358,16 +457,21 @@ def make_tool_runner(tool_node: ToolNode):
             messages = [normalized_message]
 
         logger.info("[Step %s] tool_runner -> %s errors=%s", step, tool_name, bool(tool_result.errors))
-        return {
+        result_state = {
             "messages": messages,
             "last_tool_result": tool_result.model_dump(),
             "evidence_pack": updated_evidence_pack,
             "assumption_ledger": updated_assumption_ledger,
             "provenance_map": updated_provenance_map,
             "pending_tool_call": None,
+            "risk_feedback": None,
             "tool_fail_count": state.get("tool_fail_count", 0) + (1 if tool_result.errors else 0),
             "last_tool_signature": _tool_signature(state),
             "workpad": workpad,
         }
+        next_stage = _next_solver_stage_after_tool(state)
+        if next_stage and not tool_result.errors:
+            result_state["solver_stage"] = next_stage
+        return result_state
 
     return tool_runner

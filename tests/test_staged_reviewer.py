@@ -87,6 +87,8 @@ def test_reviewer_revises_undisclosed_options_pricing_assumption():
                     "errors": [],
                 }
             ],
+            "risk_results": [{"verdict": "pass"}],
+            "risk_requirements": {"required_disclosures": [], "recommendation_class": "scenario_dependent_recommendation"},
             "review_ready": True,
             "review_stage": "SYNTHESIZE",
         },
@@ -117,6 +119,51 @@ def test_reviewer_revises_undisclosed_options_pricing_assumption():
 
     assert result["solver_stage"] == "REVISE"
     assert "disclosed material assumptions" in [gap.lower() for gap in result["review_feedback"]["missing_dimensions"]]
+
+
+def test_reviewer_revises_options_final_missing_risk_required_disclosures():
+    state = make_state(
+        "Should I be a net buyer or seller of options?",
+        task_profile="finance_options",
+        capability_flags=["needs_options_engine"],
+        solver_stage="SYNTHESIZE",
+        workpad={
+            "events": [],
+            "stage_outputs": {},
+            "tool_results": [
+                {
+                    "type": "analyze_strategy",
+                    "facts": {"net_premium": 23.98, "total_vega_per_vol_point": -0.6834},
+                    "assumptions": {},
+                    "source": {"tool": "analyze_strategy"},
+                    "errors": [],
+                }
+            ],
+            "risk_results": [{"verdict": "pass"}],
+            "risk_requirements": {
+                "required_disclosures": ["Explicitly disclose short-volatility / volatility-spike risk."],
+                "recommendation_class": "scenario_dependent_recommendation",
+            },
+            "review_ready": True,
+            "review_stage": "SYNTHESIZE",
+        },
+    )
+    state["messages"].append(
+        AIMessage(
+            content=(
+                "Recommendation: net seller of options.\n"
+                "Primary strategy: short straddle.\n"
+                "Alternative strategy: iron condor.\n"
+                "Key Greeks and breakevens: delta, theta, vega, breakeven.\n"
+                "Risk management: use 1% position sizing and stop-loss."
+            )
+        )
+    )
+
+    result = reviewer(state)
+
+    assert result["solver_stage"] == "REVISE"
+    assert "required risk disclosures" in [gap.lower() for gap in result["review_feedback"]["missing_dimensions"]]
 
 
 def test_reviewer_backtracks_bad_gather_result():
