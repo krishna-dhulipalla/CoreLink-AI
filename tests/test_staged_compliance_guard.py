@@ -101,3 +101,73 @@ def test_compliance_guard_passes_defined_risk_recommendation():
 
     assert result["compliance_feedback"] is None
     assert result["workpad"]["compliance_results"][-1]["verdict"] == "pass"
+
+
+def test_compliance_guard_extracts_primary_strategy_from_hash_heading():
+    state = make_state(
+        "Defined-risk only. No naked options.",
+        task_profile="finance_options",
+        capability_flags=["needs_options_engine"],
+        execution_template={
+            "template_id": "options_tool_backed",
+            "allowed_stages": ["COMPUTE", "SYNTHESIZE", "REVISE", "COMPLETE"],
+            "default_initial_stage": "COMPUTE",
+            "allowed_tool_names": ["analyze_strategy", "scenario_pnl"],
+            "review_stages": ["COMPUTE", "SYNTHESIZE"],
+            "review_cadence": "milestone_and_final",
+            "answer_focus": [],
+        },
+        solver_stage="SYNTHESIZE",
+        evidence_pack={
+            "policy_context": {
+                "action_orientation": True,
+                "defined_risk_only": True,
+                "no_naked_options": True,
+                "requires_recommendation_class": True,
+            }
+        },
+        workpad={
+            "events": [],
+            "stage_outputs": {},
+            "tool_results": [],
+            "review_ready": True,
+            "review_stage": "SYNTHESIZE",
+        },
+    )
+    state["messages"].append(
+        AIMessage(
+            content=(
+                "### Recommendation\nUse a defined-risk iron condor.\n\n"
+                "### Primary Strategy\nDefined-risk iron condor with capped downside.\n\n"
+                "### Risk Management\nKeep a position-risk cap in force.\n\n"
+                "Recommendation class: scenario_dependent_recommendation."
+            )
+        )
+    )
+
+    result = compliance_guard(state)
+
+    assert result["compliance_feedback"] is None
+    assert result["workpad"]["compliance_results"][-1]["verdict"] == "pass"
+
+
+def test_requires_compliance_guard_for_actionable_portfolio_finance_quant():
+    state = make_state(
+        "Review this portfolio and recommend actions.",
+        task_profile="finance_quant",
+        capability_flags=["needs_portfolio_risk"],
+        execution_template={
+            "template_id": "portfolio_risk_review",
+            "allowed_stages": ["COMPUTE", "SYNTHESIZE", "REVISE", "COMPLETE"],
+            "default_initial_stage": "COMPUTE",
+            "allowed_tool_names": ["concentration_check"],
+            "review_stages": ["COMPUTE", "SYNTHESIZE"],
+            "review_cadence": "milestone_and_final",
+            "answer_focus": [],
+        },
+        solver_stage="SYNTHESIZE",
+        evidence_pack={"policy_context": {"action_orientation": True}},
+        workpad={"events": [], "stage_outputs": {}, "tool_results": [], "review_ready": True, "review_stage": "SYNTHESIZE"},
+    )
+
+    assert requires_compliance_guard(state) is True

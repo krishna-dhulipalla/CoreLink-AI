@@ -38,6 +38,26 @@ _PORTFOLIO_RISK_TOOLS = {
     "run_stress_test",
 }
 
+_RISK_CONTROL_TOKENS = (
+    "stop-loss",
+    "stop loss",
+    "position size",
+    "position sizing",
+    "position limit",
+    "risk cap",
+    "risk budget",
+    "hedge",
+    "max loss",
+    "risk limit",
+    "breakeven breach",
+    "cut risk",
+    "reduce exposure",
+)
+
+_SHORT_VOL_TOKENS = ("short vol", "short-vol", "short volatility", "short-volatility", "vol spike", "volatility spike")
+_TAIL_RISK_TOKENS = ("gap risk", "unbounded", "tail risk", "tail loss", "large tail loss")
+_POSITION_SIZING_TOKENS = ("position size", "position sizing", "risk cap", "position limit", "size small")
+
 
 def requires_risk_control(state: AgentState) -> bool:
     template_id = str((state.get("execution_template") or {}).get("template_id", ""))
@@ -104,21 +124,20 @@ def _looks_unbounded_short_vol(tool_result: dict[str, Any]) -> bool:
 
 def _has_risk_controls(text: str) -> bool:
     normalized = re.sub(r"\s+", " ", (text or "").lower()).strip()
-    tokens = ("stop-loss", "stop loss", "sizing", "position size", "hedge", "max loss", "risk limit")
-    return any(token in normalized for token in tokens)
+    return any(token in normalized for token in _RISK_CONTROL_TOKENS)
 
 
 def _has_required_disclosure(answer_text: str, disclosure: str) -> bool:
     normalized = re.sub(r"\s+", " ", (answer_text or "").lower()).strip()
     lowered = disclosure.lower()
     if "short-volatility" in lowered or "volatility-spike" in lowered:
-        return "short vol" in normalized or "volatility spike" in normalized or "vol spike" in normalized
+        return any(token in normalized for token in _SHORT_VOL_TOKENS)
     if "tail loss" in lowered or "gap risk" in lowered or "unbounded" in lowered:
-        return "gap risk" in normalized or "unbounded" in normalized or "tail risk" in normalized or "tail loss" in normalized
+        return any(token in normalized for token in _TAIL_RISK_TOKENS)
     if "max loss" in lowered:
         return "max loss" in normalized
     if "position sizing" in lowered:
-        return "position size" in normalized or "sizing" in normalized
+        return any(token in normalized for token in _POSITION_SIZING_TOKENS)
     return False
 
 

@@ -632,6 +632,48 @@ def test_solver_uses_deterministic_primary_tool_call_for_standard_options():
     assert {leg["option_type"] for leg in legs} == {"call", "put"}
 
 
+def test_solver_uses_history_reference_price_for_standard_options_tool_call():
+    solver = make_solver([_DummyTool("analyze_strategy", "Analyze an options strategy")])
+    state = make_state(
+        "META's IV is elevated versus realized volatility. Design a strategy accordingly.",
+        task_profile="finance_options",
+        capability_flags=["needs_options_engine"],
+        solver_stage="COMPUTE",
+        evidence_pack={
+            "derived_facts": {"vol_bias": "short_vol"},
+            "prompt_facts": {"implied_volatility": 0.35, "historical_volatility": 0.28},
+        },
+        execution_template={
+            "template_id": "options_tool_backed",
+            "allowed_stages": ["COMPUTE", "SYNTHESIZE", "REVISE", "COMPLETE"],
+            "default_initial_stage": "COMPUTE",
+            "allowed_tool_names": ["analyze_strategy", "scenario_pnl"],
+            "review_stages": ["COMPUTE", "SYNTHESIZE"],
+            "review_cadence": "milestone_and_final",
+            "answer_focus": [],
+        },
+        workpad={
+            "events": [],
+            "stage_outputs": {},
+            "tool_results": [
+                {
+                    "type": "get_price_history",
+                    "facts": {"start_close": 405.0, "end_close": 412.3},
+                    "assumptions": {"ticker": "META", "period": "3mo"},
+                    "source": {"tool": "get_price_history", "timestamp": "2024-10-14"},
+                    "errors": [],
+                }
+            ],
+        },
+    )
+
+    result = solver(state)
+
+    assert result["pending_tool_call"]["name"] == "analyze_strategy"
+    legs = result["pending_tool_call"]["arguments"]["legs"]
+    assert all(leg["S"] == 412.3 for leg in legs)
+
+
 def test_solver_uses_deterministic_policy_final_when_primary_strategy_is_compliant():
     solver = make_solver([])
     state = make_state(

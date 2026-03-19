@@ -63,6 +63,26 @@ def _latest_answer_text(state: AgentState) -> str:
     return str((state.get("workpad") or {}).get("draft_answer", ""))
 
 
+def _normalize_heading_text(line: str) -> str:
+    cleaned = re.sub(r"^[#>\-\*\s]+", "", (line or "").strip())
+    cleaned = re.sub(r"[*:_\s]+", " ", cleaned.lower()).strip(" -:")
+    return cleaned
+
+
+def _looks_like_heading(line: str) -> bool:
+    stripped = (line or "").strip()
+    if not stripped:
+        return False
+    if stripped.startswith("**") and stripped.endswith("**"):
+        return True
+    if stripped.startswith("#"):
+        return True
+    if stripped.endswith(":"):
+        words = [word for word in re.split(r"\s+", stripped.rstrip(":")) if word]
+        return 1 <= len(words) <= 6
+    return False
+
+
 def _extract_section(answer_text: str, section_name: str) -> str:
     lines = (answer_text or "").splitlines()
     collecting = False
@@ -70,11 +90,11 @@ def _extract_section(answer_text: str, section_name: str) -> str:
     target = section_name.strip().lower()
     for raw_line in lines:
         line = raw_line.strip()
-        normalized = re.sub(r"[*:_\s]+", " ", line.lower()).strip()
+        normalized = _normalize_heading_text(line)
         if target in normalized:
             collecting = True
             continue
-        if collecting and line.startswith("**") and line.endswith("**"):
+        if collecting and _looks_like_heading(line):
             break
         if collecting:
             collected.append(line)

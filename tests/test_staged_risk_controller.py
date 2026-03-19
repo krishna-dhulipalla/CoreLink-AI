@@ -142,6 +142,70 @@ def test_risk_controller_passes_with_scenario_and_controls():
     assert result["workpad"]["risk_results"][-1]["verdict"] == "pass"
 
 
+def test_risk_controller_accepts_risk_cap_language_as_control():
+    state = make_state(
+        "Compare volatility-selling strategies for META.",
+        task_profile="finance_options",
+        capability_flags=["needs_options_engine"],
+        execution_template=_options_template(),
+        solver_stage="COMPUTE",
+        workpad={
+            "events": [],
+            "stage_outputs": {
+                "COMPUTE": (
+                    "Primary strategy is a short straddle. Keep a risk cap in force, cut risk on a breach, "
+                    "and use a stop loss if the stress scenario moves outside tolerance."
+                )
+            },
+            "tool_results": [
+                {
+                    "type": "analyze_strategy",
+                    "facts": {
+                        "net_premium": 23.98,
+                        "total_delta": -0.0726,
+                        "total_gamma": -0.0264,
+                        "total_theta_per_day": 0.4393,
+                        "total_vega_per_vol_point": -0.6834,
+                    },
+                    "assumptions": {
+                        "legs": [
+                            {"option_type": "call", "action": "sell", "S": 300.0, "K": 300.0},
+                            {"option_type": "put", "action": "sell", "S": 300.0, "K": 300.0},
+                        ]
+                    },
+                    "source": {"tool": "analyze_strategy"},
+                    "errors": [],
+                },
+                {
+                    "type": "scenario_pnl",
+                    "facts": {
+                        "worst_case_pnl": -48.0,
+                        "worst_case_scenario": "stress",
+                        "scenarios": [{"name": "stress", "approx_pnl": -48.0}],
+                    },
+                    "assumptions": {"reference_price": 300.0},
+                    "source": {"tool": "scenario_pnl"},
+                    "errors": [],
+                },
+            ],
+            "review_ready": True,
+            "review_stage": "COMPUTE",
+        },
+        last_tool_result={
+            "type": "scenario_pnl",
+            "facts": {"worst_case_pnl": -48.0},
+            "assumptions": {"reference_price": 300.0},
+            "source": {"tool": "scenario_pnl"},
+            "errors": [],
+        },
+    )
+
+    result = risk_controller(state)
+
+    assert result["risk_feedback"] is None
+    assert result["workpad"]["risk_results"][-1]["verdict"] == "pass"
+
+
 def test_risk_controller_blocks_limit_breach():
     state = make_state(
         "Compare volatility-selling strategies for META.",

@@ -385,6 +385,8 @@ def _infer_period_from_text(task_text: str) -> str:
         return "6mo"
     if any(token in normalized for token in ("1-year", "1 year", "12 month", "12-month", "1y")):
         return "1y"
+    if any(token in normalized for token in ("performance", "trend", "history", "historical", "price action")):
+        return "3mo"
     return "1mo"
 
 
@@ -401,6 +403,64 @@ def _reference_price_from_tool(tool_result: dict[str, Any]) -> float | None:
                 if isinstance(leg, dict) and isinstance(leg.get("S"), (int, float)):
                     return float(leg["S"])
     return None
+
+
+def _first_numeric(*candidates: Any) -> float | None:
+    for candidate in candidates:
+        if isinstance(candidate, (int, float)):
+            return float(candidate)
+    return None
+
+
+def _latest_history_reference_price(tool_results: list[dict[str, Any]]) -> float | None:
+    for result in reversed(tool_results):
+        if not isinstance(result, dict) or result.get("errors"):
+            continue
+        if str(result.get("type", "")) != "get_price_history":
+            continue
+        facts = result.get("facts", {}) if isinstance(result.get("facts", {}), dict) else {}
+        return _first_numeric(facts.get("end_close"), facts.get("start_close"))
+    return None
+
+
+def _infer_options_market_inputs(state: AgentState) -> tuple[float, float, float, int]:
+    evidence_pack = state.get("evidence_pack", {}) or {}
+    prompt_facts = evidence_pack.get("prompt_facts", {}) or {}
+    market_snapshot = prompt_facts.get("market_snapshot", {}) if isinstance(prompt_facts.get("market_snapshot", {}), dict) else {}
+    tool_results = list((state.get("workpad") or {}).get("tool_results", []))
+    last_tool_result = state.get("last_tool_result") if isinstance(state.get("last_tool_result"), dict) else {}
+
+    spot = _first_numeric(
+        prompt_facts.get("spot"),
+        prompt_facts.get("spot_price"),
+        prompt_facts.get("reference_price"),
+        market_snapshot.get("spot"),
+        market_snapshot.get("spot_price"),
+        market_snapshot.get("reference_price"),
+        market_snapshot.get("current_price"),
+        _reference_price_from_tool(last_tool_result),
+        _latest_history_reference_price(tool_results),
+    )
+    sigma = _first_numeric(
+        prompt_facts.get("implied_volatility"),
+        market_snapshot.get("implied_volatility"),
+    )
+    r = _first_numeric(
+        prompt_facts.get("risk_free_rate"),
+        market_snapshot.get("risk_free_rate"),
+    )
+    t_days_value = _first_numeric(
+        prompt_facts.get("days_to_expiry"),
+        market_snapshot.get("days_to_expiry"),
+    )
+    t_days = int(t_days_value) if isinstance(t_days_value, (int, float)) else 30
+
+    return (
+        float(spot) if isinstance(spot, (int, float)) else 300.0,
+        float(sigma) if isinstance(sigma, (int, float)) else 0.35,
+        float(r) if isinstance(r, (int, float)) else 0.05,
+        t_days,
+    )
 
 
 def _latest_successful_tool_result(
@@ -1307,24 +1367,12 @@ def _primary_tool_is_policy_compliant(primary_tool: dict[str, Any], policy_conte
 
 def _deterministic_policy_options_tool_call(state: AgentState) -> dict[str, Any] | None:
     evidence_pack = state.get("evidence_pack", {}) or {}
-    prompt_facts = evidence_pack.get("prompt_facts", {}) or {}
     derived_facts = evidence_pack.get("derived_facts", {}) or {}
     policy_context = evidence_pack.get("policy_context", {}) or {}
     if not (policy_context.get("defined_risk_only") or policy_context.get("no_naked_options")):
         return None
 
-    spot = 300.0
-    for candidate in (
-        prompt_facts.get("spot"),
-        prompt_facts.get("spot_price"),
-        prompt_facts.get("reference_price"),
-    ):
-        if isinstance(candidate, (int, float)):
-            spot = float(candidate)
-            break
-    sigma = float(prompt_facts.get("implied_volatility", 0.35) or 0.35)
-    r = float(prompt_facts.get("risk_free_rate", 0.05) or 0.05)
-    t_days = int(prompt_facts.get("days_to_expiry", 30) or 30)
+    spot, sigma, r, t_days = _infer_options_market_inputs(state)
     width = max(5.0, round(spot * 0.03 / 5.0) * 5.0)
     inner = max(5.0, round(spot * 0.015 / 5.0) * 5.0)
     vol_bias = str(derived_facts.get("vol_bias", "short_vol"))
@@ -1346,22 +1394,9 @@ def _deterministic_policy_options_tool_call(state: AgentState) -> dict[str, Any]
 
 def _deterministic_standard_options_tool_call(state: AgentState) -> dict[str, Any] | None:
     evidence_pack = state.get("evidence_pack", {}) or {}
-    prompt_facts = evidence_pack.get("prompt_facts", {}) or {}
     derived_facts = evidence_pack.get("derived_facts", {}) or {}
 
-    spot = 300.0
-    for candidate in (
-        prompt_facts.get("spot"),
-        prompt_facts.get("spot_price"),
-        prompt_facts.get("reference_price"),
-    ):
-        if isinstance(candidate, (int, float)):
-            spot = float(candidate)
-            break
-
-    sigma = float(prompt_facts.get("implied_volatility", 0.35) or 0.35)
-    r = float(prompt_facts.get("risk_free_rate", 0.05) or 0.05)
-    t_days = int(prompt_facts.get("days_to_expiry", 30) or 30)
+    spot, sigma, r, t_days = _infer_options_market_inputs(state)
     vol_bias = str(derived_facts.get("vol_bias", "short_vol"))
     atm = round(spot / 5.0) * 5.0
 

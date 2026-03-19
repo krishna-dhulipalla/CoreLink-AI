@@ -137,3 +137,10 @@ Rules:
 - **Actions Taken:** Strengthened the deterministic finals for `equity_research_report`, `portfolio_risk_review`, and `event_driven_finance` so those templates now finish with fuller recommendation, action, catalyst, and watchpoint sections without adding more LLM churn. Added the detailed architecture checkpoint in [finance_hands_checkpoint.md](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\docs\finance_hands_checkpoint.md).
 - **Blockers:** None.
 - **Handoff Notes:** The main finance paths are now structurally complete enough to document as the current checkpoint. Further work should target depth of evidence and domain breadth, not another control-flow rewrite.
+
+### Chat 15: Finance Hands Cleanup Before Refactor
+
+- **Role:** Coder
+- **Actions Taken:** Tightened small runtime issues without changing the architecture: broadened `compliance_guard` section parsing beyond bold-only headings, made risk/disclosure matching less brittle to wording changes, and made deterministic options seeding prefer already-available market evidence before falling back to generic defaults.
+- **Blockers:** None.
+- **Handoff Notes:** One review concern was not acted on because it was incorrect: actionable `portfolio_risk_review` flows can already trigger `compliance_guard` through `policy_context.action_orientation` on `finance_quant` paths.
