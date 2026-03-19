@@ -1,166 +1,50 @@
 # CoreLink AI
 
-CoreLink AI is a staged A2A reasoning engine built for finance-first workflows on top of LangGraph and MCP. The runtime is designed to give general models structured context at each step instead of forcing one large prompt to handle routing, tool use, reasoning, review, and formatting all at once.
+CoreLink AI is a finance-first A2A reasoning engine built on LangGraph and MCP.
+
+It is designed for tasks where a plain chat workflow is not enough: quantitative finance, options strategy analysis, portfolio risk review, event-driven finance, document-backed reasoning, and policy-constrained recommendations.
+
+## What It Does
+
+- Runs a staged reasoning pipeline instead of a single prompt-heavy loop
+- Uses structured evidence and normalized tool outputs for finance tasks
+- Supports finance-specific templates for quant, options, research, portfolio risk, and event-driven analysis
+- Applies risk and compliance gates on actionable finance paths
+- Exposes an A2A-compatible server surface for local experimentation
 
 ## Architecture
 
-![CoreLink AI staged architecture](docs/architecture.svg)
+![CoreLink AI architecture](docs/architecture.svg)
 
-The active request path is:
+At a high level, the system works in five steps:
 
-```text
-A2A Request
-  -> intake
-  -> task_profiler
-  -> template_selector
-  -> context_builder
-  -> solver
-       -> tool_runner -> solver
-       -> reviewer
-  -> output_adapter
-  -> reflect
-```
+1. `Intake` normalizes the request and detects output requirements.
+2. `Profile + Template` selects the execution path for the task.
+3. `Context Builder` assembles evidence from the prompt, tools, and documents.
+4. `Solver` reasons stage by stage and calls tools only when exact data or computation is needed.
+5. `Review Gates`, `Output Adapter`, and `Reflect` finish the answer and persist run records.
 
-## Node Responsibilities
+## Supported Workloads
 
-| Node | Responsibility |
-| --- | --- |
-| `intake` | Normalizes the incoming request and extracts output-format requirements into an `AnswerContract`. |
-| `task_profiler` | Chooses a coarse `task_profile` and additive `capability_flags` without overcommitting to one brittle route. |
-| `template_selector` | Maps the profile decision to a static execution template with explicit stage, tool, and review policy. |
-| `context_builder` | Builds a typed `EvidencePack` from prompt facts, formulas, tables, file references, and derived domain signals. |
-| `solver` | Runs stage-based reasoning across `PLAN`, `GATHER`, `COMPUTE`, `SYNTHESIZE`, `REVISE`, and `COMPLETE`. |
-| `tool_runner` | Executes one allowed tool call and normalizes the result into a structured `ToolResult`. |
-| `reviewer` | Reviews milestone and final artifacts only. It returns `pass`, `revise`, or `backtrack` plus missing dimensions. |
-| `output_adapter` | Applies exact JSON or XML wrapping without changing the underlying reasoning. |
-| `reflect` | Finalizes the run and writes compact execution memory to SQLite. |
+- Finance quant and market-data-backed analysis
+- Options strategy analysis with risk scenarios
+- Portfolio risk review and policy-aware recommendations
+- Equity research and event-driven finance workflows
+- Document-backed finance and general QA flows
 
-## Runtime Artifacts
+## Handling Finance Complexity
 
-The runtime moves explicit artifacts between nodes:
+Finance tasks are harder than general QA because they involve uncertainty, exact computation, risk tradeoffs, and policy constraints.
 
-- `task_profile`
-- `capability_flags`
-- `answer_contract`
-- `evidence_pack`
-- `solver_stage`
-- `workpad`
-- `pending_tool_call`
-- `last_tool_result`
-- `review_feedback`
-- `profile_decision`
-- `execution_template`
-- `assumption_ledger`
-- `provenance_map`
+CoreLink AI handles that by:
 
-These contracts are defined in [src/agent/contracts.py](src/agent/contracts.py).
+- using structured market, document, and analytics tools instead of relying on free-form model recall
+- separating evidence gathering from reasoning and final answer generation
+- running risk checks on actionable finance paths
+- applying compliance checks when the output moves from analysis toward recommendation
+- keeping assumptions and sources explicit throughout the run
 
-## How Context Is Supplied To The Model
-
-CoreLink AI does not rely on one universal prompt manifesto. It builds context in layers:
-
-1. `task_profiler` chooses a coarse domain profile such as `finance_quant`, `finance_options`, or `legal_transactional`.
-2. `context_builder` merges that profile with the request itself to assemble an `EvidencePack`.
-3. `solver` receives:
-   - the current stage
-   - the answer contract
-   - the compact evidence pack
-   - the last structured tool result
-   - the current review feedback, if any
-
-This keeps the model focused on the current stage rather than re-reading the full conversation on every turn.
-
-## Tool Contract
-
-Every tool result is normalized into the same shape before it goes back to the solver:
-
-```json
-{
-  "type": "tool_name",
-  "facts": {},
-  "assumptions": {},
-  "source": {},
-  "errors": []
-}
-```
-
-That normalization layer lives in [src/agent/tools/normalization.py](src/agent/tools/normalization.py). The root [src/agent/tool_normalization.py](src/agent/tool_normalization.py) module remains as a compatibility facade.
-
-## Persistence
-
-Execution memory is written after each completed run into SQLite at `src/data/agent_memory.db`.
-
-The active store is versioned and keeps staged-runtime records only:
-
-- `run_memory`
-- `tool_memory`
-- `review_memory`
-- `curation_memory`
-
-If the on-disk schema is incompatible with the current runtime, it is reset automatically. The store implementation is in [src/agent/memory/store.py](src/agent/memory/store.py).
-
-`curation_memory` is store-only. It exists to support offline profile-pack and template-policy curation and is not injected back into runtime prompts.
-
-## Repository Layout
-
-```text
-src/
-  server.py
-  executor.py
-  mcp_client.py
-  tools.py
-  agent/
-    contracts.py
-    graph.py
-    runner.py
-    state.py
-    profile_packs.py
-    template_library.py
-    document_evidence.py
-    runtime_support.py
-    tool_normalization.py
-    context/
-      profiling.py
-      extraction.py
-      evidence.py
-      stages.py
-    memory/
-      curation.py
-      schema.py
-      store.py
-    nodes/
-      intake.py
-      task_profiler.py
-      template_selector.py
-      context_builder.py
-      solver.py
-      tool_runner.py
-      reviewer.py
-      output_adapter.py
-      reflect.py
-    solver/
-      common.py
-      market.py
-      quant.py
-      options.py
-      portfolio.py
-      research.py
-    tools/
-      normalization.py
-  mcp_servers/
-    finance/
-    options_chain/
-    file_handler/
-    risk_metrics/
-    trading_sim/
-
-docs/
-  architecture.svg
-```
-
-The root `runtime_support.py` and `tool_normalization.py` modules are retained as compatibility facades so older imports and tests do not break while the implementation lives under the new packages.
-
-## Setup
+## Quickstart
 
 Install dependencies:
 
@@ -168,7 +52,7 @@ Install dependencies:
 uv sync
 ```
 
-Create a `.env` file with your model and MCP settings:
+Create a `.env` file:
 
 ```env
 OPENAI_API_KEY=...
@@ -179,56 +63,61 @@ MCP_SERVER_STDIO=
 MCP_SERVER_URLS=
 ```
 
-## Run Locally
-
 Start the A2A server:
 
 ```bash
 uv run python src/server.py --port 9010
 ```
 
-The agent card will be available at:
+Agent card:
 
 ```text
 http://127.0.0.1:9010/.well-known/agent-card.json
 ```
 
-## Replicate The Runtime Locally
+## Local Validation
 
-To reproduce the same staged runtime flow:
-
-1. Install dependencies with `uv sync`.
-2. Configure your model and any MCP servers in `.env`.
-3. Start the server with `uv run python src/server.py --port 9010`.
-4. Run the deterministic smoke check:
+Deterministic smoke:
 
 ```bash
 uv run python scripts/run_staged_runtime_smoke.py
 ```
 
-5. If you want to exercise the live LLM and active MCP surface:
+Live LLM smoke:
 
 ```bash
 uv run python scripts/run_live_staged_smoke.py
 ```
 
-## Tests
-
-Run the full test suite:
+Test suite:
 
 ```bash
 uv run pytest tests -q
 ```
 
-If you only want the staged-runtime core:
+## Project Layout
 
-```bash
-uv run pytest tests/test_staged_profiler.py tests/test_staged_context_builder.py tests/test_staged_solver.py tests/test_staged_tool_runner.py tests/test_staged_reviewer.py tests/test_staged_output_adapter.py -q
+```text
+src/
+  server.py
+  mcp_servers/
+  agent/
+    graph.py
+    runner.py
+    nodes/
+    context/
+    solver/
+    tools/
+    memory/
+
+docs/
+  architecture.svg
+  v3_checkpoint.md
+  finance_hands_checkpoint.md
 ```
 
-## Notes
+## Status
 
-- The previous coordinator/reasoner/verifier runtime is retired.
-- Output formatting is handled by `output_adapter`, not by prompt-only instructions.
-- External retrieval is opt-in based on explicit request signals, not a generic fallback.
-- Execution memory is store-only in the current runtime and is not injected back into prompts.
+CoreLink AI is actively evolving. The current runtime is stable enough for local use, live smoke validation, and continued finance-system development, but it should not be treated as finished production infrastructure.
+
+Development progress is tracked internally in [docs/progress.md](docs/progress.md).
