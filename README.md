@@ -84,7 +84,7 @@ Every tool result is normalized into the same shape before it goes back to the s
 }
 ```
 
-That normalization layer lives in [src/agent/tool_normalization.py](src/agent/tool_normalization.py).
+That normalization layer lives in [src/agent/tools/normalization.py](src/agent/tools/normalization.py). The root [src/agent/tool_normalization.py](src/agent/tool_normalization.py) module remains as a compatibility facade.
 
 ## Persistence
 
@@ -113,10 +113,17 @@ src/
     contracts.py
     graph.py
     runner.py
-    runtime_support.py
-    profile_packs.py
-    tool_normalization.py
     state.py
+    profile_packs.py
+    template_library.py
+    document_evidence.py
+    runtime_support.py
+    tool_normalization.py
+    context/
+      profiling.py
+      extraction.py
+      evidence.py
+      stages.py
     memory/
       curation.py
       schema.py
@@ -131,6 +138,15 @@ src/
       reviewer.py
       output_adapter.py
       reflect.py
+    solver/
+      common.py
+      market.py
+      quant.py
+      options.py
+      portfolio.py
+      research.py
+    tools/
+      normalization.py
   mcp_servers/
     finance/
     options_chain/
@@ -141,6 +157,8 @@ src/
 docs/
   architecture.svg
 ```
+
+The root `runtime_support.py` and `tool_normalization.py` modules are retained as compatibility facades so older imports and tests do not break while the implementation lives under the new packages.
 
 ## Setup
 

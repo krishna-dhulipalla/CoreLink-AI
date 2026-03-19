@@ -23,7 +23,7 @@ from agent.runtime_support import (
     merge_tool_result_into_evidence,
 )
 from agent.state import AgentState
-from agent.tool_normalization import normalize_tool_output
+from agent.tools.normalization import normalize_tool_output
 
 logger = logging.getLogger(__name__)
 

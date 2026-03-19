@@ -1,0 +1,3 @@
+"""
+Solver helper package.
+"""

@@ -144,3 +144,11 @@ Rules:
 - **Actions Taken:** Tightened small runtime issues without changing the architecture: broadened `compliance_guard` section parsing beyond bold-only headings, made risk/disclosure matching less brittle to wording changes, and made deterministic options seeding prefer already-available market evidence before falling back to generic defaults.
 - **Blockers:** None.
 - **Handoff Notes:** One review concern was not acted on because it was incorrect: actionable `portfolio_risk_review` flows can already trigger `compliance_guard` through `policy_context.action_orientation` on `finance_quant` paths.
+
+### Chat 16: Structural Refactor - Package Boundaries
+
+- **Role:** Coder
+- **Actions Taken:** Split the oversized runtime helpers into real packages: `agent.context` for profiling/evidence/stage policy, `agent.solver` for deterministic solver helpers, and `agent.tools` for tool normalization. Kept `agent.runtime_support`, `agent.tool_normalization`, and `agent.nodes.solver` as compatibility surfaces so tests, imports, and live runtime behavior stayed stable.
+- **Critical Bug Solved:** The first split would have broken `build_evidence_pack` callers because the new context implementation required an explicit labeled-JSON extractor.
+- **Fix:** Restored old behavior at the compatibility layer in [runtime_support.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\runtime_support.py) so existing callers still work without signature changes.
+- **Handoff Notes:** The active runtime behavior is unchanged, but the main maintenance surface is now the new package layout described in [README.md](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\README.md).
