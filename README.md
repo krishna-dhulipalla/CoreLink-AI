@@ -14,7 +14,7 @@ It is designed for tasks where a plain chat workflow is not enough: quantitative
 
 ## Architecture
 
-![CoreLink AI architecture](docs/architecture.svg)
+![CoreLink AI architecture](docs/architecture.png)
 
 At a high level, the system works in five steps:
 
