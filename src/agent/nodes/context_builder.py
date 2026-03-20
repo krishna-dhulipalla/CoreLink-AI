@@ -15,6 +15,7 @@ from agent.runtime_support import (
     artifact_checkpoint_from_state,
     apply_profile_contract_rules,
     build_evidence_pack,
+    infer_task_complexity_tier,
     initial_stage_for_template,
     latest_human_text,
     selective_checkpoint_policy,
@@ -68,6 +69,12 @@ def context_builder(state: AgentState) -> dict:
     workpad["profile_decision"] = profile_decision.model_dump()
     workpad["execution_template"] = execution_template.model_dump()
     workpad["profile_pack"] = profile_pack.model_dump()
+    workpad["task_complexity_tier"] = infer_task_complexity_tier(
+        execution_template,
+        task_profile,
+        capability_flags,
+        evidence.model_dump(),
+    )
     workpad.setdefault("stage_history", [])
     workpad.setdefault("events", [])
     next_stage = initial_stage_for_template(
@@ -82,6 +89,7 @@ def context_builder(state: AgentState) -> dict:
             "node": "context_builder",
             "action": (
                 f"template={execution_template.template_id} "
+                f"tier={workpad['task_complexity_tier']} "
                 f"stage={next_stage} entities={len(evidence.entities)} "
                 f"citations={len(evidence.citations)} documents={len(evidence.document_evidence)}"
             ),

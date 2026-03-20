@@ -35,9 +35,13 @@ class TestContextBuilder:
         assert evidence["document_evidence"][0]["status"] == "discovered"
         assert evidence["document_evidence"][0]["metadata"]["format"] == "pdf"
         assert evidence["answer_contract"]["format"] == "json"
+        assert "Financial Leverage Effect" in evidence["task_query"]
+        assert evidence["relevant_rows"]
+        assert result["workpad"]["task_complexity_tier"] == "structured_analysis"
         assert "Use formulas and inline tables from the prompt before calling tools." in evidence["constraints"]
         assert any("metadata or a narrow page/row window first" in item for item in evidence["constraints"])
-        assert "prompt_facts.numbers" in result["provenance_map"]
+        assert "relevant_rows" in result["provenance_map"]
+        assert "relevant_formulae" in result["provenance_map"]
         assert "document_evidence.report_pdf.metadata.citation" in result["provenance_map"]
         assert result["workpad"]["profile_pack"]["profile"] == "finance_quant"
 

@@ -27,6 +27,65 @@ def test_reviewer_revises_incomplete_legal_final():
     assert "tax consequences" in [gap.lower() for gap in result["review_feedback"]["missing_dimensions"]]
 
 
+def test_reviewer_passes_bare_numeric_quant_final_for_output_adapter():
+    state = make_state(
+        'Financial Leverage Effect = (ROE - ROA) / ROA. Output Format: {"answer": <value>}',
+        task_profile="finance_quant",
+        capability_flags=["needs_math", "requires_exact_format"],
+        execution_template={
+            "template_id": "quant_inline_exact",
+            "allowed_stages": ["COMPUTE", "SYNTHESIZE", "REVISE", "COMPLETE"],
+            "default_initial_stage": "COMPUTE",
+            "allowed_tool_names": [],
+            "review_stages": ["COMPUTE", "SYNTHESIZE"],
+            "review_cadence": "milestone_and_final",
+            "answer_focus": [],
+        },
+        answer_contract={"format": "json", "requires_adapter": True, "wrapper_key": "answer"},
+        solver_stage="SYNTHESIZE",
+        workpad={
+            "events": [],
+            "stage_outputs": {},
+            "tool_results": [],
+            "review_ready": True,
+            "review_stage": "SYNTHESIZE",
+        },
+    )
+    state["messages"].append(AIMessage(content="0.9273"))
+
+    result = reviewer(state)
+
+    assert result["solver_stage"] == "COMPLETE"
+    assert result["review_feedback"] is None
+
+
+def test_reviewer_terminates_repeated_unchanged_final_loop():
+    state = make_state(
+        "Summarize the acquisition structure options for this deal.",
+        task_profile="legal_transactional",
+        capability_flags=["needs_legal_reasoning"],
+        solver_stage="SYNTHESIZE",
+        workpad={
+            "events": [],
+            "stage_outputs": {},
+            "tool_results": [],
+            "review_results": [],
+            "review_ready": True,
+            "review_stage": "SYNTHESIZE",
+            "repeat_signature": reviewer_module._artifact_signature("Use a stock purchase with escrow."),
+            "repeat_count": 2,
+            "last_review_reason": "Final legal answer is directionally correct but incomplete.",
+            "last_review_verdict": "revise",
+        },
+    )
+    state["messages"].append(AIMessage(content="Use a stock purchase with escrow."))
+
+    result = reviewer(state)
+
+    assert result["solver_stage"] == "COMPLETE"
+    assert result["review_feedback"]["verdict"] == "revise"
+
+
 def test_reviewer_revises_truncated_options_final():
     state = make_state(
         "Should I be a net buyer or seller of options?",

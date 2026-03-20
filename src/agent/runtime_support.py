@@ -21,6 +21,7 @@ from agent.context.profiling import (
     select_execution_template,
 )
 from agent.context.stages import (
+    infer_task_complexity_tier,
     initial_solver_stage,
     initial_stage_for_template,
     next_stage_after_review,
@@ -79,6 +80,7 @@ __all__ = [
     "extract_formulas",
     "extract_inline_facts",
     "extract_urls",
+    "infer_task_complexity_tier",
     "infer_task_profile",
     "initial_solver_stage",
     "initial_stage_for_template",

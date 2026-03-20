@@ -345,6 +345,7 @@ def make_solver(tools: list):
             return {"solver_stage": next_stage, "workpad": workpad}
 
         effective_stage = stage
+        repair_class = str(review_feedback.get("repair_class", "generic"))
         if stage == "REVISE":
             repair_target = str(review_feedback.get("repair_target", "final"))
             if risk_feedback:
@@ -416,6 +417,8 @@ def make_solver(tools: list):
             stage_prompt += "\nRisk controller feedback is active. If structured primary strategy facts already exist, emit one risk/scenario tool call next, preferably scenario_pnl. Use the latest strategy facts for net_premium, delta, gamma, theta, vega, and reference spot before writing more narrative."
         if stage == "REVISE" and review_feedback:
             stage_prompt += "\nReviewer feedback:\n" + f"{json.dumps(review_feedback, ensure_ascii=True)}\n" + f"Repair target stage: {effective_stage}."
+            if repair_class in {"wrapper_only", "scalar_only"}:
+                stage_prompt += "\nThis is a terminal formatting repair. Do not restate reasoning. Emit only the repaired final answer."
         if stage == "REVISE" and risk_feedback:
             stage_prompt += "\nRisk controller feedback:\n" + f"{json.dumps(risk_feedback, ensure_ascii=True)}\n" + f"Repair target stage: {effective_stage}."
         if stage == "REVISE" and compliance_feedback:
@@ -460,7 +463,14 @@ def make_solver(tools: list):
                 return {"workpad": workpad, "pending_tool_call": None, "risk_feedback": None}
 
         deterministic_final_text = None
-        if execution_template.get("template_id") == "quant_inline_exact" and effective_stage == "SYNTHESIZE":
+        if execution_template.get("template_id") == "quant_inline_exact" and (
+            effective_stage == "SYNTHESIZE"
+            or (
+                stage == "REVISE"
+                and str(review_feedback.get("repair_target", "final")) == "final"
+                and repair_class in {"wrapper_only", "scalar_only"}
+            )
+        ):
             deterministic_final_text = deterministic_quant_final_answer(state)
         elif profile == "finance_options" and effective_stage == "SYNTHESIZE" and not compliance_feedback:
             if policy_context.get("defined_risk_only") or policy_context.get("no_naked_options"):

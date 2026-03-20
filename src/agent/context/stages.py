@@ -22,6 +22,31 @@ def initial_solver_stage(task_profile: str, capability_flags: list[str], evidenc
     return "SYNTHESIZE"
 
 
+def infer_task_complexity_tier(
+    template: dict[str, Any] | ExecutionTemplate | None,
+    task_profile: str,
+    capability_flags: list[str],
+    evidence_pack: dict[str, Any],
+) -> str:
+    if isinstance(template, dict):
+        template_id = str(template.get("template_id", ""))
+    elif isinstance(template, ExecutionTemplate):
+        template_id = template.template_id
+    else:
+        template_id = ""
+
+    flags = set(capability_flags)
+    if template_id == "quant_inline_exact":
+        return "simple_exact"
+    if template_id in {"legal_reasoning_only", "legal_with_document_evidence", "live_retrieval"}:
+        return "complex_qualitative"
+    if task_profile == "legal_transactional":
+        return "complex_qualitative"
+    if {"needs_legal_reasoning", "needs_live_data"} <= flags and evidence_pack.get("document_evidence"):
+        return "complex_qualitative"
+    return "structured_analysis"
+
+
 def initial_stage_for_template(
     template: dict[str, Any] | ExecutionTemplate | None,
     task_profile: str,

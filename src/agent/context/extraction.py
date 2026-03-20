@@ -9,8 +9,6 @@ import re
 from typing import Any
 
 _URL_RE = re.compile(r"https?://[^\s\)\]\"',]+")
-_PERCENT_RE = re.compile(r"(-?\d+(?:\.\d+)?)\s*%")
-_NUMBER_RE = re.compile(r"(?<![A-Za-z0-9])(-?\d+(?:\.\d+)?)(?![A-Za-z0-9])")
 _MONTH_NAME_DATE_RE = re.compile(
     r"\b(?:as of|on|dated?|for)\s+"
     r"((?:Jan|January|Feb|February|Mar|March|Apr|April|May|Jun|June|Jul|July|Aug|August|Sep|Sept|September|Oct|October|Nov|November|Dec|December)\s+\d{1,2},?\s+\d{4})",
@@ -113,14 +111,6 @@ def extract_inline_facts(text: str, *, labeled_json_extractor=None) -> dict[str,
         match = re.search(r"iv percentile[^0-9]*(\d+(?:\.\d+)?)", lowered)
         if match:
             facts["iv_percentile"] = float(match.group(1))
-
-    percentages = _PERCENT_RE.findall(text or "")
-    if percentages:
-        facts["percentages"] = [float(value) / 100.0 for value in percentages[:12]]
-
-    numbers = _NUMBER_RE.findall(text or "")
-    if numbers:
-        facts["numbers"] = [float(value) for value in numbers[:20]]
 
     iv_match = re.search(r"\biv\b[^0-9]*(\d+(?:\.\d+)?)\s*%", lowered)
     hv_match = re.search(r"historical volatility[^0-9]*(\d+(?:\.\d+)?)\s*%", lowered)

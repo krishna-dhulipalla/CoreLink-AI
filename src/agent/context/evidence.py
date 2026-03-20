@@ -36,6 +36,94 @@ _RISK_CAP_RE = re.compile(
     r"(?:(?:max(?:imum)?|keep|cap(?:ped)?|limit(?:ed)?)\s+)?(?:position\s+)?risk(?:\s+(?:to|at|under))?(?:\s+of)?\s+(\d+(?:\.\d+)?)\s*%",
     re.IGNORECASE,
 )
+_YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
+_USER_QUESTION_RE = re.compile(
+    r"(?:###\s*<User Question>|<User Question>|User Question)\s*(.*?)(?:###|$)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _normalize_text(value: str) -> str:
+    return re.sub(r"\s+", " ", value or "").strip()
+
+
+def _extract_task_query(task_text: str) -> str:
+    match = _USER_QUESTION_RE.search(task_text or "")
+    if match:
+        return _normalize_text(match.group(1))
+    normalized = _normalize_text(task_text)
+    if "?" in normalized:
+        parts = [part.strip() for part in normalized.split("?") if part.strip()]
+        if parts:
+            return parts[-1] + "?"
+    return normalized[:400]
+
+
+def _extract_target_period(task_text: str) -> str:
+    years = _YEAR_RE.findall(task_text or "")
+    if years:
+        return str(years[-1])
+    return ""
+
+
+def _coerce_row_value(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    stripped = value.strip().replace(",", "")
+    percent_match = re.fullmatch(r"(-?\d+(?:\.\d+)?)\s*%", stripped)
+    if percent_match:
+        return float(percent_match.group(1)) / 100.0
+    number_match = re.fullmatch(r"-?\d+(?:\.\d+)?", stripped)
+    if number_match:
+        return float(stripped)
+    return value
+
+
+def _row_matches_query(row: dict[str, Any], query: str) -> bool:
+    normalized_query = (query or "").lower()
+    if not normalized_query:
+        return False
+    for value in row.values():
+        text = str(value or "").lower()
+        if not text:
+            continue
+        if text in normalized_query or normalized_query in text:
+            return True
+        if len(text) > 4 and all(token in normalized_query for token in text.split()[:2]):
+            return True
+    return False
+
+
+def _select_relevant_table_rows(
+    tables: list[dict[str, Any]],
+    *,
+    task_query: str,
+    target_period: str,
+) -> tuple[list[dict[str, Any]], int]:
+    selected: list[dict[str, Any]] = []
+    unused = 0
+    for table in tables:
+        headers = list(table.get("headers", []))
+        rows = list(table.get("rows", []))
+        matched_rows = [row for row in rows if isinstance(row, dict) and _row_matches_query(row, task_query)]
+        if not matched_rows:
+            unused += 1
+            continue
+        normalized_rows: list[dict[str, Any]] = []
+        for row in matched_rows[:4]:
+            normalized_row: dict[str, Any] = {}
+            for key, value in row.items():
+                key_text = str(key)
+                if target_period and target_period not in key_text and any(year in key_text for year in re.findall(r"\b(?:19|20)\d{2}\b", key_text)):
+                    continue
+                normalized_row[key_text] = _coerce_row_value(value)
+            if normalized_row:
+                normalized_rows.append(normalized_row)
+        if normalized_rows:
+            selected.append({"headers": headers, "rows": normalized_rows})
+        else:
+            unused += 1
+    return selected, unused
 
 
 def _flatten_provenance(
@@ -213,6 +301,16 @@ def build_evidence_pack(
     market_snapshot, derived = derive_market_snapshot(task_text, inline_facts)
     policy_context = _extract_policy_context(task_text, task_profile, capability_flags)
     prompt_facts: dict[str, Any] = dict(inline_facts)
+    task_query = _extract_task_query(task_text)
+    target_period = _extract_target_period(task_text)
+    target_entities = extract_entities(task_query) or extract_entities(task_text)
+    formulas = extract_formulas(task_text)
+    parsed_tables = parse_markdown_tables(task_text)
+    relevant_rows, unused_table_count = _select_relevant_table_rows(
+        parsed_tables,
+        task_query=task_query,
+        target_period=target_period,
+    )
     if market_snapshot:
         prompt_facts["market_snapshot"] = market_snapshot
         if task_profile == "finance_options":
@@ -247,7 +345,20 @@ def build_evidence_pack(
         open_questions.append("Document evidence has not been extracted yet; start with metadata or a targeted fetch before answering.")
 
     evidence = EvidencePack(
-        task_brief=re.sub(r"\s+", " ", task_text or "").strip()[:280],
+        task_brief=task_query[:220],
+        task_query=task_query,
+        task_constraints=constraints,
+        target_entities=target_entities[:6],
+        target_period=target_period,
+        relevant_rows=relevant_rows,
+        relevant_formulae=formulas[:6],
+        required_output={
+            "format": answer_contract.format,
+            "requires_adapter": answer_contract.requires_adapter,
+            "wrapper_key": answer_contract.wrapper_key,
+            "section_requirements": answer_contract.section_requirements,
+        },
+        unused_table_count=unused_table_count,
         answer_contract=answer_contract.model_dump(),
         entities=extract_entities(task_text),
         constraints=constraints,
@@ -256,8 +367,8 @@ def build_evidence_pack(
         derived_facts=derived,
         policy_context=policy_context,
         document_evidence=document_placeholders,
-        tables=parse_markdown_tables(task_text),
-        formulas=extract_formulas(task_text),
+        tables=relevant_rows or parsed_tables[:4],
+        formulas=formulas,
         citations=urls[:],
         open_questions=open_questions,
     )
@@ -289,6 +400,18 @@ def build_evidence_pack(
             extraction_method="policy_extraction",
         )
     )
+    if relevant_rows:
+        provenance_map["relevant_rows"] = ProvenanceRecord(
+            source_class="prompt",
+            source_id="user_prompt",
+            extraction_method="table_row_selection",
+        ).model_dump()
+    if formulas:
+        provenance_map["relevant_formulae"] = ProvenanceRecord(
+            source_class="prompt",
+            source_id="user_prompt",
+            extraction_method="formula_selection",
+        ).model_dump()
     for record in document_placeholders:
         document_id = str(record.get("document_id", "document"))
         metadata = dict(record.get("metadata", {}))

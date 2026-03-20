@@ -154,6 +154,52 @@ def estimate_response_tokens(response: AIMessage) -> int:
     return count_tokens([AIMessage(content="\n".join(parts))])
 
 
+def _filtered_prompt_facts(evidence: dict[str, Any], complexity_tier: str) -> dict[str, Any]:
+    prompt_facts = dict(evidence.get("prompt_facts", {}))
+    if complexity_tier == "simple_exact":
+        keep_keys = {"as_of_date", "structured_inputs"}
+        return {key: value for key, value in prompt_facts.items() if key in keep_keys}
+    return prompt_facts
+
+
+def _solver_facing_evidence(evidence: dict[str, Any], complexity_tier: str) -> dict[str, Any]:
+    relevant_rows = evidence.get("relevant_rows", [])
+    relevant_formulae = evidence.get("relevant_formulae", [])
+    payload = {
+        "task_brief": evidence.get("task_brief", ""),
+        "task_query": evidence.get("task_query", ""),
+        "task_constraints": evidence.get("task_constraints", []),
+        "target_entities": evidence.get("target_entities", []),
+        "target_period": evidence.get("target_period", ""),
+        "relevant_rows": relevant_rows,
+        "relevant_formulae": relevant_formulae,
+        "required_output": evidence.get("required_output", {}),
+        "constraints": evidence.get("constraints", []),
+        "entities": evidence.get("entities", []),
+        "prompt_facts": _filtered_prompt_facts(evidence, complexity_tier),
+        "retrieved_facts": {
+            key: value
+            for key, value in evidence.get("retrieved_facts", {}).items()
+            if key not in {"fetch_reference_file"}
+        },
+        "derived_facts": evidence.get("derived_facts", {}),
+        "policy_context": evidence.get("policy_context", {}),
+        "document_evidence": summarize_document_evidence(evidence.get("document_evidence", [])),
+        "tables": [] if relevant_rows else evidence.get("tables", [])[:2],
+        "formulas": [] if relevant_formulae else evidence.get("formulas", [])[:2],
+        "citations": evidence.get("citations", []),
+        "open_questions": evidence.get("open_questions", []),
+        "unused_table_count": evidence.get("unused_table_count", 0),
+    }
+    if complexity_tier == "simple_exact":
+        payload["retrieved_facts"] = {}
+        payload["document_evidence"] = []
+        payload["open_questions"] = []
+        payload["citations"] = []
+        payload["derived_facts"] = {}
+    return payload
+
+
 def compact_evidence_block(state: AgentState) -> str:
     evidence = state.get("evidence_pack", {})
     workpad = state.get("workpad", {})
@@ -163,9 +209,11 @@ def compact_evidence_block(state: AgentState) -> str:
     profile_pack = workpad.get("profile_pack") or get_profile_pack(state.get("task_profile", "general")).model_dump()
     answer_contract = state.get("answer_contract", {})
     execution_template = state.get("execution_template", {})
+    complexity_tier = str(workpad.get("task_complexity_tier", "structured_analysis"))
     payload = {
         "task_profile": state.get("task_profile", "general"),
         "capability_flags": state.get("capability_flags", []),
+        "task_complexity_tier": complexity_tier,
         "execution_template": {
             "template_id": execution_template.get("template_id"),
             "description": execution_template.get("description", ""),
@@ -188,24 +236,7 @@ def compact_evidence_block(state: AgentState) -> str:
             "schema_hint": answer_contract.get("schema_hint", {}),
             "value_rules": answer_contract.get("value_rules", {}),
         },
-        "evidence_pack": {
-            "task_brief": evidence.get("task_brief", ""),
-            "constraints": evidence.get("constraints", []),
-            "entities": evidence.get("entities", []),
-            "prompt_facts": evidence.get("prompt_facts", {}),
-            "retrieved_facts": {
-                key: value
-                for key, value in evidence.get("retrieved_facts", {}).items()
-                if key not in {"fetch_reference_file"}
-            },
-            "derived_facts": evidence.get("derived_facts", {}),
-            "policy_context": evidence.get("policy_context", {}),
-            "document_evidence": summarize_document_evidence(evidence.get("document_evidence", [])),
-            "tables": evidence.get("tables", []),
-            "formulas": evidence.get("formulas", []),
-            "citations": evidence.get("citations", []),
-            "open_questions": evidence.get("open_questions", []),
-        },
+        "evidence_pack": _solver_facing_evidence(evidence, complexity_tier),
         "assumption_ledger": assumption_ledger[:8],
         "provenance_summary": {
             key: {
@@ -213,7 +244,7 @@ def compact_evidence_block(state: AgentState) -> str:
                 "source_id": value.get("source_id"),
                 "tool_name": value.get("tool_name"),
             }
-            for key, value in list(provenance_map.items())[:20]
+            for key, value in list(provenance_map.items())[: (8 if complexity_tier == "simple_exact" else 20)]
         },
         "last_tool_result": state.get("last_tool_result"),
         "stage_outputs": workpad.get("stage_outputs", {}),

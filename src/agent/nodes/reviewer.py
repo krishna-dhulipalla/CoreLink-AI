@@ -6,6 +6,7 @@ Milestone and final review only. The reviewer no longer sits in every tool hop.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -28,6 +29,7 @@ from agent.runtime_support import (
     selective_backtracking_allowed,
     should_checkpoint_stage,
 )
+from agent.solver.quant import deterministic_quant_final_answer
 from agent.state import AgentState
 from context_manager import count_tokens
 
@@ -40,6 +42,7 @@ Return ONLY one JSON object with:
 - reasoning: short explanation
 - missing_dimensions: list of short strings
 - repair_target: gather | compute | synthesize | final
+- repair_class: generic | wrapper_only | scalar_only | missing_section | missing_evidence | missing_risk
 
 Do not answer the task.
 Do not produce user-facing prose.
@@ -85,6 +88,7 @@ def _append_review_result(
             "reasoning": verdict.reasoning,
             "missing_dimensions": list(verdict.missing_dimensions),
             "repair_target": verdict.repair_target,
+            "repair_class": verdict.repair_class,
         }
     )
     updated["review_results"] = history
@@ -117,6 +121,34 @@ def _looks_truncated(text: str) -> bool:
     if last_line.startswith(("-", "*")) and len(last_line) < 8:
         return True
     return False
+
+
+def _artifact_signature(text: str) -> str:
+    normalized = re.sub(r"\s+", " ", (text or "").strip().lower())
+    return hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:16]
+
+
+def _update_repeat_diagnostics(workpad: dict[str, Any], verdict: ReviewResult, artifact: str) -> dict[str, Any]:
+    updated = dict(workpad)
+    current_signature = _artifact_signature(artifact)
+    previous_signature = str(updated.get("repeat_signature", ""))
+    previous_reason = str(updated.get("last_review_reason", ""))
+    previous_verdict = str(updated.get("last_review_verdict", ""))
+    current_reason = str(verdict.reasoning or "").strip()
+    if (
+        current_signature
+        and current_signature == previous_signature
+        and current_reason == previous_reason
+        and verdict.verdict == previous_verdict
+    ):
+        updated["repeat_count"] = int(updated.get("repeat_count", 1)) + 1
+    else:
+        updated["repeat_count"] = 1
+    updated["repeat_signature"] = current_signature
+    updated["last_repair_target"] = verdict.repair_target
+    updated["last_review_reason"] = current_reason
+    updated["last_review_verdict"] = verdict.verdict
+    return updated
 
 
 def _is_numeric_like(value: Any) -> bool:
@@ -321,6 +353,7 @@ def _deterministic_review(state: AgentState, artifact: str, is_final: bool) -> R
             reasoning="Final answer appears truncated or cut off.",
             missing_dimensions=["complete final answer"],
             repair_target="final",
+            repair_class="generic",
         )
 
     if is_final and profile == "finance_quant":
@@ -332,6 +365,7 @@ def _deterministic_review(state: AgentState, artifact: str, is_final: bool) -> R
                 reasoning="Final finance answer is incomplete relative to the selected execution template.",
                 missing_dimensions=template_gaps,
                 repair_target="final",
+                repair_class="missing_section",
             )
         if "needs_live_data" in capability_flags and not has_structured_tool:
             return ReviewResult(
@@ -339,14 +373,18 @@ def _deterministic_review(state: AgentState, artifact: str, is_final: bool) -> R
                 reasoning="Final finance answer with live-data needs must stay grounded in structured retrieval evidence.",
                 missing_dimensions=["retrieval-backed finance evidence"],
                 repair_target="gather",
+                repair_class="missing_evidence",
             )
         if answer_contract.get("requires_adapter") and answer_contract.get("format") == "json":
             if not _matches_exact_json_contract(artifact, answer_contract):
+                stripped = (artifact or "").strip()
+                repair_class = "wrapper_only" if _is_numeric_like(stripped) else "scalar_only"
                 return ReviewResult(
                     verdict="revise",
                     reasoning="Final quantitative answer must be a scalar value or already match the JSON answer contract.",
                     missing_dimensions=["scalar answer matching output contract"],
                     repair_target="final",
+                    repair_class=repair_class,
                 )
 
     if is_final and profile == "legal_transactional":
@@ -357,6 +395,7 @@ def _deterministic_review(state: AgentState, artifact: str, is_final: bool) -> R
                 reasoning="Final legal answer is directionally correct but incomplete.",
                 missing_dimensions=gaps,
                 repair_target="final",
+                repair_class="missing_section",
             )
 
     if is_final and profile == "finance_options":
@@ -366,6 +405,7 @@ def _deterministic_review(state: AgentState, artifact: str, is_final: bool) -> R
                 reasoning="Final options answer requires a risk-controller pass before acceptance.",
                 missing_dimensions=["risk-controller validation"],
                 repair_target="compute",
+                repair_class="missing_risk",
             )
         if str(risk_results[-1].get("verdict", "pass")) != "pass":
             return ReviewResult(
@@ -373,6 +413,7 @@ def _deterministic_review(state: AgentState, artifact: str, is_final: bool) -> R
                 reasoning="Final options answer cannot be accepted while the latest risk-controller result is unresolved.",
                 missing_dimensions=["resolved risk-controller findings"],
                 repair_target="compute",
+                repair_class="missing_risk",
             )
         if requires_compliance_guard(state):
             if not compliance_results:
@@ -381,6 +422,7 @@ def _deterministic_review(state: AgentState, artifact: str, is_final: bool) -> R
                     reasoning="Final options answer requires a compliance-guard pass before acceptance.",
                     missing_dimensions=["compliance-guard validation"],
                     repair_target="final",
+                    repair_class="missing_risk",
                 )
             if str(compliance_results[-1].get("verdict", "pass")) != "pass":
                 return ReviewResult(
@@ -388,6 +430,7 @@ def _deterministic_review(state: AgentState, artifact: str, is_final: bool) -> R
                     reasoning="Final options answer cannot be accepted while the latest compliance-guard result is unresolved.",
                     missing_dimensions=["resolved compliance findings"],
                     repair_target="final",
+                    repair_class="missing_risk",
                 )
         if not has_structured_tool:
             return ReviewResult(
@@ -395,6 +438,7 @@ def _deterministic_review(state: AgentState, artifact: str, is_final: bool) -> R
                 reasoning="Final options answer must be grounded in at least one structured tool result.",
                 missing_dimensions=["tool-backed strategy analysis"],
                 repair_target="compute",
+                repair_class="missing_evidence",
             )
         if risk_requirements.get("required_disclosures") and not _has_risk_required_disclosures(
             artifact,
@@ -405,6 +449,7 @@ def _deterministic_review(state: AgentState, artifact: str, is_final: bool) -> R
                 reasoning="Final options answer is missing one or more risk-controller-required disclosures.",
                 missing_dimensions=["required risk disclosures"],
                 repair_target="final",
+                repair_class="missing_risk",
             )
         gaps = _options_gaps(artifact)
         if gaps:
@@ -413,6 +458,7 @@ def _deterministic_review(state: AgentState, artifact: str, is_final: bool) -> R
                 reasoning="Final options answer is missing one or more benchmark-critical dimensions.",
                 missing_dimensions=gaps,
                 repair_target="final",
+                repair_class="missing_section",
             )
         if _has_undisclosed_required_assumption(state, artifact):
             return ReviewResult(
@@ -420,6 +466,7 @@ def _deterministic_review(state: AgentState, artifact: str, is_final: bool) -> R
                 reasoning="Final options answer must disclose material pricing assumptions introduced during compute.",
                 missing_dimensions=["disclosed material assumptions"],
                 repair_target="final",
+                repair_class="missing_risk",
             )
 
     if is_final and profile == "document_qa":
@@ -429,6 +476,7 @@ def _deterministic_review(state: AgentState, artifact: str, is_final: bool) -> R
                 reasoning="Document QA final answer requires extracted document evidence, not URL discovery alone.",
                 missing_dimensions=["extracted document evidence"],
                 repair_target="gather",
+                repair_class="missing_evidence",
             )
 
     if is_final and profile_pack.reviewer_dimensions and profile not in {"legal_transactional", "finance_options"}:
@@ -439,6 +487,7 @@ def _deterministic_review(state: AgentState, artifact: str, is_final: bool) -> R
                 reasoning="Final answer is incomplete relative to the required profile dimensions.",
                 missing_dimensions=gaps,
                 repair_target="final",
+                repair_class="missing_section",
             )
 
     return None
@@ -609,6 +658,15 @@ def reviewer(state: AgentState) -> dict:
             budget.record_backtrack()
         restored = _restore_checkpoint(state)
         workpad = _append_review_result(workpad, verdict, str(review_stage), is_final)
+        workpad = _update_repeat_diagnostics(workpad, verdict, artifact)
+        if budget and budget.backtrack_exhausted():
+            budget.log_budget_exit("backtrack_budget_exhausted", verdict.reasoning)
+            workpad = _record_event(workpad, "budget exit -> backtrack cap exhausted")
+            return {
+                "review_feedback": verdict.model_dump(),
+                "solver_stage": "COMPLETE",
+                "workpad": workpad,
+            }
         workpad = _record_event(workpad, f"BACKTRACK: {verdict.reasoning}")
         restored_workpad = dict(restored.get("workpad", {}))
         merged_events = list(restored_workpad.get("events", [])) + list(workpad.get("events", []))
@@ -626,6 +684,61 @@ def reviewer(state: AgentState) -> dict:
         if budget:
             budget.record_revise()
         workpad = _append_review_result(workpad, verdict, str(review_stage), is_final)
+        workpad = _update_repeat_diagnostics(workpad, verdict, artifact)
+
+        if (
+            state.get("task_profile") == "finance_quant"
+            and is_final
+            and verdict.repair_class in {"wrapper_only", "scalar_only"}
+            and int(workpad.get("repeat_count", 1)) >= 2
+        ):
+            repaired = deterministic_quant_final_answer(state)
+            if repaired:
+                if budget:
+                    budget.log_budget_exit("repeat_review_loop", verdict.reasoning)
+                workpad = _record_event(workpad, "repeat-review-loop -> deterministic final")
+                workpad["review_ready"] = False
+                workpad["review_stage"] = None
+                logger.info("[Step %s] reviewer -> deterministic terminal repair", step)
+                return {
+                    "messages": [AIMessage(content=repaired)],
+                    "review_feedback": None,
+                    "solver_stage": "COMPLETE",
+                    "workpad": workpad,
+                }
+
+        if is_final and int(workpad.get("repeat_count", 1)) >= 3:
+            if budget:
+                budget.log_budget_exit("repeat_review_loop", verdict.reasoning)
+            workpad = _record_event(workpad, "repeat-review-loop -> terminate current finalization path")
+            workpad["review_ready"] = False
+            logger.info("[Step %s] reviewer -> terminate after repeated unchanged final review", step)
+            return {
+                "review_feedback": verdict.model_dump(),
+                "solver_stage": "COMPLETE",
+                "workpad": workpad,
+            }
+
+        if budget and budget.revise_exhausted():
+            repaired = None
+            if state.get("task_profile") == "finance_quant" and is_final:
+                repaired = deterministic_quant_final_answer(state)
+            budget.log_budget_exit("revise_budget_exhausted", verdict.reasoning)
+            workpad = _record_event(workpad, "budget exit -> revise cap exhausted")
+            workpad["review_ready"] = False
+            if repaired:
+                return {
+                    "messages": [AIMessage(content=repaired)],
+                    "review_feedback": None,
+                    "solver_stage": "COMPLETE",
+                    "workpad": workpad,
+                }
+            return {
+                "review_feedback": verdict.model_dump(),
+                "solver_stage": "COMPLETE",
+                "workpad": workpad,
+            }
+
         workpad = _record_event(workpad, f"REVISE: {verdict.reasoning}")
         workpad["review_ready"] = False
         logger.info("[Step %s] reviewer -> REVISE missing=%s", step, verdict.missing_dimensions)
@@ -651,6 +764,7 @@ def reviewer(state: AgentState) -> dict:
         "pass",
     )
     workpad = _append_review_result(workpad, verdict, str(review_stage), is_final)
+    workpad = _update_repeat_diagnostics(workpad, verdict, artifact)
     workpad = _record_event(workpad, f"PASS -> {next_stage}")
     workpad["review_ready"] = False
     workpad["review_stage"] = None

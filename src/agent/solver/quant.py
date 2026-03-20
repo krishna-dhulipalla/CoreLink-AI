@@ -11,6 +11,50 @@ from agent.solver.common import extract_inline_assignments, format_scalar_number
 from agent.state import AgentState
 
 _FORMULA_RE = re.compile(r"\b([A-Za-z][A-Za-z0-9_ ]{1,80})\s*=\s*([^\n.;]+)")
+_PERCENT_LABEL_RE = re.compile(r"(roe|roa|return on equity|return on assets)", re.IGNORECASE)
+
+
+def _coerce_numeric(value):
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        stripped = value.strip().replace(",", "")
+        if stripped.endswith("%"):
+            try:
+                return float(stripped[:-1].strip()) / 100.0
+            except ValueError:
+                return None
+        try:
+            return float(stripped)
+        except ValueError:
+            return None
+    return None
+
+
+def _assignments_from_relevant_rows(state: AgentState) -> dict[str, float]:
+    evidence_pack = state.get("evidence_pack", {}) or {}
+    relevant_rows = list(evidence_pack.get("relevant_rows", []))
+    assignments: dict[str, float] = {}
+    for table in relevant_rows:
+        for row in table.get("rows", []):
+            if not isinstance(row, dict):
+                continue
+            for key, value in row.items():
+                numeric = _coerce_numeric(value)
+                if numeric is None:
+                    continue
+                key_text = str(key)
+                lowered = key_text.lower()
+                if _PERCENT_LABEL_RE.search(lowered):
+                    if "roe" in lowered or "return on equity" in lowered:
+                        assignments["ROE"] = numeric
+                    if "roa" in lowered or "return on assets" in lowered:
+                        assignments["ROA"] = numeric
+                short_key = re.sub(r"[^A-Za-z0-9_]+", "_", key_text).strip("_")
+                if short_key:
+                    assignments.setdefault(short_key, numeric)
+                    assignments.setdefault(short_key.upper(), numeric)
+    return assignments
 
 
 def deterministic_inline_quant_value(state: AgentState) -> float | None:
@@ -20,8 +64,9 @@ def deterministic_inline_quant_value(state: AgentState) -> float | None:
 
     task_text = latest_human_text(state.get("messages", []))
     evidence_pack = state.get("evidence_pack", {}) or {}
-    formulas = list(evidence_pack.get("formulas", []))
+    formulas = list(evidence_pack.get("relevant_formulae", [])) or list(evidence_pack.get("formulas", []))
     assignments = extract_inline_assignments(task_text)
+    assignments.update(_assignments_from_relevant_rows(state))
     if not assignments:
         return None
 

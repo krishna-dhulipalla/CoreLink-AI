@@ -84,3 +84,14 @@ class BudgetTracker:
             "hint_tokens_cap": MAX_HINT_TOKENS,
             "budget_exits": self.budget_exits,
         }
+
+    def __repr__(self) -> str:
+        summary = self.summary()
+        return (
+            "BudgetTracker("
+            f"tools={summary['tool_calls']}/{summary['tool_calls_cap']}, "
+            f"revise={summary['revise_cycles']}/{summary['revise_cap']}, "
+            f"backtrack={summary['backtrack_cycles']}/{summary['backtrack_cap']})"
+        )
+
+    __str__ = __repr__

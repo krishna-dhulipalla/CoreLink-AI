@@ -4,9 +4,10 @@ Cost Tracker: Per-Run Token, Latency & Cost Accounting
 Tracks every LLM call and MCP tool invocation during a graph run.
 """
 
-import time
 import logging
+import time
 from dataclasses import dataclass, field
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +67,7 @@ class OperatorTrace:
 class CostTracker:
     """Accumulates cost and trace data for a single graph run."""
 
-    model_name: str = "openai/gpt-oss-20b"
+    model_name: str = "unknown"
     traces: list[OperatorTrace] = field(default_factory=list)
     llm_calls: int = 0
     mcp_calls: int = 0
@@ -127,4 +128,24 @@ class CostTracker:
             "operators_used": [t.operator for t in self.traces],
             "any_failure": any(not t.success for t in self.traces),
         }
+
+    def trace_payload(self) -> dict[str, Any]:
+        return {
+            "default_model": self.model_name,
+            "llm_calls": self.llm_calls,
+            "mcp_calls": self.mcp_calls,
+            "models_used": sorted({t.model_name for t in self.traces}),
+            "traces": [trace.to_dict() for trace in self.traces],
+        }
+
+    def __repr__(self) -> str:
+        summary = self.summary()
+        return (
+            "CostTracker("
+            f"llm_calls={summary['llm_calls']}, "
+            f"mcp_calls={summary['mcp_calls']}, "
+            f"models={summary['models_used']})"
+        )
+
+    __str__ = __repr__
 

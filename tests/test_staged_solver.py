@@ -210,6 +210,41 @@ def test_solver_deterministically_synthesizes_inline_quant_scalar(monkeypatch):
     assert result["messages"][0].content.startswith("0.9273")
 
 
+def test_solver_revise_wrapper_only_quant_uses_terminal_deterministic_final(monkeypatch):
+    monkeypatch.setattr("agent.nodes.solver.ChatOpenAI", lambda **kwargs: _FakeModel(AIMessage(content="unused")))
+    monkeypatch.setattr("agent.nodes.solver._tool_call_mode", lambda role: "prompt")
+
+    solver = make_solver([])
+    state = make_state(
+        'Financial Leverage Effect = (ROE - ROA) / ROA. Calculate it with ROE = 3.0433%, ROA = 1.579%. Output Format: {"answer": <value>}',
+        task_profile="finance_quant",
+        capability_flags=["needs_math", "requires_exact_format"],
+        execution_template={
+            "template_id": "quant_inline_exact",
+            "allowed_stages": ["COMPUTE", "SYNTHESIZE", "REVISE", "COMPLETE"],
+            "default_initial_stage": "COMPUTE",
+            "allowed_tool_names": ["calculator"],
+            "review_stages": ["COMPUTE", "SYNTHESIZE"],
+            "review_cadence": "milestone_and_final",
+            "answer_focus": [],
+        },
+        solver_stage="REVISE",
+        answer_contract={"format": "json", "requires_adapter": True, "wrapper_key": "answer"},
+        evidence_pack={"relevant_formulae": ["Financial Leverage Effect = (ROE - ROA) / ROA"]},
+        review_feedback={
+            "repair_target": "final",
+            "repair_class": "wrapper_only",
+            "missing_dimensions": ["scalar answer matching output contract"],
+        },
+    )
+
+    result = solver(state)
+
+    assert result["pending_tool_call"] is None
+    assert result["messages"][0].content.startswith("0.9273")
+    assert result["workpad"]["review_stage"] == "SYNTHESIZE"
+
+
 def test_solver_revise_compute_uses_existing_tool_result_before_more_tools(monkeypatch):
     response = AIMessage(content="Primary strategy is tool-backed: short straddle credit with negative vega and positive theta.")
     monkeypatch.setattr("agent.nodes.solver.ChatOpenAI", lambda **kwargs: _FakeModel(response))

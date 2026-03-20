@@ -152,3 +152,11 @@ Rules:
 - **Critical Bug Solved:** The first split would have broken `build_evidence_pack` callers because the new context implementation required an explicit labeled-JSON extractor.
 - **Fix:** Restored old behavior at the compatibility layer in [runtime_support.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\runtime_support.py) so existing callers still work without signature changes.
 - **Handoff Notes:** The active runtime behavior is unchanged, but the main maintenance surface is now the new package layout described in [README.md](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\README.md).
+
+### Chat 17: V3 Recovery Hardening
+
+- **Role:** Coder
+- **Actions Taken:** Hardened the staged runtime against the simple-finance failures seen in the benchmark traces. Added benchmark/stateless mode to the runner/executor path, deduped adjacent persisted messages, preserved partial final state on recursion-limit exits, introduced task-complexity-aware evidence compaction for the solver, added task-focused evidence fields and row selection, strengthened legal reviewer dimensions, and added repeat-review loop diagnostics plus bounded terminal loop breaking.
+- **Critical Bug Solved:** Exact `finance_quant` tasks were computing correctly and then looping through repeated final reviews because the runtime stayed in open-ended synthesis instead of collapsing into a terminal answer path; recursion handling also discarded the best partial answer.
+- **Fix:** The quant path now runs as `simple_exact`, solver-facing evidence is reduced to relevant formula/row/output data, recursion fallback keeps the real partial final answer, and unchanged final-review loops terminate deterministically instead of burning graph steps.
+- **Handoff Notes:** The live staged smoke now shows `finance_quant` finishing cleanly as exact JSON with no LLM/tool churn. The next benchmark-focused work should target deeper legal completeness and broader QA/long-document readiness rather than another control-flow rewrite.

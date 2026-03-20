@@ -51,6 +51,14 @@ SolverStage = Literal[
 ]
 
 ReviewVerdict = Literal["pass", "revise", "backtrack"]
+RepairClass = Literal[
+    "generic",
+    "wrapper_only",
+    "scalar_only",
+    "missing_section",
+    "missing_evidence",
+    "missing_risk",
+]
 RiskVerdict = Literal["pass", "revise", "blocked"]
 ComplianceVerdict = Literal["pass", "revise", "blocked"]
 SourceClass = Literal["prompt", "retrieved", "derived", "assumption"]
@@ -149,6 +157,14 @@ class DocumentEvidenceRecord(BaseModel):
 
 class EvidencePack(BaseModel):
     task_brief: str = ""
+    task_query: str = ""
+    task_constraints: list[str] = Field(default_factory=list)
+    target_entities: list[str] = Field(default_factory=list)
+    target_period: str = ""
+    relevant_rows: list[dict[str, Any]] = Field(default_factory=list)
+    relevant_formulae: list[str] = Field(default_factory=list)
+    required_output: dict[str, Any] = Field(default_factory=dict)
+    unused_table_count: int = 0
     answer_contract: dict[str, Any] = Field(default_factory=dict)
     entities: list[str] = Field(default_factory=list)
     constraints: list[str] = Field(default_factory=list)
@@ -189,6 +205,7 @@ class ReviewResult(BaseModel):
     reasoning: str = ""
     missing_dimensions: list[str] = Field(default_factory=list)
     repair_target: Literal["gather", "compute", "synthesize", "final"] = "final"
+    repair_class: RepairClass = "generic"
 
 
 class RiskResult(BaseModel):

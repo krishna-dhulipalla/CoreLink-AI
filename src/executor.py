@@ -10,6 +10,7 @@ Architecture Reference: docs/A2A_INTERFACE_SPEC.md
 
 import asyncio
 import logging
+import os
 
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
@@ -42,6 +43,10 @@ TERMINAL_STATES = {
     TaskState.failed,
     TaskState.rejected,
 }
+
+
+def _benchmark_stateless_mode() -> bool:
+    return os.getenv("BENCHMARK_STATELESS", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 class Executor(AgentExecutor):
@@ -104,7 +109,9 @@ class Executor(AgentExecutor):
             context_id = task.context_id
 
             # Retrieve prior conversation history for multi-turn support
-            history = self.conversations.get(context_id) if context_id else []
+            history = []
+            if context_id and not _benchmark_stateless_mode():
+                history = self.conversations.get(context_id)
             if history:
                 logger.info(
                     f"Resuming conversation {context_id} with "
@@ -121,7 +128,7 @@ class Executor(AgentExecutor):
             )
 
             # Persist updated conversation history
-            if context_id:
+            if context_id and not _benchmark_stateless_mode():
                 self.conversations.save(context_id, updated_history)
 
             # Stream step-level status updates for transparency

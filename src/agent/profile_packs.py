@@ -146,11 +146,11 @@ PROFILE_PACKS: dict[TaskProfile, ProfileContextPack] = {
         ],
         reviewer_dimensions={
             "structure options": ["asset", "stock", "merger", "triangular", "carve-out", "hybrid"],
-            "tax consequences": ["tax", "deferral", "step-up", "capital gain", "basis"],
-            "liability protection": ["indemn", "escrow", "reps", "warrant", "insurance", "holdback"],
-            "regulatory and diligence risks": ["regulatory", "compliance", "diligence", "approval", "eu", "us", "hsr"],
-            "key open questions and assumptions": ["assumption", "confirm", "determine", "assess", "willingness", "risk tolerance"],
-            "recommended next steps": ["next step", "engage", "draft", "timeline", "recommend", "immediately"],
+            "tax consequences": ["tax", "deferral", "step-up", "capital gain", "basis", "seller", "shareholder"],
+            "liability protection": ["indemn", "indemnity", "escrow", "reps", "warrant", "insurance", "holdback", "disclosure schedule"],
+            "regulatory and diligence risks": ["regulatory", "compliance", "diligence", "approval", "eu", "us", "hsr", "cure", "cross-border"],
+            "key open questions and assumptions": ["assumption", "confirm", "determine", "assess", "willingness", "risk tolerance", "severity", "timeline"],
+            "recommended next steps": ["next step", "engage", "draft", "timeline", "recommend", "immediately", "diligence", "execution"],
         },
     ),
     "document_qa": ProfileContextPack(

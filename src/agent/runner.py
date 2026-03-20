@@ -7,6 +7,7 @@ Executes the staged finance-first graph and returns the final answer plus trace.
 from __future__ import annotations
 
 import logging
+import os
 import re
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
@@ -24,6 +25,37 @@ logger = logging.getLogger(__name__)
 _THINK_BLOCK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
 
 _memory_store: MemoryStore | None = None
+
+
+def _same_message(a: BaseMessage, b: BaseMessage) -> bool:
+    if type(a) is not type(b):
+        return False
+    if isinstance(a, HumanMessage):
+        return str(a.content or "").strip() == str(b.content or "").strip()
+    if isinstance(a, AIMessage):
+        return (
+            str(a.content or "").strip() == str(b.content or "").strip()
+            and bool(a.tool_calls) == bool(b.tool_calls)
+        )
+    if isinstance(a, ToolMessage):
+        return (
+            str(a.content or "").strip() == str(b.content or "").strip()
+            and str(getattr(a, "name", "")) == str(getattr(b, "name", ""))
+        )
+    return False
+
+
+def _dedupe_adjacent_messages(messages: list[BaseMessage]) -> list[BaseMessage]:
+    deduped: list[BaseMessage] = []
+    for msg in messages:
+        if deduped and _same_message(deduped[-1], msg):
+            continue
+        deduped.append(msg)
+    return deduped
+
+
+def _benchmark_stateless_mode() -> bool:
+    return os.getenv("BENCHMARK_STATELESS", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _get_memory_store() -> MemoryStore:
@@ -54,6 +86,13 @@ def _extract_steps(final_state: AgentState, tracker: CostTracker, budget: Budget
     return steps
 
 
+def _build_updated_history(final_state: AgentState, final_answer: str | None = None) -> list[BaseMessage]:
+    updated_history = [msg for msg in final_state.get("messages", []) if isinstance(msg, HumanMessage)]
+    if final_answer:
+        updated_history.append(AIMessage(content=_extract_final_answer(final_answer)))
+    return _dedupe_adjacent_messages(updated_history)
+
+
 async def run_agent(
     graph,
     input_text: str,
@@ -68,9 +107,16 @@ async def run_agent_trace(
     input_text: str,
     history: list[BaseMessage] | None = None,
 ) -> dict:
+    if _benchmark_stateless_mode():
+        history = []
+
     messages = list(history) if history else []
-    messages.append(HumanMessage(content=input_text))
+    incoming_human = HumanMessage(content=input_text)
+    if not (messages and isinstance(messages[-1], HumanMessage) and str(messages[-1].content or "").strip() == input_text.strip()):
+        messages.append(incoming_human)
+    messages = _dedupe_adjacent_messages(messages)
     messages = summarize_and_window(messages)
+    messages = _dedupe_adjacent_messages(messages)
 
     reset_runtime_steps()
     tracker = CostTracker()
@@ -102,26 +148,49 @@ async def run_agent_trace(
         "memory_store": _get_memory_store(),
     }
 
+    last_state = initial_state
     try:
-        final_state = await graph.ainvoke(initial_state, config={"recursion_limit": 40})
+        async for streamed_state in graph.astream(initial_state, config={"recursion_limit": 40}, stream_mode="values"):
+            if isinstance(streamed_state, dict):
+                last_state = streamed_state
+        final_state = last_state
     except GraphRecursionError as exc:
         logger.warning("[Safety] Recursion limit hit: %s", exc)
-        partial_answer = "I was unable to complete this task within the step limit."
+        final_state = last_state if isinstance(last_state, dict) else initial_state
+        workpad = dict(final_state.get("workpad", {}))
+        events = list(workpad.get("events", []))
+        events.append({"node": "runner", "action": "recursion limit hit"})
+        workpad["events"] = events
+        final_state["workpad"] = workpad
+        budget = final_state.get("budget_tracker", budget)
+        budget.log_budget_exit("recursion_limit", str(exc))
+
+        partial_answer = ""
+        for msg in reversed(final_state.get("messages", [])):
+            if isinstance(msg, AIMessage) and msg.content and not msg.tool_calls:
+                partial_answer = _extract_final_answer(str(msg.content))
+                break
+        if not partial_answer:
+            partial_answer = "I was unable to complete this task within the step limit."
         return {
             "answer": partial_answer,
-            "steps": _extract_steps(initial_state, initial_state["cost_tracker"], initial_state["budget_tracker"]),
-            "updated_history": initial_state["messages"],
-            "final_state": initial_state,
+            "steps": _extract_steps(final_state, final_state.get("cost_tracker", tracker), budget),
+            "updated_history": _build_updated_history(final_state, partial_answer),
+            "final_state": final_state,
         }
 
-    tracker = initial_state["cost_tracker"]
-    budget = initial_state["budget_tracker"]
+    tracker = final_state.get("cost_tracker", initial_state["cost_tracker"])
+    budget = final_state.get("budget_tracker", initial_state["budget_tracker"])
     steps = _extract_steps(final_state, tracker, budget)
-    updated_history = [
-        msg
-        for msg in final_state.get("messages", [])
-        if isinstance(msg, HumanMessage) or (isinstance(msg, AIMessage) and msg.content and not msg.tool_calls)
-    ]
+    final_public_ai: AIMessage | None = None
+    for msg in reversed(final_state.get("messages", [])):
+        if isinstance(msg, AIMessage) and msg.content and not msg.tool_calls:
+            final_public_ai = msg
+            break
+    updated_history = _build_updated_history(
+        final_state,
+        _extract_final_answer(str(final_public_ai.content)) if final_public_ai is not None else None,
+    )
 
     for msg in reversed(final_state.get("messages", [])):
         if isinstance(msg, AIMessage) and msg.content and not msg.tool_calls:
