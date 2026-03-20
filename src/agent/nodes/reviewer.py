@@ -182,6 +182,38 @@ def _keyword_gaps(answer_text: str, dimensions: dict[str, list[str]]) -> list[st
     return gaps
 
 
+def _count_token_group_hits(answer_text: str, groups: list[list[str]]) -> int:
+    normalized = re.sub(r"\s+", " ", (answer_text or "").lower()).strip()
+    hits = 0
+    for group in groups:
+        if any(token in normalized for token in group):
+            hits += 1
+    return hits
+
+
+def _legal_depth_gaps(answer_text: str) -> list[str]:
+    gaps = _keyword_gaps(answer_text, get_profile_pack("legal_transactional").reviewer_dimensions)
+    allocation_groups = [
+        ["indemn", "indemnity"],
+        ["escrow", "holdback"],
+        ["reps", "warrant", "representation", "warranty"],
+        ["disclosure schedule"],
+        ["insurance", "r&w insurance", "representation and warranty insurance"],
+        ["cap", "basket", "survival"],
+    ]
+    execution_groups = [
+        ["signing", "sign", "closing", "close"],
+        ["pre-close", "pre close", "interim covenant", "interim operating"],
+        ["consent", "approval", "condition precedent"],
+        ["timeline", "weeks", "days", "rapid", "quickly"],
+    ]
+    if _count_token_group_hits(answer_text, allocation_groups) < 3:
+        gaps.append("liability allocation mechanics")
+    if _count_token_group_hits(answer_text, execution_groups) < 2:
+        gaps.append("execution timing and closing mechanics")
+    return sorted(set(gaps))
+
+
 def _options_gaps(answer_text: str) -> list[str]:
     return _keyword_gaps(answer_text, get_profile_pack("finance_options").reviewer_dimensions)
 
@@ -388,7 +420,7 @@ def _deterministic_review(state: AgentState, artifact: str, is_final: bool) -> R
                 )
 
     if is_final and profile == "legal_transactional":
-        gaps = _keyword_gaps(artifact, profile_pack.reviewer_dimensions)
+        gaps = _legal_depth_gaps(artifact)
         if gaps:
             return ReviewResult(
                 verdict="revise",

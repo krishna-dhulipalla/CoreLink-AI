@@ -10,15 +10,24 @@ import logging
 
 from agent.memory.curation import build_curation_signals
 from agent.memory.schema import ReviewMemory, RunMemory, ToolMemory, infer_memory_family, normalize_memory_text, task_signature
+from agent.memory.store import MemoryStore
 from agent.runtime_clock import increment_runtime_step
 from agent.runtime_support import latest_human_text
 from agent.state import AgentState
 
 logger = logging.getLogger(__name__)
+_memory_store: MemoryStore | None = None
+
+
+def _get_memory_store() -> MemoryStore:
+    global _memory_store
+    if _memory_store is None:
+        _memory_store = MemoryStore()
+    return _memory_store
 
 
 def _persist_run(state: AgentState, task_text: str, workpad: dict) -> None:
-    store = state.get("memory_store")
+    store = state.get("memory_store") or _get_memory_store()
     tracker = state.get("cost_tracker")
     if store is None or tracker is None:
         return
@@ -73,9 +82,7 @@ def _persist_run(state: AgentState, task_text: str, workpad: dict) -> None:
 
 
 def _persist_tools(state: AgentState, task_text: str, workpad: dict) -> None:
-    store = state.get("memory_store")
-    if store is None:
-        return
+    store = state.get("memory_store") or _get_memory_store()
 
     task_profile = state.get("task_profile", "general")
     task_family = infer_memory_family(task_profile, task_text)
@@ -112,9 +119,7 @@ def _persist_tools(state: AgentState, task_text: str, workpad: dict) -> None:
 
 
 def _persist_reviews(state: AgentState, task_text: str, workpad: dict) -> None:
-    store = state.get("memory_store")
-    if store is None:
-        return
+    store = state.get("memory_store") or _get_memory_store()
 
     task_profile = state.get("task_profile", "general")
     task_family = infer_memory_family(task_profile, task_text)
@@ -139,9 +144,7 @@ def _persist_reviews(state: AgentState, task_text: str, workpad: dict) -> None:
 
 
 def _persist_curation(state: AgentState, task_text: str, workpad: dict) -> None:
-    store = state.get("memory_store")
-    if store is None:
-        return
+    store = state.get("memory_store") or _get_memory_store()
 
     for signal in build_curation_signals(state, task_text, workpad):
         store.store_curation(signal)

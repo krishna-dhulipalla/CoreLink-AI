@@ -38,7 +38,7 @@ _RISK_CAP_RE = re.compile(
 )
 _YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
 _USER_QUESTION_RE = re.compile(
-    r"(?:###\s*<User Question>|<User Question>|User Question)\s*(.*?)(?:###|$)",
+    r"(?:###\s*<User Question>|<User Question>|User Question)\s*:?\s*(.*?)(?:\n###|\Z)",
     re.IGNORECASE | re.DOTALL,
 )
 
@@ -47,16 +47,12 @@ def _normalize_text(value: str) -> str:
     return re.sub(r"\s+", " ", value or "").strip()
 
 
-def _extract_task_query(task_text: str) -> str:
+def _extract_focus_query(task_text: str) -> str:
     match = _USER_QUESTION_RE.search(task_text or "")
     if match:
         return _normalize_text(match.group(1))
     normalized = _normalize_text(task_text)
-    if "?" in normalized:
-        parts = [part.strip() for part in normalized.split("?") if part.strip()]
-        if parts:
-            return parts[-1] + "?"
-    return normalized[:400]
+    return normalized[:600]
 
 
 def _extract_target_period(task_text: str) -> str:
@@ -97,15 +93,25 @@ def _row_matches_query(row: dict[str, Any], query: str) -> bool:
 def _select_relevant_table_rows(
     tables: list[dict[str, Any]],
     *,
-    task_query: str,
+    focus_query: str,
+    target_entities: list[str],
     target_period: str,
 ) -> tuple[list[dict[str, Any]], int]:
     selected: list[dict[str, Any]] = []
     unused = 0
+    normalized_entities = [str(item).strip().lower() for item in target_entities if str(item).strip()]
     for table in tables:
         headers = list(table.get("headers", []))
         rows = list(table.get("rows", []))
-        matched_rows = [row for row in rows if isinstance(row, dict) and _row_matches_query(row, task_query)]
+        matched_rows: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            row_text = " ".join(str(value or "").lower() for value in row.values())
+            entity_match = any(entity and entity in row_text for entity in normalized_entities)
+            query_match = _row_matches_query(row, focus_query)
+            if entity_match or query_match:
+                matched_rows.append(row)
         if not matched_rows:
             unused += 1
             continue
@@ -301,14 +307,15 @@ def build_evidence_pack(
     market_snapshot, derived = derive_market_snapshot(task_text, inline_facts)
     policy_context = _extract_policy_context(task_text, task_profile, capability_flags)
     prompt_facts: dict[str, Any] = dict(inline_facts)
-    task_query = _extract_task_query(task_text)
+    focus_query = _extract_focus_query(task_text)
     target_period = _extract_target_period(task_text)
-    target_entities = extract_entities(task_query) or extract_entities(task_text)
+    target_entities = extract_entities(focus_query) or extract_entities(task_text)
     formulas = extract_formulas(task_text)
     parsed_tables = parse_markdown_tables(task_text)
     relevant_rows, unused_table_count = _select_relevant_table_rows(
         parsed_tables,
-        task_query=task_query,
+        focus_query=focus_query,
+        target_entities=target_entities,
         target_period=target_period,
     )
     if market_snapshot:
@@ -345,8 +352,6 @@ def build_evidence_pack(
         open_questions.append("Document evidence has not been extracted yet; start with metadata or a targeted fetch before answering.")
 
     evidence = EvidencePack(
-        task_brief=task_query[:220],
-        task_query=task_query,
         task_constraints=constraints,
         target_entities=target_entities[:6],
         target_period=target_period,
@@ -367,7 +372,7 @@ def build_evidence_pack(
         derived_facts=derived,
         policy_context=policy_context,
         document_evidence=document_placeholders,
-        tables=relevant_rows or parsed_tables[:4],
+        tables=relevant_rows if relevant_rows else parsed_tables[:2],
         formulas=formulas,
         citations=urls[:],
         open_questions=open_questions,

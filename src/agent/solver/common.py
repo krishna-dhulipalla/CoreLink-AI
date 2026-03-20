@@ -166,8 +166,6 @@ def _solver_facing_evidence(evidence: dict[str, Any], complexity_tier: str) -> d
     relevant_rows = evidence.get("relevant_rows", [])
     relevant_formulae = evidence.get("relevant_formulae", [])
     payload = {
-        "task_brief": evidence.get("task_brief", ""),
-        "task_query": evidence.get("task_query", ""),
         "task_constraints": evidence.get("task_constraints", []),
         "target_entities": evidence.get("target_entities", []),
         "target_period": evidence.get("target_period", ""),

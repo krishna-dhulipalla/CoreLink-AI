@@ -156,8 +156,6 @@ class DocumentEvidenceRecord(BaseModel):
 
 
 class EvidencePack(BaseModel):
-    task_brief: str = ""
-    task_query: str = ""
     task_constraints: list[str] = Field(default_factory=list)
     target_entities: list[str] = Field(default_factory=list)
     target_period: str = ""

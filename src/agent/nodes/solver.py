@@ -419,6 +419,12 @@ def make_solver(tools: list):
             stage_prompt += "\nReviewer feedback:\n" + f"{json.dumps(review_feedback, ensure_ascii=True)}\n" + f"Repair target stage: {effective_stage}."
             if repair_class in {"wrapper_only", "scalar_only"}:
                 stage_prompt += "\nThis is a terminal formatting repair. Do not restate reasoning. Emit only the repaired final answer."
+            elif profile == "legal_transactional":
+                stage_prompt += (
+                    "\nFor legal repairs, add concrete execution and risk-allocation detail."
+                    "\nIf relevant, make reps and warranties, disclosure schedules, escrow or holdback, caps or baskets, insurance, timing, closing conditions, and cure mechanics explicit."
+                    "\nPreserve sections that are already valid; deepen only the missing ones."
+                )
         if stage == "REVISE" and risk_feedback:
             stage_prompt += "\nRisk controller feedback:\n" + f"{json.dumps(risk_feedback, ensure_ascii=True)}\n" + f"Repair target stage: {effective_stage}."
         if stage == "REVISE" and compliance_feedback:
