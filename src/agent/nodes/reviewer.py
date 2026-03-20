@@ -16,6 +16,14 @@ from typing import Any
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from agent.contracts import ReviewResult
+from agent.context.legal_dimensions import (
+    legal_allocation_groups,
+    legal_employee_transfer_groups,
+    legal_execution_groups,
+    legal_regulatory_execution_groups,
+    legal_tax_execution_groups,
+    normalize_legal_task_text,
+)
 from agent.document_evidence import has_extracted_document_evidence
 from agent.cost import CostTracker
 from agent.nodes.compliance_guard import requires_compliance_guard
@@ -194,47 +202,20 @@ def _count_token_group_hits(answer_text: str, groups: list[list[str]]) -> int:
 
 def _legal_depth_gaps(answer_text: str, task_text: str = "") -> list[str]:
     gaps = _keyword_gaps(answer_text, get_profile_pack("legal_transactional").reviewer_dimensions)
-    normalized_task = re.sub(r"\s+", " ", (task_text or "").lower()).strip()
-    allocation_groups = [
-        ["indemn", "indemnity"],
-        ["escrow", "holdback"],
-        ["reps", "warrant", "representation", "warranty"],
-        ["disclosure schedule"],
-        ["insurance", "r&w insurance", "representation and warranty insurance"],
-        ["cap", "basket", "survival"],
-    ]
-    execution_groups = [
-        ["signing", "sign", "closing", "close"],
-        ["pre-close", "pre close", "interim covenant", "interim operating"],
-        ["consent", "approval", "condition precedent"],
-        ["timeline", "weeks", "days", "rapid", "quickly"],
-    ]
+    normalized_task = normalize_legal_task_text(task_text)
+    allocation_groups = legal_allocation_groups()
+    execution_groups = legal_execution_groups()
     if _count_token_group_hits(answer_text, allocation_groups) < 3:
         gaps.append("liability allocation mechanics")
     if _count_token_group_hits(answer_text, execution_groups) < 2:
         gaps.append("execution timing and closing mechanics")
-    if any(token in normalized_task for token in ("stock consideration", "stock considerafton", "stock-for-stock", "tax reasons", "tax")):
-        us_tax_groups = [
-            ["irs", "section 368", "368", "tax-free reorganization"],
-            ["carryover basis", "built-in gain", "basis"],
-            ["seller tax", "shareholder tax", "capital gain"],
-        ]
-        if _count_token_group_hits(answer_text, us_tax_groups) < 2:
+    if any(token in normalized_task for token in ("stock consideration", "stock-for-stock", "tax reasons", "tax")):
+        if _count_token_group_hits(answer_text, legal_tax_execution_groups()) < 2:
             gaps.append("tax execution mechanics")
     if any(token in normalized_task for token in ("eu", "us", "cross-border", "compliance")):
-        regulatory_groups = [
-            ["hsr", "merger control", "antitrust", "foreign investment", "cfius"],
-            ["regulatory remediation", "remediation", "compliance cure", "cure plan"],
-            ["consent", "approval", "notification", "condition precedent"],
-        ]
-        if _count_token_group_hits(answer_text, regulatory_groups) < 2:
+        if _count_token_group_hits(answer_text, legal_regulatory_execution_groups()) < 2:
             gaps.append("regulatory execution specifics")
-        employee_groups = [
-            ["employee", "employees", "labor", "employment"],
-            ["works council", "consultation", "collective", "benefit"],
-            ["transfer", "tupe", "retention", "service credit"],
-        ]
-        if _count_token_group_hits(answer_text, employee_groups) < 2:
+        if _count_token_group_hits(answer_text, legal_employee_transfer_groups()) < 2:
             gaps.append("employee-transfer considerations")
     return sorted(set(gaps))
 

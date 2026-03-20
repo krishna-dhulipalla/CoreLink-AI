@@ -18,6 +18,14 @@ from typing import Any
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
+from agent.context.legal_dimensions import (
+    legal_allocation_groups,
+    legal_employee_transfer_groups,
+    legal_execution_groups,
+    legal_regulatory_execution_groups,
+    legal_tax_execution_groups,
+    normalize_legal_task_text,
+)
 from agent.cost import CostTracker
 from agent.model_config import get_model_name, invoke_structured_output
 from agent.runtime_clock import increment_runtime_step
@@ -116,20 +124,8 @@ def _heuristic_reflection(answer: str, state: AgentState) -> ReflectionResult:
         score -= 0.12
 
     if template_id in {"legal_reasoning_only", "legal_with_document_evidence"}:
-        allocation_groups = [
-            ["indemn", "indemnity"],
-            ["escrow", "holdback"],
-            ["reps", "warrant", "representation", "warranty"],
-            ["disclosure schedule"],
-            ["insurance", "r&w insurance", "representation and warranty insurance"],
-            ["cap", "basket", "survival"],
-        ]
-        execution_groups = [
-            ["signing", "sign", "closing", "close"],
-            ["pre-close", "pre close", "interim covenant", "interim operating"],
-            ["consent", "approval", "condition precedent"],
-            ["timeline", "weeks", "days", "rapid", "quickly"],
-        ]
+        allocation_groups = legal_allocation_groups()
+        execution_groups = legal_execution_groups()
         allocation_hits = _keyword_hits(answer, allocation_groups)
         execution_hits = _keyword_hits(answer, execution_groups)
         if allocation_hits >= 4:
@@ -148,42 +144,22 @@ def _heuristic_reflection(answer: str, state: AgentState) -> ReflectionResult:
         if "next step" not in normalized and "next steps" not in normalized:
             score -= 0.06
             missing.append("actionable next steps")
-        task_text = next(
+        task_text = normalize_legal_task_text(
+            next(
             (str(msg.content) for msg in reversed(state.get("messages", [])) if isinstance(msg, HumanMessage)),
             "",
-        ).lower()
-        if any(token in task_text for token in ("stock consideration", "stock considerafton", "stock-for-stock", "tax reasons", "tax")):
-            tax_hits = _keyword_hits(
-                answer,
-                [
-                    ["irs", "section 368", "368", "tax-free reorganization"],
-                    ["carryover basis", "built-in gain", "basis"],
-                    ["seller tax", "shareholder tax", "capital gain"],
-                ],
-            )
+        ))
+        if any(token in task_text for token in ("stock consideration", "stock-for-stock", "tax reasons", "tax")):
+            tax_hits = _keyword_hits(answer, legal_tax_execution_groups())
             if tax_hits < 2:
                 score -= 0.10
                 missing.append("tax execution detail")
         if any(token in task_text for token in ("eu", "us", "cross-border", "compliance")):
-            regulatory_hits = _keyword_hits(
-                answer,
-                [
-                    ["hsr", "merger control", "antitrust", "foreign investment", "cfius"],
-                    ["regulatory remediation", "remediation", "compliance cure", "cure plan"],
-                    ["consent", "approval", "notification", "condition precedent"],
-                ],
-            )
+            regulatory_hits = _keyword_hits(answer, legal_regulatory_execution_groups())
             if regulatory_hits < 2:
                 score -= 0.10
                 missing.append("regulatory execution detail")
-            employee_hits = _keyword_hits(
-                answer,
-                [
-                    ["employee", "employees", "labor", "employment"],
-                    ["works council", "consultation", "collective", "benefit"],
-                    ["transfer", "tupe", "retention", "service credit"],
-                ],
-            )
+            employee_hits = _keyword_hits(answer, legal_employee_transfer_groups())
             if employee_hits < 2:
                 score -= 0.10
                 missing.append("employee-transfer detail")

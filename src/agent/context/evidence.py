@@ -141,9 +141,9 @@ def _select_relevant_formulas(formulas: list[str], focus_query: str) -> list[str
             score += 8
         formula_tokens = _query_tokens(formula)
         score += min(len(query_tokens & formula_tokens), 5)
-        if any(token in normalized_formula for token in ("roe", "roa", "financial leverage effect")) and any(
-            token in normalized_query for token in ("roe", "roa", "financial leverage effect", "leverage")
-        ):
+        formula_name = normalized_formula.split("=", 1)[0].strip()
+        formula_name_tokens = _query_tokens(formula_name)
+        if formula_name_tokens and len(formula_name_tokens & query_tokens) >= min(2, len(formula_name_tokens)):
             score += 4
         scored.append((score, formula))
     ranked = sorted(scored, key=lambda item: item[0], reverse=True)

@@ -53,6 +53,12 @@ PROMPTS = [
         "deal size is ~$500M, what structure options do we have that could work for both sides? Need to move quicly here.",
     ),
     (
+        "legal_transactional_clean",
+        "Target company we're acquiring has some clean IP but also regulatory compliance gaps in EU and US. "
+        "The board wants stock consideration for tax reasons, but we cannot risk inheriting the compliance liabilities. "
+        "Deal size is about $500M. What structure options do we have that could work for both sides if we need to move quickly?",
+    ),
+    (
         "mixed_legal_math",
         "We are acquiring a target with EU compliance gaps and need a fast structure recommendation, "
         "but also quantify a holdback formula tied to EBITDA and current liabilities. "

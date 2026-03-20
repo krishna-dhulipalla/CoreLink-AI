@@ -205,6 +205,8 @@ def solver_user_message(state: AgentState) -> str:
     complexity_tier = str(workpad.get("task_complexity_tier", "structured_analysis"))
     if complexity_tier != "simple_exact":
         return latest_human_text(state["messages"])
+    if not evidence.get("target_entities") and not evidence.get("relevant_rows"):
+        return latest_human_text(state["messages"])
 
     compact_task = {
         "task_profile": state.get("task_profile", "general"),

@@ -192,3 +192,10 @@ Rules:
 - **Critical Bug Solved:** The runtime was still duplicating user messages in final state, overfeeding simple exact quant tasks with low-signal context, and allowing benchmark-weak legal finals to pass without ever triggering bounded final reflection.
 - **Fix:** Added regression coverage for duplicate-message replacement, benchmark-style quant row selection, stricter legal reviewer gaps, and default complex-qualitative self-reflection routing.
 - **Handoff Notes:** Full suite is green again. The remaining benchmark work should focus on rerunning the legal benchmark trace and verifying whether the stricter deterministic legal gate plus bounded self-reflection materially lift task 2 before touching broader architecture again.
+
+### Chat 22: Follow-up Review Cleanup
+
+- **Role:** Coder
+- **Actions Taken:** Addressed the follow-up code review findings by extracting shared legal keyword groups and typo normalization into [legal_dimensions.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\context\legal_dimensions.py), removing the task1-specific formula keyword bonus in [evidence.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\context\evidence.py), adding a safety fallback in [solver/common.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\solver\common.py) so `simple_exact` only hides the full prompt when extracted evidence is actually present, and expanding [run_live_staged_smoke.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\scripts\run_live_staged_smoke.py) to include both the exact benchmark-style legal prompt and a clean equivalent.
+- **Blockers:** None.
+- **Handoff Notes:** The live smoke can now be used to debug the exact legal benchmark task in-loop without replacing the cleaner legal regression. The shared legal heuristic module also removes the reviewer/self-reflection drift risk.
