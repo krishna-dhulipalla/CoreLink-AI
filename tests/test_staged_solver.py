@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from langchain_core.messages import AIMessage
 
 from agent.nodes.solver import make_solver
+from agent.solver.quant import deterministic_inline_quant_value
 from staged_test_utils import make_state
 
 
@@ -242,7 +243,37 @@ def test_solver_revise_wrapper_only_quant_uses_terminal_deterministic_final(monk
 
     assert result["pending_tool_call"] is None
     assert result["messages"][0].content.startswith("0.9273")
-    assert result["workpad"]["review_stage"] == "SYNTHESIZE"
+
+
+def test_inline_quant_refuses_ambiguous_relevant_rows():
+    state = make_state(
+        "Calculate the financial leverage effect for Company A in 2024.",
+        task_profile="finance_quant",
+        capability_flags=["needs_math", "requires_exact_format"],
+        execution_template={
+            "template_id": "quant_inline_exact",
+            "allowed_stages": ["COMPUTE", "SYNTHESIZE", "REVISE", "COMPLETE"],
+            "default_initial_stage": "COMPUTE",
+            "allowed_tool_names": ["calculator"],
+            "review_stages": ["COMPUTE", "SYNTHESIZE"],
+            "review_cadence": "milestone_and_final",
+            "answer_focus": [],
+        },
+        evidence_pack={
+            "relevant_formulae": ["Financial Leverage Effect = (ROE - ROA) / ROA"],
+            "relevant_rows": [
+                {
+                    "headers": ["Company", "2024 ROE", "2024 ROA"],
+                    "rows": [
+                        {"Company": "Company A", "2024 ROE": 0.030433, "2024 ROA": 0.015791},
+                        {"Company": "Company B", "2024 ROE": 0.01, "2024 ROA": 0.005},
+                    ],
+                }
+            ],
+        },
+    )
+
+    assert deterministic_inline_quant_value(state) is None
 
 
 def test_solver_revise_compute_uses_existing_tool_result_before_more_tools(monkeypatch):

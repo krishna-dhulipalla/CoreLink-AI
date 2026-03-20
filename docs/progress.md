@@ -184,3 +184,11 @@ Rules:
 - **Critical Bug Solved:** None. This is a controlled quality layer, not a bug fix.
 - **Fix:** Added [self_reflection.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\self_reflection.py), routed eligible final passes through it in [graph.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\graph.py) and [reviewer.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\reviewer.py), and added targeted tests in [test_staged_self_reflection.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_staged_self_reflection.py).
 - **Handoff Notes:** The design follows the useful part of self-reflection idea: heuristic-first, single bounded improvement pass, final-only. It is not a new general reflection loop.
+
+### Chat 21: Inline Quant Row-Selection Safety Fix
+
+- **Role:** Coder
+- **Actions Taken:** Fixed the exact-quant evidence bug where fallback prompt-prefix matching could select unrelated table rows and silently feed wrong `ROE` / `ROA` values into deterministic compute. Tightened focus-query extraction, row scoring, row disambiguation, and conflicting assignment handling.
+- **Critical Bug Solved:** Multi-entity or multi-period inline tables could previously contaminate `relevant_rows`, after which deterministic quant compute could use the wrong row without surfacing ambiguity.
+- **Fix:** Replaced the unsafe first-600-character fallback in [evidence.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\context\evidence.py), made table-row selection score and disambiguate against the actual focus line, kept a safe one-row fallback only for single-row tables, and made [quant.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\solver\quant.py) refuse deterministic compute when conflicting row-derived assignments appear.
+- **Handoff Notes:** The deterministic exact-quant path is now conservative by design: resolve one row cleanly or refuse the shortcut.

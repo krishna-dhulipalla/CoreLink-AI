@@ -35,6 +35,14 @@ def _assignments_from_relevant_rows(state: AgentState) -> dict[str, float]:
     evidence_pack = state.get("evidence_pack", {}) or {}
     relevant_rows = list(evidence_pack.get("relevant_rows", []))
     assignments: dict[str, float] = {}
+
+    def _assign_once(name: str, numeric: float) -> bool:
+        existing = assignments.get(name)
+        if existing is None:
+            assignments[name] = numeric
+            return True
+        return abs(existing - numeric) <= 1e-12
+
     for table in relevant_rows:
         for row in table.get("rows", []):
             if not isinstance(row, dict):
@@ -47,13 +55,17 @@ def _assignments_from_relevant_rows(state: AgentState) -> dict[str, float]:
                 lowered = key_text.lower()
                 if _PERCENT_LABEL_RE.search(lowered):
                     if "roe" in lowered or "return on equity" in lowered:
-                        assignments["ROE"] = numeric
+                        if not _assign_once("ROE", numeric):
+                            return {}
                     if "roa" in lowered or "return on assets" in lowered:
-                        assignments["ROA"] = numeric
+                        if not _assign_once("ROA", numeric):
+                            return {}
                 short_key = re.sub(r"[^A-Za-z0-9_]+", "_", key_text).strip("_")
                 if short_key:
-                    assignments.setdefault(short_key, numeric)
-                    assignments.setdefault(short_key.upper(), numeric)
+                    if not _assign_once(short_key, numeric):
+                        return {}
+                    if not _assign_once(short_key.upper(), numeric):
+                        return {}
     return assignments
 
 

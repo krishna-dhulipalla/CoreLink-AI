@@ -176,3 +176,32 @@ class TestContextBuilder:
         checkpoint = result["checkpoint_stack"][0]
         assert checkpoint["template_id"] == "document_qa"
         assert checkpoint["checkpoint_stage"] == "GATHER"
+
+    def test_selects_only_target_row_for_inline_quant_without_user_question_block(self):
+        prompt = """
+        We looked at China Overseas Grand Oceans Group and LVGEM China Real Estate Investment Company Limited.
+
+        Financial Leverage Effect = (ROE - ROA) / ROA
+
+        | Company | 2024 ROE | 2024 ROA |
+        |---|---|---|
+        | China Overseas Grand Oceans Group | 3.0433 % | 1.5791 % |
+        | LVGEM China Real Estate Investment Company Limited | 1.0000 % | 0.5000 % |
+
+        Calculate the financial leverage effect for China Overseas Grand Oceans Group in 2024.
+        Output Format: {"answer": <value>}
+        """
+        state = make_state(prompt)
+        state.update(intake(state))
+        state.update(task_profiler(state))
+        state.update(template_selector(state))
+
+        result = context_builder(state)
+        evidence = result["evidence_pack"]
+
+        assert len(evidence["relevant_rows"]) == 1
+        rows = evidence["relevant_rows"][0]["rows"]
+        assert len(rows) == 1
+        serialized = json.dumps(rows[0], ensure_ascii=True)
+        assert "China Overseas Grand Oceans Group" in serialized
+        assert "LVGEM China Real Estate Investment Company Limited" not in serialized
