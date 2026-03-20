@@ -168,3 +168,11 @@ Rules:
 - **Critical Bug Solved:** Trace and run summaries implied dollar precision even when the active backend model had no reliable pricing entry, and tool budgets were counted but not enforced in the actual tool path.
 - **Fix:** Cost summaries now expose `cost_estimate_status` and `unpriced_models`, `total_cost_usd` is withheld unless pricing is known, and tool-budget exhaustion is enforced inside [tool_runner](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\tool_runner.py).
 - **Handoff Notes:** Use `BENCHMARK_STATELESS=1` for benchmark slices so each task runs as a fresh item with no conversation carryover. Prefer `PROFILER_MODEL`, `SOLVER_MODEL`, and `REVIEWER_MODEL` over the older env names in new setups.
+
+### Chat 19: Options Duplicate-Call Cleanup
+
+- **Role:** Coder
+- **Actions Taken:** Removed low-value duplicate behavior in the deterministic options path. The first primary options tool result now becomes a compute milestone immediately, so the graph moves to `risk_controller` instead of calling `analyze_strategy` twice. Also normalized and deduped equivalent option assumption disclosures like `300` vs `300.0`.
+- **Critical Bug Solved:** The deterministic smoke was still issuing `analyze_strategy` twice before risk review and could repeat the same spot-price assumption in the final answer.
+- **Fix:** Added a primary-strategy compute summary in [options.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\solver\options.py), normalized assumption dedupe in both [options.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\solver\options.py) and [evidence.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\context\evidence.py), and added targeted solver regressions.
+- **Handoff Notes:** The intended deterministic path is now `analyze_strategy -> compute milestone -> risk revise -> scenario_pnl -> compute milestone -> synthesize`. This is the right place to evaluate any future final-only self-reflection layer because the core options path is no longer duplicating its own primary analysis.

@@ -508,6 +508,73 @@ def test_solver_builds_deterministic_options_compute_summary_after_scenario_tool
     assert "max loss" in compute_text
 
 
+def test_solver_builds_primary_options_compute_milestone_after_first_strategy_tool(monkeypatch):
+    monkeypatch.setattr("agent.nodes.solver.ChatOpenAI", lambda **kwargs: _FakeModel(AIMessage(content="unused")))
+    monkeypatch.setattr("agent.nodes.solver._tool_call_mode", lambda role: "prompt")
+
+    solver = make_solver([])
+    state = make_state(
+        "Should you be a net buyer or seller of options when IV is elevated?",
+        task_profile="finance_options",
+        capability_flags=["needs_options_engine"],
+        execution_template={
+            "template_id": "options_tool_backed",
+            "allowed_stages": ["COMPUTE", "SYNTHESIZE", "REVISE", "COMPLETE"],
+            "default_initial_stage": "COMPUTE",
+            "allowed_tool_names": ["analyze_strategy", "scenario_pnl"],
+            "review_stages": ["COMPUTE", "SYNTHESIZE"],
+            "review_cadence": "milestone_and_final",
+            "answer_focus": [],
+        },
+        solver_stage="COMPUTE",
+        last_tool_result={
+            "type": "analyze_strategy",
+            "facts": {
+                "net_premium": 9.16,
+                "premium_direction": "CREDIT",
+                "total_delta": -0.12,
+                "total_gamma": -0.0015,
+                "total_theta_per_day": 0.04,
+                "total_vega_per_vol_point": -0.06,
+                "max_loss": 22.4,
+            },
+            "assumptions": {"legs": [{"S": 300.0}]},
+            "source": {"tool": "analyze_strategy"},
+            "errors": [],
+        },
+        workpad={
+            "events": [],
+            "stage_outputs": {},
+            "tool_results": [
+                {
+                    "type": "analyze_strategy",
+                    "facts": {
+                        "net_premium": 9.16,
+                        "premium_direction": "CREDIT",
+                        "total_delta": -0.12,
+                        "total_gamma": -0.0015,
+                        "total_theta_per_day": 0.04,
+                        "total_vega_per_vol_point": -0.06,
+                        "max_loss": 22.4,
+                    },
+                    "assumptions": {"legs": [{"S": 300.0}]},
+                    "source": {"tool": "analyze_strategy"},
+                    "errors": [],
+                }
+            ],
+        },
+    )
+
+    result = solver(state)
+
+    assert result["pending_tool_call"] is None
+    assert result["workpad"]["review_ready"] is True
+    assert result["workpad"]["review_stage"] == "COMPUTE"
+    compute_text = result["workpad"]["stage_outputs"]["COMPUTE"].lower()
+    assert "tool-backed and ready for risk review" in compute_text
+    assert "scenario analysis is still required" in compute_text
+
+
 def test_solver_builds_deterministic_options_final_answer_after_risk_pass(monkeypatch):
     monkeypatch.setattr("agent.nodes.solver.ChatOpenAI", lambda **kwargs: _FakeModel(AIMessage(content="unused")))
     monkeypatch.setattr("agent.nodes.solver._tool_call_mode", lambda role: "prompt")
@@ -592,6 +659,89 @@ def test_solver_builds_deterministic_options_final_answer_after_risk_pass(monkey
     assert "risk management" in content
     assert "disclosures" in content
     assert "short-volatility / volatility-spike risk" in content
+
+
+def test_solver_dedupes_equivalent_option_assumption_disclosures(monkeypatch):
+    monkeypatch.setattr("agent.nodes.solver.ChatOpenAI", lambda **kwargs: _FakeModel(AIMessage(content="unused")))
+    monkeypatch.setattr("agent.nodes.solver._tool_call_mode", lambda role: "prompt")
+
+    solver = make_solver([])
+    state = make_state(
+        "Should you be a net buyer or seller of options when IV is elevated?",
+        task_profile="finance_options",
+        capability_flags=["needs_options_engine"],
+        solver_stage="SYNTHESIZE",
+        evidence_pack={"derived_facts": {"vol_bias": "short_vol"}},
+        execution_template={
+            "template_id": "options_tool_backed",
+            "allowed_stages": ["COMPUTE", "SYNTHESIZE", "REVISE", "COMPLETE"],
+            "default_initial_stage": "COMPUTE",
+            "allowed_tool_names": ["analyze_strategy", "scenario_pnl"],
+            "review_stages": ["COMPUTE", "SYNTHESIZE"],
+            "review_cadence": "milestone_and_final",
+            "answer_focus": [],
+        },
+        assumption_ledger=[
+            {
+                "key": "spot_price",
+                "assumption": "Spot price was assumed as 300.0 from tool arguments because it was not explicit in prompt evidence.",
+                "source": "tool_arguments:analyze_strategy",
+                "confidence": "medium",
+                "requires_user_visible_disclosure": True,
+                "review_status": "pending",
+            },
+            {
+                "key": "spot_price",
+                "assumption": "Spot price was assumed as 300 from tool arguments because it was not explicit in prompt evidence.",
+                "source": "tool_arguments:scenario_pnl",
+                "confidence": "medium",
+                "requires_user_visible_disclosure": True,
+                "review_status": "pending",
+            },
+        ],
+        workpad={
+            "events": [],
+            "stage_outputs": {},
+            "tool_results": [
+                {
+                    "type": "analyze_strategy",
+                    "facts": {
+                        "net_premium": 15.33,
+                        "premium_direction": "CREDIT",
+                        "total_delta": -0.0729,
+                        "total_gamma": -0.025,
+                        "total_theta_per_day": 0.4177,
+                        "total_vega_per_vol_point": -0.6467,
+                    },
+                    "assumptions": {
+                        "legs": [
+                            {"option_type": "put", "action": "sell", "S": 300.0, "K": 290.0},
+                            {"option_type": "call", "action": "sell", "S": 300.0, "K": 310.0},
+                        ]
+                    },
+                    "source": {"tool": "analyze_strategy"},
+                    "errors": [],
+                },
+                {
+                    "type": "scenario_pnl",
+                    "facts": {"best_case_pnl": 0.42, "worst_case_pnl": -20.92},
+                    "assumptions": {"reference_price": 300.0},
+                    "source": {"tool": "scenario_pnl"},
+                    "errors": [],
+                },
+            ],
+            "risk_results": [{"verdict": "pass"}],
+            "risk_requirements": {
+                "required_disclosures": ["Explicitly disclose short-volatility / volatility-spike risk."],
+                "recommendation_class": "scenario_dependent_recommendation",
+            },
+        },
+    )
+
+    result = solver(state)
+
+    content = result["messages"][0].content
+    assert content.count("Spot price was assumed as") == 1
 
 
 def test_solver_uses_deterministic_policy_tool_call_for_defined_risk_options():

@@ -195,11 +195,26 @@ def _merge_unique_assumptions(
     existing: list[dict[str, Any]] | list[AssumptionRecord],
     additions: list[dict[str, Any]] | list[AssumptionRecord],
 ) -> list[dict[str, Any]]:
+    def _normalize_assumption_signature(value: str) -> str:
+        compact = re.sub(r"\s+", " ", str(value or "")).strip().lower()
+
+        def _normalize_numeric(match: re.Match[str]) -> str:
+            raw = match.group(0)
+            try:
+                return f"{float(raw):g}"
+            except Exception:
+                return raw
+
+        return re.sub(r"-?\d+(?:\.\d+)?", _normalize_numeric, compact)
+
     merged: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
     for record in [*(existing or []), *(additions or [])]:
         payload = record.model_dump() if isinstance(record, AssumptionRecord) else dict(record)
-        signature = (str(payload.get("key", "")), str(payload.get("assumption", "")))
+        signature = (
+            str(payload.get("key", "")),
+            _normalize_assumption_signature(str(payload.get("assumption", ""))),
+        )
         if signature in seen:
             continue
         seen.add(signature)
