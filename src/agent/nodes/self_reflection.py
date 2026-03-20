@@ -18,6 +18,14 @@ from typing import Any
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
+from agent.context.legal_dimensions import (
+    legal_allocation_groups,
+    legal_employee_transfer_groups,
+    legal_execution_groups,
+    legal_regulatory_execution_groups,
+    legal_tax_execution_groups,
+    normalize_legal_task_text,
+)
 from agent.cost import CostTracker
 from agent.model_config import get_model_name, invoke_structured_output
 from agent.runtime_clock import increment_runtime_step
@@ -57,20 +65,26 @@ class ReflectionResult(BaseModel):
 
 
 def _self_reflection_enabled() -> bool:
+    disable_flag = os.getenv("DISABLE_FINAL_SELF_REFLECTION", "").strip().lower()
+    if disable_flag in {"1", "true", "yes", "on"}:
+        return False
     flag = os.getenv("ENABLE_FINAL_SELF_REFLECTION", "").strip().lower()
     benchmark_mode = os.getenv("BENCHMARK_STATELESS", "").strip().lower() in {"1", "true", "yes", "on"}
     return benchmark_mode or flag in {"1", "true", "yes", "on"}
 
 
 def should_run_self_reflection(state: AgentState) -> bool:
-    if not _self_reflection_enabled():
-        return False
     workpad = state.get("workpad", {}) or {}
+    benchmark_or_explicit = _self_reflection_enabled()
+    complexity_tier = str(workpad.get("task_complexity_tier", ""))
+    template_id = str((state.get("execution_template") or {}).get("template_id", ""))
+
+    if not benchmark_or_explicit and complexity_tier != "complex_qualitative":
+        return False
     if int(workpad.get("self_reflection_attempts", 0)) >= 1:
         return False
     if state.get("answer_contract", {}).get("requires_adapter"):
         return False
-    template_id = str((state.get("execution_template") or {}).get("template_id", ""))
     return template_id in _ELIGIBLE_TEMPLATES
 
 
@@ -110,20 +124,8 @@ def _heuristic_reflection(answer: str, state: AgentState) -> ReflectionResult:
         score -= 0.12
 
     if template_id in {"legal_reasoning_only", "legal_with_document_evidence"}:
-        allocation_groups = [
-            ["indemn", "indemnity"],
-            ["escrow", "holdback"],
-            ["reps", "warrant", "representation", "warranty"],
-            ["disclosure schedule"],
-            ["insurance", "r&w insurance", "representation and warranty insurance"],
-            ["cap", "basket", "survival"],
-        ]
-        execution_groups = [
-            ["signing", "sign", "closing", "close"],
-            ["pre-close", "pre close", "interim covenant", "interim operating"],
-            ["consent", "approval", "condition precedent"],
-            ["timeline", "weeks", "days", "rapid", "quickly"],
-        ]
+        allocation_groups = legal_allocation_groups()
+        execution_groups = legal_execution_groups()
         allocation_hits = _keyword_hits(answer, allocation_groups)
         execution_hits = _keyword_hits(answer, execution_groups)
         if allocation_hits >= 4:
@@ -142,6 +144,25 @@ def _heuristic_reflection(answer: str, state: AgentState) -> ReflectionResult:
         if "next step" not in normalized and "next steps" not in normalized:
             score -= 0.06
             missing.append("actionable next steps")
+        task_text = normalize_legal_task_text(
+            next(
+            (str(msg.content) for msg in reversed(state.get("messages", [])) if isinstance(msg, HumanMessage)),
+            "",
+        ))
+        if any(token in task_text for token in ("stock consideration", "stock-for-stock", "tax reasons", "tax")):
+            tax_hits = _keyword_hits(answer, legal_tax_execution_groups())
+            if tax_hits < 2:
+                score -= 0.10
+                missing.append("tax execution detail")
+        if any(token in task_text for token in ("eu", "us", "cross-border", "compliance")):
+            regulatory_hits = _keyword_hits(answer, legal_regulatory_execution_groups())
+            if regulatory_hits < 2:
+                score -= 0.10
+                missing.append("regulatory execution detail")
+            employee_hits = _keyword_hits(answer, legal_employee_transfer_groups())
+            if employee_hits < 2:
+                score -= 0.10
+                missing.append("employee-transfer detail")
 
     elif template_id == "equity_research_report":
         for label, tokens in {

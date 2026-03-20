@@ -195,7 +195,26 @@ def _solver_facing_evidence(evidence: dict[str, Any], complexity_tier: str) -> d
         payload["open_questions"] = []
         payload["citations"] = []
         payload["derived_facts"] = {}
+        payload["entities"] = payload.get("target_entities", [])[:4]
     return payload
+
+
+def solver_user_message(state: AgentState) -> str:
+    evidence = state.get("evidence_pack", {}) or {}
+    workpad = state.get("workpad", {}) or {}
+    complexity_tier = str(workpad.get("task_complexity_tier", "structured_analysis"))
+    if complexity_tier != "simple_exact":
+        return latest_human_text(state["messages"])
+    if not evidence.get("target_entities") and not evidence.get("relevant_rows"):
+        return latest_human_text(state["messages"])
+
+    compact_task = {
+        "task_profile": state.get("task_profile", "general"),
+        "target_entities": evidence.get("target_entities", [])[:4],
+        "target_period": evidence.get("target_period", ""),
+        "required_output": evidence.get("required_output", {}),
+    }
+    return json.dumps(compact_task, ensure_ascii=True)
 
 
 def compact_evidence_block(state: AgentState) -> str:
@@ -248,6 +267,19 @@ def compact_evidence_block(state: AgentState) -> str:
         "stage_outputs": workpad.get("stage_outputs", {}),
         "review_feedback": review_feedback,
     }
+    if complexity_tier == "simple_exact":
+        payload["profile_pack"] = {
+            "domain_summary": profile_pack.get("domain_summary", ""),
+            "content_rules": profile_pack.get("content_rules", [])[:2],
+            "section_requirements": [],
+            "required_evidence_types": profile_pack.get("required_evidence_types", [])[:2],
+            "failure_modes": [],
+        }
+        payload["review_feedback"] = {
+            "verdict": review_feedback.get("verdict"),
+            "repair_target": review_feedback.get("repair_target"),
+            "repair_class": review_feedback.get("repair_class"),
+        }
     return json.dumps(payload, ensure_ascii=True, default=str)
 
 

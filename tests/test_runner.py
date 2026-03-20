@@ -3,6 +3,8 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.errors import GraphRecursionError
 
 import agent.runner as runner_module
+from agent.nodes.intake import intake
+from agent.state import ReplaceMessages
 
 
 class _StaticGraph:
@@ -70,3 +72,14 @@ def test_run_agent_trace_recursion_preserves_partial_answer_and_history(monkeypa
     assert trace["final_state"]["memory_store"] is None
     budget_step = next(step for step in trace["steps"] if step["node"] == "budget_summary")
     assert budget_step["budget_exits"][0]["category"] == "recursion_limit"
+
+
+def test_intake_replaces_message_history_instead_of_appending():
+    state = {
+        "messages": [HumanMessage(content="What is ROE?")],
+        "workpad": {"events": []},
+    }
+
+    result = intake(state)
+
+    assert isinstance(result["messages"], ReplaceMessages)

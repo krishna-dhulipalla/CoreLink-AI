@@ -34,6 +34,7 @@ from agent.solver.common import (
     patch_prompt_tool_call,
     record_event,
     solver_max_tokens,
+    solver_user_message,
     strip_think_markup,
 )
 from agent.solver.market import best_available_timestamp, first_ticker_entity, infer_period_from_text
@@ -505,7 +506,7 @@ def make_solver(tools: list):
             tool_prompt = build_tool_prompt_block(allowed_tools)
             if tool_prompt:
                 messages.append(SystemMessage(content=tool_prompt))
-        messages.append(HumanMessage(content=latest_human_text(state["messages"])))
+        messages.append(HumanMessage(content=solver_user_message(state)))
 
         model_name = get_model_name("solver")
         model = ChatOpenAI(model=model_name, **get_client_kwargs("solver"), temperature=0, max_tokens=solver_max_tokens(stage, profile))

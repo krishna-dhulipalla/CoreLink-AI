@@ -159,6 +159,31 @@ def _row_match_score(row: dict[str, Any], query: str) -> int:
     return best_score
 
 
+def _select_relevant_formulas(formulas: list[str], focus_query: str) -> list[str]:
+    if not formulas:
+        return []
+    normalized_query = _normalize_text(focus_query).lower()
+    query_tokens = _query_tokens(focus_query)
+    scored: list[tuple[int, str]] = []
+    for formula in formulas:
+        normalized_formula = _normalize_text(formula).lower()
+        score = 0
+        if normalized_query and normalized_query in normalized_formula:
+            score += 8
+        formula_tokens = _query_tokens(formula)
+        score += min(len(query_tokens & formula_tokens), 5)
+        formula_name = normalized_formula.split("=", 1)[0].strip()
+        formula_name_tokens = _query_tokens(formula_name)
+        if formula_name_tokens and len(formula_name_tokens & query_tokens) >= min(2, len(formula_name_tokens)):
+            score += 4
+        scored.append((score, formula))
+    ranked = sorted(scored, key=lambda item: item[0], reverse=True)
+    selected = [formula for score, formula in ranked if score > 0][:4]
+    if selected:
+        return selected
+    return formulas[:2]
+
+
 def _select_relevant_table_rows(
     tables: list[dict[str, Any]],
     *,
@@ -193,9 +218,6 @@ def _select_relevant_table_rows(
         matched_rows = [row for score, row in scored_rows if score == top_score]
         unique_labels = {_row_label(row) for row in matched_rows}
         if len(unique_labels) > 1:
-            unused += 1
-            continue
-        if not matched_rows:
             unused += 1
             continue
         normalized_rows: list[dict[str, Any]] = []
@@ -407,9 +429,10 @@ def build_evidence_pack(
     prompt_facts: dict[str, Any] = dict(inline_facts)
     focus_query = _extract_focus_query(task_text)
     target_period = _extract_target_period(task_text)
-    target_entities = extract_entities(focus_query)
+    target_entities = extract_entities(focus_query) or extract_entities(task_text)
     formulas = extract_formulas(task_text)
     parsed_tables = parse_markdown_tables(task_text)
+    relevant_formulae = _select_relevant_formulas(formulas, focus_query)
     relevant_rows, unused_table_count = _select_relevant_table_rows(
         parsed_tables,
         focus_query=focus_query,
@@ -454,7 +477,7 @@ def build_evidence_pack(
         target_entities=target_entities[:6],
         target_period=target_period,
         relevant_rows=relevant_rows,
-        relevant_formulae=formulas[:6],
+        relevant_formulae=relevant_formulae,
         required_output={
             "format": answer_contract.format,
             "requires_adapter": answer_contract.requires_adapter,
@@ -471,7 +494,7 @@ def build_evidence_pack(
         policy_context=policy_context,
         document_evidence=document_placeholders,
         tables=relevant_rows if relevant_rows else parsed_tables[:2],
-        formulas=formulas,
+        formulas=relevant_formulae if relevant_formulae else formulas[:4],
         citations=urls[:],
         open_questions=open_questions,
     )
@@ -509,7 +532,7 @@ def build_evidence_pack(
             source_id="user_prompt",
             extraction_method="table_row_selection",
         ).model_dump()
-    if formulas:
+    if relevant_formulae:
         provenance_map["relevant_formulae"] = ProvenanceRecord(
             source_class="prompt",
             source_id="user_prompt",

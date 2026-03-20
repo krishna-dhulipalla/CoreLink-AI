@@ -16,6 +16,14 @@ from typing import Any
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from agent.contracts import ReviewResult
+from agent.context.legal_dimensions import (
+    legal_allocation_groups,
+    legal_employee_transfer_groups,
+    legal_execution_groups,
+    legal_regulatory_execution_groups,
+    legal_tax_execution_groups,
+    normalize_legal_task_text,
+)
 from agent.document_evidence import has_extracted_document_evidence
 from agent.cost import CostTracker
 from agent.nodes.compliance_guard import requires_compliance_guard
@@ -192,26 +200,23 @@ def _count_token_group_hits(answer_text: str, groups: list[list[str]]) -> int:
     return hits
 
 
-def _legal_depth_gaps(answer_text: str) -> list[str]:
+def _legal_depth_gaps(answer_text: str, task_text: str = "") -> list[str]:
     gaps = _keyword_gaps(answer_text, get_profile_pack("legal_transactional").reviewer_dimensions)
-    allocation_groups = [
-        ["indemn", "indemnity"],
-        ["escrow", "holdback"],
-        ["reps", "warrant", "representation", "warranty"],
-        ["disclosure schedule"],
-        ["insurance", "r&w insurance", "representation and warranty insurance"],
-        ["cap", "basket", "survival"],
-    ]
-    execution_groups = [
-        ["signing", "sign", "closing", "close"],
-        ["pre-close", "pre close", "interim covenant", "interim operating"],
-        ["consent", "approval", "condition precedent"],
-        ["timeline", "weeks", "days", "rapid", "quickly"],
-    ]
+    normalized_task = normalize_legal_task_text(task_text)
+    allocation_groups = legal_allocation_groups()
+    execution_groups = legal_execution_groups()
     if _count_token_group_hits(answer_text, allocation_groups) < 3:
         gaps.append("liability allocation mechanics")
     if _count_token_group_hits(answer_text, execution_groups) < 2:
         gaps.append("execution timing and closing mechanics")
+    if any(token in normalized_task for token in ("stock consideration", "stock-for-stock", "tax reasons", "tax")):
+        if _count_token_group_hits(answer_text, legal_tax_execution_groups()) < 2:
+            gaps.append("tax execution mechanics")
+    if any(token in normalized_task for token in ("eu", "us", "cross-border", "compliance")):
+        if _count_token_group_hits(answer_text, legal_regulatory_execution_groups()) < 2:
+            gaps.append("regulatory execution specifics")
+        if _count_token_group_hits(answer_text, legal_employee_transfer_groups()) < 2:
+            gaps.append("employee-transfer considerations")
     return sorted(set(gaps))
 
 
@@ -293,6 +298,7 @@ def _has_risk_required_disclosures(answer_text: str, disclosures: list[str]) -> 
 
 def _deterministic_review(state: AgentState, artifact: str, is_final: bool) -> ReviewResult | None:
     profile = state.get("task_profile", "general")
+    task_text = latest_human_text(state.get("messages", []))
     workpad = state.get("workpad", {})
     review_stage = workpad.get("review_stage", state.get("solver_stage", "SYNTHESIZE"))
     last_tool_result = state.get("last_tool_result") or {}
@@ -421,7 +427,7 @@ def _deterministic_review(state: AgentState, artifact: str, is_final: bool) -> R
                 )
 
     if is_final and profile == "legal_transactional":
-        gaps = _legal_depth_gaps(artifact)
+        gaps = _legal_depth_gaps(artifact, task_text)
         if gaps:
             return ReviewResult(
                 verdict="revise",
