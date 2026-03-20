@@ -41,8 +41,39 @@ _USER_QUESTION_RE = re.compile(
     r"(?:###\s*<User Question>|<User Question>|User Question)\s*:?\s*(.*?)(?:\n###|\Z)",
     re.IGNORECASE | re.DOTALL,
 )
-_QUESTION_SENTENCE_RE = re.compile(r"([^.!?\n]*\?)")
-_TITLE_ENTITY_TOKEN_RE = re.compile(r"\b[A-Z][A-Za-z0-9&'()./-]{2,}\b")
+_FOCUS_VERB_RE = re.compile(r"\b(calculate|compute|derive|determine|evaluate|find|what is|what's|for)\b", re.IGNORECASE)
+_QUERY_STOPWORDS = {
+    "the",
+    "and",
+    "for",
+    "with",
+    "from",
+    "that",
+    "this",
+    "into",
+    "then",
+    "than",
+    "over",
+    "under",
+    "using",
+    "show",
+    "need",
+    "needs",
+    "should",
+    "would",
+    "could",
+    "about",
+    "compare",
+    "company",
+    "companies",
+    "calculate",
+    "compute",
+    "derive",
+    "determine",
+    "output",
+    "format",
+    "answer",
+}
 
 
 def _normalize_text(value: str) -> str:
@@ -53,15 +84,25 @@ def _extract_focus_query(task_text: str) -> str:
     match = _USER_QUESTION_RE.search(task_text or "")
     if match:
         return _normalize_text(match.group(1))
-    normalized = _normalize_text(task_text)
-    question_matches = _QUESTION_SENTENCE_RE.findall(task_text or "")
-    if question_matches:
-        return _normalize_text(question_matches[-1])
-    for chunk in reversed(re.split(r"[\n\r]+", task_text or "")):
-        candidate = _normalize_text(chunk)
-        if candidate:
-            return candidate[:300]
-    return normalized[:300]
+    candidate_lines: list[str] = []
+    for raw_line in (task_text or "").splitlines():
+        line = _normalize_text(raw_line)
+        if not line:
+            continue
+        lowered = line.lower()
+        if line.startswith("|"):
+            continue
+        if lowered.startswith("output format") or lowered.startswith("reference file") or lowered.startswith("reference:"):
+            continue
+        if lowered.startswith("###") and "question" not in lowered:
+            continue
+        if "=" in line and not line.endswith("?"):
+            continue
+        candidate_lines.append(line)
+    for line in reversed(candidate_lines):
+        if "?" in line or _FOCUS_VERB_RE.search(line):
+            return line
+    return ""
 
 
 def _extract_target_period(task_text: str) -> str:
@@ -84,48 +125,38 @@ def _coerce_row_value(value: Any) -> Any:
     return value
 
 
-def _query_tokens(query: str) -> set[str]:
-    return {
-        token
-        for token in re.findall(r"[A-Za-z0-9][A-Za-z0-9.&'/-]{1,}", (query or "").lower())
-        if len(token) > 2
-    }
+def _query_tokens(text: str) -> set[str]:
+    tokens = set(re.findall(r"[a-z0-9]+", (text or "").lower()))
+    return {token for token in tokens if len(token) >= 3 and token not in _QUERY_STOPWORDS}
 
 
-def _row_match_score(row: dict[str, Any], query: str, target_entities: list[str], target_period: str) -> int:
-    normalized_query = _normalize_text(query).lower()
-    if not normalized_query and not target_entities:
-        return 0
-    query_tokens = _query_tokens(query)
-    entity_tokens = [str(item).strip().lower() for item in target_entities if str(item).strip()]
-    score = 0
+def _row_label(row: dict[str, Any]) -> str:
     for value in row.values():
-        text = _normalize_text(str(value or "")).lower()
+        if isinstance(value, str):
+            text = _normalize_text(value)
+            if text and not re.fullmatch(r"-?\d+(?:\.\d+)?%?", text.replace(",", "")):
+                return text.lower()
+    return json.dumps(row, ensure_ascii=True, sort_keys=True).lower()
+
+
+def _row_match_score(row: dict[str, Any], query: str) -> int:
+    query_tokens = _query_tokens(query)
+    if not query_tokens:
+        return 0
+    best_score = 0
+    for value in row.values():
+        text = _normalize_text(str(value or "").lower())
         if not text:
             continue
-        if text == normalized_query:
-            score += 10
-        elif normalized_query and normalized_query in text:
-            score += 6
-        elif normalized_query and text in normalized_query and len(text) > 4:
-            score += 5
-
-        for entity in entity_tokens:
-            if entity and text == entity:
-                score += 12
-            elif entity and entity in text:
-                score += 8
-
-        text_tokens = {
-            token
-            for token in re.findall(r"[A-Za-z0-9][A-Za-z0-9.&'/-]{1,}", text)
-            if len(token) > 2
-        }
-        score += min(len(query_tokens & text_tokens), 4)
-
-        if target_period and target_period in text:
-            score += 2
-    return score
+        value_tokens = _query_tokens(text)
+        if not value_tokens:
+            continue
+        overlap = len(query_tokens & value_tokens)
+        if overlap > best_score:
+            best_score = overlap
+        if len(value_tokens) >= 2 and value_tokens.issubset(query_tokens):
+            best_score = max(best_score, len(value_tokens) + 2)
+    return best_score
 
 
 def _select_relevant_formulas(formulas: list[str], focus_query: str) -> list[str]:
@@ -162,26 +193,35 @@ def _select_relevant_table_rows(
 ) -> tuple[list[dict[str, Any]], int]:
     selected: list[dict[str, Any]] = []
     unused = 0
+    normalized_entities = [str(item).strip().lower() for item in target_entities if str(item).strip()]
     for table in tables:
         headers = list(table.get("headers", []))
         rows = list(table.get("rows", []))
-        matched_rows: list[tuple[int, dict[str, Any]]] = []
+        scored_rows: list[tuple[int, dict[str, Any]]] = []
         for row in rows:
             if not isinstance(row, dict):
                 continue
-            score = _row_match_score(row, focus_query, target_entities, target_period)
+            row_text = " ".join(str(value or "").lower() for value in row.values())
+            entity_match = any(entity and entity in row_text for entity in normalized_entities)
+            score = _row_match_score(row, focus_query)
+            if entity_match:
+                score += 3
             if score > 0:
-                matched_rows.append((score, row))
-        if not matched_rows:
+                scored_rows.append((score, row))
+        if not scored_rows:
+            if not focus_query and len(rows) == 1 and isinstance(rows[0], dict):
+                scored_rows.append((1, rows[0]))
+            else:
+                unused += 1
+                continue
+        top_score = max(score for score, _ in scored_rows)
+        matched_rows = [row for score, row in scored_rows if score == top_score]
+        unique_labels = {_row_label(row) for row in matched_rows}
+        if len(unique_labels) > 1:
             unused += 1
             continue
-        best_score = max(score for score, _ in matched_rows)
-        if best_score <= 0:
-            unused += 1
-            continue
-        best_rows = [row for score, row in matched_rows if score == best_score][:2]
         normalized_rows: list[dict[str, Any]] = []
-        for row in best_rows:
+        for row in matched_rows[:1]:
             normalized_row: dict[str, Any] = {}
             for key, value in row.items():
                 key_text = str(key)
