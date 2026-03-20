@@ -27,6 +27,47 @@ def test_reviewer_revises_incomplete_legal_final():
     assert "tax consequences" in [gap.lower() for gap in result["review_feedback"]["missing_dimensions"]]
 
 
+def test_reviewer_revises_legal_answer_that_has_sections_but_not_enough_execution_depth():
+    state = make_state(
+        "Need acquisition structure options with tax deferral and liability protection.",
+        task_profile="legal_transactional",
+        capability_flags=["needs_legal_reasoning"],
+        solver_stage="SYNTHESIZE",
+        workpad={
+            "events": [],
+            "stage_outputs": {},
+            "tool_results": [],
+            "review_ready": True,
+            "review_stage": "SYNTHESIZE",
+        },
+    )
+    state["messages"].append(
+        AIMessage(
+            content=(
+                "**Structure Options**\n"
+                "1. Asset purchase with IP carve-out.\n"
+                "2. Stock purchase with indemnities.\n"
+                "3. Merger with insurance.\n\n"
+                "**Tax Consequences**\n"
+                "Stock can defer seller tax, while an asset deal can give the buyer a basis step-up.\n\n"
+                "**Liability Protection**\n"
+                "Use indemnities and insurance to reduce inherited compliance exposure.\n\n"
+                "**Regulatory and Diligence Risks**\n"
+                "EU and US compliance gaps require diligence and regulatory review.\n\n"
+                "**Key Open Questions & Assumptions**\n"
+                "Need to confirm severity and seller willingness.\n\n"
+                "**Recommended Next Steps**\n"
+                "Start diligence immediately and move quickly."
+            )
+        )
+    )
+
+    result = reviewer(state)
+
+    assert result["solver_stage"] == "REVISE"
+    assert "liability allocation mechanics" in [gap.lower() for gap in result["review_feedback"]["missing_dimensions"]]
+
+
 def test_reviewer_passes_bare_numeric_quant_final_for_output_adapter():
     state = make_state(
         'Financial Leverage Effect = (ROE - ROA) / ROA. Output Format: {"answer": <value>}',
@@ -1027,12 +1068,12 @@ def test_reviewer_pass_does_not_checkpoint_legal_reasoning_only():
     state["messages"].append(
         AIMessage(
             content=(
-                "Structure options: asset purchase or reverse triangular merger.\n"
-                "Tax consequences: basis step-up versus seller tax deferral.\n"
-                "Liability protection: indemnities and escrow.\n"
-                "Regulatory and diligence risks: EU and US compliance diligence.\n"
-                "Key open questions and assumptions: seller cooperation and diligence findings.\n"
-                "Recommended next steps: diligence and draft structure terms."
+                "Structure options: asset purchase, reverse triangular merger, or a hybrid stock-and-asset carve-out.\n"
+                "Tax consequences: stock consideration can preserve seller deferral, while an asset deal can give the buyer a basis step-up.\n"
+                "Liability protection: use indemnities, escrow or holdback, reps and warranties, disclosure schedules, and R&W insurance, with caps and baskets where appropriate.\n"
+                "Regulatory and diligence risks: EU and US compliance diligence, consents, approvals, and remediation planning must be sequenced before signing and closing.\n"
+                "Key open questions and assumptions: seller cooperation, severity of the gaps, buyer risk tolerance, and whether pre-close cure is feasible.\n"
+                "Recommended next steps: start diligence immediately, draft structure terms, and set a signing-to-closing timeline with conditions precedent."
             )
         )
     )

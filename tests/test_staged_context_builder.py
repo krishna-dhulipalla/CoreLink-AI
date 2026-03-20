@@ -1,3 +1,5 @@
+import json
+
 from agent.nodes.context_builder import context_builder
 from agent.nodes.intake import intake
 from agent.nodes.task_profiler import task_profiler
@@ -35,8 +37,9 @@ class TestContextBuilder:
         assert evidence["document_evidence"][0]["status"] == "discovered"
         assert evidence["document_evidence"][0]["metadata"]["format"] == "pdf"
         assert evidence["answer_contract"]["format"] == "json"
-        assert "Financial Leverage Effect" in evidence["task_query"]
         assert evidence["relevant_rows"]
+        first_row = evidence["relevant_rows"][0]["rows"][0]
+        assert "China Overseas Grand Oceans Group" in json.dumps(first_row)
         assert result["workpad"]["task_complexity_tier"] == "structured_analysis"
         assert "Use formulas and inline tables from the prompt before calling tools." in evidence["constraints"]
         assert any("metadata or a narrow page/row window first" in item for item in evidence["constraints"])

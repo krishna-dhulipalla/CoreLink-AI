@@ -4,6 +4,7 @@ Options-strategy deterministic helpers.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from agent.solver.market import (
@@ -12,6 +13,26 @@ from agent.solver.market import (
     reference_price_from_tool,
 )
 from agent.state import AgentState
+
+_PRIMARY_OPTIONS_RESULT_TYPES = {
+    "analyze_strategy",
+    "black_scholes_price",
+    "option_greeks",
+    "mispricing_analysis",
+}
+
+
+def _normalized_assumption_text(text: str) -> str:
+    compact = re.sub(r"\s+", " ", str(text or "")).strip().lower()
+
+    def _normalize_numeric(match: re.Match[str]) -> str:
+        raw = match.group(0)
+        try:
+            return f"{float(raw):g}"
+        except Exception:
+            return raw
+
+    return re.sub(r"-?\d+(?:\.\d+)?", _normalize_numeric, compact)
 
 
 def scenario_args_from_primary_tool(tool_result: dict[str, Any]) -> dict[str, Any] | None:
@@ -71,23 +92,51 @@ def deterministic_options_compute_summary(state: AgentState) -> str | None:
     if str(latest_risk_result.get("verdict", "")) == "pass":
         return None
 
-    scenario_result = state.get("last_tool_result") or {}
-    if str(scenario_result.get("type", "")) != "scenario_pnl" or scenario_result.get("errors"):
-        return None
-
     primary_tool = latest_successful_tool_result(
         tool_results,
-        {"analyze_strategy", "black_scholes_price", "option_greeks", "mispricing_analysis"},
+        _PRIMARY_OPTIONS_RESULT_TYPES,
     )
-    primary_facts = primary_tool.get("facts", {}) if isinstance(primary_tool, dict) else {}
-    scenario_facts = scenario_result.get("facts", {}) if isinstance(scenario_result, dict) else {}
-    scenario_assumptions = scenario_result.get("assumptions", {}) if isinstance(scenario_result, dict) else {}
+    if primary_tool is None:
+        return None
 
-    max_loss = primary_facts.get("max_loss")
+    last_tool_result = state.get("last_tool_result") or {}
+    last_tool_type = str(last_tool_result.get("type", ""))
+    primary_facts = primary_tool.get("facts", {}) if isinstance(primary_tool, dict) else {}
     delta = primary_facts.get("total_delta", primary_facts.get("delta"))
     gamma = primary_facts.get("total_gamma", primary_facts.get("gamma"))
     theta = primary_facts.get("total_theta_per_day", primary_facts.get("theta"))
     vega = primary_facts.get("total_vega_per_vol_point", primary_facts.get("vega"))
+    net_premium = primary_facts.get("net_premium")
+    max_loss = primary_facts.get("max_loss")
+
+    if last_tool_type in _PRIMARY_OPTIONS_RESULT_TYPES and not last_tool_result.get("errors"):
+        summary_lines = ["Primary strategy analysis is now tool-backed and ready for risk review."]
+        if isinstance(net_premium, (int, float)):
+            summary_lines.append(f"Net premium is approximately {float(net_premium):.2f}.")
+        greeks_bits: list[str] = []
+        if isinstance(delta, (int, float)):
+            greeks_bits.append(f"delta {float(delta):.3f}")
+        if isinstance(gamma, (int, float)):
+            greeks_bits.append(f"gamma {float(gamma):.3f}")
+        if isinstance(theta, (int, float)):
+            greeks_bits.append(f"theta {float(theta):.3f}/day")
+        if isinstance(vega, (int, float)):
+            greeks_bits.append(f"vega {float(vega):.3f} per vol point")
+        if greeks_bits:
+            summary_lines.append("Key Greeks: " + ", ".join(greeks_bits) + ".")
+        if isinstance(max_loss, (int, float)):
+            summary_lines.append(f"Max loss reference is approximately {float(max_loss):.2f}.")
+        summary_lines.append(
+            "Scenario analysis is still required before finalization so risk review can set the downside control response."
+        )
+        return " ".join(summary_lines)
+
+    scenario_result = last_tool_result
+    if last_tool_type != "scenario_pnl" or scenario_result.get("errors"):
+        return None
+
+    scenario_facts = scenario_result.get("facts", {}) if isinstance(scenario_result, dict) else {}
+    scenario_assumptions = scenario_result.get("assumptions", {}) if isinstance(scenario_result, dict) else {}
     worst_case_pnl = scenario_facts.get("worst_case_pnl")
     best_case_pnl = scenario_facts.get("best_case_pnl")
 
@@ -316,10 +365,16 @@ def deterministic_options_final_answer(state: AgentState) -> str | None:
         disclosures.append(f"Downside scenario loss is approximately {float(worst_case_pnl):.2f}.")
 
     assumption_lines: list[str] = []
+    seen_assumptions: set[str] = set()
     for record in state.get("assumption_ledger", []):
         if not isinstance(record, dict) or not record.get("requires_user_visible_disclosure"):
             continue
-        assumption_lines.append(str(record.get("assumption", "")))
+        assumption_text = str(record.get("assumption", ""))
+        signature = _normalized_assumption_text(assumption_text)
+        if not signature or signature in seen_assumptions:
+            continue
+        seen_assumptions.add(signature)
+        assumption_lines.append(assumption_text)
 
     lines = ["**Recommendation**", f"Be a {recommendation}.", "", "**Primary Strategy**", f"{strategy_label.title()} with {premium_direction.lower()} premium" + (f" of {float(net_premium):.2f}." if isinstance(net_premium, (int, float)) else "."), "", "**Alternative Strategy Comparison**", f"{alternative.title()} is the cleaner alternative when you want {tradeoff}.", "", "**Key Greeks and Breakevens**"]
     greeks_line = []
@@ -445,9 +500,15 @@ def deterministic_policy_options_final_answer(state: AgentState) -> str | None:
         lines.append(f"- {item}")
     if isinstance(worst_case_pnl, (int, float)) and not disclosures:
         lines.append(f"- Stress downside scenario loss is approximately {float(worst_case_pnl):.2f}.")
+    seen_assumptions: set[str] = set()
     for record in state.get("assumption_ledger", []):
         if isinstance(record, dict) and record.get("requires_user_visible_disclosure"):
-            lines.append(f"- Assumption: {record.get('assumption', '')}")
+            assumption_text = str(record.get("assumption", ""))
+            signature = _normalized_assumption_text(assumption_text)
+            if not signature or signature in seen_assumptions:
+                continue
+            seen_assumptions.add(signature)
+            lines.append(f"- Assumption: {assumption_text}")
     lines.append("")
     lines.append(f"Recommendation class: {risk_requirements.get('recommendation_class', 'scenario_dependent_recommendation')}.")
     return "\n".join(lines)

@@ -49,17 +49,25 @@ class _FakeModel:
 @contextmanager
 def patched_models(executor_queue, reviewer_queue):
     original_solver_chat = solver_module.ChatOpenAI
-    original_reviewer_chat = reviewer_module.ChatOpenAI
     original_tool_mode = solver_module._tool_call_mode
+    original_reviewer_invoke = reviewer_module.invoke_structured_output
     try:
         solver_module.ChatOpenAI = lambda **kwargs: _FakeModel(executor_queue)
-        reviewer_module.ChatOpenAI = lambda **kwargs: _FakeModel(reviewer_queue)
         solver_module._tool_call_mode = lambda role: "prompt"
+
+        def _fake_reviewer_invoke(role, schema, messages, temperature=0, max_tokens=0):
+            if not reviewer_queue:
+                raise RuntimeError("Fake reviewer queue exhausted.")
+            response = reviewer_queue.pop(0)
+            content = str(getattr(response, "content", ""))
+            return schema.model_validate_json(content), content
+
+        reviewer_module.invoke_structured_output = _fake_reviewer_invoke
         yield
     finally:
         solver_module.ChatOpenAI = original_solver_chat
-        reviewer_module.ChatOpenAI = original_reviewer_chat
         solver_module._tool_call_mode = original_tool_mode
+        reviewer_module.invoke_structured_output = original_reviewer_invoke
 
 
 @tool

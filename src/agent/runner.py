@@ -140,12 +140,13 @@ async def run_agent_trace(
         "risk_feedback": None,
         "compliance_feedback": None,
         "review_feedback": None,
+        "reflection_feedback": None,
         "checkpoint_stack": [],
         "tool_fail_count": 0,
         "last_tool_signature": "",
         "budget_tracker": budget,
         "cost_tracker": tracker,
-        "memory_store": _get_memory_store(),
+        "memory_store": None,
     }
 
     last_state = initial_state
@@ -157,6 +158,9 @@ async def run_agent_trace(
     except GraphRecursionError as exc:
         logger.warning("[Safety] Recursion limit hit: %s", exc)
         final_state = last_state if isinstance(last_state, dict) else initial_state
+        final_state = dict(final_state)
+        final_state["messages"] = _dedupe_adjacent_messages(list(final_state.get("messages", [])))
+        final_state["memory_store"] = None
         workpad = dict(final_state.get("workpad", {}))
         events = list(workpad.get("events", []))
         events.append({"node": "runner", "action": "recursion limit hit"})
@@ -179,6 +183,9 @@ async def run_agent_trace(
             "final_state": final_state,
         }
 
+    final_state = dict(final_state)
+    final_state["messages"] = _dedupe_adjacent_messages(list(final_state.get("messages", [])))
+    final_state["memory_store"] = None
     tracker = final_state.get("cost_tracker", initial_state["cost_tracker"])
     budget = final_state.get("budget_tracker", initial_state["budget_tracker"])
     steps = _extract_steps(final_state, tracker, budget)

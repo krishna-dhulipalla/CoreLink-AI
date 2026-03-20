@@ -26,7 +26,6 @@ def intake(state: AgentState) -> dict:
     workpad = dict(state.get("workpad", {}))
     workpad.setdefault("stage_history", [])
     workpad.setdefault("events", [])
-    workpad["task_text"] = task_text
     workpad["answer_contract_detected"] = contract.requires_adapter
     workpad["stage_history"].append("PLAN")
     workpad["events"].append({"node": "intake", "action": f"Detected output format={contract.format}"})
