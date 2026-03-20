@@ -83,7 +83,7 @@ def _should_try_llm_profile(profile_decision: ProfileDecision) -> bool:
 
 def _llm_profile(task_text: str) -> tuple[TaskProfile, list[str], list[str]] | None:
     parsed, _ = invoke_structured_output(
-        "coordinator",
+        "profiler",
         _ProfileDecisionPayload,
         [
             SystemMessage(content=_PROFILE_SCHEMA_PROMPT),
@@ -121,7 +121,7 @@ def task_profiler(state: AgentState) -> dict:
     ambiguity_flags = list(profile_decision.ambiguity_flags)
 
     invocation_messages = [HumanMessage(content=task_text)]
-    model_name = get_model_name("coordinator")
+    model_name = get_model_name("profiler")
     success = True
     latency = 0.0
     used_llm = False

@@ -341,6 +341,7 @@ def make_tool_runner(tool_node: ToolNode):
     async def tool_runner(state: AgentState) -> dict:
         step = increment_runtime_step()
         profile = state.get("task_profile", "general")
+        budget = state.get("budget_tracker")
         pending = state.get("pending_tool_call") or {}
         tool_name = str(pending.get("name", "")).strip()
         tool_args = _normalize_finance_tool_args(
@@ -408,6 +409,26 @@ def make_tool_runner(tool_node: ToolNode):
                 "workpad": workpad,
             }
 
+        if budget and budget.tool_calls_exhausted():
+            budget.log_budget_exit("tool_budget_exhausted", f"Blocked tool '{tool_name}' after reaching tool-call cap.")
+            tool_result = ToolResult(
+                type=tool_name,
+                facts={},
+                assumptions=tool_args if isinstance(tool_args, dict) else {},
+                source={"tool": tool_name},
+                errors=[f"Tool-call budget exhausted before running '{tool_name}'."],
+            )
+            workpad.setdefault("tool_results", []).append(tool_result.model_dump())
+            workpad.setdefault("events", []).append({"node": "tool_runner", "action": f"budget blocked {tool_name}"})
+            return {
+                "messages": [ToolMessage(content=json.dumps(tool_result.model_dump(), ensure_ascii=True), name=tool_name, tool_call_id=_extract_tool_call_id(state))],
+                "last_tool_result": tool_result.model_dump(),
+                "pending_tool_call": None,
+                "tool_fail_count": state.get("tool_fail_count", 0) + 1,
+                "last_tool_signature": _tool_signature(state),
+                "workpad": workpad,
+            }
+
         invoke_state = {
             **state,
             "pending_tool_call": normalized_pending,
@@ -447,6 +468,8 @@ def make_tool_runner(tool_node: ToolNode):
         tracker = state.get("cost_tracker")
         if tracker:
             tracker.record_mcp_call()
+        if budget:
+            budget.record_tool_call()
 
         if tool_message is not None:
             normalized_message = ToolMessage(

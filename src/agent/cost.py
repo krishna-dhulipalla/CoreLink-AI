@@ -24,12 +24,8 @@ MODEL_COST_TABLE: dict[str, dict[str, float]] = {
     "openai/gpt-oss-20b":   {"input": 0.0,     "output": 0.0},   # free competition endpoint
 }
 
-# Fallback for unknown models
-_DEFAULT_COST = {"input": 0.001, "output": 0.002}
-
-
-def _get_cost_rates(model_name: str) -> dict[str, float]:
-    return MODEL_COST_TABLE.get(model_name, _DEFAULT_COST)
+def _get_cost_rates(model_name: str) -> dict[str, float] | None:
+    return MODEL_COST_TABLE.get(model_name)
 
 
 # ---------------------------------------------------------------------------
@@ -45,6 +41,7 @@ class OperatorTrace:
     tokens_out: int
     latency_ms: float
     cost_usd: float
+    pricing_known: bool
     success: bool
 
     def to_dict(self) -> dict:
@@ -54,7 +51,8 @@ class OperatorTrace:
             "tokens_in": self.tokens_in,
             "tokens_out": self.tokens_out,
             "latency_ms": round(self.latency_ms, 1),
-            "cost_usd": round(self.cost_usd, 6),
+            "estimated_cost_usd": round(self.cost_usd, 6) if self.pricing_known else None,
+            "pricing_known": self.pricing_known,
             "success": self.success,
         }
 
@@ -85,8 +83,11 @@ class CostTracker:
         """Record an operator invocation and return its trace."""
         effective_model = model_name or self.model_name
         rates = _get_cost_rates(effective_model)
-        cost = (tokens_in / 1000.0) * rates["input"] + \
-               (tokens_out / 1000.0) * rates["output"]
+        pricing_known = rates is not None
+        cost = 0.0
+        if rates is not None:
+            cost = (tokens_in / 1000.0) * rates["input"] + \
+                   (tokens_out / 1000.0) * rates["output"]
 
         trace = OperatorTrace(
             operator=operator,
@@ -95,6 +96,7 @@ class CostTracker:
             tokens_out=tokens_out,
             latency_ms=latency_ms,
             cost_usd=cost,
+            pricing_known=pricing_known,
             success=success,
         )
         self.traces.append(trace)
@@ -113,6 +115,21 @@ class CostTracker:
         return sum(t.cost_usd for t in self.traces)
 
     @property
+    def pricing_status(self) -> str:
+        if not self.traces:
+            return "none"
+        known = [trace for trace in self.traces if trace.pricing_known]
+        if len(known) == len(self.traces):
+            return "known"
+        if known:
+            return "partial"
+        return "unpriced"
+
+    @property
+    def unpriced_models(self) -> list[str]:
+        return sorted({trace.model_name for trace in self.traces if not trace.pricing_known})
+
+    @property
     def wall_clock_ms(self) -> float:
         return (time.monotonic() - self._run_start) * 1000.0
 
@@ -122,7 +139,9 @@ class CostTracker:
             "llm_calls": self.llm_calls,
             "mcp_calls": self.mcp_calls,
             "total_tokens": self.total_tokens,
-            "total_cost_usd": round(self.total_cost(), 6),
+            "total_cost_usd": round(self.total_cost(), 6) if self.pricing_status == "known" else None,
+            "cost_estimate_status": self.pricing_status,
+            "unpriced_models": self.unpriced_models,
             "wall_clock_ms": round(self.wall_clock_ms, 1),
             "models_used": sorted({t.model_name for t in self.traces}),
             "operators_used": [t.operator for t in self.traces],
@@ -134,6 +153,8 @@ class CostTracker:
             "default_model": self.model_name,
             "llm_calls": self.llm_calls,
             "mcp_calls": self.mcp_calls,
+            "cost_estimate_status": self.pricing_status,
+            "unpriced_models": self.unpriced_models,
             "models_used": sorted({t.model_name for t in self.traces}),
             "traces": [trace.to_dict() for trace in self.traces],
         }

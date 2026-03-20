@@ -69,12 +69,13 @@ def context_builder(state: AgentState) -> dict:
     workpad["profile_decision"] = profile_decision.model_dump()
     workpad["execution_template"] = execution_template.model_dump()
     workpad["profile_pack"] = profile_pack.model_dump()
-    workpad["task_complexity_tier"] = infer_task_complexity_tier(
+    complexity_tier = infer_task_complexity_tier(
         execution_template,
         task_profile,
         capability_flags,
         evidence.model_dump(),
     )
+    workpad["task_complexity_tier"] = complexity_tier
     workpad.setdefault("stage_history", [])
     workpad.setdefault("events", [])
     next_stage = initial_stage_for_template(
@@ -96,6 +97,9 @@ def context_builder(state: AgentState) -> dict:
         }
     )
     checkpoint_stack = list(state.get("checkpoint_stack", []))
+    budget = state.get("budget_tracker")
+    if budget is not None:
+        budget.configure(complexity_tier=complexity_tier, template_id=execution_template.template_id)
     policy = selective_checkpoint_policy(execution_template)
     if not checkpoint_stack and policy["enabled"]:
         checkpoint_stack.append(

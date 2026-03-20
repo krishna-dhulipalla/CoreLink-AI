@@ -322,7 +322,7 @@ def route_from_solver(state: AgentState) -> str:
 
 
 def make_solver(tools: list):
-    use_prompt_tools = _tool_call_mode("executor") == "prompt"
+    use_prompt_tools = _tool_call_mode("solver") == "prompt"
 
     def solver(state: AgentState) -> dict:
         step = increment_runtime_step()
@@ -501,9 +501,9 @@ def make_solver(tools: list):
                 messages.append(SystemMessage(content=tool_prompt))
         messages.append(HumanMessage(content=latest_human_text(state["messages"])))
 
-        model_name = get_model_name("executor")
-        model = ChatOpenAI(model=model_name, **get_client_kwargs("executor"), temperature=0, max_tokens=solver_max_tokens(stage, profile))
-        if _tool_call_mode("executor") == "native" and allowed_tools:
+        model_name = get_model_name("solver")
+        model = ChatOpenAI(model=model_name, **get_client_kwargs("solver"), temperature=0, max_tokens=solver_max_tokens(stage, profile))
+        if _tool_call_mode("solver") == "native" and allowed_tools:
             model = model.bind_tools(allowed_tools)
 
         t0 = time.monotonic()

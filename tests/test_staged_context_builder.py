@@ -44,6 +44,7 @@ class TestContextBuilder:
         assert "relevant_formulae" in result["provenance_map"]
         assert "document_evidence.report_pdf.metadata.citation" in result["provenance_map"]
         assert result["workpad"]["profile_pack"]["profile"] == "finance_quant"
+        assert state["budget_tracker"].summary()["complexity_tier"] == "structured_analysis"
 
     def test_derives_options_market_signals(self):
         prompt = (

@@ -19,13 +19,52 @@ from langchain_core.messages import BaseMessage, SystemMessage
 
 load_dotenv(override=False)
 
+_ROLE_ALIASES: dict[str, str] = {
+    "coordinator": "profiler",
+    "profiler": "profiler",
+    "direct": "direct",
+    "executor": "solver",
+    "solver": "solver",
+    "verifier": "reviewer",
+    "reviewer": "reviewer",
+    "formatter": "adapter",
+    "adapter": "adapter",
+    "reflector": "reflection",
+    "reflection": "reflection",
+}
+
 ROLE_MODEL_ENV: dict[str, str] = {
-    "coordinator": "COORDINATOR_MODEL",
+    "profiler": "PROFILER_MODEL",
     "direct": "DIRECT_MODEL",
-    "executor": "EXECUTOR_MODEL",
-    "verifier": "VERIFIER_MODEL",
-    "formatter": "FORMATTER_MODEL",
-    "reflector": "REFLECTOR_MODEL",
+    "solver": "SOLVER_MODEL",
+    "reviewer": "REVIEWER_MODEL",
+    "adapter": "ADAPTER_MODEL",
+    "reflection": "REFLECTION_MODEL",
+}
+
+_LEGACY_ROLE_MODEL_ENV: dict[str, str] = {
+    "profiler": "COORDINATOR_MODEL",
+    "solver": "EXECUTOR_MODEL",
+    "reviewer": "VERIFIER_MODEL",
+    "adapter": "FORMATTER_MODEL",
+    "reflection": "REFLECTOR_MODEL",
+}
+
+_ROLE_CLIENT_PREFIX: dict[str, str] = {
+    "profiler": "PROFILER",
+    "direct": "DIRECT",
+    "solver": "SOLVER",
+    "reviewer": "REVIEWER",
+    "adapter": "ADAPTER",
+    "reflection": "REFLECTION",
+}
+
+_LEGACY_ROLE_CLIENT_PREFIX: dict[str, str] = {
+    "profiler": "COORDINATOR",
+    "solver": "EXECUTOR",
+    "reviewer": "VERIFIER",
+    "adapter": "FORMATTER",
+    "reflection": "REFLECTOR",
 }
 
 LOCAL_BACKEND_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0"}
@@ -36,7 +75,36 @@ _PROMPT_TOOL_HOSTS = {"api.tokenfactory.nebius.com", "api.studio.nebius.ai"}
 
 
 def _role_env_prefix(role: str) -> str:
-    return role.upper()
+    canonical = _canonical_role(role)
+    return _ROLE_CLIENT_PREFIX.get(canonical, canonical.upper())
+
+
+def _canonical_role(role: str) -> str:
+    return _ROLE_ALIASES.get(role, role)
+
+
+def _role_model_env_names(role: str) -> list[str]:
+    canonical = _canonical_role(role)
+    names: list[str] = []
+    current = ROLE_MODEL_ENV.get(canonical)
+    legacy = _LEGACY_ROLE_MODEL_ENV.get(canonical)
+    if current:
+        names.append(current)
+    if legacy and legacy not in names:
+        names.append(legacy)
+    return names
+
+
+def _role_client_prefixes(role: str) -> list[str]:
+    canonical = _canonical_role(role)
+    prefixes: list[str] = []
+    current = _ROLE_CLIENT_PREFIX.get(canonical)
+    legacy = _LEGACY_ROLE_CLIENT_PREFIX.get(canonical)
+    if current:
+        prefixes.append(current)
+    if legacy and legacy not in prefixes:
+        prefixes.append(legacy)
+    return prefixes
 
 
 def _current_default_model() -> str:
@@ -52,63 +120,71 @@ def _profile_models() -> dict[str, dict[str, str]]:
     return {
         "custom": {},
         "oss_debug": {
-            "coordinator": default_model,
+            "profiler": default_model,
             "direct": default_model,
-            "executor": default_model,
-            "verifier": default_model,
-            "formatter": default_model,
-            "reflector": default_model,
+            "solver": default_model,
+            "reviewer": default_model,
+            "adapter": default_model,
+            "reflection": default_model,
         },
         "cheap": {
-            "coordinator": "Qwen/Qwen3-32B-fast",
+            "profiler": "Qwen/Qwen3-32B-fast",
             "direct": "Qwen/Qwen3-32B-fast",
-            "executor": "Qwen/Qwen3-32B-fast",
-            "verifier": "Qwen/Qwen3-32B-fast",
-            "formatter": "meta-llama/Meta-Llama-3.1-8B-Instruct-fast",
-            "reflector": "meta-llama/Meta-Llama-3.1-8B-Instruct-fast",
+            "solver": "Qwen/Qwen3-32B-fast",
+            "reviewer": "Qwen/Qwen3-32B-fast",
+            "adapter": "meta-llama/Meta-Llama-3.1-8B-Instruct-fast",
+            "reflection": "meta-llama/Meta-Llama-3.1-8B-Instruct-fast",
         },
         "balanced": {
-            "coordinator": "Qwen/Qwen3-32B-fast",
+            "profiler": "Qwen/Qwen3-32B-fast",
             "direct": "Qwen/Qwen3-32B-fast",
-            "executor": "meta-llama/Llama-3.3-70B-Instruct-fast",
-            "verifier": "Qwen/Qwen3-32B-fast",
-            "formatter": "meta-llama/Meta-Llama-3.1-8B-Instruct-fast",
-            "reflector": "Qwen/Qwen3-32B-fast",
+            "solver": "meta-llama/Llama-3.3-70B-Instruct-fast",
+            "reviewer": "Qwen/Qwen3-32B-fast",
+            "adapter": "meta-llama/Meta-Llama-3.1-8B-Instruct-fast",
+            "reflection": "Qwen/Qwen3-32B-fast",
         },
         "score_max": {
-            "coordinator": "Qwen/Qwen3-32B-fast",
+            "profiler": "Qwen/Qwen3-32B-fast",
             "direct": "meta-llama/Llama-3.3-70B-Instruct-fast",
-            "executor": "deepseek-ai/DeepSeek-V3-0324-fast",
-            "verifier": "meta-llama/Llama-3.3-70B-Instruct-fast",
-            "formatter": "Qwen/Qwen3-32B-fast",
-            "reflector": "Qwen/Qwen3-32B-fast",
+            "solver": "deepseek-ai/DeepSeek-V3-0324-fast",
+            "reviewer": "meta-llama/Llama-3.3-70B-Instruct-fast",
+            "adapter": "Qwen/Qwen3-32B-fast",
+            "reflection": "Qwen/Qwen3-32B-fast",
         },
     }
 
 
 def get_model_name(role: str) -> str:
     """Resolve the model name for a runtime role."""
-    env_name = ROLE_MODEL_ENV.get(role)
-    if env_name:
+    canonical = _canonical_role(role)
+    for env_name in _role_model_env_names(canonical):
         override = os.getenv(env_name)
         if override:
             return override
 
     profile_models = _profile_models().get(_current_model_profile(), {})
-    if role in profile_models:
-        return profile_models[role]
+    if canonical in profile_models:
+        return profile_models[canonical]
 
     return _current_default_model()
 
 
 def get_client_kwargs(role: str) -> dict[str, Any]:
     """Resolve shared or role-specific OpenAI-compatible client settings."""
-    prefix = _role_env_prefix(role)
+    prefixes = _role_client_prefixes(role)
     profile = _current_model_profile()
     is_nebius_profile = profile in ("cheap", "balanced", "score_max")
 
-    api_key = os.getenv(f"{prefix}_OPENAI_API_KEY")
-    base_url = os.getenv(f"{prefix}_OPENAI_BASE_URL")
+    api_key = None
+    base_url = None
+    for prefix in prefixes:
+        api_key = os.getenv(f"{prefix}_OPENAI_API_KEY")
+        if api_key:
+            break
+    for prefix in prefixes:
+        base_url = os.getenv(f"{prefix}_OPENAI_BASE_URL")
+        if base_url:
+            break
 
     if not api_key:
         if is_nebius_profile and os.getenv("NEBIUS_API_KEY"):
@@ -249,20 +325,20 @@ def startup_compatibility_warnings() -> list[str]:
     """Return startup warnings for risky local backend configurations."""
     warnings: list[str] = []
 
-    executor_host = _base_url_host("executor")
-    if executor_host in LOCAL_BACKEND_HOSTS:
+    solver_host = _base_url_host("solver")
+    if solver_host in LOCAL_BACKEND_HOSTS:
         warnings.append(
-            "Executor is configured to use a localhost OpenAI-compatible backend. "
+            "Solver is configured to use a localhost OpenAI-compatible backend. "
             "If this is vLLM, the backend must support tool-calling requests and may need "
             "--trust-request-chat-template plus the appropriate tool-calling flags. "
-            "If benchmark runs fail, move EXECUTOR_* to a reliable hosted model first."
+            "If benchmark runs fail, move SOLVER_* or EXECUTOR_* to a reliable hosted model first."
         )
 
-    for role in ("coordinator", "verifier"):
+    for role, label in (("profiler", "Profiler"), ("reviewer", "Reviewer")):
         host = _base_url_host(role)
         if host in LOCAL_BACKEND_HOSTS and _structured_output_mode(role) != "local_json":
             warnings.append(
-                f"{role.capitalize()} is using a localhost backend with native structured output. "
+                f"{label} is using a localhost backend with native structured output. "
                 "Set STRUCTURED_OUTPUT_MODE=local_json unless that backend explicitly supports "
                 "provider-native structured output."
             )
@@ -326,4 +402,4 @@ def build_chat_model(role: str, **kwargs: Any) -> ChatOpenAI:
 
 def primary_runtime_model() -> str:
     """Main model label for run-level summaries and defaults."""
-    return get_model_name("executor")
+    return get_model_name("solver")

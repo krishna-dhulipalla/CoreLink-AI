@@ -107,6 +107,31 @@ def test_tool_runner_blocks_profile_allowed_tool_when_template_disallows_it():
     assert "not allowed" in result["last_tool_result"]["errors"][0]
 
 
+def test_tool_runner_blocks_when_tool_budget_is_exhausted():
+    runner = make_tool_runner(_DummyToolNode("calculator", '{"result": 2}'))
+    state = make_state(
+        "Calculate 1 + 1.",
+        task_profile="finance_quant",
+        execution_template={
+            "template_id": "quant_with_tool_compute",
+            "allowed_tool_names": ["calculator"],
+            "allowed_stages": ["GATHER", "COMPUTE", "SYNTHESIZE", "REVISE", "COMPLETE"],
+            "default_initial_stage": "COMPUTE",
+            "review_stages": ["COMPUTE", "SYNTHESIZE"],
+            "review_cadence": "milestone_and_final",
+            "answer_focus": [],
+        },
+        pending_tool_call={"name": "calculator", "arguments": {"expression": "1+1"}},
+    )
+    state["budget_tracker"].configure(complexity_tier="simple_exact", template_id="quant_inline_exact")
+    state["budget_tracker"].tool_calls = state["budget_tracker"].tool_calls_cap
+
+    result = asyncio.run(runner(state))
+
+    assert result["tool_fail_count"] == 1
+    assert "budget exhausted" in result["last_tool_result"]["errors"][0].lower()
+
+
 def test_tool_runner_normalizes_analyze_strategy_output():
     raw = (
         "Multi-Leg Strategy (2 legs):\n"

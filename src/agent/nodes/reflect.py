@@ -52,7 +52,7 @@ def _persist_run(state: AgentState, task_text: str, workpad: dict) -> None:
         success=state.get("solver_stage") == "COMPLETE",
         tool_call_count=len(tool_results),
         review_cycle_count=len(review_results),
-        cost_usd=tracker.total_cost(),
+        cost_usd=tracker.total_cost() if tracker.pricing_status == "known" else 0.0,
         latency_ms=tracker.wall_clock_ms,
         tags=[task_profile, *capability_flags[:4]],
         metadata={
@@ -65,6 +65,8 @@ def _persist_run(state: AgentState, task_text: str, workpad: dict) -> None:
             "risk_result_count": len(risk_results),
             "compliance_result_count": len(compliance_results),
             "recommendation_class": str((workpad.get("risk_requirements") or {}).get("recommendation_class", "")),
+            "cost_estimate_status": tracker.pricing_status,
+            "unpriced_models": tracker.unpriced_models,
         },
     )
     store.store_run(record)

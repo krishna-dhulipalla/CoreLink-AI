@@ -589,7 +589,7 @@ def reviewer(state: AgentState) -> dict:
 
     verdict = deterministic
     latency = 0.0
-    model_name = get_model_name("verifier")
+    model_name = get_model_name("reviewer")
     used_llm = False
     invocation_messages = [
         SystemMessage(content=_REVIEW_PROMPT),
@@ -624,7 +624,7 @@ def reviewer(state: AgentState) -> dict:
         t0 = time.monotonic()
         try:
             verdict, _ = invoke_structured_output(
-                "verifier",
+                "reviewer",
                 ReviewResult,
                 invocation_messages,
                 temperature=0,
