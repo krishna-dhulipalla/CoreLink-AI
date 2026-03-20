@@ -19,6 +19,7 @@ from agent.contracts import ReviewResult
 from agent.document_evidence import has_extracted_document_evidence
 from agent.cost import CostTracker
 from agent.nodes.compliance_guard import requires_compliance_guard
+from agent.nodes.self_reflection import should_run_self_reflection
 from agent.model_config import get_model_name, invoke_structured_output
 from agent.profile_packs import get_profile_pack
 from agent.runtime_clock import increment_runtime_step
@@ -604,6 +605,8 @@ def _restore_checkpoint(state: AgentState) -> dict[str, Any]:
 
 def route_from_reviewer(state: AgentState) -> str:
     if state.get("solver_stage") == "COMPLETE":
+        if should_run_self_reflection(state):
+            return "self_reflection"
         if state.get("answer_contract", {}).get("requires_adapter"):
             return "output_adapter"
         return "reflect"
@@ -709,6 +712,7 @@ def reviewer(state: AgentState) -> dict:
             **restored,
             "workpad": restored_workpad,
             "review_feedback": verdict.model_dump(),
+            "reflection_feedback": None,
             "solver_stage": "REVISE",
         }
 
@@ -735,6 +739,7 @@ def reviewer(state: AgentState) -> dict:
                 return {
                     "messages": [AIMessage(content=repaired)],
                     "review_feedback": None,
+                    "reflection_feedback": None,
                     "solver_stage": "COMPLETE",
                     "workpad": workpad,
                 }
@@ -747,6 +752,7 @@ def reviewer(state: AgentState) -> dict:
             logger.info("[Step %s] reviewer -> terminate after repeated unchanged final review", step)
             return {
                 "review_feedback": verdict.model_dump(),
+                "reflection_feedback": None,
                 "solver_stage": "COMPLETE",
                 "workpad": workpad,
             }
@@ -762,11 +768,13 @@ def reviewer(state: AgentState) -> dict:
                 return {
                     "messages": [AIMessage(content=repaired)],
                     "review_feedback": None,
+                    "reflection_feedback": None,
                     "solver_stage": "COMPLETE",
                     "workpad": workpad,
                 }
             return {
                 "review_feedback": verdict.model_dump(),
+                "reflection_feedback": None,
                 "solver_stage": "COMPLETE",
                 "workpad": workpad,
             }
@@ -776,6 +784,7 @@ def reviewer(state: AgentState) -> dict:
         logger.info("[Step %s] reviewer -> REVISE missing=%s", step, verdict.missing_dimensions)
         return {
             "review_feedback": verdict.model_dump(),
+            "reflection_feedback": None,
             "solver_stage": "REVISE",
             "workpad": workpad,
         }
@@ -803,6 +812,7 @@ def reviewer(state: AgentState) -> dict:
     logger.info("[Step %s] reviewer -> PASS next=%s", step, next_stage)
     return {
         "review_feedback": None,
+        "reflection_feedback": None,
         "solver_stage": next_stage,
         "checkpoint_stack": checkpoint_stack,
         "workpad": workpad,

@@ -50,6 +50,7 @@ class AgentState(TypedDict):
     risk_feedback: dict[str, Any] | None
     compliance_feedback: dict[str, Any] | None
     review_feedback: dict[str, Any] | None
+    reflection_feedback: dict[str, Any] | None
     checkpoint_stack: list[dict]
     tool_fail_count: int
     last_tool_signature: str

@@ -23,6 +23,7 @@ def make_state(
     risk_feedback: dict | None = None,
     compliance_feedback: dict | None = None,
     review_feedback: dict | None = None,
+    reflection_feedback: dict | None = None,
     checkpoint_stack: list[dict] | None = None,
 ):
     return {
@@ -43,6 +44,7 @@ def make_state(
         "risk_feedback": risk_feedback,
         "compliance_feedback": compliance_feedback,
         "review_feedback": review_feedback,
+        "reflection_feedback": reflection_feedback,
         "checkpoint_stack": checkpoint_stack or [],
         "tool_fail_count": 0,
         "last_tool_signature": "",

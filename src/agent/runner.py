@@ -140,6 +140,7 @@ async def run_agent_trace(
         "risk_feedback": None,
         "compliance_feedback": None,
         "review_feedback": None,
+        "reflection_feedback": None,
         "checkpoint_stack": [],
         "tool_fail_count": 0,
         "last_tool_signature": "",
