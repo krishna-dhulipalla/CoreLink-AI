@@ -13,7 +13,7 @@ from langchain_core.messages import HumanMessage
 from agent.contracts import AnswerContract
 from agent.runtime_clock import increment_runtime_step
 from agent.runtime_support import extract_answer_contract, latest_human_text
-from agent.state import AgentState
+from agent.state import AgentState, ReplaceMessages
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +43,7 @@ def intake(state: AgentState) -> dict:
     ]
 
     return {
-        "messages": clean_messages,
+        "messages": ReplaceMessages(clean_messages),
         "answer_contract": contract.model_dump(),
         "solver_stage": "PLAN",
         "workpad": workpad,

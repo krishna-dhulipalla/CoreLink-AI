@@ -48,9 +48,9 @@ PROMPTS = [
     ),
     (
         "legal_transactional",
-        "Target company we're acquiring has clean IP but regulatory compliance gaps in EU and US. "
-        "Board wants stock consideration for tax reasons but we cannot inherit the compliance liabilities. "
-        "Deal size is about $500M. What structure options could work quickly for both sides?",
+        "target company we're acquiring has some clean IP but also regulatory compliance gaps in EU and US. "
+        "ther board wants stock considerafton for tax reasons but we can't risk inheriting the compliance liabilities. "
+        "deal size is ~$500M, what structure options do we have that could work for both sides? Need to move quicly here.",
     ),
     (
         "mixed_legal_math",

@@ -192,8 +192,9 @@ def _count_token_group_hits(answer_text: str, groups: list[list[str]]) -> int:
     return hits
 
 
-def _legal_depth_gaps(answer_text: str) -> list[str]:
+def _legal_depth_gaps(answer_text: str, task_text: str = "") -> list[str]:
     gaps = _keyword_gaps(answer_text, get_profile_pack("legal_transactional").reviewer_dimensions)
+    normalized_task = re.sub(r"\s+", " ", (task_text or "").lower()).strip()
     allocation_groups = [
         ["indemn", "indemnity"],
         ["escrow", "holdback"],
@@ -212,6 +213,29 @@ def _legal_depth_gaps(answer_text: str) -> list[str]:
         gaps.append("liability allocation mechanics")
     if _count_token_group_hits(answer_text, execution_groups) < 2:
         gaps.append("execution timing and closing mechanics")
+    if any(token in normalized_task for token in ("stock consideration", "stock considerafton", "stock-for-stock", "tax reasons", "tax")):
+        us_tax_groups = [
+            ["irs", "section 368", "368", "tax-free reorganization"],
+            ["carryover basis", "built-in gain", "basis"],
+            ["seller tax", "shareholder tax", "capital gain"],
+        ]
+        if _count_token_group_hits(answer_text, us_tax_groups) < 2:
+            gaps.append("tax execution mechanics")
+    if any(token in normalized_task for token in ("eu", "us", "cross-border", "compliance")):
+        regulatory_groups = [
+            ["hsr", "merger control", "antitrust", "foreign investment", "cfius"],
+            ["regulatory remediation", "remediation", "compliance cure", "cure plan"],
+            ["consent", "approval", "notification", "condition precedent"],
+        ]
+        if _count_token_group_hits(answer_text, regulatory_groups) < 2:
+            gaps.append("regulatory execution specifics")
+        employee_groups = [
+            ["employee", "employees", "labor", "employment"],
+            ["works council", "consultation", "collective", "benefit"],
+            ["transfer", "tupe", "retention", "service credit"],
+        ]
+        if _count_token_group_hits(answer_text, employee_groups) < 2:
+            gaps.append("employee-transfer considerations")
     return sorted(set(gaps))
 
 
@@ -293,6 +317,7 @@ def _has_risk_required_disclosures(answer_text: str, disclosures: list[str]) -> 
 
 def _deterministic_review(state: AgentState, artifact: str, is_final: bool) -> ReviewResult | None:
     profile = state.get("task_profile", "general")
+    task_text = latest_human_text(state.get("messages", []))
     workpad = state.get("workpad", {})
     review_stage = workpad.get("review_stage", state.get("solver_stage", "SYNTHESIZE"))
     last_tool_result = state.get("last_tool_result") or {}
@@ -421,7 +446,7 @@ def _deterministic_review(state: AgentState, artifact: str, is_final: bool) -> R
                 )
 
     if is_final and profile == "legal_transactional":
-        gaps = _legal_depth_gaps(artifact)
+        gaps = _legal_depth_gaps(artifact, task_text)
         if gaps:
             return ReviewResult(
                 verdict="revise",

@@ -4,6 +4,7 @@ Inline quantitative helpers.
 
 from __future__ import annotations
 
+import json
 import re
 
 from agent.runtime_support import latest_human_text
@@ -102,4 +103,9 @@ def deterministic_quant_final_answer(state: AgentState) -> str | None:
     value = deterministic_inline_quant_value(state)
     if value is None:
         return None
-    return format_scalar_number(value)
+    formatted = format_scalar_number(value)
+    answer_contract = state.get("answer_contract", {}) or {}
+    if answer_contract.get("requires_adapter") and answer_contract.get("format") == "json":
+        wrapper_key = str(answer_contract.get("wrapper_key") or "answer")
+        return json.dumps({wrapper_key: float(formatted)}, ensure_ascii=True)
+    return formatted

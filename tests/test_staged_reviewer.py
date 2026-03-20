@@ -68,6 +68,49 @@ def test_reviewer_revises_legal_answer_that_has_sections_but_not_enough_executio
     assert "liability allocation mechanics" in [gap.lower() for gap in result["review_feedback"]["missing_dimensions"]]
 
 
+def test_reviewer_revises_legal_answer_missing_regulatory_tax_and_employee_execution_detail():
+    state = make_state(
+        "Target company we're acquiring has EU and US compliance gaps. Board wants stock consideration for tax reasons and we need to move quickly.",
+        task_profile="legal_transactional",
+        capability_flags=["needs_legal_reasoning"],
+        solver_stage="SYNTHESIZE",
+        workpad={
+            "events": [],
+            "stage_outputs": {},
+            "tool_results": [],
+            "review_ready": True,
+            "review_stage": "SYNTHESIZE",
+            "task_complexity_tier": "complex_qualitative",
+        },
+    )
+    state["messages"].append(
+        AIMessage(
+            content=(
+                "**Structure Options**\n"
+                "Asset deal, carve-out merger, or stock deal.\n\n"
+                "**Tax Consequences**\n"
+                "Stock consideration may help with seller tax deferral.\n\n"
+                "**Liability Protection**\n"
+                "Use indemnities and escrow.\n\n"
+                "**Regulatory and Diligence Risks**\n"
+                "EU and US compliance gaps need diligence and regulatory review.\n\n"
+                "**Key Open Questions and Assumptions**\n"
+                "Need to confirm severity and timing.\n\n"
+                "**Recommended Next Steps**\n"
+                "Start diligence immediately."
+            )
+        )
+    )
+
+    result = reviewer(state)
+    gaps = [gap.lower() for gap in result["review_feedback"]["missing_dimensions"]]
+
+    assert result["solver_stage"] == "REVISE"
+    assert "tax execution mechanics" in gaps
+    assert "regulatory execution specifics" in gaps
+    assert "employee-transfer considerations" in gaps
+
+
 def test_reviewer_passes_bare_numeric_quant_final_for_output_adapter():
     state = make_state(
         'Financial Leverage Effect = (ROE - ROA) / ROA. Output Format: {"answer": <value>}',

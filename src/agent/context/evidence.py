@@ -41,6 +41,8 @@ _USER_QUESTION_RE = re.compile(
     r"(?:###\s*<User Question>|<User Question>|User Question)\s*:?\s*(.*?)(?:\n###|\Z)",
     re.IGNORECASE | re.DOTALL,
 )
+_QUESTION_SENTENCE_RE = re.compile(r"([^.!?\n]*\?)")
+_TITLE_ENTITY_TOKEN_RE = re.compile(r"\b[A-Z][A-Za-z0-9&'()./-]{2,}\b")
 
 
 def _normalize_text(value: str) -> str:
@@ -52,7 +54,14 @@ def _extract_focus_query(task_text: str) -> str:
     if match:
         return _normalize_text(match.group(1))
     normalized = _normalize_text(task_text)
-    return normalized[:600]
+    question_matches = _QUESTION_SENTENCE_RE.findall(task_text or "")
+    if question_matches:
+        return _normalize_text(question_matches[-1])
+    for chunk in reversed(re.split(r"[\n\r]+", task_text or "")):
+        candidate = _normalize_text(chunk)
+        if candidate:
+            return candidate[:300]
+    return normalized[:300]
 
 
 def _extract_target_period(task_text: str) -> str:
@@ -75,19 +84,73 @@ def _coerce_row_value(value: Any) -> Any:
     return value
 
 
-def _row_matches_query(row: dict[str, Any], query: str) -> bool:
-    normalized_query = (query or "").lower()
-    if not normalized_query:
-        return False
+def _query_tokens(query: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[A-Za-z0-9][A-Za-z0-9.&'/-]{1,}", (query or "").lower())
+        if len(token) > 2
+    }
+
+
+def _row_match_score(row: dict[str, Any], query: str, target_entities: list[str], target_period: str) -> int:
+    normalized_query = _normalize_text(query).lower()
+    if not normalized_query and not target_entities:
+        return 0
+    query_tokens = _query_tokens(query)
+    entity_tokens = [str(item).strip().lower() for item in target_entities if str(item).strip()]
+    score = 0
     for value in row.values():
-        text = str(value or "").lower()
+        text = _normalize_text(str(value or "")).lower()
         if not text:
             continue
-        if text in normalized_query or normalized_query in text:
-            return True
-        if len(text) > 4 and all(token in normalized_query for token in text.split()[:2]):
-            return True
-    return False
+        if text == normalized_query:
+            score += 10
+        elif normalized_query and normalized_query in text:
+            score += 6
+        elif normalized_query and text in normalized_query and len(text) > 4:
+            score += 5
+
+        for entity in entity_tokens:
+            if entity and text == entity:
+                score += 12
+            elif entity and entity in text:
+                score += 8
+
+        text_tokens = {
+            token
+            for token in re.findall(r"[A-Za-z0-9][A-Za-z0-9.&'/-]{1,}", text)
+            if len(token) > 2
+        }
+        score += min(len(query_tokens & text_tokens), 4)
+
+        if target_period and target_period in text:
+            score += 2
+    return score
+
+
+def _select_relevant_formulas(formulas: list[str], focus_query: str) -> list[str]:
+    if not formulas:
+        return []
+    normalized_query = _normalize_text(focus_query).lower()
+    query_tokens = _query_tokens(focus_query)
+    scored: list[tuple[int, str]] = []
+    for formula in formulas:
+        normalized_formula = _normalize_text(formula).lower()
+        score = 0
+        if normalized_query and normalized_query in normalized_formula:
+            score += 8
+        formula_tokens = _query_tokens(formula)
+        score += min(len(query_tokens & formula_tokens), 5)
+        if any(token in normalized_formula for token in ("roe", "roa", "financial leverage effect")) and any(
+            token in normalized_query for token in ("roe", "roa", "financial leverage effect", "leverage")
+        ):
+            score += 4
+        scored.append((score, formula))
+    ranked = sorted(scored, key=lambda item: item[0], reverse=True)
+    selected = [formula for score, formula in ranked if score > 0][:4]
+    if selected:
+        return selected
+    return formulas[:2]
 
 
 def _select_relevant_table_rows(
@@ -99,24 +162,26 @@ def _select_relevant_table_rows(
 ) -> tuple[list[dict[str, Any]], int]:
     selected: list[dict[str, Any]] = []
     unused = 0
-    normalized_entities = [str(item).strip().lower() for item in target_entities if str(item).strip()]
     for table in tables:
         headers = list(table.get("headers", []))
         rows = list(table.get("rows", []))
-        matched_rows: list[dict[str, Any]] = []
+        matched_rows: list[tuple[int, dict[str, Any]]] = []
         for row in rows:
             if not isinstance(row, dict):
                 continue
-            row_text = " ".join(str(value or "").lower() for value in row.values())
-            entity_match = any(entity and entity in row_text for entity in normalized_entities)
-            query_match = _row_matches_query(row, focus_query)
-            if entity_match or query_match:
-                matched_rows.append(row)
+            score = _row_match_score(row, focus_query, target_entities, target_period)
+            if score > 0:
+                matched_rows.append((score, row))
         if not matched_rows:
             unused += 1
             continue
+        best_score = max(score for score, _ in matched_rows)
+        if best_score <= 0:
+            unused += 1
+            continue
+        best_rows = [row for score, row in matched_rows if score == best_score][:2]
         normalized_rows: list[dict[str, Any]] = []
-        for row in matched_rows[:4]:
+        for row in best_rows:
             normalized_row: dict[str, Any] = {}
             for key, value in row.items():
                 key_text = str(key)
@@ -327,6 +392,7 @@ def build_evidence_pack(
     target_entities = extract_entities(focus_query) or extract_entities(task_text)
     formulas = extract_formulas(task_text)
     parsed_tables = parse_markdown_tables(task_text)
+    relevant_formulae = _select_relevant_formulas(formulas, focus_query)
     relevant_rows, unused_table_count = _select_relevant_table_rows(
         parsed_tables,
         focus_query=focus_query,
@@ -371,7 +437,7 @@ def build_evidence_pack(
         target_entities=target_entities[:6],
         target_period=target_period,
         relevant_rows=relevant_rows,
-        relevant_formulae=formulas[:6],
+        relevant_formulae=relevant_formulae,
         required_output={
             "format": answer_contract.format,
             "requires_adapter": answer_contract.requires_adapter,
@@ -388,7 +454,7 @@ def build_evidence_pack(
         policy_context=policy_context,
         document_evidence=document_placeholders,
         tables=relevant_rows if relevant_rows else parsed_tables[:2],
-        formulas=formulas,
+        formulas=relevant_formulae if relevant_formulae else formulas[:4],
         citations=urls[:],
         open_questions=open_questions,
     )
@@ -426,7 +492,7 @@ def build_evidence_pack(
             source_id="user_prompt",
             extraction_method="table_row_selection",
         ).model_dump()
-    if formulas:
+    if relevant_formulae:
         provenance_map["relevant_formulae"] = ProvenanceRecord(
             source_class="prompt",
             source_id="user_prompt",

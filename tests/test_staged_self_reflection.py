@@ -21,6 +21,30 @@ def test_route_from_reviewer_sends_eligible_finals_to_self_reflection_in_benchma
     assert route_from_reviewer(state) == "self_reflection"
 
 
+def test_route_from_reviewer_sends_complex_qualitative_legal_final_to_self_reflection_without_env(monkeypatch):
+    monkeypatch.delenv("BENCHMARK_STATELESS", raising=False)
+    monkeypatch.delenv("ENABLE_FINAL_SELF_REFLECTION", raising=False)
+    monkeypatch.delenv("DISABLE_FINAL_SELF_REFLECTION", raising=False)
+    state = make_state(
+        "Need to move quickly here.",
+        task_profile="legal_transactional",
+        execution_template={
+            "template_id": "legal_reasoning_only",
+            "allowed_stages": ["SYNTHESIZE", "REVISE", "COMPLETE"],
+        },
+        solver_stage="COMPLETE",
+        workpad={
+            "events": [],
+            "stage_outputs": {},
+            "tool_results": [],
+            "self_reflection_attempts": 0,
+            "task_complexity_tier": "complex_qualitative",
+        },
+    )
+
+    assert route_from_reviewer(state) == "self_reflection"
+
+
 def test_route_from_reviewer_skips_self_reflection_after_one_attempt(monkeypatch):
     monkeypatch.setenv("BENCHMARK_STATELESS", "1")
     state = make_state(

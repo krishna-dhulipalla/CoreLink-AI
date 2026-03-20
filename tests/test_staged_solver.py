@@ -207,7 +207,7 @@ def test_solver_deterministically_synthesizes_inline_quant_scalar(monkeypatch):
     result = solver(state)
 
     assert result["workpad"]["review_stage"] == "SYNTHESIZE"
-    assert result["messages"][0].content.startswith("0.9273")
+    assert result["messages"][0].content.startswith('{"answer": 0.9273')
 
 
 def test_solver_revise_wrapper_only_quant_uses_terminal_deterministic_final(monkeypatch):
@@ -241,7 +241,7 @@ def test_solver_revise_wrapper_only_quant_uses_terminal_deterministic_final(monk
     result = solver(state)
 
     assert result["pending_tool_call"] is None
-    assert result["messages"][0].content.startswith("0.9273")
+    assert result["messages"][0].content.startswith('{"answer": 0.9273')
     assert result["workpad"]["review_stage"] == "SYNTHESIZE"
 
 

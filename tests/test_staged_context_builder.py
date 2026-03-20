@@ -127,6 +127,44 @@ class TestContextBuilder:
         assert result["execution_template"]["template_id"] == "quant_with_tool_compute"
         assert result["solver_stage"] == "GATHER"
 
+    def test_exact_quant_focuses_relevant_company_rows_from_user_question(self):
+        prompt = """
+        ### <Formula List>
+        Financial Leverage Effect = (ROE - ROA) / ROA
+        Quick Ratio = (Current Assets - Inventory) / Current Liabilities
+
+        ### <Related Data>
+        | Stock Name | ROE (2024 Annual Report) (%) |
+        |---|---|
+        | Everbright Environment | 7.4065 % |
+        | China Overseas Grand Oceans Group | 3.0433 % |
+
+        | Stock Name | ROA (2024 Annual Report) (%) |
+        |---|---|
+        | Everbright Environment | 2.5944 % |
+        | China Overseas Grand Oceans Group | 1.5790 % |
+
+        ### <User Question>
+        Please calculate: What is the Financial Leverage Effect (2024 Annual Report) for China Overseas Grand Oceans Group?
+
+        ### Output Format
+        {"answer": <value>}
+        """
+        state = make_state(prompt)
+        state.update(intake(state))
+        state.update(task_profiler(state))
+        state.update(template_selector(state))
+
+        result = context_builder(state)
+        evidence = result["evidence_pack"]
+
+        assert "China Overseas Grand Oceans Group" in evidence["target_entities"]
+        assert evidence["relevant_rows"]
+        serialized_rows = json.dumps(evidence["relevant_rows"])
+        assert "China Overseas Grand Oceans Group" in serialized_rows
+        assert "Everbright Environment" not in serialized_rows
+        assert any("Financial Leverage Effect" in item for item in evidence["relevant_formulae"])
+
     def test_ambiguous_profile_adds_conservative_constraint(self):
         prompt = (
             "We need acquisition structure advice and also a quick valuation ratio calculation from a file "

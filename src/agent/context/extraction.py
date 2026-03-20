@@ -9,6 +9,9 @@ import re
 from typing import Any
 
 _URL_RE = re.compile(r"https?://[^\s\)\]\"',]+")
+_TITLE_ENTITY_RE = re.compile(
+    r"\b(?:[A-Z][A-Za-z0-9&'()./-]*\s+){1,7}[A-Z][A-Za-z0-9&'()./-]*\b"
+)
 _MONTH_NAME_DATE_RE = re.compile(
     r"\b(?:as of|on|dated?|for)\s+"
     r"((?:Jan|January|Feb|February|Mar|March|Apr|April|May|Jun|June|Jul|July|Aug|August|Sep|Sept|September|Oct|October|Nov|November|Dec|December)\s+\d{1,2},?\s+\d{4})",
@@ -91,6 +94,23 @@ def parse_markdown_tables(text: str) -> list[dict[str, Any]]:
 
 def extract_entities(text: str) -> list[str]:
     candidates: list[str] = []
+    normalized = text or ""
+
+    for match in _TITLE_ENTITY_RE.findall(normalized):
+        cleaned = re.sub(r"\s+", " ", match).strip(" ,.:;?()")
+        if len(cleaned) < 6:
+            continue
+        lowered = cleaned.lower()
+        if lowered in {
+            "user question",
+            "related data",
+            "formula list",
+            "output format",
+            "annual report",
+        }:
+            continue
+        if cleaned not in candidates:
+            candidates.append(cleaned)
     for match in re.findall(r"\b[A-Z]{2,6}\b", text or ""):
         if match not in candidates:
             candidates.append(match)
