@@ -11,6 +11,7 @@ import asyncio
 import json
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 os.environ.setdefault("LANGCHAIN_TRACING_V2", "false")
@@ -19,6 +20,7 @@ os.environ.setdefault("LANGSMITH_RUNS_ENDPOINTS", "")
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
+TRACE_DIR = ROOT / "Results&traces"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
@@ -128,16 +130,17 @@ async def main() -> None:
             results.append({"label": label, **_summarize(trace)})
         except Exception as exc:
             results.append({"label": label, "error": str(exc)})
-    print(
-        json.dumps(
-            {
-                "ok": True,
-                "loaded_tools": sorted(getattr(tool, "name", "") for tool in tools if getattr(tool, "name", "")),
-                "results": results,
-            },
-            ensure_ascii=True,
-        )
-    )
+    payload = {
+        "ok": True,
+        "saved_at": datetime.now(timezone.utc).isoformat(),
+        "loaded_tools": sorted(getattr(tool, "name", "") for tool in tools if getattr(tool, "name", "")),
+        "results": results,
+    }
+    TRACE_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    output_path = TRACE_DIR / f"live_staged_smoke_{stamp}.json"
+    output_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    print(json.dumps({"ok": True, "saved_path": str(output_path), "result_count": len(results)}, ensure_ascii=True))
 
 
 if __name__ == "__main__":

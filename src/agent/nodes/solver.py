@@ -426,6 +426,20 @@ def make_solver(tools: list):
                     "\nIf relevant, make reps and warranties, disclosure schedules, escrow or holdback, caps or baskets, insurance, timing, closing conditions, and cure mechanics explicit."
                     "\nPreserve sections that are already valid; deepen only the missing ones."
                 )
+                missing_dimensions = [str(item).lower() for item in review_feedback.get("missing_dimensions", []) if str(item).strip()]
+                targeted_lines: list[str] = []
+                if any("liability allocation" in item for item in missing_dimensions):
+                    targeted_lines.append("For liability allocation mechanics, name concrete tools such as indemnities, escrow or holdback, caps, baskets, survival periods, and buyer-favorable reps and warranties.")
+                if any("regulatory execution" in item for item in missing_dimensions):
+                    targeted_lines.append("For regulatory execution specifics, explain approvals, remediation covenants, interim operating restrictions, and which issues should become closing conditions versus post-close covenants.")
+                if any("tax execution" in item for item in missing_dimensions):
+                    targeted_lines.append("For tax execution mechanics, explain who gets the tax benefit, what election, qualification, or structural condition is required, and what implementation risk or tradeoff could break the intended treatment.")
+                if any("employee-transfer" in item for item in missing_dimensions):
+                    targeted_lines.append("For employee-transfer considerations, address transition mechanics, retained liabilities, consultation obligations, and integration timing constraints.")
+                if any("execution timing" in item for item in missing_dimensions):
+                    targeted_lines.append("For execution timing and closing mechanics, make the signing-to-closing path concrete: diligence gating items, consent sequencing, cure periods, and drop-dead timing.")
+                if targeted_lines:
+                    stage_prompt += "\nTargeted legal repair requirements:\n- " + "\n- ".join(targeted_lines)
         if stage == "REVISE" and risk_feedback:
             stage_prompt += "\nRisk controller feedback:\n" + f"{json.dumps(risk_feedback, ensure_ascii=True)}\n" + f"Repair target stage: {effective_stage}."
         if stage == "REVISE" and compliance_feedback:

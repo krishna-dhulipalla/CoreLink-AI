@@ -141,19 +141,25 @@ def _update_repeat_diagnostics(workpad: dict[str, Any], verdict: ReviewResult, a
     updated = dict(workpad)
     current_signature = _artifact_signature(artifact)
     previous_signature = str(updated.get("repeat_signature", ""))
+    current_missing_signature = "|".join(sorted(str(item).strip().lower() for item in verdict.missing_dimensions if str(item).strip()))
+    previous_missing_signature = str(updated.get("last_missing_signature", ""))
     previous_reason = str(updated.get("last_review_reason", ""))
     previous_verdict = str(updated.get("last_review_verdict", ""))
     current_reason = str(verdict.reasoning or "").strip()
     if (
-        current_signature
-        and current_signature == previous_signature
+        current_reason
         and current_reason == previous_reason
         and verdict.verdict == previous_verdict
+        and (
+            (current_signature and current_signature == previous_signature)
+            or (current_missing_signature and current_missing_signature == previous_missing_signature)
+        )
     ):
         updated["repeat_count"] = int(updated.get("repeat_count", 1)) + 1
     else:
         updated["repeat_count"] = 1
     updated["repeat_signature"] = current_signature
+    updated["last_missing_signature"] = current_missing_signature
     updated["last_repair_target"] = verdict.repair_target
     updated["last_review_reason"] = current_reason
     updated["last_review_verdict"] = verdict.verdict
@@ -750,7 +756,8 @@ def reviewer(state: AgentState) -> dict:
                     "workpad": workpad,
                 }
 
-        if is_final and int(workpad.get("repeat_count", 1)) >= 3:
+        repeat_limit = 2 if is_final and state.get("task_profile") == "legal_transactional" else 3
+        if is_final and int(workpad.get("repeat_count", 1)) >= repeat_limit:
             if budget:
                 budget.log_budget_exit("repeat_review_loop", verdict.reasoning)
             workpad = _record_event(workpad, "repeat-review-loop -> terminate current finalization path")

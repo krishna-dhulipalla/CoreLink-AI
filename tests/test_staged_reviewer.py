@@ -170,6 +170,50 @@ def test_reviewer_terminates_repeated_unchanged_final_loop():
     assert result["review_feedback"]["verdict"] == "revise"
 
 
+def test_reviewer_terminates_repeated_legal_loop_when_same_missing_dimensions_persist():
+    original = reviewer_module._legal_depth_gaps
+    reviewer_module._legal_depth_gaps = lambda answer_text, task_text="": ["tax execution mechanics"]
+    state = make_state(
+        "Target company has EU and US compliance gaps and the board wants stock consideration for tax reasons.",
+        task_profile="legal_transactional",
+        capability_flags=["needs_legal_reasoning"],
+        solver_stage="SYNTHESIZE",
+        workpad={
+            "events": [],
+            "stage_outputs": {},
+            "tool_results": [],
+            "review_results": [],
+            "review_ready": True,
+            "review_stage": "SYNTHESIZE",
+            "repeat_signature": reviewer_module._artifact_signature("Older legal draft with escrow and indemnities."),
+            "repeat_count": 1,
+            "last_missing_signature": "tax execution mechanics",
+            "last_review_reason": "Final legal answer is directionally correct but incomplete.",
+            "last_review_verdict": "revise",
+        },
+    )
+    state["messages"].append(
+        AIMessage(
+            content=(
+                "New wording of the legal answer with escrow, indemnities, regulatory covenants, "
+                "and stock consideration, but still generic on tax execution."
+            )
+        )
+    )
+
+    try:
+        result = reviewer(state)
+    finally:
+        reviewer_module._legal_depth_gaps = original
+
+    assert result["solver_stage"] == "COMPLETE"
+    assert result["review_feedback"]["verdict"] == "revise"
+    assert any(
+        event.get("action") == "repeat-review-loop -> terminate current finalization path"
+        for event in result["workpad"]["events"]
+    )
+
+
 def test_reviewer_revises_truncated_options_final():
     state = make_state(
         "Should I be a net buyer or seller of options?",

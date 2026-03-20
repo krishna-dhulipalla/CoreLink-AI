@@ -134,3 +134,109 @@ def test_self_reflection_passes_strong_qualitative_final(monkeypatch):
     assert result["solver_stage"] == "COMPLETE"
     assert result["workpad"]["self_reflection_attempts"] == 1
     assert result["reflection_feedback"]["complete"] is True
+
+
+def test_self_reflection_converts_repeated_legal_review_loop_into_one_targeted_revise(monkeypatch):
+    monkeypatch.setenv("BENCHMARK_STATELESS", "1")
+    state = make_state(
+        "Need acquisition structure options with tax deferral and liability protection.",
+        task_profile="legal_transactional",
+        execution_template={
+            "template_id": "legal_reasoning_only",
+            "allowed_stages": ["SYNTHESIZE", "REVISE", "COMPLETE"],
+        },
+        solver_stage="COMPLETE",
+        review_feedback={
+            "verdict": "revise",
+            "reasoning": "Final legal answer is directionally correct but incomplete.",
+            "missing_dimensions": [
+                "liability allocation mechanics",
+                "regulatory execution specifics",
+                "tax execution mechanics",
+            ],
+            "repair_target": "final",
+            "repair_class": "missing_section",
+        },
+        workpad={
+            "events": [{"node": "reviewer", "action": "repeat-review-loop -> terminate current finalization path"}],
+            "stage_outputs": {},
+            "tool_results": [],
+            "self_reflection_attempts": 0,
+            "task_complexity_tier": "complex_qualitative",
+            "review_results": [
+                {
+                    "review_stage": "SYNTHESIZE",
+                    "is_final": True,
+                    "verdict": "revise",
+                    "reasoning": "Final legal answer is directionally correct but incomplete.",
+                    "missing_dimensions": [
+                        "liability allocation mechanics",
+                        "regulatory execution specifics",
+                        "tax execution mechanics",
+                    ],
+                    "repair_target": "final",
+                    "repair_class": "missing_section",
+                }
+            ],
+        },
+    )
+    state["messages"].append(
+        AIMessage(
+            content=(
+                "Recommendation: use an asset deal.\n"
+                "Tax: stock can help seller deferral.\n"
+                "Liability: use indemnities.\n"
+                "Next steps: move quickly."
+            )
+        )
+    )
+
+    result = self_reflection(state)
+
+    assert result["solver_stage"] == "REVISE"
+    assert "escrow" in result["review_feedback"]["reasoning"].lower()
+    assert "regulatory" in result["review_feedback"]["reasoning"].lower()
+    assert result["workpad"]["self_reflection_attempts"] == 1
+
+
+def test_self_reflection_converts_revise_budget_exit_into_one_targeted_revise(monkeypatch):
+    monkeypatch.setenv("BENCHMARK_STATELESS", "1")
+    state = make_state(
+        "Need acquisition structure options with tax deferral and liability protection.",
+        task_profile="legal_transactional",
+        execution_template={
+            "template_id": "legal_reasoning_only",
+            "allowed_stages": ["SYNTHESIZE", "REVISE", "COMPLETE"],
+        },
+        solver_stage="COMPLETE",
+        review_feedback={
+            "verdict": "revise",
+            "reasoning": "Final legal answer is directionally correct but incomplete.",
+            "missing_dimensions": ["tax execution mechanics"],
+            "repair_target": "final",
+            "repair_class": "missing_section",
+        },
+        workpad={
+            "events": [{"node": "reviewer", "action": "budget exit -> revise cap exhausted"}],
+            "stage_outputs": {},
+            "tool_results": [],
+            "self_reflection_attempts": 0,
+            "task_complexity_tier": "complex_qualitative",
+        },
+    )
+    state["messages"].append(
+        AIMessage(
+            content=(
+                "Recommendation: use an asset deal.\n"
+                "Tax: stock can help seller deferral.\n"
+                "Liability: use indemnities.\n"
+                "Next steps: move quickly."
+            )
+        )
+    )
+
+    result = self_reflection(state)
+
+    assert result["solver_stage"] == "REVISE"
+    assert "tax benefit" in result["review_feedback"]["reasoning"].lower()
+    assert result["workpad"]["self_reflection_attempts"] == 1

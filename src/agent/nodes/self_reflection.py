@@ -206,9 +206,56 @@ def _heuristic_reflection(answer: str, state: AgentState) -> ReflectionResult:
 def _fallback_result(heuristic: ReflectionResult) -> ReflectionResult:
     if heuristic.complete:
         return heuristic
-    if heuristic.score >= 0.75:
-        return ReflectionResult(score=heuristic.score, complete=True, missing_dimensions=[], improve_prompt="")
     return heuristic
+
+
+def _targeted_legal_improve_prompt(missing_dimensions: list[str]) -> str:
+    normalized = [str(item).lower() for item in missing_dimensions]
+    additions: list[str] = []
+    if any("liability allocation" in item for item in normalized):
+        additions.append("explicit indemnities, escrow or holdback, caps or baskets, and survival periods")
+    if any("regulatory execution" in item for item in normalized):
+        additions.append("regulatory approvals, remediation covenants, and closing-condition mechanics")
+    if any("tax execution" in item for item in normalized):
+        additions.append("tax execution steps, who gets the tax benefit, required elections or qualification conditions, and what could break the intended treatment")
+    if any("employee-transfer" in item for item in normalized):
+        additions.append("employee-transfer and cross-border employment transition points")
+    if any("execution timing" in item for item in normalized):
+        additions.append("signing-to-closing timing, consent sequencing, and cure mechanics")
+    if not additions:
+        additions.append("one concrete layer of execution detail for each missing legal dimension")
+    return "Add concise but concrete legal execution detail covering " + ", ".join(additions[:3]) + "."
+
+
+def _review_loop_reflection_result(state: AgentState) -> ReflectionResult | None:
+    workpad = state.get("workpad", {}) or {}
+    events = list(workpad.get("events", []))
+    if not any(
+        str(event.get("action", "")).startswith("repeat-review-loop -> terminate")
+        or str(event.get("action", "")) == "budget exit -> revise cap exhausted"
+        for event in events
+        if isinstance(event, dict)
+    ):
+        return None
+
+    review_feedback = state.get("review_feedback") or {}
+    missing = [str(item) for item in review_feedback.get("missing_dimensions", []) if str(item).strip()]
+    if not missing:
+        review_results = list(workpad.get("review_results", []))
+        for item in reversed(review_results):
+            if isinstance(item, dict) and item.get("verdict") == "revise" and item.get("is_final"):
+                missing = [str(entry) for entry in item.get("missing_dimensions", []) if str(entry).strip()]
+                break
+    if not missing:
+        return None
+
+    template_id = str((state.get("execution_template") or {}).get("template_id", ""))
+    improve_prompt = ""
+    if template_id in {"legal_reasoning_only", "legal_with_document_evidence"}:
+        improve_prompt = _targeted_legal_improve_prompt(missing)
+    else:
+        improve_prompt = "Add one targeted final improvement pass for: " + ", ".join(missing[:3]) + "."
+    return ReflectionResult(score=0.6, complete=False, missing_dimensions=missing[:5], improve_prompt=improve_prompt)
 
 
 def self_reflection(state: AgentState) -> dict[str, Any]:
@@ -223,6 +270,29 @@ def self_reflection(state: AgentState) -> dict[str, Any]:
         events.append({"node": "self_reflection", "action": "skipped"})
         workpad["events"] = events
         return {"solver_stage": "COMPLETE", "workpad": workpad, "reflection_feedback": None}
+
+    forced_result = _review_loop_reflection_result(state)
+    if forced_result is not None:
+        workpad["self_reflection_attempts"] = attempts + 1
+        history = list(workpad.get("self_reflection_results", []))
+        history.append(forced_result.model_dump())
+        workpad["self_reflection_results"] = history
+        events = list(workpad.get("events", []))
+        review_feedback = {
+            "verdict": "revise",
+            "reasoning": forced_result.improve_prompt or "Final answer needs one targeted improvement pass.",
+            "missing_dimensions": list(forced_result.missing_dimensions),
+            "repair_target": "final",
+            "repair_class": "missing_section",
+        }
+        events.append({"node": "self_reflection", "action": f"REVISE: {review_feedback['reasoning']}"})
+        workpad["events"] = events
+        return {
+            "solver_stage": "REVISE",
+            "review_feedback": review_feedback,
+            "reflection_feedback": forced_result.model_dump(),
+            "workpad": workpad,
+        }
 
     heuristic = _heuristic_reflection(answer, state)
     result = heuristic
@@ -283,7 +353,7 @@ def self_reflection(state: AgentState) -> dict[str, Any]:
     workpad["self_reflection_results"] = history
     events = list(workpad.get("events", []))
 
-    if result.complete or result.score >= 0.75 or not (result.missing_dimensions or result.improve_prompt):
+    if result.complete or not (result.missing_dimensions or result.improve_prompt):
         events.append({"node": "self_reflection", "action": "PASS"})
         workpad["events"] = events
         return {

@@ -182,6 +182,47 @@ def test_solver_synthesize_generates_final_draft(monkeypatch):
     assert result["messages"][0].content.startswith("Use an asset purchase")
 
 
+def test_solver_legal_revise_includes_targeted_repair_requirements(monkeypatch):
+    fake_model = _FakeModel(AIMessage(content="Revised legal answer with deeper mechanics."))
+    monkeypatch.setattr("agent.nodes.solver.ChatOpenAI", lambda **kwargs: fake_model)
+    monkeypatch.setattr("agent.nodes.solver._tool_call_mode", lambda role: "prompt")
+
+    solver = make_solver([])
+    state = make_state(
+        "What structure options do we have for this acquisition?",
+        task_profile="legal_transactional",
+        capability_flags=["needs_legal_reasoning"],
+        execution_template={
+            "template_id": "legal_reasoning_only",
+            "allowed_stages": ["SYNTHESIZE", "REVISE", "COMPLETE"],
+            "default_initial_stage": "SYNTHESIZE",
+            "allowed_tool_names": [],
+            "review_stages": ["SYNTHESIZE"],
+            "review_cadence": "final_only",
+            "answer_focus": [],
+        },
+        solver_stage="REVISE",
+        review_feedback={
+            "repair_target": "final",
+            "repair_class": "missing_section",
+            "missing_dimensions": [
+                "liability allocation mechanics",
+                "regulatory execution specifics",
+                "tax execution mechanics",
+            ],
+        },
+    )
+
+    result = solver(state)
+
+    assert result["workpad"]["review_ready"] is True
+    stage_prompt = fake_model.last_messages[1].content.lower()
+    assert "targeted legal repair requirements" in stage_prompt
+    assert "escrow or holdback" in stage_prompt
+    assert "approvals, remediation covenants" in stage_prompt
+    assert "tax execution mechanics" in stage_prompt
+
+
 def test_solver_deterministically_synthesizes_inline_quant_scalar(monkeypatch):
     monkeypatch.setattr("agent.nodes.solver.ChatOpenAI", lambda **kwargs: _FakeModel(AIMessage(content="unused")))
     monkeypatch.setattr("agent.nodes.solver._tool_call_mode", lambda role: "prompt")
