@@ -160,3 +160,11 @@ Rules:
 - **Critical Bug Solved:** Exact `finance_quant` tasks were computing correctly and then looping through repeated final reviews because the runtime stayed in open-ended synthesis instead of collapsing into a terminal answer path; recursion handling also discarded the best partial answer.
 - **Fix:** The quant path now runs as `simple_exact`, solver-facing evidence is reduced to relevant formula/row/output data, recursion fallback keeps the real partial final answer, and unchanged final-review loops terminate deterministically instead of burning graph steps.
 - **Handoff Notes:** The live staged smoke now shows `finance_quant` finishing cleanly as exact JSON with no LLM/tool churn. The next benchmark-focused work should target deeper legal completeness and broader QA/long-document readiness rather than another control-flow rewrite.
+
+### Chat 18: Budget, Cost, and Benchmark Mode Cleanup
+
+- **Role:** Coder
+- **Actions Taken:** Aligned budget tracking with the staged runtime by making it complexity-tier aware, enforcing tool-call budgets at runtime, and cleaning cost summaries so unpriced models no longer produce misleading USD totals. Renamed model roles to the v3-native `profiler` / `solver` / `reviewer` surface while keeping legacy env compatibility. Added a dedicated benchmark/stateless smoke and updated the public README to document `BENCHMARK_STATELESS` and the canonical model env vars.
+- **Critical Bug Solved:** Trace and run summaries implied dollar precision even when the active backend model had no reliable pricing entry, and tool budgets were counted but not enforced in the actual tool path.
+- **Fix:** Cost summaries now expose `cost_estimate_status` and `unpriced_models`, `total_cost_usd` is withheld unless pricing is known, and tool-budget exhaustion is enforced inside [tool_runner](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\tool_runner.py).
+- **Handoff Notes:** Use `BENCHMARK_STATELESS=1` for benchmark slices so each task runs as a fresh item with no conversation carryover. Prefer `PROFILER_MODEL`, `SOLVER_MODEL`, and `REVIEWER_MODEL` over the older env names in new setups.

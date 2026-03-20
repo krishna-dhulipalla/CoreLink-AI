@@ -58,10 +58,20 @@ Create a `.env` file:
 OPENAI_API_KEY=...
 MODEL_PROFILE=balanced
 MODEL_NAME=Qwen/Qwen3-32B-fast
+PROFILER_MODEL=Qwen/Qwen3-32B-fast
+SOLVER_MODEL=Qwen/Qwen3-32B-fast
+REVIEWER_MODEL=Qwen/Qwen3-32B-fast
 STRUCTURED_OUTPUT_MODE=local_json
 MCP_SERVER_STDIO=
 MCP_SERVER_URLS=
 ```
+
+Model role env vars:
+- `PROFILER_MODEL` controls task profiling fallback
+- `SOLVER_MODEL` controls the main staged reasoning path
+- `REVIEWER_MODEL` controls ambiguous final review only
+
+Legacy env names like `COORDINATOR_MODEL`, `EXECUTOR_MODEL`, and `VERIFIER_MODEL` still work, but the canonical names above are preferred.
 
 Start the A2A server:
 
@@ -89,11 +99,28 @@ Live LLM smoke:
 uv run python scripts/run_live_staged_smoke.py
 ```
 
+Benchmark/stateless smoke:
+
+```bash
+BENCHMARK_STATELESS=1 uv run python scripts/run_benchmark_stateless_smoke.py
+```
+
 Test suite:
 
 ```bash
 uv run pytest tests -q
 ```
+
+## Benchmark Mode
+
+Set `BENCHMARK_STATELESS=1` when you want each run to behave like a fresh benchmark item instead of an interactive conversation.
+
+In this mode the runtime:
+- ignores prior conversation history
+- avoids writing prior turns back into the next benchmark item
+- dedupes adjacent repeated messages before graph entry
+
+Use it for offline benchmark slices and trace debugging. Leave it unset for normal multi-turn A2A usage.
 
 ## Project Layout
 

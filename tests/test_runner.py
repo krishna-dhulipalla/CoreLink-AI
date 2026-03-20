@@ -45,6 +45,8 @@ def test_run_agent_trace_stateless_mode_ignores_history_and_dedupes(monkeypatch)
 
     assert [msg.content for msg in graph.initial_state["messages"]] == ["What is ROE?"]
     assert [msg.content for msg in trace["updated_history"]] == ["What is ROE?", "0.12"]
+    budget_step = next(step for step in trace["steps"] if step["node"] == "budget_summary")
+    assert budget_step["complexity_tier"] == "structured_analysis"
 
 
 def test_run_agent_trace_recursion_preserves_partial_answer_and_history(monkeypatch):
