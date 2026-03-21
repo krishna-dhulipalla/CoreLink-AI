@@ -26,6 +26,7 @@ if str(SRC) not in sys.path:
 
 from agent.graph import build_agent_graph
 from agent.runner import run_agent_trace
+from agent.runtime_version import get_runtime_version
 from mcp_client import load_mcp_tools_from_env
 
 
@@ -102,11 +103,17 @@ def _summarize(trace: dict) -> dict:
     state = trace["final_state"]
     workpad = state.get("workpad", {})
     return {
+        "runtime_version": get_runtime_version(),
         "answer": trace["answer"],
         "task_profile": state.get("task_profile"),
         "capability_flags": state.get("capability_flags"),
         "ambiguity_flags": state.get("ambiguity_flags"),
         "execution_template": (state.get("execution_template") or {}).get("template_id"),
+        "task_intent": state.get("task_intent", {}),
+        "tool_plan": state.get("tool_plan", {}),
+        "curated_context": state.get("curated_context", {}),
+        "quality_report": state.get("quality_report", {}),
+        "fast_path_used": state.get("fast_path_used", False),
         "assumption_ledger": state.get("assumption_ledger", []),
         "provenance_keys": sorted((state.get("provenance_map") or {}).keys())[:20],
         "solver_stage": state.get("solver_stage"),
@@ -133,6 +140,7 @@ async def main() -> None:
     payload = {
         "ok": True,
         "saved_at": datetime.now(timezone.utc).isoformat(),
+        "runtime_version": get_runtime_version(),
         "loaded_tools": sorted(getattr(tool, "name", "") for tool in tools if getattr(tool, "name", "")),
         "results": results,
     }

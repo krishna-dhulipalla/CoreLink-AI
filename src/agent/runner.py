@@ -153,6 +153,13 @@ async def run_agent_trace(
         "budget_tracker": budget,
         "cost_tracker": tracker,
         "memory_store": None,
+        "task_intent": {},
+        "tool_plan": {},
+        "source_bundle": {},
+        "curated_context": {},
+        "execution_journal": {"events": [], "tool_results": [], "routed_tool_families": [], "revision_count": 0, "self_reflection_count": 0, "final_artifact_signature": ""},
+        "quality_report": {},
+        "fast_path_used": False,
     }
 
     last_state = initial_state

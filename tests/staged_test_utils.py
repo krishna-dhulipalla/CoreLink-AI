@@ -25,6 +25,13 @@ def make_state(
     review_feedback: dict | None = None,
     reflection_feedback: dict | None = None,
     checkpoint_stack: list[dict] | None = None,
+    task_intent: dict | None = None,
+    tool_plan: dict | None = None,
+    source_bundle: dict | None = None,
+    curated_context: dict | None = None,
+    execution_journal: dict | None = None,
+    quality_report: dict | None = None,
+    fast_path_used: bool = False,
 ):
     return {
         "messages": [HumanMessage(content=prompt)],
@@ -51,4 +58,18 @@ def make_state(
         "budget_tracker": BudgetTracker(),
         "cost_tracker": CostTracker(),
         "memory_store": None,
+        "task_intent": task_intent or {},
+        "tool_plan": tool_plan or {},
+        "source_bundle": source_bundle or {},
+        "curated_context": curated_context or {},
+        "execution_journal": execution_journal or {
+            "events": [],
+            "tool_results": [],
+            "routed_tool_families": [],
+            "revision_count": 0,
+            "self_reflection_count": 0,
+            "final_artifact_signature": "",
+        },
+        "quality_report": quality_report or {},
+        "fast_path_used": fast_path_used,
     }

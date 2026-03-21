@@ -26,6 +26,7 @@ from agent.nodes.solver import make_solver, route_from_solver
 from agent.nodes.task_profiler import task_profiler
 from agent.nodes.template_selector import template_selector
 from agent.nodes.tool_runner import make_tool_runner
+from agent.runtime_version import use_v4_runtime
 from agent.state import AgentState
 from tools import CALCULATOR_TOOL, SEARCH_TOOL
 
@@ -45,7 +46,7 @@ def get_current_time() -> str:
 BUILTIN_TOOLS: list[Any] = [CALCULATOR_TOOL, SEARCH_TOOL, get_current_time]
 
 
-def build_agent_graph(external_tools: list | None = None):
+def build_v3_agent_graph(external_tools: list | None = None):
     """Construct and compile the staged finance-first LangGraph."""
     all_tools = BUILTIN_TOOLS + (external_tools or [])
     raw_tool_node = ToolNode(all_tools)
@@ -79,3 +80,11 @@ def build_agent_graph(external_tools: list | None = None):
     graph.add_edge("reflect", END)
 
     return graph.compile()
+
+
+def build_agent_graph(external_tools: list | None = None):
+    if use_v4_runtime():
+        from agent.v4.graph import build_v4_agent_graph
+
+        return build_v4_agent_graph(external_tools=external_tools)
+    return build_v3_agent_graph(external_tools=external_tools)

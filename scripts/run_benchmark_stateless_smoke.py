@@ -11,6 +11,7 @@ import asyncio
 import json
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 os.environ.setdefault("LANGCHAIN_TRACING_V2", "false")
@@ -26,6 +27,9 @@ if str(SRC) not in sys.path:
 from langchain_core.messages import AIMessage, HumanMessage
 
 from agent.runner import run_agent_trace
+from agent.runtime_version import get_runtime_version
+
+TRACE_DIR = ROOT / "Results&traces"
 
 
 class _StaticGraph:
@@ -63,18 +67,19 @@ async def main():
     if budget_summary.get("complexity_tier") != "structured_analysis":
         raise SystemExit(f"unexpected default complexity tier: {budget_summary.get('complexity_tier')}")
 
-    print(
-        json.dumps(
-            {
-                "ok": True,
-                "benchmark_stateless": True,
-                "initial_messages": initial_messages,
-                "updated_history": updated_history,
-                "budget_summary": budget_summary,
-            },
-            ensure_ascii=True,
-        )
-    )
+    payload = {
+        "ok": True,
+        "benchmark_stateless": True,
+        "runtime_version": get_runtime_version(),
+        "initial_messages": initial_messages,
+        "updated_history": updated_history,
+        "budget_summary": budget_summary,
+    }
+    TRACE_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    output_path = TRACE_DIR / f"benchmark_stateless_smoke_{stamp}.json"
+    output_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    print(json.dumps({"ok": True, "saved_path": str(output_path), "runtime_version": get_runtime_version()}, ensure_ascii=True))
 
 
 if __name__ == "__main__":
