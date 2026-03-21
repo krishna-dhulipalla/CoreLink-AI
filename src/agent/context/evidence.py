@@ -38,8 +38,8 @@ _RISK_CAP_RE = re.compile(
 )
 _YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
 _USER_QUESTION_RE = re.compile(
-    r"(?:###\s*<User Question>|<User Question>|User Question)\s*:?\s*(.*?)(?:\n###|\Z)",
-    re.IGNORECASE | re.DOTALL,
+    r"(?im)^\s*(?:###\s*)?(?:<User Question>|User Question)\s*:?\s*(.*?)\s*(?=^\s*###|\Z)",
+    re.DOTALL,
 )
 _FOCUS_VERB_RE = re.compile(r"\b(calculate|compute|derive|determine|evaluate|find|what is|what's|for)\b", re.IGNORECASE)
 _QUERY_STOPWORDS = {
@@ -215,6 +215,9 @@ def _select_relevant_table_rows(
                 unused += 1
                 continue
         top_score = max(score for score, _ in scored_rows)
+        if focus_query and top_score < 2:
+            unused += 1
+            continue
         matched_rows = [row for score, row in scored_rows if score == top_score]
         unique_labels = {_row_label(row) for row in matched_rows}
         if len(unique_labels) > 1:

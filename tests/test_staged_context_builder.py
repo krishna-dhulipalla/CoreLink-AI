@@ -165,6 +165,89 @@ class TestContextBuilder:
         assert "Everbright Environment" not in serialized_rows
         assert any("Financial Leverage Effect" in item for item in evidence["relevant_formulae"])
 
+    def test_exact_quant_prefers_heading_user_question_over_instructional_mentions(self):
+        prompt = """
+        You are an expert in data calculation. Please answer the <User Question> based on the provided <Formula List> and <Related Data>.
+
+        ### <Formula List>
+        Financial Leverage Effect = (ROE - ROA) / ROA
+        Quick Ratio = (Current Assets - Inventory) / Current Liabilities
+
+        ### <Related Data>
+        | Stock Name | Return on Equity (ROE) (2024 Annual Report) (%) |
+        |---|---|
+        | Everbright Environment | 7.4065 % |
+        | China Overseas Grand Oceans Group | 3.0433 % |
+
+        | Stock Name | Return on Assets (ROA) (2024 Annual Report) (%) |
+        |---|---|
+        | Everbright Environment | 2.5944 % |
+        | China Overseas Grand Oceans Group | 1.5790 % |
+
+        ### <User Question>
+        Please calculate: What is the Financial Leverage Effect (2024 Annual Report) for China Overseas Grand Oceans Group?
+
+        ### Output Format
+        {"answer": <value>}
+        """
+        state = make_state(prompt)
+        state.update(intake(state))
+        state.update(task_profiler(state))
+        state.update(template_selector(state))
+
+        result = context_builder(state)
+        evidence = result["evidence_pack"]
+
+        assert "China Overseas Grand Oceans Group" in evidence["target_entities"]
+        serialized_rows = json.dumps(evidence["relevant_rows"], ensure_ascii=True)
+        assert "China Overseas Grand Oceans Group" in serialized_rows
+        assert "Everbright Environment" not in serialized_rows
+        assert any("Financial Leverage Effect" in item for item in evidence["relevant_formulae"])
+
+    def test_exact_quant_benchmark_prompt_does_not_pull_other_company_rows(self):
+        prompt = """
+        You are an expert in data calculation. Please answer the <User Question> based on the provided <Formula List> and <Related Data>.
+
+        ### <Formula List>
+        \text{Financial Leverage Effect} = \frac{\text{Numerator} = \text{ROE} - \text{ROA}}{\text{ROA}}\\
+        \text{Numerator} = \text{ROE} - \text{ROA}\\
+        Note: ROE = Return on Equity, ROA = Return on Assets. Data uses 2024 Annual Report figures (unit: %)
+
+        ### <Related Data>
+        |Stock Name|Stock Code|Return on Equity (ROE) (2024 Annual Report) (%)|
+        |---|---|---|
+        | China Overseas Grand Oceans Group |0081.HK|3.0433 %|
+
+        |Stock Name|Stock Code|Return on Assets (ROA) (2024 Annual Report) (%)|
+        |---|---|---|
+        | China Overseas Grand Oceans Group |0081.HK|1.579 %|
+
+        |Stock Name|Stock Code|Return on Equity (ROE) (2024 Annual Report) (%)|
+        |---|---|---|
+        | Midea Group |0300.HK|20.3026 %|
+
+        |Stock Name|Stock Code|Return on Assets (ROA) (2024 Annual Report) (%)|
+        |---|---|---|
+        | Midea Group |0300.HK|7.693 %|
+
+        ### <User Question>
+        Please calculate: What is the Financial Leverage Effect (2024 Annual Report) for China Overseas Grand Oceans Group ?
+
+        ### Output Format
+        {"answer": <value>}
+        """
+        state = make_state(prompt)
+        state.update(intake(state))
+        state.update(task_profiler(state))
+        state.update(template_selector(state))
+
+        result = context_builder(state)
+        evidence = result["evidence_pack"]
+        serialized_rows = json.dumps(evidence["relevant_rows"], ensure_ascii=True)
+
+        assert "China Overseas Grand Oceans Group" in serialized_rows
+        assert "Midea Group" not in serialized_rows
+
     def test_ambiguous_profile_adds_conservative_constraint(self):
         prompt = (
             "We need acquisition structure advice and also a quick valuation ratio calculation from a file "

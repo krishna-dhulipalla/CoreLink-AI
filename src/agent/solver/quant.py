@@ -13,6 +13,7 @@ from agent.state import AgentState
 
 _FORMULA_RE = re.compile(r"\b([A-Za-z][A-Za-z0-9_ ]{1,80})\s*=\s*([^\n.;]+)")
 _PERCENT_LABEL_RE = re.compile(r"(roe|roa|return on equity|return on assets)", re.IGNORECASE)
+_TEXT_BLOCK_RE = re.compile(r"\\text\{([^{}]+)\}")
 
 
 def _coerce_numeric(value):
@@ -70,6 +71,66 @@ def _assignments_from_relevant_rows(state: AgentState) -> dict[str, float]:
     return assignments
 
 
+def _strip_latex_text(expression: str) -> str:
+    previous = None
+    current = expression
+    while previous != current:
+        previous = current
+        current = _TEXT_BLOCK_RE.sub(lambda match: match.group(1), current)
+    return current
+
+
+def _extract_braced_segment(text: str, start_index: int) -> tuple[str, int] | tuple[None, None]:
+    if start_index >= len(text) or text[start_index] != "{":
+        return None, None
+    depth = 0
+    segment_chars: list[str] = []
+    for index in range(start_index, len(text)):
+        char = text[index]
+        if char == "{":
+            depth += 1
+            if depth == 1:
+                continue
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return "".join(segment_chars), index + 1
+        if depth >= 1:
+            segment_chars.append(char)
+    return None, None
+
+
+def _latex_fraction_to_expression(expression: str) -> str:
+    normalized = expression
+    while "\\frac" in normalized:
+        frac_index = normalized.find("\\frac")
+        num, next_index = _extract_braced_segment(normalized, frac_index + len("\\frac"))
+        if num is None or next_index is None:
+            break
+        den, end_index = _extract_braced_segment(normalized, next_index)
+        if den is None or end_index is None:
+            break
+        replacement = f"(({num})/({den}))"
+        normalized = normalized[:frac_index] + replacement + normalized[end_index:]
+    return normalized
+
+
+def _normalize_formula_expression(expression: str) -> str:
+    normalized = expression.replace("\\\\", " ")
+    normalized = _strip_latex_text(normalized)
+    normalized = _latex_fraction_to_expression(normalized)
+    normalized = normalized.replace("{", "(").replace("}", ")")
+    normalized = re.sub(
+        r"\(\s*[A-Za-z][A-Za-z0-9_ ]{0,80}\s*=\s*",
+        "(",
+        normalized,
+    )
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    if "=" in normalized:
+        normalized = normalized.split("=", 1)[1].strip()
+    return normalized
+
+
 def deterministic_inline_quant_value(state: AgentState) -> float | None:
     template_id = str((state.get("execution_template") or {}).get("template_id", ""))
     if template_id != "quant_inline_exact":
@@ -84,6 +145,13 @@ def deterministic_inline_quant_value(state: AgentState) -> float | None:
         return None
 
     candidates: list[str] = []
+    for formula in formulas:
+        formula_text = str(formula or "").strip()
+        if not formula_text:
+            continue
+        if "=" in formula_text or "\\frac" in formula_text:
+            candidates.append(formula_text)
+
     for source in [*formulas, task_text]:
         for match in _FORMULA_RE.finditer(source or ""):
             rhs = match.group(2).strip()
@@ -92,8 +160,13 @@ def deterministic_inline_quant_value(state: AgentState) -> float | None:
             if any(ch.isalpha() for ch in rhs) or any(op in rhs for op in "+-*/"):
                 candidates.append(rhs)
 
+    seen_candidates: set[str] = set()
     for expression in candidates:
-        rewritten = expression.replace("^", "**")
+        normalized_candidate = _normalize_formula_expression(expression)
+        if not normalized_candidate or normalized_candidate in seen_candidates:
+            continue
+        seen_candidates.add(normalized_candidate)
+        rewritten = normalized_candidate.replace("^", "**")
         for name in sorted(assignments, key=len, reverse=True):
             rewritten = re.sub(rf"\b{re.escape(name)}\b", str(assignments[name]), rewritten)
         if re.search(r"[A-Za-z]", rewritten):

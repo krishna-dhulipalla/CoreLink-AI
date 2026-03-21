@@ -252,6 +252,112 @@ def test_solver_deterministically_synthesizes_inline_quant_scalar(monkeypatch):
     assert result["messages"][0].content.startswith('{"answer": 0.9273')
 
 
+def test_solver_deterministically_synthesizes_table_backed_quant_from_user_question(monkeypatch):
+    monkeypatch.setattr("agent.nodes.solver.ChatOpenAI", lambda **kwargs: _FakeModel(AIMessage(content="unused")))
+    monkeypatch.setattr("agent.nodes.solver._tool_call_mode", lambda role: "prompt")
+
+    solver = make_solver([])
+    state = make_state(
+        """
+        You are an expert in data calculation. Please answer the <User Question> based on the provided <Formula List> and <Related Data>.
+
+        ### <Formula List>
+        Financial Leverage Effect = (ROE - ROA) / ROA
+
+        ### <Related Data>
+        | Stock Name | Return on Equity (ROE) (2024 Annual Report) (%) |
+        |---|---|
+        | Everbright Environment | 7.4065 % |
+        | China Overseas Grand Oceans Group | 3.0433 % |
+
+        | Stock Name | Return on Assets (ROA) (2024 Annual Report) (%) |
+        |---|---|
+        | Everbright Environment | 2.5944 % |
+        | China Overseas Grand Oceans Group | 1.5790 % |
+
+        ### <User Question>
+        Please calculate: What is the Financial Leverage Effect (2024 Annual Report) for China Overseas Grand Oceans Group?
+
+        ### Output Format
+        {"answer": <value>}
+        """,
+        task_profile="finance_quant",
+        capability_flags=["needs_math", "needs_tables", "requires_exact_format"],
+        execution_template={
+            "template_id": "quant_inline_exact",
+            "allowed_stages": ["COMPUTE", "SYNTHESIZE", "REVISE", "COMPLETE"],
+            "default_initial_stage": "COMPUTE",
+            "allowed_tool_names": ["calculator"],
+            "review_stages": ["COMPUTE", "SYNTHESIZE"],
+            "review_cadence": "milestone_and_final",
+            "answer_focus": [],
+        },
+        solver_stage="SYNTHESIZE",
+        answer_contract={"format": "json", "requires_adapter": True, "wrapper_key": "answer"},
+        evidence_pack={
+            "relevant_formulae": ["Financial Leverage Effect = (ROE - ROA) / ROA"],
+            "relevant_rows": [
+                {
+                    "headers": ["Stock Name", "Return on Equity (ROE) (2024 Annual Report) (%)"],
+                    "rows": [{"Stock Name": "China Overseas Grand Oceans Group", "Return on Equity (ROE) (2024 Annual Report) (%)": 0.030433}],
+                },
+                {
+                    "headers": ["Stock Name", "Return on Assets (ROA) (2024 Annual Report) (%)"],
+                    "rows": [{"Stock Name": "China Overseas Grand Oceans Group", "Return on Assets (ROA) (2024 Annual Report) (%)": 0.01579}],
+                },
+            ],
+        },
+    )
+
+    result = solver(state)
+
+    assert result["pending_tool_call"] is None
+    assert result["messages"][0].content.startswith('{"answer": 0.927')
+
+
+def test_solver_deterministically_handles_latex_fraction_formula_for_table_backed_quant(monkeypatch):
+    monkeypatch.setattr("agent.nodes.solver.ChatOpenAI", lambda **kwargs: _FakeModel(AIMessage(content="unused")))
+    monkeypatch.setattr("agent.nodes.solver._tool_call_mode", lambda role: "prompt")
+
+    solver = make_solver([])
+    state = make_state(
+        "Please calculate the Financial Leverage Effect for China Overseas Grand Oceans Group.",
+        task_profile="finance_quant",
+        capability_flags=["needs_math", "needs_tables", "requires_exact_format"],
+        execution_template={
+            "template_id": "quant_inline_exact",
+            "allowed_stages": ["COMPUTE", "SYNTHESIZE", "REVISE", "COMPLETE"],
+            "default_initial_stage": "COMPUTE",
+            "allowed_tool_names": ["calculator"],
+            "review_stages": ["COMPUTE", "SYNTHESIZE"],
+            "review_cadence": "milestone_and_final",
+            "answer_focus": [],
+        },
+        solver_stage="SYNTHESIZE",
+        answer_contract={"format": "json", "requires_adapter": True, "wrapper_key": "answer"},
+        evidence_pack={
+            "relevant_formulae": [
+                "\\text{Financial Leverage Effect} = \\frac{\\text{Numerator} = \\text{ROE} - \\text{ROA}}{\\text{ROA}}\\\\"
+            ],
+            "relevant_rows": [
+                {
+                    "headers": ["Stock Name", "Return on Equity (ROE) (2024 Annual Report) (%)"],
+                    "rows": [{"Stock Name": "China Overseas Grand Oceans Group", "Return on Equity (ROE) (2024 Annual Report) (%)": 0.030433}],
+                },
+                {
+                    "headers": ["Stock Name", "Return on Assets (ROA) (2024 Annual Report) (%)"],
+                    "rows": [{"Stock Name": "China Overseas Grand Oceans Group", "Return on Assets (ROA) (2024 Annual Report) (%)": 0.01579}],
+                },
+            ],
+        },
+    )
+
+    result = solver(state)
+
+    assert result["pending_tool_call"] is None
+    assert result["messages"][0].content.startswith('{"answer": 0.927')
+
+
 def test_solver_revise_wrapper_only_quant_uses_terminal_deterministic_final(monkeypatch):
     monkeypatch.setattr("agent.nodes.solver.ChatOpenAI", lambda **kwargs: _FakeModel(AIMessage(content="unused")))
     monkeypatch.setattr("agent.nodes.solver._tool_call_mode", lambda role: "prompt")
