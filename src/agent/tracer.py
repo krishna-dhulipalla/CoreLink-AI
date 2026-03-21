@@ -16,9 +16,11 @@ import json
 import logging
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any
+
+_CST = timezone(timedelta(hours=-6))  # US Central Standard Time
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +41,7 @@ class RunTracer:
     def __init__(self) -> None:
         self._run_id: str = ""
         self._start_time: float = time.monotonic()
-        self._start_dt: str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+        self._start_dt: str = datetime.now(_CST).strftime("%Y-%m-%dT%H:%M:%S")
         self._task_preview: str = ""
         self._profile: str = ""
         self._template_id: str = ""
@@ -56,7 +58,7 @@ class RunTracer:
         """Append a node record with a timestamp."""
         entry: dict[str, Any] = {
             "node": node,
-            "ts": datetime.now(timezone.utc).strftime("%H:%M:%S.%f")[:-3],
+            "ts": datetime.now(_CST).strftime("%H:%M:%S.%f")[:-3],
         }
         entry.update(data)
         self._nodes.append(entry)
@@ -72,7 +74,7 @@ class RunTracer:
         """Build the final JSON payload and write it to disk. Returns the file path or None."""
         duration = round(time.monotonic() - self._start_time, 2)
 
-        # Aggregate token counts from solver nodes
+        # Aggregate token counts from all nodes
         total_prompt = 0
         total_completion = 0
         llm_calls = 0
@@ -82,10 +84,11 @@ class RunTracer:
             if tokens and isinstance(tokens, dict):
                 total_prompt += tokens.get("prompt", 0)
                 total_completion += tokens.get("completion", 0)
+            # Count LLM calls from solver, reviewer, and self_reflection
             if entry.get("node") == "solver" and entry.get("llm_call"):
                 llm_calls += 1
-            if entry.get("node") == "solver" and entry.get("deterministic"):
-                pass  # don't count deterministic as an LLM call
+            elif entry.get("node") in {"reviewer", "self_reflection"} and entry.get("used_llm"):
+                llm_calls += 1
             if entry.get("node") == "tool_runner":
                 tool_calls += 1
 
@@ -107,7 +110,7 @@ class RunTracer:
             "final_answer_preview": (final_answer or "")[:500],
             "cost_summary": cost_summary or {},
             "budget_summary": budget_summary or {},
-            "nodes": self._nodes,
+            "nodes": _make_readable(self._nodes),
         }
 
         return _write_trace_file(payload, self._profile, self._start_dt)
@@ -115,13 +118,29 @@ class RunTracer:
 
 # ──────────────────────── helpers for LLM message capture ─────────────────
 
-def format_messages_for_trace(messages: list) -> list[dict[str, str]]:
-    """Convert LangChain messages into a compact list of {role, content} dicts."""
-    result: list[dict[str, str]] = []
+def _make_readable(value: Any) -> Any:
+    """Split long strings into arrays of lines for vertical JSON formatting."""
+    if isinstance(value, str) and ("\n" in value or len(value) > 300):
+        return value.split("\n")
+    if isinstance(value, dict):
+        return {k: _make_readable(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_make_readable(item) for item in value]
+    return value
+
+
+def format_messages_for_trace(messages: list) -> list[dict[str, Any]]:
+    """Convert LangChain messages into a compact list of {role, content} dicts.
+    Long content is split into line arrays for readability."""
+    result: list[dict[str, Any]] = []
     for msg in messages:
         role = type(msg).__name__.replace("Message", "").lower()
         content = str(getattr(msg, "content", ""))
-        result.append({"role": role, "content": content})
+        # Split long content into lines so JSON indents vertically
+        if "\n" in content or len(content) > 300:
+            result.append({"role": role, "content": content.split("\n")})
+        else:
+            result.append({"role": role, "content": content})
     return result
 
 
@@ -132,7 +151,7 @@ def _write_trace_file(payload: dict[str, Any], profile: str, start_dt: str) -> s
     try:
         _TRACES_DIR.mkdir(parents=True, exist_ok=True)
         # Filename: date_profile_time.json  e.g. 2026-03-21_finance_quant_00-06-44.json
-        dt = datetime.now(timezone.utc)
+        dt = datetime.now(_CST)
         date_str = dt.strftime("%Y-%m-%d")
         time_str = dt.strftime("%H-%M-%S")
         safe_profile = (profile or "general").replace(" ", "_")

@@ -15,5 +15,7 @@ wheels/
 
 
 # Results & traces
-Results&traces/*
+results/
 traces/
+
+docs/

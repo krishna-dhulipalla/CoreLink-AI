@@ -59,7 +59,8 @@ def template_selector(state: AgentState) -> dict:
             "default_initial_stage": template.default_initial_stage,
             "allowed_stages": template.allowed_stages,
             "review_stages": template.review_stages,
-            "tool_policy": template.tool_policy,
+            "review_cadence": template.review_cadence,
+            "allowed_tool_names": template.allowed_tool_names,
         })
 
     return {
