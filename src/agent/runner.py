@@ -18,6 +18,7 @@ from agent.cost import CostTracker
 from agent.memory.store import MemoryStore
 from agent.runtime_clock import reset_runtime_steps
 from agent.state import AgentState
+from agent.tracer import finalize_tracer, start_tracer
 from context_manager import summarize_and_window
 
 logger = logging.getLogger(__name__)
@@ -122,6 +123,11 @@ async def run_agent_trace(
     tracker = CostTracker()
     budget = BudgetTracker()
 
+    # ── Start RunTracer if enabled ──
+    tracer = start_tracer()
+    if tracer:
+        tracer.set_task(input_text)
+
     initial_state: AgentState = {
         "messages": messages,
         "profile_decision": {},
@@ -176,6 +182,7 @@ async def run_agent_trace(
                 break
         if not partial_answer:
             partial_answer = "I was unable to complete this task within the step limit."
+        finalize_tracer(partial_answer, tracker.summary(), budget.summary())
         return {
             "answer": partial_answer,
             "steps": _extract_steps(final_state, final_state.get("cost_tracker", tracker), budget),
@@ -201,13 +208,16 @@ async def run_agent_trace(
 
     for msg in reversed(final_state.get("messages", [])):
         if isinstance(msg, AIMessage) and msg.content and not msg.tool_calls:
+            answer = _extract_final_answer(str(msg.content))
+            finalize_tracer(answer, tracker.summary(), budget.summary())
             return {
-                "answer": _extract_final_answer(str(msg.content)),
+                "answer": answer,
                 "steps": steps,
                 "updated_history": updated_history,
                 "final_state": final_state,
             }
 
+    finalize_tracer("I was unable to generate a response.", tracker.summary(), budget.summary())
     return {
         "answer": "I was unable to generate a response.",
         "steps": steps,

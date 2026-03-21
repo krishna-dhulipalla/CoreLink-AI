@@ -14,6 +14,7 @@ from agent.contracts import AnswerContract
 from agent.runtime_clock import increment_runtime_step
 from agent.runtime_support import extract_answer_contract, latest_human_text
 from agent.state import AgentState, ReplaceMessages
+from agent.tracer import get_tracer
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,13 @@ def intake(state: AgentState) -> dict:
     clean_messages = [
         msg for msg in state["messages"] if isinstance(msg, HumanMessage) or getattr(msg, "type", "") != "system"
     ]
+
+    tracer = get_tracer()
+    if tracer:
+        tracer.record("intake", {
+            "answer_contract": contract.model_dump(),
+            "message_count": len(clean_messages),
+        })
 
     return {
         "messages": ReplaceMessages(clean_messages),

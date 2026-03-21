@@ -2,6 +2,7 @@ import importlib
 import os
 import sys
 from pydantic import BaseModel
+from langchain_core.messages import HumanMessage
 
 # Ensure src/ is importable
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -44,6 +45,14 @@ class TestModelConfig:
         assert model_config.get_model_name("profiler")
         assert model_config.get_model_name("solver")
         assert model_config.get_model_name("profiler") != model_config._current_default_model()
+
+    def test_score_max_uses_deepseek_v32_for_solver(self, monkeypatch):
+        monkeypatch.setenv("MODEL_PROFILE", "score_max")
+        monkeypatch.delenv("SOLVER_MODEL", raising=False)
+        monkeypatch.delenv("EXECUTOR_MODEL", raising=False)
+        model_config = _reload_model_config()
+
+        assert model_config.get_model_name("solver") == "deepseek-ai/DeepSeek-V3.2"
 
     def test_role_specific_client_kwargs(self, monkeypatch):
         monkeypatch.setenv("OPENAI_API_KEY", "global-key")
@@ -144,3 +153,21 @@ class TestModelConfig:
         assert parsed.task_profile == "finance_quant"
         assert "model_kwargs" not in captured["kwargs"]
         assert "extra_body" not in captured["kwargs"]
+
+    def test_tokenfactory_wrapper_uses_max_tokens_in_request_payload(self, monkeypatch):
+        model_config = _reload_model_config()
+        model = model_config.ChatOpenAI(
+            model="deepseek-ai/DeepSeek-V3-0324-fast",
+            api_key="test-key",
+            base_url="https://api.tokenfactory.nebius.com/v1/",
+            temperature=0,
+            max_tokens=1400,
+        )
+
+        params = model._default_params
+        payload = model._get_request_payload([HumanMessage(content="Reply with OK.")])
+
+        assert params["max_tokens"] == 1400
+        assert "max_completion_tokens" not in params
+        assert payload["max_tokens"] == 1400
+        assert "max_completion_tokens" not in payload

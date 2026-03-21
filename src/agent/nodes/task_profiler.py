@@ -21,6 +21,7 @@ from agent.runtime_support import (
     latest_human_text,
 )
 from agent.state import AgentState
+from agent.tracer import get_tracer
 from context_manager import count_tokens
 
 logger = logging.getLogger(__name__)
@@ -181,6 +182,17 @@ def task_profiler(state: AgentState) -> dict:
         capability_flags,
         ambiguity_flags,
     )
+
+    tracer = get_tracer()
+    if tracer:
+        tracer.record("task_profiler", {
+            "profile": task_profile,
+            "capability_flags": capability_flags,
+            "ambiguity_flags": ambiguity_flags,
+            "complexity_tier": str(workpad.get("task_complexity_tier", "")),
+            "used_llm": used_llm,
+        })
+
     return {
         "profile_decision": profile_decision.model_dump(),
         "task_profile": task_profile,

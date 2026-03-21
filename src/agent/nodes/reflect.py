@@ -14,6 +14,7 @@ from agent.memory.store import MemoryStore
 from agent.runtime_clock import increment_runtime_step
 from agent.runtime_support import latest_human_text
 from agent.state import AgentState
+from agent.tracer import get_tracer
 
 logger = logging.getLogger(__name__)
 _memory_store: MemoryStore | None = None
@@ -163,6 +164,17 @@ def reflect(state: AgentState) -> dict:
         _persist_curation(state, task_text, workpad)
     except Exception as exc:
         logger.warning("[Memory] Failed to persist staged runtime memory: %s", exc)
+
+    route_path = list(dict.fromkeys(
+        event.get("node", "") for event in workpad.get("events", []) if event.get("node")
+    ))
+    tracer = get_tracer()
+    if tracer:
+        tracer.record("reflect", {
+            "route_path": route_path,
+            "final_stage": state.get("solver_stage", "PLAN"),
+            "success": state.get("solver_stage") == "COMPLETE",
+        })
 
     logger.info("[Step %s] reflect -> complete", step)
     return {"workpad": workpad}

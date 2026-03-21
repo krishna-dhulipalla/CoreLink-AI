@@ -40,6 +40,7 @@ from agent.runtime_support import (
 )
 from agent.solver.quant import deterministic_quant_final_answer
 from agent.state import AgentState
+from agent.tracer import get_tracer
 from context_manager import count_tokens
 
 logger = logging.getLogger(__name__)
@@ -698,6 +699,19 @@ def reviewer(state: AgentState) -> dict:
             latency_ms=latency,
             success=verdict.verdict == "pass",
         )
+
+    tracer = get_tracer()
+    if tracer:
+        tracer.record("reviewer", {
+            "review_stage": str(review_stage),
+            "is_final": is_final,
+            "used_llm": used_llm,
+            "verdict": verdict.verdict,
+            "reasoning": verdict.reasoning,
+            "missing_dimensions": verdict.missing_dimensions,
+            "repair_target": getattr(verdict, "repair_target", None),
+            "repair_class": getattr(verdict, "repair_class", None),
+        })
 
     budget = state.get("budget_tracker")
     if verdict.verdict == "backtrack":

@@ -30,6 +30,7 @@ from agent.cost import CostTracker
 from agent.model_config import get_model_name, invoke_structured_output
 from agent.runtime_clock import increment_runtime_step
 from agent.state import AgentState
+from agent.tracer import get_tracer
 from context_manager import count_tokens
 
 logger = logging.getLogger(__name__)
@@ -269,6 +270,12 @@ def self_reflection(state: AgentState) -> dict[str, Any]:
         events = list(workpad.get("events", []))
         events.append({"node": "self_reflection", "action": "skipped"})
         workpad["events"] = events
+        tracer = get_tracer()
+        if tracer:
+            tracer.record("self_reflection", {
+                "action": "skipped",
+                "reason": "not eligible or already attempted",
+            })
         return {"solver_stage": "COMPLETE", "workpad": workpad, "reflection_feedback": None}
 
     forced_result = _review_loop_reflection_result(state)
@@ -371,6 +378,15 @@ def self_reflection(state: AgentState) -> dict[str, Any]:
     }
     events.append({"node": "self_reflection", "action": f"REVISE: {review_feedback['reasoning']}"})
     workpad["events"] = events
+    tracer = get_tracer()
+    if tracer:
+        tracer.record("self_reflection", {
+            "action": "REVISE",
+            "used_llm": used_llm,
+            "score": result.score,
+            "missing_dimensions": list(result.missing_dimensions),
+            "improve_prompt": result.improve_prompt,
+        })
     return {
         "solver_stage": "REVISE",
         "review_feedback": review_feedback,

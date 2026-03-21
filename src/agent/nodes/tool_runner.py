@@ -23,6 +23,7 @@ from agent.runtime_support import (
     merge_tool_result_into_evidence,
 )
 from agent.state import AgentState
+from agent.tracer import get_tracer
 from agent.tools.normalization import normalize_tool_output
 
 logger = logging.getLogger(__name__)
@@ -480,6 +481,15 @@ def make_tool_runner(tool_node: ToolNode):
             messages = [normalized_message]
 
         logger.info("[Step %s] tool_runner -> %s errors=%s", step, tool_name, bool(tool_result.errors))
+        tracer = get_tracer()
+        if tracer:
+            tracer.record("tool_runner", {
+                "tool_name": tool_name,
+                "tool_args": tool_args if isinstance(tool_args, dict) else {},
+                "result_type": tool_result.type,
+                "errors": tool_result.errors,
+                "fact_keys": sorted(tool_result.facts.keys()) if isinstance(tool_result.facts, dict) else [],
+            })
         result_state = {
             "messages": messages,
             "last_tool_result": tool_result.model_dump(),

@@ -14,7 +14,7 @@ from urllib.parse import urlparse
 from typing import Any
 
 from dotenv import load_dotenv
-from langchain_openai import ChatOpenAI
+from langchain_openai import ChatOpenAI as _BaseChatOpenAI
 from langchain_core.messages import BaseMessage, SystemMessage
 
 load_dotenv(override=False)
@@ -74,6 +74,40 @@ LOCAL_BACKEND_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0"}
 _PROMPT_TOOL_HOSTS = {"api.tokenfactory.nebius.com", "api.studio.nebius.ai"}
 
 
+class ChatOpenAI(_BaseChatOpenAI):
+    """ChatOpenAI wrapper with provider compatibility shims.
+
+    Nebius Token Factory currently accepts `max_tokens` for all tested chat
+    models, while at least `deepseek-ai/DeepSeek-V3-0324-fast` rejects
+    `max_completion_tokens`. LangChain's OpenAI client rewrites `max_tokens`
+    into `max_completion_tokens` by default, so we remap it back on Nebius
+    hosts before the request is sent.
+    """
+
+    def _uses_legacy_max_tokens(self) -> bool:
+        host = (urlparse(self.openai_api_base or "").hostname or "").lower()
+        return host in _PROMPT_TOOL_HOSTS
+
+    @property
+    def _default_params(self) -> dict[str, Any]:
+        params = super()._default_params
+        if self._uses_legacy_max_tokens() and "max_completion_tokens" in params:
+            params["max_tokens"] = params.pop("max_completion_tokens")
+        return params
+
+    def _get_request_payload(
+        self,
+        input_,
+        *,
+        stop=None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+        if self._uses_legacy_max_tokens() and "max_completion_tokens" in payload:
+            payload["max_tokens"] = payload.pop("max_completion_tokens")
+        return payload
+
+
 def _role_env_prefix(role: str) -> str:
     canonical = _canonical_role(role)
     return _ROLE_CLIENT_PREFIX.get(canonical, canonical.upper())
@@ -128,8 +162,8 @@ def _profile_models() -> dict[str, dict[str, str]]:
             "reflection": default_model,
         },
         "cheap": {
-            "profiler": "Qwen/Qwen3-32B-fast",
-            "direct": "Qwen/Qwen3-32B-fast",
+            "profiler": "meta-llama/Meta-Llama-3.1-8B-Instruct-fast",
+            "direct": "meta-llama/Meta-Llama-3.1-8B-Instruct-fast",
             "solver": "Qwen/Qwen3-32B-fast",
             "reviewer": "Qwen/Qwen3-32B-fast",
             "adapter": "meta-llama/Meta-Llama-3.1-8B-Instruct-fast",
@@ -138,7 +172,7 @@ def _profile_models() -> dict[str, dict[str, str]]:
         "balanced": {
             "profiler": "Qwen/Qwen3-32B-fast",
             "direct": "Qwen/Qwen3-32B-fast",
-            "solver": "meta-llama/Llama-3.3-70B-Instruct-fast",
+            "solver": "deepseek-ai/DeepSeek-V3.2",
             "reviewer": "Qwen/Qwen3-32B-fast",
             "adapter": "meta-llama/Meta-Llama-3.1-8B-Instruct-fast",
             "reflection": "Qwen/Qwen3-32B-fast",
@@ -146,7 +180,7 @@ def _profile_models() -> dict[str, dict[str, str]]:
         "score_max": {
             "profiler": "Qwen/Qwen3-32B-fast",
             "direct": "meta-llama/Llama-3.3-70B-Instruct-fast",
-            "solver": "deepseek-ai/DeepSeek-V3-0324-fast",
+            "solver": "deepseek-ai/DeepSeek-V3.2",
             "reviewer": "meta-llama/Llama-3.3-70B-Instruct-fast",
             "adapter": "Qwen/Qwen3-32B-fast",
             "reflection": "Qwen/Qwen3-32B-fast",

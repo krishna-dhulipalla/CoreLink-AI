@@ -14,12 +14,11 @@ import uuid
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
 
 from agent.contracts import ToolCallEnvelope
 from agent.cost import CostTracker
 from agent.document_evidence import has_extracted_document_evidence
-from agent.model_config import _extract_json_payload, _tool_call_mode, get_client_kwargs, get_model_name
+from agent.model_config import ChatOpenAI, _extract_json_payload, _tool_call_mode, get_client_kwargs, get_model_name
 from agent.nodes.compliance_guard import requires_compliance_guard
 from agent.nodes.risk_controller import requires_risk_control
 from agent.profile_packs import get_profile_pack
@@ -63,6 +62,7 @@ from agent.solver.research import (
     deterministic_research_final_answer,
 )
 from agent.state import AgentState
+from agent.tracer import format_messages_for_trace, get_tracer
 from context_manager import count_tokens
 
 logger = logging.getLogger(__name__)
@@ -513,6 +513,13 @@ def make_solver(tools: list):
             workpad["review_stage"] = "SYNTHESIZE"
             workpad = record_event(workpad, "solver", f"{stage}: deterministic final draft ready")
             logger.info("[Step %s] solver(%s) -> deterministic final draft", step, stage)
+            tracer = get_tracer()
+            if tracer:
+                tracer.record("solver", {
+                    "stage": stage,
+                    "deterministic": True,
+                    "output_preview": deterministic_final_text[:500],
+                })
             return {"messages": [final_message], "workpad": workpad, "pending_tool_call": None, "risk_feedback": None}
 
         messages = [SystemMessage(content=SOLVER_PROMPT), SystemMessage(content=stage_prompt), SystemMessage(content=compact_evidence_block(state))]
@@ -550,6 +557,18 @@ def make_solver(tools: list):
             pending = ToolCallEnvelope(name=tool_call["name"], arguments=tool_call.get("args", {})).model_dump()
             workpad = record_event(workpad, "solver", f"{stage}: tool_call {tool_call['name']}")
             logger.info("[Step %s] solver(%s) -> tool_call %s", step, stage, tool_call["name"])
+            tracer = get_tracer()
+            if tracer:
+                tracer.record("solver", {
+                    "stage": stage,
+                    "llm_call": True,
+                    "model": model_name,
+                    "llm_prompt": format_messages_for_trace(messages),
+                    "llm_output": str(response.content or "")[:500],
+                    "tool_call": {"name": tool_call["name"], "args": tool_call.get("args", {})},
+                    "tokens": {"prompt": count_tokens(messages), "completion": estimate_response_tokens(response)},
+                    "latency_ms": round(latency, 1),
+                })
             return {"messages": [response], "pending_tool_call": pending, "workpad": workpad}
 
         content = strip_think_markup(str(response.content or ""))
@@ -587,6 +606,17 @@ def make_solver(tools: list):
         workpad["review_stage"] = "SYNTHESIZE"
         workpad = record_event(workpad, "solver", f"{stage}: final draft ready")
         logger.info("[Step %s] solver(%s) -> final draft", step, stage)
+        tracer = get_tracer()
+        if tracer:
+            tracer.record("solver", {
+                "stage": stage,
+                "llm_call": True,
+                "model": model_name,
+                "llm_prompt": format_messages_for_trace(messages),
+                "llm_output": content[:500],
+                "tokens": {"prompt": count_tokens(messages), "completion": estimate_response_tokens(response)},
+                "latency_ms": round(latency, 1),
+            })
         return {"messages": [final_message], "workpad": workpad, "pending_tool_call": None, "risk_feedback": None}
 
     return solver

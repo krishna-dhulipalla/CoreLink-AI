@@ -21,6 +21,7 @@ from agent.runtime_support import (
     selective_checkpoint_policy,
 )
 from agent.state import AgentState
+from agent.tracer import get_tracer
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +128,15 @@ def context_builder(state: AgentState) -> dict:
         len(evidence.citations),
         len(evidence.document_evidence),
     )
+
+    tracer = get_tracer()
+    if tracer:
+        tracer.record("context_builder", {
+            "complexity_tier": complexity_tier,
+            "initial_stage": next_stage,
+            "evidence_pack": evidence.model_dump(),
+            "assumption_ledger": assumption_ledger,
+        })
 
     return {
         "evidence_pack": evidence.model_dump(),

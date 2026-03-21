@@ -12,6 +12,7 @@ from agent.contracts import AnswerContract, ExecutionTemplate, ProfileDecision
 from agent.runtime_clock import increment_runtime_step
 from agent.runtime_support import latest_human_text, select_execution_template
 from agent.state import AgentState
+from agent.tracer import get_tracer
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,17 @@ def template_selector(state: AgentState) -> dict:
         template.template_id,
         profile_decision.primary_profile,
     )
+
+    tracer = get_tracer()
+    if tracer:
+        tracer.record("template_selector", {
+            "template_id": template.template_id,
+            "default_initial_stage": template.default_initial_stage,
+            "allowed_stages": template.allowed_stages,
+            "review_stages": template.review_stages,
+            "tool_policy": template.tool_policy,
+        })
+
     return {
         "execution_template": template.model_dump(),
         "workpad": workpad,
