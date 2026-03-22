@@ -1,5 +1,4 @@
-"""
-RunTracer — Lightweight per-run trace files
+"""RunTracer — Lightweight per-run trace files
 ============================================
 Captures one structured JSON file per graph run with only the debugging-
 critical details for each node: profile decisions, template selection,
@@ -8,6 +7,16 @@ and cost.
 
 Enable with  ENABLE_RUN_TRACER=1  in .env.
 Files are saved to  traces/  in the project root.
+
+Benchmark session grouping
+--------------------------
+Call ``start_session()`` before a multi-task benchmark run.
+All subsequent traces will be saved into a single folder:
+  traces/2026-03-21_21-10-44/task_001.json
+  traces/2026-03-21_21-10-44/task_002.json
+  ...
+Call ``end_session()`` when the benchmark finishes.
+If no session is active, traces save to ``traces/`` as before.
 """
 
 from __future__ import annotations
@@ -29,6 +38,24 @@ _TRACES_DIR = _PROJECT_ROOT / "traces"
 
 # ──────────────────────────── singleton ────────────────────────────
 _active_tracer: RunTracer | None = None
+
+
+# ──────────────────────── session state ────────────────────────
+class _Session:
+    """Tracks a multi-task benchmark session for folder grouping."""
+
+    def __init__(self) -> None:
+        dt = datetime.now(_CST)
+        self.folder_name: str = dt.strftime("%Y-%m-%d_%H-%M-%S")
+        self.folder_path: Path = _TRACES_DIR / self.folder_name
+        self.task_counter: int = 0
+
+    def next_task_number(self) -> int:
+        self.task_counter += 1
+        return self.task_counter
+
+
+_active_session: _Session | None = None
 
 
 def _tracer_enabled() -> bool:
@@ -179,16 +206,26 @@ def format_messages_for_trace(messages: list) -> list[dict[str, Any]]:
 # ──────────────────────── file writer ─────────────────────────
 
 def _write_trace_file(payload: dict[str, Any], profile: str, start_dt: str) -> str | None:
-    """Write the trace JSON to traces/ directory."""
+    """Write the trace JSON to traces/ directory (or session subfolder)."""
+    global _active_session
     try:
-        _TRACES_DIR.mkdir(parents=True, exist_ok=True)
-        # Filename: date_profile_time.json  e.g. 2026-03-21_finance_quant_00-06-44.json
-        dt = datetime.now(_CST)
-        date_str = dt.strftime("%Y-%m-%d")
-        time_str = dt.strftime("%H-%M-%S")
-        safe_profile = (profile or "general").replace(" ", "_")
-        filename = f"{date_str}_{safe_profile}_{time_str}.json"
-        filepath = _TRACES_DIR / filename
+        if _active_session is not None:
+            # Session mode: save as task_NNN.json inside the session folder
+            target_dir = _active_session.folder_path
+            target_dir.mkdir(parents=True, exist_ok=True)
+            task_num = _active_session.next_task_number()
+            filename = f"task_{task_num:03d}.json"
+        else:
+            # Standalone mode: save to traces/ with date_profile_time.json
+            target_dir = _TRACES_DIR
+            target_dir.mkdir(parents=True, exist_ok=True)
+            dt = datetime.now(_CST)
+            date_str = dt.strftime("%Y-%m-%d")
+            time_str = dt.strftime("%H-%M-%S")
+            safe_profile = (profile or "general").replace(" ", "_")
+            filename = f"{date_str}_{safe_profile}_{time_str}.json"
+
+        filepath = target_dir / filename
 
         with open(filepath, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2, ensure_ascii=False, default=str)
@@ -211,11 +248,18 @@ def get_tracer() -> RunTracer | None:
 
 
 def start_tracer() -> RunTracer | None:
-    """Create a new RunTracer instance if tracing is enabled."""
-    global _active_tracer
+    """Create a new RunTracer instance if tracing is enabled.
+
+    In benchmark mode (BENCHMARK_STATELESS=1), auto-starts a session folder
+    on the first call so all tasks land in one dated folder.
+    """
+    global _active_tracer, _active_session
     if not _tracer_enabled():
         _active_tracer = None
         return None
+    # Auto-start session for benchmark runs
+    if _active_session is None and os.getenv("BENCHMARK_STATELESS", "").strip().lower() in {"1", "true", "yes", "on"}:
+        start_session()
     _active_tracer = RunTracer()
     return _active_tracer
 
@@ -228,3 +272,43 @@ def finalize_tracer(final_answer: str = "", cost_summary: dict | None = None, bu
     path = _active_tracer.finalize(final_answer, cost_summary, budget_summary)
     _active_tracer = None
     return path
+
+
+# ──────────────────────── session management ──────────────────
+
+def start_session() -> str:
+    """Start a benchmark session. All subsequent traces go into one folder.
+
+    Returns the session folder name (e.g. '2026-03-21_21-10-44').
+    """
+    global _active_session
+    _active_session = _Session()
+    _active_session.folder_path.mkdir(parents=True, exist_ok=True)
+    logger.info("[RunTracer] Session started → %s", _active_session.folder_path)
+    return _active_session.folder_name
+
+
+def end_session() -> dict[str, Any] | None:
+    """End the current benchmark session. Returns a summary dict or None."""
+    global _active_session
+    if _active_session is None:
+        return None
+    summary = {
+        "session_folder": _active_session.folder_name,
+        "total_tasks": _active_session.task_counter,
+        "path": str(_active_session.folder_path),
+    }
+    logger.info("[RunTracer] Session ended — %d tasks in %s", _active_session.task_counter, _active_session.folder_path)
+    _active_session = None
+    return summary
+
+
+def get_session_info() -> dict[str, Any] | None:
+    """Return current session info without ending it."""
+    if _active_session is None:
+        return None
+    return {
+        "session_folder": _active_session.folder_name,
+        "tasks_so_far": _active_session.task_counter,
+        "path": str(_active_session.folder_path),
+    }
