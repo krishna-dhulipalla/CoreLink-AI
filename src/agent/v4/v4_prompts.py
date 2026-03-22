@@ -43,13 +43,16 @@ EXECUTOR_SYSTEM = (
 # Family-specific guidance — appended as a second system message
 # ---------------------------------------------------------------------------
 LEGAL_GUIDANCE = (
-    "Present at least three viable structure alternatives with clear tradeoffs, "
-    "then recommend one.\n"
+    "Start with a compact opening snapshot before any deep dive.\n"
+    "In the first section, list multiple viable structure alternatives with one-line tradeoffs, "
+    "then name the recommended path.\n"
+    "Make the opening summary self-sufficient for skimmers: it should already show the options, "
+    "recommendation, economic or tax tradeoffs, liability mechanics, execution constraints, "
+    "and a concrete next-step plan.\n"
     "For each structure cover:\n"
-    "  (1) tax treatment — who benefits and what breaks it,\n"
-    "  (2) liability allocation — indemnities, escrow, caps, survival periods,\n"
-    "  (3) regulatory and employee-transfer execution — required filings, "
-    "consultation, timing,\n"
+    "  (1) economic and tax treatment — who benefits and what breaks it,\n"
+    "  (2) liability allocation — indemnities, escrow or holdback, caps, survival periods,\n"
+    "  (3) execution constraints — required approvals, consultations, third-party consents, and timing,\n"
     "  (4) rapid next-step plan with owners and sequencing."
 )
 
@@ -123,11 +126,19 @@ def build_revision_prompt(
     missing_dimensions: list[str],
     improve_hint: str = "",
     reviewer_reasoning: str = "",
+    *,
+    task_family: str = "",
 ) -> str:
     """Build a targeted revision prompt from reflection/reviewer output."""
     missing_str = ", ".join(missing_dimensions) if missing_dimensions else "see below"
     hint = improve_hint or reviewer_reasoning or "add the missing detail"
-    return REVISION_TEMPLATE.format(missing_items=missing_str, improve_hint=hint)
+    prompt = REVISION_TEMPLATE.format(missing_items=missing_str, improve_hint=hint)
+    if task_family == "legal_transactional":
+        prompt += (
+            "\nKeep the opening section compact. Start with a snapshot naming multiple viable structures, "
+            "one-line tradeoffs, and the recommended path before any deep dive."
+        )
+    return prompt
 
 
 # ---------------------------------------------------------------------------

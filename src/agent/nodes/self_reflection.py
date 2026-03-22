@@ -163,7 +163,7 @@ def _heuristic_reflection(answer: str, state: AgentState) -> ReflectionResult:
             employee_hits = _keyword_hits(answer, legal_employee_transfer_groups())
             if employee_hits < 2:
                 score -= 0.10
-                missing.append("employee-transfer detail")
+                missing.append("workforce transfer or consultation detail")
 
     elif template_id == "equity_research_report":
         for label, tokens in {
@@ -219,8 +219,8 @@ def _targeted_legal_improve_prompt(missing_dimensions: list[str]) -> str:
         additions.append("regulatory approvals, remediation covenants, and closing-condition mechanics")
     if any("tax execution" in item for item in normalized):
         additions.append("tax execution steps, who gets the tax benefit, required elections or qualification conditions, and what could break the intended treatment")
-    if any("employee-transfer" in item for item in normalized):
-        additions.append("employee-transfer and cross-border employment transition points")
+    if any("employee-transfer" in item or "workforce transfer" in item or "consultation" in item for item in normalized):
+        additions.append("workforce-transfer, consultation, and cross-border employment transition points")
     if any("execution timing" in item for item in normalized):
         additions.append("signing-to-closing timing, consent sequencing, and cure mechanics")
     if not additions:

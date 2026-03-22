@@ -216,14 +216,14 @@ def _legal_depth_gaps(answer_text: str, task_text: str = "") -> list[str]:
         gaps.append("liability allocation mechanics")
     if _count_token_group_hits(answer_text, execution_groups) < 2:
         gaps.append("execution timing and closing mechanics")
-    if any(token in normalized_task for token in ("stock consideration", "stock-for-stock", "tax reasons", "tax")):
+    if any(token in normalized_task for token in ("stock consideration", "stock-for-stock", "equity consideration", "rollover", "tax reasons", "tax")):
         if _count_token_group_hits(answer_text, legal_tax_execution_groups()) < 2:
             gaps.append("tax execution mechanics")
-    if any(token in normalized_task for token in ("eu", "us", "cross-border", "compliance")):
+    if any(token in normalized_task for token in ("eu", "us", "cross-border", "compliance", "regulatory", "employment", "labor", "workforce", "consultation")):
         if _count_token_group_hits(answer_text, legal_regulatory_execution_groups()) < 2:
             gaps.append("regulatory execution specifics")
         if _count_token_group_hits(answer_text, legal_employee_transfer_groups()) < 2:
-            gaps.append("employee-transfer considerations")
+            gaps.append("workforce transfer or consultation considerations")
     return sorted(set(gaps))
 
 

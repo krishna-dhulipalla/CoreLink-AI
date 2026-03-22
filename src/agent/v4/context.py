@@ -33,19 +33,23 @@ def _deal_size_hint(task_text: str) -> str:
 
 def _consideration_preference(task_text: str) -> str:
     normalized = (task_text or "").lower()
-    if "stock consideration" in normalized or "stock-for-stock" in normalized or "stock deal" in normalized:
-        return "stock"
+    if any(token in normalized for token in ("stock consideration", "stock-for-stock", "stock deal", "equity consideration", "rollover equity", "share consideration")):
+        return "equity"
     if "asset purchase" in normalized or "asset deal" in normalized:
         return "asset"
+    if any(token in normalized for token in ("cash consideration", "all-cash", "cash deal")):
+        return "cash"
+    if any(token in normalized for token in ("earnout", "contingent consideration", "hybrid")):
+        return "hybrid"
     return ""
 
 
 def _liability_goal(task_text: str) -> str:
     normalized = (task_text or "").lower()
-    if "can't risk inheriting" in normalized or "avoid inheriting" in normalized or "mitigating the risk" in normalized:
+    if any(token in normalized for token in ("can't risk inheriting", "avoid inheriting", "mitigating the risk", "ring-fence liabilities", "limit liability carryover", "avoid successor liability")):
         return "minimize inherited liabilities"
     if "liability" in normalized:
-        return "manage compliance liabilities"
+        return "manage inherited and contingent liabilities"
     return ""
 
 
@@ -163,9 +167,9 @@ def build_curated_context(
     elif intent.task_family == "legal_transactional":
         facts_in_use = _legal_facts_in_use(task_text, source_bundle)
         open_questions = [
-            "Confirm the severity of the compliance gaps and whether they are curable pre-closing.",
-            "Confirm willingness to provide indemnities, escrow, or holdback support.",
-            "Confirm whether employee-transfer or consultation timing creates a signing-to-closing constraint.",
+            "Confirm the severity of the core execution risks and whether they are curable pre-closing.",
+            "Confirm willingness to provide indemnities, escrow, holdback, insurance, or other downside protection.",
+            "Confirm whether workforce transfer, stakeholder approvals, consultations, or third-party consents create signing-to-closing constraints.",
         ]
     else:
         facts_in_use = _dedupe_facts(
@@ -252,4 +256,3 @@ def solver_context_block(
         if tool_findings:
             payload["tool_findings"] = tool_findings
     return json.dumps(payload, ensure_ascii=True)
-

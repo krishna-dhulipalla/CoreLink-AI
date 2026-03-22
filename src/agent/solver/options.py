@@ -377,17 +377,14 @@ def deterministic_options_final_answer(state: AgentState) -> str | None:
         assumption_lines.append(assumption_text)
 
     lines = ["**Recommendation**", f"Be a {recommendation}.", "", "**Primary Strategy**", f"{strategy_label.title()} with {premium_direction.lower()} premium" + (f" of {float(net_premium):.2f}." if isinstance(net_premium, (int, float)) else "."), "", "**Alternative Strategy Comparison**", f"{alternative.title()} is the cleaner alternative when you want {tradeoff}.", "", "**Key Greeks and Breakevens**"]
-    greeks_line = []
     if isinstance(delta, (int, float)):
-        greeks_line.append(f"delta {float(delta):.3f}")
+        lines.append(f"- Delta: {float(delta):.3f}")
     if isinstance(gamma, (int, float)):
-        greeks_line.append(f"gamma {float(gamma):.3f}")
+        lines.append(f"- Gamma: {float(gamma):.3f}")
     if isinstance(theta, (int, float)):
-        greeks_line.append(f"theta {float(theta):.3f}/day")
+        lines.append(f"- Theta: {float(theta):.3f}/day")
     if isinstance(vega, (int, float)):
-        greeks_line.append(f"vega {float(vega):.3f} per vol point")
-    if greeks_line:
-        lines.append(", ".join(greeks_line) + ".")
+        lines.append(f"- Vega: {float(vega):.3f} per vol point")
     lines.append(f"Breakevens: {breakevens}.")
     if isinstance(max_loss, (int, float)):
         lines.append(f"Max loss reference: {float(max_loss):.2f}.")
@@ -445,7 +442,7 @@ def deterministic_policy_options_final_answer(state: AgentState) -> str | None:
         else "Be a net buyer of options through a defined-risk spread"
     )
     alternative = "put credit spread" if strategy_label == "iron condor" else "iron condor"
-    tradeoff = "retains short-vol carry with simpler one-sided management" if alternative == "put credit spread" else "diversifies tail exposure across both sides at the cost of more moving parts"
+    tradeoff = "retaining short-vol carry with simpler one-sided management" if alternative == "put credit spread" else "better diversified tail exposure across both sides at the cost of more moving parts"
     net_premium = primary_facts.get("net_premium")
     premium_direction = str(primary_facts.get("premium_direction", "credit")).upper()
     delta = primary_facts.get("total_delta", primary_facts.get("delta"))
@@ -472,17 +469,14 @@ def deterministic_policy_options_final_answer(state: AgentState) -> str | None:
                 disclosures.append(f"Max loss reference is approximately {float(max_loss):.2f}.")
 
     lines = ["**Recommendation**", f"{recommendation}. This mandate requires defined-risk only and prohibits naked options.", "", "**Primary Strategy**", f"Defined-risk {strategy_label} with {premium_direction.lower()} premium" + (f" of {float(net_premium):.2f}." if isinstance(net_premium, (int, float)) else "."), "", "**Alternative Strategy Comparison**", f"{alternative.title()} is the cleaner backup when you want {tradeoff}.", "", "**Key Greeks and Breakevens**"]
-    greeks_line = []
     if isinstance(delta, (int, float)):
-        greeks_line.append(f"delta {float(delta):.3f}")
+        lines.append(f"- Delta: {float(delta):.3f}")
     if isinstance(gamma, (int, float)):
-        greeks_line.append(f"gamma {float(gamma):.3f}")
+        lines.append(f"- Gamma: {float(gamma):.3f}")
     if isinstance(theta, (int, float)):
-        greeks_line.append(f"theta {float(theta):.3f}/day")
+        lines.append(f"- Theta: {float(theta):.3f}/day")
     if isinstance(vega, (int, float)):
-        greeks_line.append(f"vega {float(vega):.3f} per vol point")
-    if greeks_line:
-        lines.append(", ".join(greeks_line) + ".")
+        lines.append(f"- Vega: {float(vega):.3f} per vol point")
     lines.append(f"Breakevens: {breakevens}.")
     lines.extend(["", "**Risk Management**", (f"Cap position risk at about {float(risk_cap):g}% of capital, use defined exit points near the short strikes or at roughly a 1x premium-loss threshold, and reduce exposure if gamma or vol expands sharply.") if isinstance(risk_cap, (int, float)) else "Use defined exit points near the short strikes or at roughly a 1x premium-loss threshold, and reduce exposure if gamma or vol expands sharply."])
     if isinstance(best_case_pnl, (int, float)) or isinstance(worst_case_pnl, (int, float)):

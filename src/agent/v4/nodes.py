@@ -12,6 +12,7 @@ from typing import Any
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from agent.contracts import AnswerContract
+from agent.context.evidence import _extract_policy_context
 from agent.context.extraction import derive_market_snapshot
 from agent.model_config import ChatOpenAI, get_client_kwargs, get_model_name, invoke_structured_output
 from agent.nodes.reviewer import _legal_depth_gaps, _looks_truncated, _matches_exact_json_contract, _options_gaps
@@ -51,12 +52,31 @@ def _legal_structure_option_count(answer: str) -> int:
     normalized = re.sub(r"\s+", " ", (answer or "").lower())
     patterns = {
         "asset_purchase": r"\basset purchase\b|\basset deal\b",
+        "stock_purchase": r"\bstock purchase\b|\bshare purchase\b|\bequity purchase\b",
+        "merger": r"\bmerger\b|\bforward triangular merger\b|\breverse triangular merger\b|\brtm\b",
         "carve_out": r"\bcarve[- ]out\b",
-        "reverse_triangular_merger": r"\breverse triangular merger\b|\brtm\b",
         "hybrid_structure": r"\bhybrid\b|\bcontingent consideration\b|\bearn[- ]?out\b",
         "joint_venture": r"\bjoint venture\b|\bpartnership\b",
+        "minority_or_staged": r"\bminority investment\b|\bstaged acquisition\b|\boption to acquire\b",
+        "commercial_structure": r"\blicen[sc]e\b|\bcommercial agreement\b|\bchannel partnership\b",
     }
     return sum(1 for pattern in patterns.values() if re.search(pattern, normalized))
+
+
+def _opening_summary_window(answer: str) -> str:
+    text = (answer or "").strip()
+    if not text:
+        return ""
+    paragraphs = [part.strip() for part in re.split(r"\n\s*\n", text) if part.strip()]
+    if not paragraphs:
+        return text[:2200]
+    opening = "\n\n".join(paragraphs[:3]).strip()
+    return opening[:2200]
+
+
+def _legal_frontload_gap(answer: str) -> bool:
+    preview = _opening_summary_window(answer)
+    return _legal_structure_option_count(preview) < 2
 
 
 def _record_event(workpad: dict[str, Any], node: str, action: str) -> dict[str, Any]:
@@ -566,11 +586,12 @@ def _v4_options_final_answer(state: V4AgentState) -> str | None:
     source_bundle = SourceBundle.model_validate(state.get("source_bundle") or {})
     inline_facts = dict(source_bundle.inline_facts)
     market_snapshot, derived = derive_market_snapshot(source_bundle.task_text, inline_facts)
+    policy_context = _extract_policy_context(source_bundle.task_text, "finance_options", ["needs_options_engine"])
     evidence_pack = {
         "derived_facts": derived,
         "prompt_facts": inline_facts,
         "market_snapshot": market_snapshot,
-        "policy_context": {},
+        "policy_context": policy_context,
     }
     option_state = {
         "messages": state.get("messages", []),
@@ -589,7 +610,9 @@ def _v4_options_final_answer(state: V4AgentState) -> str | None:
             },
         },
     }
-    return deterministic_policy_options_final_answer(option_state) or deterministic_options_final_answer(option_state)
+    if policy_context.get("defined_risk_only") or policy_context.get("no_naked_options") or policy_context.get("retail_or_retirement_account"):
+        return deterministic_policy_options_final_answer(option_state) or deterministic_options_final_answer(option_state)
+    return deterministic_options_final_answer(option_state)
 
 
 def make_executor(registry: dict[str, dict[str, Any]]):
@@ -709,6 +732,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                 missing_dimensions=review_feedback.get("missing_dimensions", []),
                 improve_hint=review_feedback.get("improve_hint", ""),
                 reviewer_reasoning=review_feedback.get("reasoning", ""),
+                task_family=intent.task_family,
             )
             prompt_messages.append(SystemMessage(content=revision_text))
             journal.revision_count += 1
@@ -804,17 +828,19 @@ def _targeted_fix_prompt(missing_dimensions: list[str]) -> str:
     normalized = [str(item).lower() for item in missing_dimensions]
     additions: list[str] = []
     if any("multiple structure alternatives" in item or "structure alternatives" in item for item in normalized):
-        additions.append("at least three distinct structure alternatives with tradeoffs and a clear recommendation")
+        additions.append("multiple viable structures with tradeoffs and a clear recommendation")
     if any("liability allocation" in item for item in normalized):
         additions.append("explicit indemnities, escrow or holdback, caps or baskets, and survival periods")
     if any("regulatory execution" in item for item in normalized):
-        additions.append("regulatory approvals, pre-closing remediation covenants, and closing-condition mechanics")
+        additions.append("regulatory approvals, pre-closing remediation covenants, third-party consents, and closing-condition mechanics")
     if any("tax execution" in item for item in normalized):
-        additions.append("who gets the tax benefit, required elections or qualification conditions, and what breaks the intended tax treatment")
-    if any("employee-transfer" in item for item in normalized):
-        additions.append("employee-transfer consultation and cross-border transition mechanics")
+        additions.append("who gets the economic or tax benefit, required elections or qualification conditions, and what breaks the intended treatment")
+    if any("employee-transfer" in item or "workforce transfer" in item or "consultation" in item for item in normalized):
+        additions.append("workforce transfer, consultation, retained-liability, and cross-border transition mechanics when relevant")
     if any("actionable next steps" in item or "next steps" in item for item in normalized):
         additions.append("a concrete first-week execution plan with owners and sequencing")
+    if any("opening summary" in item or "front-loaded" in item for item in normalized):
+        additions.append("an opening summary that names multiple viable paths, their tradeoffs, and the recommended path before deeper analysis")
     if not additions:
         additions.append("one concise but concrete layer of actionable detail for each missing dimension")
     return "Add concise execution detail covering " + ", ".join(additions[:3]) + "."
@@ -848,6 +874,8 @@ def reviewer(state: V4AgentState) -> dict[str, Any]:
         missing = _legal_depth_gaps(answer, latest_human_text(state["messages"]))
         if _legal_structure_option_count(answer) < 2:
             missing = sorted(set([*missing, "multiple structure alternatives with tradeoffs"]))
+        if _legal_frontload_gap(answer):
+            missing = sorted(set([*missing, "opening summary with multiple viable paths before the deep dive"]))
         if missing:
             verdict = "revise" if journal.revision_count < 1 else "fail"
             reasoning = "Final legal answer is directionally correct but still missing actionable execution depth or structure coverage."
@@ -924,6 +952,11 @@ def route_from_reviewer(state: V4AgentState) -> str:
         return "executor"
     if state.get("solver_stage") == "COMPLETE":
         intent = TaskIntent.model_validate(state.get("task_intent") or {})
+        report = QualityReport.model_validate(state.get("quality_report") or {})
+        if report.verdict == "fail":
+            if state.get("answer_contract", {}).get("requires_adapter"):
+                return "output_adapter"
+            return "reflect"
         if intent.complexity_tier == "complex_qualitative":
             return "self_reflection"
         if state.get("answer_contract", {}).get("requires_adapter"):
@@ -982,16 +1015,31 @@ def self_reflection(state: V4AgentState) -> dict[str, Any]:
 
     # Non-complex or already has missing-dimensions from reviewer → skip LLM reflection
     if report.missing_dimensions or intent.complexity_tier != "complex_qualitative":
-        workpad = _record_event(workpad, "self_reflection", "PASS (non-complex or reviewer-flagged)")
+        flagged_complete = not bool(report.missing_dimensions)
+        workpad = _record_event(
+            workpad,
+            "self_reflection",
+            "PASS (non-complex)" if flagged_complete else "SKIP (reviewer-flagged gaps remain)",
+        )
         tracer = get_tracer()
         if tracer:
             tracer.record(
                 "self_reflection",
-                {"score": report.score, "complete": True, "missing_dimensions": [], "used_llm": False},
+                {
+                    "score": report.score,
+                    "complete": flagged_complete,
+                    "missing_dimensions": [] if flagged_complete else list(report.missing_dimensions),
+                    "used_llm": False,
+                },
             )
         return {
             "execution_journal": journal.model_dump(),
-            "reflection_feedback": {"score": report.score, "complete": True, "missing_dimensions": [], "improve_prompt": ""},
+            "reflection_feedback": {
+                "score": report.score,
+                "complete": flagged_complete,
+                "missing_dimensions": [] if flagged_complete else list(report.missing_dimensions),
+                "improve_prompt": "",
+            },
             "solver_stage": "COMPLETE",
             "workpad": workpad,
         }

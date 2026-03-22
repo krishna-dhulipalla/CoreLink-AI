@@ -15,9 +15,11 @@ from agent.v4.nodes import (
     make_capability_resolver,
     make_executor,
     reviewer,
+    route_from_reviewer,
     self_reflection,
     task_planner,
 )
+from agent.v4.v4_prompts import build_revision_prompt
 from staged_test_utils import make_state
 from tools import CALCULATOR_TOOL, SEARCH_TOOL
 
@@ -252,9 +254,10 @@ def test_v4_executor_uses_deterministic_options_final_without_llm(monkeypatch):
     result = asyncio.run(executor(state))
     answer = str(result["messages"][0].content)
 
-    assert "delta -0.073" in answer.lower()
-    assert "gamma -0.026" in answer.lower()
-    assert "vega -0.683" in answer.lower()
+    assert "defined-risk only" not in answer.lower()
+    assert "- delta: -0.073" in answer.lower()
+    assert "- gamma: -0.026" in answer.lower()
+    assert "- vega: -0.683" in answer.lower()
 
 
 def test_v4_reviewer_revises_legal_once_then_stops_cleanly():
@@ -326,6 +329,75 @@ def test_v4_reviewer_rejects_single_recommended_legal_structure():
     assert "multiple structure alternatives" in " ".join(result["review_feedback"]["missing_dimensions"]).lower()
 
 
+def test_v4_reviewer_flags_when_option_snapshot_is_not_front_loaded():
+    prompt = "Need structure options for a cross-border acquisition with stock consideration and compliance risk."
+    repetitive_prefix = "Recommended structure: reverse triangular merger. " * 80
+    state = make_state(
+        prompt,
+        task_profile="legal_transactional",
+        task_intent={
+            "task_family": "legal_transactional",
+            "execution_mode": "advisory_analysis",
+            "complexity_tier": "complex_qualitative",
+            "tool_families_needed": [],
+            "evidence_strategy": "compact_prompt",
+            "review_mode": "qualitative_advisory",
+            "completion_mode": "advisory_memo",
+            "routing_rationale": "",
+            "confidence": 0.9,
+            "planner_source": "heuristic",
+        },
+        execution_journal={"events": [], "tool_results": [], "routed_tool_families": [], "revision_count": 0, "self_reflection_count": 0, "final_artifact_signature": ""},
+        workpad={"events": [], "stage_outputs": {}, "tool_results": [], "v4_review_ready": True},
+    )
+    state["messages"].append(
+        AIMessage(
+            content=(
+                repetitive_prefix
+                + "\n\nStructure options: reverse triangular merger, asset purchase, carve-out transaction."
+                + "\nTax consequences: tax-free reorganization under section 368 can give target shareholders tax deferral, buyer basis step-up can arise in an asset deal, required elections matter, and tax treatment breaks if qualification conditions fail."
+                + "\nLiability protection: indemnities, escrow, caps, baskets, survival periods, and disclosure schedules."
+                + "\nRegulatory and diligence risks: EU and US approvals, employee-transfer consultation, closing conditions, and remediation timing."
+                + "\nKey open questions and assumptions: severity of compliance gaps, cure feasibility, seller indemnity support."
+                + "\nRecommended next steps: week-one workplan with owners, sequencing, and accelerated diligence."
+            )
+        )
+    )
+
+    result = reviewer(state)
+
+    assert result["solver_stage"] == "REVISE"
+    assert "opening summary with multiple viable paths" in " ".join(result["review_feedback"]["missing_dimensions"]).lower()
+
+
+def test_v4_failed_reviewer_path_skips_self_reflection():
+    state = make_state(
+        "Need acquisition structure advice.",
+        task_intent={
+            "task_family": "legal_transactional",
+            "execution_mode": "advisory_analysis",
+            "complexity_tier": "complex_qualitative",
+            "tool_families_needed": [],
+            "evidence_strategy": "compact_prompt",
+            "review_mode": "qualitative_advisory",
+            "completion_mode": "advisory_memo",
+            "routing_rationale": "",
+            "confidence": 0.9,
+            "planner_source": "heuristic",
+        },
+        solver_stage="COMPLETE",
+        quality_report={
+            "verdict": "fail",
+            "reasoning": "still missing structure coverage",
+            "missing_dimensions": ["multiple structure alternatives with tradeoffs"],
+            "targeted_fix_prompt": "",
+            "score": 0.58,
+        },
+    )
+
+    assert route_from_reviewer(state) == "reflect"
+
+
 def test_v4_self_reflection_requests_one_extra_legal_deepen_pass(monkeypatch):
     state = make_state(
         "Advise on acquisition structure.",
@@ -359,6 +431,17 @@ def test_v4_self_reflection_requests_one_extra_legal_deepen_pass(monkeypatch):
 
     assert result["solver_stage"] == "REVISE"
     assert "next steps" in " ".join(result["review_feedback"]["missing_dimensions"]).lower()
+
+
+def test_v4_legal_revision_prompt_requires_front_loaded_snapshot():
+    prompt = build_revision_prompt(
+        ["opening summary with multiple viable paths before the deep dive", "regulatory execution specifics"],
+        improve_hint="Add approvals, consultation timing, and closing conditions.",
+        task_family="legal_transactional",
+    )
+
+    assert "snapshot" in prompt.lower()
+    assert "multiple viable structures" in prompt.lower()
 
 
 def test_v4_tracer_captures_v4_headers_and_counts(monkeypatch):

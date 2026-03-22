@@ -434,8 +434,8 @@ def make_solver(tools: list):
                     targeted_lines.append("For regulatory execution specifics, explain approvals, remediation covenants, interim operating restrictions, and which issues should become closing conditions versus post-close covenants.")
                 if any("tax execution" in item for item in missing_dimensions):
                     targeted_lines.append("For tax execution mechanics, explain who gets the tax benefit, what election, qualification, or structural condition is required, and what implementation risk or tradeoff could break the intended treatment.")
-                if any("employee-transfer" in item for item in missing_dimensions):
-                    targeted_lines.append("For employee-transfer considerations, address transition mechanics, retained liabilities, consultation obligations, and integration timing constraints.")
+                if any("employee-transfer" in item or "workforce transfer" in item or "consultation" in item for item in missing_dimensions):
+                    targeted_lines.append("For workforce-transfer or consultation considerations, address transition mechanics, retained liabilities, consultation obligations, and integration timing constraints.")
                 if any("execution timing" in item for item in missing_dimensions):
                     targeted_lines.append("For execution timing and closing mechanics, make the signing-to-closing path concrete: diligence gating items, consent sequencing, cure periods, and drop-dead timing.")
                 if targeted_lines:

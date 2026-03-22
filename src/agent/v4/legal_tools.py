@@ -29,7 +29,7 @@ def legal_playbook_retrieval(query: str, deal_size_hint: str = "", urgency: str 
     facts = {
         "playbook_points": [
             "Separate structure choice from risk-allocation mechanics; both must be explicit.",
-            "When stock consideration is requested, analyze tax deferral benefits against inherited liability risk.",
+            "When equity, rollover, or non-cash consideration is contemplated, analyze economics and tax treatment against inherited liability risk.",
             "Cross-border regulatory gaps require closing-condition, covenant, and remediation sequencing detail.",
             "Accelerated timelines demand a narrower diligence plan, not a thinner one.",
         ],
@@ -81,7 +81,7 @@ def regulatory_execution_checklist(jurisdictions_json: str = "[]", regulatory_ga
             "map approvals, filings, and consultation obligations by jurisdiction",
             "separate pre-closing cure items from post-closing remediation covenants",
             "decide which compliance issues become closing conditions versus price protections",
-            "track employee-transfer and consultation timing constraints for each jurisdiction",
+            "track workforce-transfer, consultation, third-party consent, and other timing constraints for each jurisdiction",
         ],
         "regulatory_gaps": regulatory_gaps,
     }
@@ -96,7 +96,7 @@ def tax_structure_checklist(consideration_preference: str = "", cross_border: bo
             "identify who receives the tax benefit under each structure",
             "identify required elections, qualification conditions, or rollover mechanics",
             "spell out what breaks the intended tax treatment",
-            "compare stock consideration deferral against asset deal step-up and leakage tradeoffs",
+            "compare equity or rollover treatment against asset deal step-up and leakage tradeoffs",
         ],
         "consideration_preference": consideration_preference,
         "cross_border": bool(cross_border),
