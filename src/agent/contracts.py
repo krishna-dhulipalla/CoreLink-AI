@@ -328,6 +328,22 @@ class ReviewPacket(BaseModel):
     open_questions: list[str] = Field(default_factory=list)
 
 
+class RetrievalAction(BaseModel):
+    action: Literal["tool", "answer"] = "tool"
+    tool_name: str = ""
+    query: str = ""
+    url: str = ""
+    document_id: str = ""
+    path: str = ""
+    page_start: int = 0
+    page_limit: int = 5
+    row_offset: int = 0
+    row_limit: int = 200
+    chunk_start: int = 0
+    chunk_limit: int = 3
+    rationale: str = ""
+
+
 class ProgressSignature(BaseModel):
     execution_mode: str = ""
     selected_tools: list[str] = Field(default_factory=list)
@@ -350,6 +366,9 @@ class ExecutionJournal(BaseModel):
     routed_tool_families: list[str] = Field(default_factory=list)
     revision_count: int = 0
     self_reflection_count: int = 0
+    retrieval_iterations: int = 0
+    retrieval_queries: list[str] = Field(default_factory=list)
+    retrieved_citations: list[str] = Field(default_factory=list)
     final_artifact_signature: str = ""
     progress_signatures: list[dict[str, Any]] = Field(default_factory=list)
     stop_reason: str = ""

@@ -204,6 +204,49 @@ def get_model_name(role: str) -> str:
     return _current_default_model()
 
 
+def get_model_name_for_task(
+    role: str,
+    *,
+    execution_mode: str = "",
+    task_family: str = "",
+    prompt_tokens: int = 0,
+) -> str:
+    """Resolve a model name with optional task-aware long-context overrides."""
+    canonical = _canonical_role(role)
+    env_candidates: list[str] = []
+
+    if canonical == "solver":
+        if execution_mode == "document_grounded_analysis":
+            env_candidates.extend(["DOCUMENT_SOLVER_MODEL", "LONG_CONTEXT_SOLVER_MODEL"])
+        elif execution_mode == "retrieval_augmented_analysis":
+            env_candidates.extend(["RETRIEVAL_SOLVER_MODEL", "LONG_CONTEXT_SOLVER_MODEL"])
+        elif task_family == "legal_transactional" and prompt_tokens >= 5000:
+            env_candidates.append("LONG_CONTEXT_SOLVER_MODEL")
+    elif canonical == "reviewer":
+        if execution_mode == "document_grounded_analysis":
+            env_candidates.append("DOCUMENT_REVIEWER_MODEL")
+        elif execution_mode == "retrieval_augmented_analysis":
+            env_candidates.append("RETRIEVAL_REVIEWER_MODEL")
+
+    if prompt_tokens >= 6000:
+        env_candidates.extend(
+            [
+                f"LONG_CONTEXT_{canonical.upper()}_MODEL",
+                "LONG_CONTEXT_MODEL",
+            ]
+        )
+
+    seen: set[str] = set()
+    for env_name in env_candidates:
+        if env_name in seen:
+            continue
+        seen.add(env_name)
+        override = os.getenv(env_name, "").strip()
+        if override:
+            return override
+    return get_model_name(role)
+
+
 def get_client_kwargs(role: str) -> dict[str, Any]:
     """Resolve shared or role-specific OpenAI-compatible client settings."""
     prefixes = _role_client_prefixes(role)

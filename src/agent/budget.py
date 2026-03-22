@@ -61,22 +61,22 @@ _MODE_CAPS: dict[str, dict[str, int]] = {
         "context_tokens": _env_int("TOOL_COMPUTE_MAX_CONTEXT_TOKENS", 3000),
     },
     "retrieval_augmented_analysis": {
-        "tool_calls": _env_int("RETRIEVAL_ANALYSIS_MAX_TOOL_CALLS", 8),
+        "tool_calls": _env_int("RETRIEVAL_ANALYSIS_MAX_TOOL_CALLS", 10),
         "revise_cycles": _env_int("RETRIEVAL_ANALYSIS_MAX_REVISE_CYCLES", 2),
         "backtrack_cycles": _env_int("RETRIEVAL_ANALYSIS_MAX_BACKTRACK_CYCLES", 1),
-        "context_tokens": _env_int("RETRIEVAL_ANALYSIS_MAX_CONTEXT_TOKENS", 4000),
+        "context_tokens": _env_int("RETRIEVAL_ANALYSIS_MAX_CONTEXT_TOKENS", 9000),
     },
     "document_grounded_analysis": {
-        "tool_calls": _env_int("DOCUMENT_ANALYSIS_MAX_TOOL_CALLS", 6),
+        "tool_calls": _env_int("DOCUMENT_ANALYSIS_MAX_TOOL_CALLS", 10),
         "revise_cycles": _env_int("DOCUMENT_ANALYSIS_MAX_REVISE_CYCLES", 2),
         "backtrack_cycles": _env_int("DOCUMENT_ANALYSIS_MAX_BACKTRACK_CYCLES", 1),
-        "context_tokens": _env_int("DOCUMENT_ANALYSIS_MAX_CONTEXT_TOKENS", 4500),
+        "context_tokens": _env_int("DOCUMENT_ANALYSIS_MAX_CONTEXT_TOKENS", 12000),
     },
     "advisory_analysis": {
         "tool_calls": _env_int("ADVISORY_ANALYSIS_MAX_TOOL_CALLS", 8),
         "revise_cycles": _env_int("ADVISORY_ANALYSIS_MAX_REVISE_CYCLES", 2),
         "backtrack_cycles": _env_int("ADVISORY_ANALYSIS_MAX_BACKTRACK_CYCLES", 1),
-        "context_tokens": _env_int("ADVISORY_ANALYSIS_MAX_CONTEXT_TOKENS", 4500),
+        "context_tokens": _env_int("ADVISORY_ANALYSIS_MAX_CONTEXT_TOKENS", 5500),
     },
 }
 

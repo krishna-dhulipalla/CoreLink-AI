@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 import time
 from typing import Any
@@ -17,6 +18,7 @@ from agent.contracts import (
     ExecutionJournal,
     ProgressSignature,
     QualityReport,
+    RetrievalAction,
     ReviewPacket,
     SourceBundle,
     TaskIntent,
@@ -25,7 +27,7 @@ from agent.contracts import (
 )
 from agent.context.evidence import _extract_policy_context
 from agent.context.extraction import derive_market_snapshot
-from agent.model_config import ChatOpenAI, get_client_kwargs, get_model_name, invoke_structured_output
+from agent.model_config import ChatOpenAI, get_client_kwargs, get_model_name, get_model_name_for_task, invoke_structured_output
 from agent.runtime_clock import increment_runtime_step
 from agent.runtime_support import detect_ambiguity_flags, detect_capability_flags, infer_task_profile, latest_human_text
 from agent.solver.options import (
@@ -43,6 +45,7 @@ from agent.curated_context import _compact_tool_findings, build_curated_context,
 from agent.prompts import (
     PLANNER_SYSTEM,
     EXECUTOR_SYSTEM,
+    RETRIEVAL_PLANNER_SYSTEM,
     SELF_REFLECTION_SYSTEM,
     build_revision_prompt,
     execution_guidance,
@@ -55,6 +58,8 @@ from context_manager import count_tokens
 
 logger = logging.getLogger(__name__)
 RuntimeState = AgentState
+_RETRIEVAL_EXECUTION_MODES = {"retrieval_augmented_analysis", "document_grounded_analysis"}
+_MAX_RETRIEVAL_HOPS = max(2, int(os.getenv("MAX_RETRIEVAL_HOPS", "4")))
 
 # Prompts are centralized in runtime_prompts.py — no inline prompt strings here.
 
@@ -189,6 +194,27 @@ def _source_requests_live_data(task_text: str) -> bool:
     )
 
 
+def _looks_like_grounded_document_query(task_text: str) -> bool:
+    normalized = (task_text or "").lower()
+    return any(
+        token in normalized
+        for token in (
+            "according to",
+            "treasury bulletin",
+            "bulletin",
+            "annual report",
+            "10-k",
+            "10q",
+            "filing",
+            "document",
+            "report",
+            "table",
+            "page",
+            "source document",
+        )
+    )
+
+
 def _normalize_tool_families(intent: TaskIntent, task_text: str) -> list[str]:
     normalized: list[str] = []
     mapping = {
@@ -232,6 +258,12 @@ def _normalize_task_intent(intent: TaskIntent, task_text: str, heuristic_intent:
         candidate.review_mode = "qualitative_advisory"
         candidate.completion_mode = "capability_gap"
         candidate.tool_families_needed = []
+    if candidate.task_family in {"external_retrieval", "document_qa"} and _looks_like_grounded_document_query(task_text):
+        candidate.execution_mode = "document_grounded_analysis"
+        candidate.evidence_strategy = "document_first"
+        candidate.review_mode = "document_grounded"
+        candidate.completion_mode = "document_grounded"
+        candidate.tool_families_needed = list(dict.fromkeys(["document_retrieval", *candidate.tool_families_needed, "external_retrieval"]))
     candidate.tool_families_needed = _normalize_tool_families(candidate, task_text)
     if candidate.task_family == "legal_transactional":
         candidate.tool_families_needed = list(
@@ -422,6 +454,24 @@ def _heuristic_intent(task_text: str, answer_contract: dict[str, Any]) -> tuple[
                 completion_mode="advisory_memo",
                 routing_rationale="Legal structure/risk/compliance questions need broader checklist and retrieval capabilities.",
                 confidence=0.88,
+                planner_source="heuristic",
+            ),
+            capability_flags,
+            ambiguity_flags,
+        )
+
+    if _looks_like_grounded_document_query(task_text) and task_family not in {"finance_options", "legal_transactional"}:
+        return (
+            TaskIntent(
+                task_family="document_qa" if task_family == "general" else task_family,
+                execution_mode="document_grounded_analysis",
+                complexity_tier="structured_analysis",
+                tool_families_needed=["document_retrieval", "external_retrieval"],
+                evidence_strategy="document_first",
+                review_mode="document_grounded",
+                completion_mode="document_grounded",
+                routing_rationale="The task appears grounded in reports or source documents, so use retrieval before answering.",
+                confidence=0.83,
                 planner_source="heuristic",
             ),
             capability_flags,
@@ -739,11 +789,17 @@ def _structured_tool_args(state: RuntimeState, tool_name: str) -> dict[str, Any]
             "consideration_preference": "stock" if "stock" in lowered else "",
             "cross_border": bool("eu" in lowered and ("us" in lowered or "united states" in lowered)),
         }
+    if tool_name == "internet_search":
+        return {"query": source_bundle.focus_query or task_text[:240]}
+    if tool_name == "search_reference_corpus":
+        return {"query": source_bundle.focus_query or task_text[:240], "top_k": 5, "snippet_chars": 700}
     if tool_name == "fetch_reference_file":
         if source_bundle.urls:
-            return {"url": source_bundle.urls[0], "max_chars": 4000}
+            return {"url": source_bundle.urls[0], "page_start": 0, "page_limit": 5, "row_offset": 0, "row_limit": 200}
         return {}
     if tool_name == "list_reference_files":
+        return {"prompt_text": source_bundle.task_text}
+    if tool_name == "fetch_corpus_document":
         return {}
     if tool_name == "analyze_strategy":
         inline_facts = dict(source_bundle.inline_facts)
@@ -790,6 +846,232 @@ async def _run_tool_step(state: RuntimeState, registry: dict[str, dict[str, Any]
     return args, normalize_tool_output(tool_name, raw, args)
 
 
+async def _run_tool_step_with_args(
+    state: RuntimeState,
+    registry: dict[str, dict[str, Any]],
+    tool_name: str,
+    args_override: dict[str, Any],
+) -> tuple[dict[str, Any], Any]:
+    tool_obj = _tool_lookup(registry, tool_name)
+    if tool_obj is None:
+        return args_override, normalize_tool_output(tool_name, {"error": f"Tool '{tool_name}' is not registered."}, args_override)
+    raw = await _invoke_tool(tool_obj, args_override)
+    return args_override, normalize_tool_output(tool_name, raw, args_override)
+
+
+def _retrieval_tools_available(tool_plan: ToolPlan) -> list[str]:
+    retrieval_tools = []
+    for tool_name in tool_plan.selected_tools:
+        if tool_name in {
+            "internet_search",
+            "search_reference_corpus",
+            "fetch_corpus_document",
+            "list_reference_files",
+            "fetch_reference_file",
+        }:
+            retrieval_tools.append(tool_name)
+    return retrieval_tools
+
+
+def _derive_retrieval_seed_query(source_bundle: SourceBundle) -> str:
+    parts = [source_bundle.focus_query or source_bundle.task_text]
+    if source_bundle.entities:
+        parts.append(" ".join(source_bundle.entities[:4]))
+    if source_bundle.target_period:
+        parts.append(source_bundle.target_period)
+    seed = " ".join(part.strip() for part in parts if part and part.strip())
+    return re.sub(r"\s+", " ", seed).strip()[:280]
+
+
+def _tool_result_citations(tool_result: dict[str, Any]) -> list[str]:
+    facts = dict(tool_result.get("facts") or {})
+    citations: list[str] = []
+    direct = [facts.get("citation", "")]
+    for item in facts.get("results", []):
+        if isinstance(item, dict):
+            direct.append(item.get("url", "") or item.get("citation", ""))
+    for item in facts.get("documents", []):
+        if isinstance(item, dict):
+            direct.append(item.get("citation", "") or item.get("url", "") or item.get("path", ""))
+    for item in facts.get("chunks", []):
+        if isinstance(item, dict):
+            direct.append(item.get("citation", ""))
+    seen: set[str] = set()
+    for raw in direct:
+        citation = str(raw or "").strip()
+        if not citation or citation in seen:
+            continue
+        seen.add(citation)
+        citations.append(citation)
+    return citations
+
+
+def _search_result_candidates(tool_result: dict[str, Any]) -> list[dict[str, Any]]:
+    facts = dict(tool_result.get("facts") or {})
+    candidates: list[dict[str, Any]] = []
+    for item in facts.get("documents", []):
+        if isinstance(item, dict):
+            candidates.append(
+                {
+                    "document_id": str(item.get("document_id", "")),
+                    "citation": str(item.get("citation", "") or item.get("url", "") or item.get("path", "")),
+                    "path": str(item.get("path", "")),
+                }
+            )
+    for item in facts.get("results", []):
+        if isinstance(item, dict):
+            candidates.append(
+                {
+                    "document_id": str(item.get("document_id", "")),
+                    "citation": str(item.get("url", "") or item.get("citation", "")),
+                    "path": str(item.get("path", "")),
+                }
+            )
+    return [candidate for candidate in candidates if candidate.get("citation") or candidate.get("document_id") or candidate.get("path")]
+
+
+def _fallback_retrieval_action(
+    *,
+    source_bundle: SourceBundle,
+    journal: ExecutionJournal,
+    tool_plan: ToolPlan,
+) -> RetrievalAction:
+    available = _retrieval_tools_available(tool_plan)
+    last_result = journal.tool_results[-1] if journal.tool_results else {}
+    last_type = str(last_result.get("type", ""))
+    candidates = _search_result_candidates(last_result)
+    seed_query = _derive_retrieval_seed_query(source_bundle)
+
+    if not journal.tool_results:
+        if source_bundle.urls and "list_reference_files" in available:
+            return RetrievalAction(action="tool", tool_name="list_reference_files", query=source_bundle.task_text, rationale="Discover prompt-supplied reference files.")
+        if "search_reference_corpus" in available:
+            return RetrievalAction(action="tool", tool_name="search_reference_corpus", query=seed_query, rationale="Search the local document corpus first.")
+        if source_bundle.urls and "fetch_reference_file" in available:
+            return RetrievalAction(action="tool", tool_name="fetch_reference_file", url=source_bundle.urls[0], rationale="Read the first supplied reference file.")
+        if "internet_search" in available:
+            return RetrievalAction(action="tool", tool_name="internet_search", query=seed_query, rationale="Search the web for a supporting source.")
+        return RetrievalAction(action="answer", rationale="No retrieval tools are available.")
+
+    if last_type in {"search_reference_corpus", "list_reference_files"} and candidates:
+        first = candidates[0]
+        if last_type == "search_reference_corpus" and "fetch_corpus_document" in available:
+            return RetrievalAction(
+                action="tool",
+                tool_name="fetch_corpus_document",
+                document_id=first.get("document_id", ""),
+                path=first.get("path", "") or first.get("citation", ""),
+                rationale="Read the top matching corpus document.",
+            )
+        if "fetch_reference_file" in available:
+            return RetrievalAction(
+                action="tool",
+                tool_name="fetch_reference_file",
+                url=first.get("citation", ""),
+                rationale="Read the top matching reference document.",
+            )
+
+    if last_type == "internet_search" and candidates and "fetch_reference_file" in available:
+        return RetrievalAction(
+            action="tool",
+            tool_name="fetch_reference_file",
+            url=candidates[0].get("citation", ""),
+            rationale="Open the top search result for grounded evidence.",
+        )
+
+    if last_type in {"fetch_reference_file", "fetch_corpus_document"}:
+        facts = dict(last_result.get("facts") or {})
+        if facts.get("chunks") or facts.get("tables") or facts.get("numeric_summaries"):
+            return RetrievalAction(action="answer", rationale="Retrieved document evidence is available for the final answer.")
+
+    if journal.retrieval_iterations >= _MAX_RETRIEVAL_HOPS - 1:
+        return RetrievalAction(action="answer", rationale="Retrieval hop budget exhausted.")
+
+    if "internet_search" in available and last_type != "internet_search":
+        query = journal.retrieval_queries[-1] if journal.retrieval_queries else seed_query
+        return RetrievalAction(action="tool", tool_name="internet_search", query=query, rationale="Broaden search after insufficient local evidence.")
+
+    return RetrievalAction(action="answer", rationale="No better retrieval action is available.")
+
+
+def _validate_retrieval_action(action: RetrievalAction, tool_plan: ToolPlan) -> RetrievalAction:
+    allowed_tools = set(_retrieval_tools_available(tool_plan))
+    if action.action != "tool":
+        return action
+    if action.tool_name not in allowed_tools:
+        return RetrievalAction(action="answer", rationale="Planned retrieval tool is not available in the current tool plan.")
+    if action.tool_name in {"internet_search", "search_reference_corpus"} and not action.query.strip():
+        return RetrievalAction(action="answer", rationale="Search action did not produce a usable query.")
+    if action.tool_name == "fetch_reference_file" and not action.url.strip():
+        return RetrievalAction(action="answer", rationale="Fetch action did not produce a usable URL.")
+    if action.tool_name == "fetch_corpus_document" and not (action.document_id.strip() or action.path.strip()):
+        return RetrievalAction(action="answer", rationale="Corpus fetch action did not identify a document.")
+    return action
+
+
+def _plan_retrieval_action(
+    *,
+    state: RuntimeState,
+    source_bundle: SourceBundle,
+    tool_plan: ToolPlan,
+    journal: ExecutionJournal,
+) -> RetrievalAction:
+    available_tools = _retrieval_tools_available(tool_plan)
+    heuristic = _fallback_retrieval_action(source_bundle=source_bundle, journal=journal, tool_plan=tool_plan)
+    if not available_tools or journal.retrieval_iterations >= _MAX_RETRIEVAL_HOPS:
+        return RetrievalAction(action="answer", rationale="No remaining retrieval capacity.")
+
+    findings = _compact_tool_findings(journal.tool_results)
+    messages = [
+        SystemMessage(content=RETRIEVAL_PLANNER_SYSTEM),
+        HumanMessage(
+            content=json.dumps(
+                {
+                    "task": source_bundle.task_text,
+                    "focus_query": source_bundle.focus_query,
+                    "available_tools": available_tools,
+                    "heuristic_action": heuristic.model_dump(),
+                    "tool_findings": findings,
+                    "retrieval_iterations": journal.retrieval_iterations,
+                    "max_retrieval_hops": _MAX_RETRIEVAL_HOPS,
+                },
+                ensure_ascii=True,
+            )
+        ),
+    ]
+    try:
+        parsed, _ = invoke_structured_output("profiler", RetrievalAction, messages, temperature=0, max_tokens=220)
+        return _validate_retrieval_action(RetrievalAction.model_validate(parsed), tool_plan)
+    except Exception as exc:
+        logger.info("Retrieval planner fallback used heuristic action: %s", exc)
+        return _validate_retrieval_action(heuristic, tool_plan)
+
+
+def _tool_args_from_retrieval_action(action: RetrievalAction, source_bundle: SourceBundle) -> dict[str, Any]:
+    if action.tool_name == "internet_search":
+        return {"query": action.query or _derive_retrieval_seed_query(source_bundle)}
+    if action.tool_name == "search_reference_corpus":
+        return {"query": action.query or _derive_retrieval_seed_query(source_bundle), "top_k": 5, "snippet_chars": 700}
+    if action.tool_name == "list_reference_files":
+        return {"prompt_text": source_bundle.task_text}
+    if action.tool_name == "fetch_reference_file":
+        return {
+            "url": action.url,
+            "page_start": action.page_start,
+            "page_limit": max(2, action.page_limit),
+            "row_offset": action.row_offset,
+            "row_limit": max(100, action.row_limit),
+        }
+    if action.tool_name == "fetch_corpus_document":
+        return {
+            "document_id": action.document_id,
+            "path": action.path,
+            "chunk_start": action.chunk_start,
+            "chunk_limit": max(1, action.chunk_limit),
+        }
+    return {}
+
+
 def _adaptive_completion_budget(
     mode: str,
     prompt_tokens: int,
@@ -805,22 +1087,36 @@ def _adaptive_completion_budget(
     if mode == "scalar_or_json":
         return 600 if review_feedback else 400
     if mode == "long_form_derivation":
-        if prompt_tokens >= 2400 or derivation_heavy:
+        if derivation_heavy or prompt_tokens >= 5000:
+            return 3200
+        if prompt_tokens >= 2400 or review_feedback:
             return 2800
         return 2200
-    if mode in {"advisory_memo", "document_grounded"}:
+    if mode == "document_grounded":
+        if derivation_heavy or prompt_tokens >= 7000:
+            return 3200
+        if prompt_tokens >= 3500 or review_feedback:
+            return 2800
+        return 2400
+    if mode == "advisory_memo":
         if task_family == "legal_transactional":
+            if prompt_tokens >= 5000:
+                return 3200
             if prompt_tokens >= 2400 or review_feedback:
                 return 2800
             if prompt_tokens >= 1400:
                 return 2400
             return 2200
-        if prompt_tokens >= 2000 or review_feedback:
+        if prompt_tokens >= 3500 or review_feedback:
+            return 2600
+        if prompt_tokens >= 2000:
             return 2200
         return 1800
     if mode == "compact_sections":
         if task_family == "market_scenario":
-            return 1800 if review_feedback else 1400
+            return 2000 if review_feedback or prompt_tokens >= 2400 else 1600
+        if prompt_tokens >= 4000:
+            return 2000
         if prompt_tokens >= 1800 or derivation_heavy:
             return 1800
         return 1200 if review_feedback else 1100
@@ -1013,17 +1309,27 @@ def make_executor(registry: dict[str, dict[str, Any]]):
             if budget and budget.tool_calls_exhausted():
                 budget.log_budget_exit("tool_budget_exhausted", f"Blocked tool '{next_tool}' after reaching tool-call cap.")
             else:
-                _, tool_result = await _run_tool_step(state, registry, next_tool)
+                tool_args, tool_result = await _run_tool_step(state, registry, next_tool)
                 if tracker:
                     tracker.record_mcp_call()
                 if budget:
                     budget.record_tool_call()
                 tools_ran_this_call.append(next_tool)
                 journal.tool_results.append(tool_result.model_dump())
+                if intent.execution_mode in _RETRIEVAL_EXECUTION_MODES:
+                    journal.retrieval_iterations += 1
+                    if next_tool in {"internet_search", "search_reference_corpus"}:
+                        query = str(tool_args.get("query", "")).strip()
+                        if query:
+                            journal.retrieval_queries.append(query)
+                    for citation in _tool_result_citations(tool_result.model_dump()):
+                        if citation not in journal.retrieved_citations:
+                            journal.retrieved_citations.append(citation)
                 journal.routed_tool_families = list(dict.fromkeys([*journal.routed_tool_families, *tool_plan.tool_families_needed]))
                 workpad = _record_event(workpad, "executor", f"ran tool {next_tool}")
                 tool_plan.pending_tools = tool_plan.pending_tools[1:]
-                if tool_plan.pending_tools and intent.execution_mode in {"advisory_analysis", "document_grounded_analysis", "tool_compute"}:
+                should_continue_after_tool = bool(tool_plan.pending_tools) or intent.execution_mode in _RETRIEVAL_EXECUTION_MODES
+                if should_continue_after_tool and intent.execution_mode in {"advisory_analysis", "document_grounded_analysis", "tool_compute", "retrieval_augmented_analysis"}:
                     if tracer:
                         tracer.record(
                             "executor",
@@ -1042,9 +1348,62 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                         "tool_plan": tool_plan.model_dump(),
                         "execution_journal": journal.model_dump(),
                         "curated_context": curated.model_dump(),
-                        "solver_stage": "COMPUTE",
+                        "solver_stage": "GATHER" if intent.execution_mode in _RETRIEVAL_EXECUTION_MODES else "COMPUTE",
                         "workpad": workpad,
                     }
+
+        if intent.execution_mode in _RETRIEVAL_EXECUTION_MODES and not review_feedback and journal.retrieval_iterations < _MAX_RETRIEVAL_HOPS:
+            retrieval_action = _plan_retrieval_action(
+                state=state,
+                source_bundle=source_bundle,
+                tool_plan=tool_plan,
+                journal=journal,
+            )
+            if retrieval_action.action == "tool":
+                if budget and budget.tool_calls_exhausted():
+                    budget.log_budget_exit("tool_budget_exhausted", f"Blocked tool '{retrieval_action.tool_name}' after reaching tool-call cap.")
+                else:
+                    tool_args = _tool_args_from_retrieval_action(retrieval_action, source_bundle)
+                    _, tool_result = await _run_tool_step_with_args(state, registry, retrieval_action.tool_name, tool_args)
+                    if tracker:
+                        tracker.record_mcp_call()
+                    if budget:
+                        budget.record_tool_call()
+                    tools_ran_this_call.append(retrieval_action.tool_name)
+                    journal.tool_results.append(tool_result.model_dump())
+                    journal.retrieval_iterations += 1
+                    if retrieval_action.tool_name in {"internet_search", "search_reference_corpus"} and tool_args.get("query"):
+                        journal.retrieval_queries.append(str(tool_args["query"]))
+                    for citation in _tool_result_citations(tool_result.model_dump()):
+                        if citation not in journal.retrieved_citations:
+                            journal.retrieved_citations.append(citation)
+                    if retrieval_action.tool_name not in tool_plan.selected_tools:
+                        tool_plan.selected_tools.append(retrieval_action.tool_name)
+                    workpad = _record_event(workpad, "executor", f"retrieval hop -> {retrieval_action.tool_name}")
+                    if tracer:
+                        tracer.record(
+                            "executor",
+                            {
+                                "intent": intent.model_dump(),
+                                "used_llm": False,
+                                "tools_ran": tools_ran_this_call,
+                                "tool_results": _compact_tool_findings(journal.tool_results),
+                                "output_preview": "",
+                                "completion_budget": 0,
+                                "retrieval_action": retrieval_action.model_dump(),
+                            },
+                        )
+                    return {
+                        "last_tool_result": tool_result.model_dump(),
+                        "task_intent": intent.model_dump(),
+                        "tool_plan": tool_plan.model_dump(),
+                        "execution_journal": journal.model_dump(),
+                        "curated_context": curated.model_dump(),
+                        "solver_stage": "GATHER",
+                        "workpad": workpad,
+                    }
+            else:
+                workpad = _record_event(workpad, "executor", f"retrieval ready to answer -> {retrieval_action.rationale or 'evidence collected'}")
 
         if intent.task_family == "finance_options" and journal.tool_results:
             answer = _options_final_answer({**state, "execution_journal": journal.model_dump()})
@@ -1100,9 +1459,10 @@ def make_executor(registry: dict[str, dict[str, Any]]):
             prompt_messages.append(SystemMessage(content=revision_text))
             journal.revision_count += 1
         # On revision, skip tool findings for non-live-data tools (already in prior answer)
-        skip_tools_on_revision = is_revision and all(
-            (r.get("type") or r.get("tool_name", "")) in REUSABLE_TOOL_FAMILIES
-            for r in journal.tool_results
+        skip_tools_on_revision = (
+            is_revision
+            and intent.execution_mode not in _RETRIEVAL_EXECUTION_MODES
+            and all((r.get("type") or r.get("tool_name", "")) in REUSABLE_TOOL_FAMILIES for r in journal.tool_results)
         ) if journal.tool_results else False
         prompt_messages.append(
             SystemMessage(
@@ -1126,7 +1486,12 @@ def make_executor(registry: dict[str, dict[str, Any]]):
             review_feedback=bool(review_feedback),
             task_text=task_text,
         )
-        model_name = get_model_name("solver")
+        model_name = get_model_name_for_task(
+            "solver",
+            execution_mode=intent.execution_mode,
+            task_family=intent.task_family,
+            prompt_tokens=prompt_tokens,
+        )
         model = ChatOpenAI(model=model_name, **get_client_kwargs("solver"), temperature=0, max_tokens=max_tokens)
         t0 = time.monotonic()
         response = model.invoke(prompt_messages)
@@ -1266,6 +1631,21 @@ def reviewer(state: RuntimeState) -> dict[str, Any]:
             reasoning = "Analytical derivation appears truncated or incomplete."
             missing = ["complete derivation and final result"]
             score = 0.46 if verdict == "revise" else 0.38
+    elif intent.review_mode == "document_grounded":
+        if not journal.tool_results:
+            missing.append("retrieved evidence")
+        if not review_packet.citations:
+            missing.append("source citations")
+        answer_lower = (answer or "").lower()
+        has_inline_attribution = any(token in answer_lower for token in ("source:", "citation", "[source", "(source"))
+        if review_packet.citations and not has_inline_attribution:
+            missing.append("inline source attribution")
+        if review_packet.tool_findings and not has_inline_attribution and "\"" not in answer and "quote" not in answer_lower:
+            missing.append("quoted supporting evidence or extracted table row")
+        if missing:
+            verdict = "revise" if journal.revision_count < 1 else "fail"
+            reasoning = "Grounded retrieval answer needs clearer evidence usage, attribution, or quoted support."
+            score = 0.58 if verdict == "revise" else 0.48
     elif intent.task_family == "legal_transactional":
         missing = legal_depth_gaps(answer, latest_human_text(state["messages"]))
         if _legal_structure_option_count(answer) < 2:

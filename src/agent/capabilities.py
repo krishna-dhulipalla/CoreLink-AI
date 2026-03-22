@@ -13,6 +13,7 @@ from agent.legal_tools import (
     tax_structure_checklist,
     transaction_structure_checklist,
 )
+from agent.retrieval_tools import fetch_corpus_document, search_reference_corpus
 from agent.contracts import ACEEvent, CapabilityDescriptor, SourceBundle, TaskIntent, ToolPlan
 
 BUILTIN_LEGAL_TOOLS = [
@@ -20,6 +21,10 @@ BUILTIN_LEGAL_TOOLS = [
     transaction_structure_checklist,
     regulatory_execution_checklist,
     tax_structure_checklist,
+]
+BUILTIN_RETRIEVAL_TOOLS = [
+    search_reference_corpus,
+    fetch_corpus_document,
 ]
 
 _CANONICAL_FAMILIES = {
@@ -79,6 +84,8 @@ _FAMILY_BY_TOOL: dict[str, tuple[str, int]] = {
     "calculate_risk_metrics": ("market_scenario_analysis", 25),
     "fetch_reference_file": ("document_retrieval", 15),
     "list_reference_files": ("document_retrieval", 20),
+    "search_reference_corpus": ("document_retrieval", 8),
+    "fetch_corpus_document": ("document_retrieval", 9),
     "internet_search": ("external_retrieval", 20),
     "legal_playbook_retrieval": ("legal_playbook_retrieval", 10),
     "transaction_structure_checklist": ("transaction_structure_analysis", 10),
@@ -175,6 +182,27 @@ def _source_requests_live_data(source_bundle: SourceBundle) -> bool:
     )
 
 
+def _looks_like_document_corpus_query(source_bundle: SourceBundle) -> bool:
+    lowered = (source_bundle.task_text or "").lower()
+    return any(
+        token in lowered
+        for token in (
+            "according to",
+            "report",
+            "bulletin",
+            "filing",
+            "document",
+            "treasury",
+            "annual report",
+            "10-k",
+            "10q",
+            "table",
+            "page",
+            "pdf",
+        )
+    )
+
+
 def _normalize_family(raw_family: str, intent: TaskIntent, source_bundle: SourceBundle) -> str:
     family = str(raw_family or "").strip()
     if family in _CANONICAL_FAMILIES:
@@ -204,6 +232,9 @@ def _widen_families(intent: TaskIntent, source_bundle: SourceBundle, normalized:
         for family in ("market_data_retrieval", "external_retrieval"):
             if family not in widened:
                 widened.append(family)
+    if intent.task_family in {"document_qa", "external_retrieval"} and _looks_like_document_corpus_query(source_bundle):
+        if "document_retrieval" not in widened:
+            widened.insert(0, "document_retrieval")
     if intent.task_family == "legal_transactional":
         for family in (
             "legal_playbook_retrieval",
@@ -242,6 +273,25 @@ def _ordered_candidates(registry: dict[str, dict[str, Any]], family: str) -> lis
     return sorted(matches, key=lambda item: int(item[0].get("priority", 50)))
 
 
+def _document_retrieval_candidates(
+    registry: dict[str, dict[str, Any]],
+    source_bundle: SourceBundle,
+) -> list[str]:
+    candidate_names = [descriptor["tool_name"] for descriptor, _ in _ordered_candidates(registry, "document_retrieval")]
+    selected: list[str] = []
+    if source_bundle.urls:
+        for tool_name in ("list_reference_files", "fetch_reference_file"):
+            if tool_name in candidate_names and tool_name not in selected:
+                selected.append(tool_name)
+    for tool_name in ("search_reference_corpus", "fetch_corpus_document"):
+        if tool_name in candidate_names and tool_name not in selected:
+            selected.append(tool_name)
+    for tool_name in candidate_names:
+        if tool_name not in selected:
+            selected.append(tool_name)
+    return selected
+
+
 def resolve_tool_plan(
     intent: TaskIntent,
     source_bundle: SourceBundle,
@@ -272,6 +322,36 @@ def resolve_tool_plan(
         return plan, mutable_registry
 
     for family in widened:
+        if family == "document_retrieval":
+            document_tools = _document_retrieval_candidates(mutable_registry, source_bundle)
+            if not document_tools:
+                ace_event, synthesized = synthesize_capability(family)
+                ace_events.append(ace_event.model_dump())
+                if synthesized is not None:
+                    descriptor = _descriptor_for_tool(synthesized)
+                    mutable_registry[descriptor.tool_name] = {
+                        "descriptor": descriptor.model_dump(),
+                        "tool": synthesized,
+                    }
+                    document_tools = _document_retrieval_candidates(mutable_registry, source_bundle)
+            if not document_tools:
+                blocked.append(family)
+                notes.append(f"No safe tool binding found for {family}.")
+                continue
+            for tool_name in document_tools:
+                if tool_name not in selected:
+                    selected.append(tool_name)
+            initial_pending = [
+                tool_name
+                for tool_name in document_tools
+                if tool_name in {"search_reference_corpus", "list_reference_files"}
+                or (tool_name == "fetch_reference_file" and bool(source_bundle.urls))
+            ]
+            for tool_name in initial_pending:
+                if tool_name not in pending:
+                    pending.append(tool_name)
+            continue
+
         candidates = _ordered_candidates(mutable_registry, family)
         if not candidates:
             ace_event, synthesized = synthesize_capability(family)

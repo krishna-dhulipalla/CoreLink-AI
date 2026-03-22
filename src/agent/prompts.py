@@ -56,6 +56,16 @@ EXECUTOR_SYSTEM = (
     "If the data does not support a conclusion, say so rather than hedging."
 )
 
+RETRIEVAL_PLANNER_SYSTEM = (
+    "You are a retrieval planner for finance and document-grounded tasks.\n"
+    "Choose the next best action before final answer generation.\n"
+    "Prefer this loop: search -> read -> refine -> answer.\n"
+    "Use document or corpus retrieval before open-web search when the task appears grounded in reports, filings, bulletins, or provided documents.\n"
+    "Choose action='answer' only when the retrieved evidence already supports a grounded answer.\n"
+    "When the task requires grounding, prefer exact quotes, table rows, or document-window evidence with citations.\n"
+    "Return only JSON matching the schema."
+)
+
 # ---------------------------------------------------------------------------
 # Family-specific guidance — appended as a second system message
 # ---------------------------------------------------------------------------
@@ -90,8 +100,18 @@ QUANT_GUIDANCE = (
 )
 
 DOCUMENT_GROUNDED_GUIDANCE = (
-    "Ground the answer in retrieved evidence. "
+    "Ground the answer in retrieved evidence.\n"
+    "Use the retrieved documents or corpus content before outside knowledge.\n"
+    "Quote the exact supporting phrase, number, or table row when it materially supports the answer.\n"
+    "Cite the supporting source inline using the available citation or document label.\n"
     "Keep unsupported parts clearly marked as open questions."
+)
+
+RETRIEVAL_GUIDANCE = (
+    "Answer from retrieved sources rather than model memory.\n"
+    "Use the available search, corpus, or document findings to ground the answer.\n"
+    "Prefer exact quotes or extracted numeric facts when they resolve the question.\n"
+    "Cite the source used for the key conclusion."
 )
 
 GENERAL_GUIDANCE = (
@@ -124,6 +144,8 @@ def execution_guidance(task_family: str, execution_mode: str) -> str:
         return ANALYTICAL_REASONING_GUIDANCE
     if task_family == "market_scenario":
         return MARKET_SCENARIO_GUIDANCE
+    if execution_mode == "retrieval_augmented_analysis":
+        return RETRIEVAL_GUIDANCE
     if execution_mode == "document_grounded_analysis":
         return DOCUMENT_GROUNDED_GUIDANCE
     return GENERAL_GUIDANCE
@@ -170,6 +192,11 @@ def build_revision_prompt(
         prompt += (
             "\nKeep the opening section compact. Start with a snapshot naming multiple viable structures, "
             "one-line tradeoffs, and the recommended path before any deep dive."
+        )
+    if task_family in {"document_qa", "external_retrieval"}:
+        prompt += (
+            "\nUse retrieved evidence directly. Add the missing supporting quote, citation, or extracted number "
+            "instead of general background."
         )
     return prompt
 

@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 from langchain_core.tools import tool
 from langgraph.graph import END, StateGraph
 
-from agent.capabilities import BUILTIN_LEGAL_TOOLS, build_capability_registry
+from agent.capabilities import BUILTIN_LEGAL_TOOLS, BUILTIN_RETRIEVAL_TOOLS, build_capability_registry
 from agent.nodes.intake import intake
 from agent.nodes.orchestrator import (
     context_curator,
@@ -39,7 +39,14 @@ def get_current_time() -> str:
 
 
 def build_agent_graph(external_tools: list | None = None):
-    all_tools: list[Any] = [CALCULATOR_TOOL, SEARCH_TOOL, get_current_time, *BUILTIN_LEGAL_TOOLS, *(external_tools or [])]
+    all_tools: list[Any] = [
+        CALCULATOR_TOOL,
+        SEARCH_TOOL,
+        get_current_time,
+        *BUILTIN_RETRIEVAL_TOOLS,
+        *BUILTIN_LEGAL_TOOLS,
+        *(external_tools or []),
+    ]
     registry = build_capability_registry(all_tools)
 
     graph = StateGraph(AgentState)

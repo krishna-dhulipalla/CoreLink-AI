@@ -173,6 +173,24 @@ def _market_scenario_facts(task_text: str, source_bundle: SourceBundle) -> list[
     return _dedupe_facts(facts)
 
 
+def _retrieval_facts_in_use(task_text: str, source_bundle: SourceBundle) -> list[dict[str, Any]]:
+    facts: list[dict[str, Any]] = []
+    if source_bundle.focus_query:
+        facts.append({"type": "focus_query", "value": source_bundle.focus_query})
+    if source_bundle.entities:
+        facts.append({"type": "entities", "value": source_bundle.entities[:8]})
+    if source_bundle.target_period:
+        facts.append({"type": "target_period", "value": source_bundle.target_period})
+    if source_bundle.urls:
+        facts.append({"type": "reference_urls", "value": source_bundle.urls[:6]})
+    for key, value in list(source_bundle.inline_facts.items())[:8]:
+        facts.append({"type": "inline_fact", "key": key, "value": value})
+    lowered = (task_text or "").lower()
+    if any(token in lowered for token in ("according to", "report", "bulletin", "filing", "document", "source")):
+        facts.append({"type": "grounding_required", "value": True})
+    return _dedupe_facts(facts)
+
+
 def build_curated_context(
     task_text: str,
     answer_contract: dict[str, Any],
@@ -215,6 +233,12 @@ def build_curated_context(
             "Exact severity and curability of the execution risks are not specified.",
             "Seller support for indemnity, escrow, or other downside protection is not yet confirmed.",
         ]
+    elif intent.execution_mode in {"retrieval_augmented_analysis", "document_grounded_analysis"}:
+        facts_in_use = _retrieval_facts_in_use(task_text, source_bundle)
+        open_questions = [
+            "Find the exact supporting quote, table row, or document window before finalizing the answer.",
+        ]
+        assumptions = []
     else:
         facts_in_use = _dedupe_facts(
             [{"type": "inline_fact", "key": key, "value": value} for key, value in list(source_bundle.inline_facts.items())[:10]]
@@ -270,6 +294,46 @@ def _compact_tool_findings(tool_results: list[dict[str, Any]] | None) -> list[di
             facts.pop("deal_size_hint", None)
         if not facts.get("urgency"):
             facts.pop("urgency", None)
+        if "results" in facts and isinstance(facts["results"], list):
+            facts["results"] = [
+                {
+                    "title": item.get("title", ""),
+                    "snippet": _compact_prompt_value(item.get("snippet", "")),
+                    "citation": item.get("url", "") or item.get("citation", ""),
+                }
+                for item in facts["results"][:4]
+                if isinstance(item, dict)
+            ]
+        if "documents" in facts and isinstance(facts["documents"], list):
+            facts["documents"] = [
+                {
+                    "document_id": item.get("document_id", ""),
+                    "citation": item.get("citation", "") or item.get("url", ""),
+                    "format": item.get("format", ""),
+                }
+                for item in facts["documents"][:6]
+                if isinstance(item, dict)
+            ]
+        if "chunks" in facts and isinstance(facts["chunks"], list):
+            facts["chunks"] = [
+                {
+                    "locator": item.get("locator", ""),
+                    "text": _compact_prompt_value(item.get("text", "")),
+                    "citation": item.get("citation", ""),
+                }
+                for item in facts["chunks"][:4]
+                if isinstance(item, dict)
+            ]
+        if "tables" in facts and isinstance(facts["tables"], list):
+            facts["tables"] = [
+                {
+                    "locator": item.get("locator", ""),
+                    "headers": list(item.get("headers", []))[:8],
+                    "citation": item.get("citation", ""),
+                }
+                for item in facts["tables"][:2]
+                if isinstance(item, dict)
+            ]
         finding = {
             "tool": str(result.get("type", "") or result.get("tool_name", "")),
             "facts": _compact_prompt_value(facts),
@@ -277,6 +341,32 @@ def _compact_tool_findings(tool_results: list[dict[str, Any]] | None) -> list[di
         if finding["tool"]:
             findings.append(finding)
     return findings
+
+
+def _extract_tool_citations(tool_results: list[dict[str, Any]] | None) -> list[str]:
+    citations: list[str] = []
+    seen: set[str] = set()
+    for result in tool_results or []:
+        if not isinstance(result, dict):
+            continue
+        facts = dict(result.get("facts") or {})
+        direct = [facts.get("citation", "")]
+        for item in facts.get("results", []):
+            if isinstance(item, dict):
+                direct.append(item.get("url", "") or item.get("citation", ""))
+        for item in facts.get("documents", []):
+            if isinstance(item, dict):
+                direct.append(item.get("citation", "") or item.get("url", ""))
+        for item in facts.get("chunks", []):
+            if isinstance(item, dict):
+                direct.append(item.get("citation", ""))
+        for item in direct:
+            citation = str(item or "").strip()
+            if not citation or citation in seen:
+                continue
+            seen.add(citation)
+            citations.append(citation)
+    return citations
 
 
 def build_review_packet(
@@ -290,6 +380,7 @@ def build_review_packet(
     provenance = dict(curated_context.get("provenance_summary") or {})
     source_summary = dict(provenance.get("source_bundle") or {})
     citations = [str(item) for item in source_summary.get("urls", []) if str(item).strip()]
+    citations.extend([item for item in _extract_tool_citations(tool_results) if item not in citations])
     return ReviewPacket(
         task_text=task_text,
         answer_text=answer_text,

@@ -54,6 +54,21 @@ class TestModelConfig:
 
         assert model_config.get_model_name("solver") == "deepseek-ai/DeepSeek-V3.2"
 
+    def test_long_context_override_applies_to_document_solver(self, monkeypatch):
+        monkeypatch.setenv("MODEL_PROFILE", "balanced")
+        monkeypatch.setenv("LONG_CONTEXT_SOLVER_MODEL", "long-context-model")
+        model_config = _reload_model_config()
+
+        assert (
+            model_config.get_model_name_for_task(
+                "solver",
+                execution_mode="document_grounded_analysis",
+                task_family="document_qa",
+                prompt_tokens=7000,
+            )
+            == "long-context-model"
+        )
+
     def test_role_specific_client_kwargs(self, monkeypatch):
         monkeypatch.setenv("OPENAI_API_KEY", "global-key")
         monkeypatch.delenv("REVIEWER_OPENAI_API_KEY", raising=False)
