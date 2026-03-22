@@ -294,3 +294,12 @@ Rules:
   - `python -m py_compile ...` on touched files
   - `pytest tests/test_engine_runtime.py -k "document_query_prefers_document_grounded_retrieval_tools or runs_retrieval_search_then_fetch_before_final_answer or reviewer_flags_missing_grounding_for_document_answers" -q`
   - `pytest tests/test_model_config.py -k "long_context_override_applies_to_document_solver" -q`
+
+### Chat 36: Retrieval Pagination Hardening
+
+- **Role:** Coder
+- **Actions Taken:** Hardened retrieval paging across both local corpus and URL-backed reference files. In [src/agent/retrieval_tools.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\retrieval_tools.py), blocked corpus path escape, switched corpus scoring from broad substring checks to token overlap, and added explicit chunk-window metadata (`chunk_start`, `chunk_limit`, `returned_chunks`). In [src/agent/tools/normalization.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\tools\normalization.py), parsed reference-file page/row window metadata into `window_kind`, totals, and `has_more_windows`. In [src/agent/nodes/orchestrator.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\orchestrator.py), replaced the old “any fetched chunk means answer” behavior with evidence-sufficiency checks plus bounded next-window actions for both `fetch_corpus_document` and `fetch_reference_file`, while keeping `document_grounded_analysis` inside grounded sources instead of widening to web search too early.
+- **Critical Bug Solved:** Long-document retrieval could still stop after the first weak chunk/page because the state machine treated any fetch as sufficient evidence; URL-backed `fetch_reference_file` also had no usable next-page/next-row control path even though the tool itself supported pagination.
+- **Fix:** Added regressions in [tests/test_engine_runtime.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_engine_runtime.py) for corpus path safety, corpus multi-chunk pagination, reference-file pagination metadata, and multi-page `fetch_reference_file` execution. Verified with:
+  - `python -m py_compile src/agent/retrieval_tools.py src/agent/tools/normalization.py src/agent/nodes/orchestrator.py tests/test_engine_runtime.py`
+  - `pytest tests/test_engine_runtime.py -q`

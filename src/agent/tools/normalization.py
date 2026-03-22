@@ -17,6 +17,8 @@ _SEARCH_RESULT_RE = re.compile(
     r"\[(?P<rank>\d+)\]\s+(?P<title>.+?)\n\s*(?P<snippet>.+?)\n\s*URL:\s*(?P<url>https?://\S+)",
     re.DOTALL,
 )
+_PAGE_WINDOW_RE = re.compile(r"\[Pages\s+(?P<start>\d+)\s*[–—-]\s*(?P<end>\d+)\s+of\s+(?P<total>\d+)\]", re.IGNORECASE)
+_ROW_WINDOW_RE = re.compile(r"\[Rows\s+(?P<start>\d+)\s*[–—-]\s*(?P<end>\d+)\s+of\s+~?(?P<total>\d+)\]", re.IGNORECASE)
 
 
 def _normalize_scalar(value: str) -> Any:
@@ -140,6 +142,24 @@ def _parse_file_fetch(raw: str) -> dict[str, Any]:
         metadata["size_kb"] = float(size_match.group(1))
     if window_match:
         metadata["window"] = f"{window_match.group(1)} {window_match.group(2)}"
+    page_window = _PAGE_WINDOW_RE.search(raw or "")
+    if page_window:
+        window_end = int(page_window.group("end"))
+        total_pages = int(page_window.group("total"))
+        metadata["window_kind"] = "pages"
+        metadata["window_start"] = int(page_window.group("start"))
+        metadata["window_end"] = window_end
+        metadata["total_pages"] = total_pages
+        metadata["has_more_windows"] = window_end < total_pages
+    row_window = _ROW_WINDOW_RE.search(raw or "")
+    if row_window:
+        window_end = int(row_window.group("end"))
+        total_rows = int(row_window.group("total"))
+        metadata["window_kind"] = "rows"
+        metadata["window_start"] = int(row_window.group("start"))
+        metadata["window_end"] = window_end
+        metadata["total_rows"] = total_rows
+        metadata["has_more_windows"] = window_end < total_rows
 
     parts = re.split(r"\n[-\u2500]{10,}\n", raw or "", maxsplit=1)
     body = parts[1] if len(parts) > 1 else raw

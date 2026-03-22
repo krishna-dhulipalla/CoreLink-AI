@@ -45,7 +45,6 @@ from agent.curated_context import _compact_tool_findings, build_curated_context,
 from agent.prompts import (
     PLANNER_SYSTEM,
     EXECUTOR_SYSTEM,
-    RETRIEVAL_PLANNER_SYSTEM,
     SELF_REFLECTION_SYSTEM,
     build_revision_prompt,
     execution_guidance,
@@ -60,8 +59,25 @@ logger = logging.getLogger(__name__)
 RuntimeState = AgentState
 _RETRIEVAL_EXECUTION_MODES = {"retrieval_augmented_analysis", "document_grounded_analysis"}
 _MAX_RETRIEVAL_HOPS = max(2, int(os.getenv("MAX_RETRIEVAL_HOPS", "4")))
+_RETRIEVAL_STOP_WORDS = {
+    "the",
+    "and",
+    "for",
+    "with",
+    "from",
+    "that",
+    "this",
+    "what",
+    "which",
+    "according",
+    "report",
+    "document",
+    "source",
+    "using",
+    "based",
+}
 
-# Prompts are centralized in runtime_prompts.py — no inline prompt strings here.
+# Prompts are centralized in prompts.py; orchestration code stays logic-only.
 
 
 def _legal_structure_option_count(answer: str) -> int:
@@ -883,6 +899,154 @@ def _derive_retrieval_seed_query(source_bundle: SourceBundle) -> str:
     return re.sub(r"\s+", " ", seed).strip()[:280]
 
 
+def _retrieval_tokens(text: str) -> list[str]:
+    return [
+        token
+        for token in re.findall(r"[a-z0-9]+", (text or "").lower())
+        if len(token) > 1 and token not in _RETRIEVAL_STOP_WORDS
+    ]
+
+
+def _retrieval_focus_tokens(source_bundle: SourceBundle) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for part in [source_bundle.focus_query, *source_bundle.entities[:6], source_bundle.target_period]:
+        for token in _retrieval_tokens(str(part or "")):
+            if token in seen:
+                continue
+            seen.add(token)
+            ordered.append(token)
+    return ordered[:14]
+
+
+def _retrieval_content_text(facts: dict[str, Any]) -> str:
+    parts: list[str] = []
+    for chunk in facts.get("chunks", []):
+        if isinstance(chunk, dict):
+            parts.append(str(chunk.get("text", "")))
+            parts.append(str(chunk.get("locator", "")))
+            parts.append(str(chunk.get("citation", "")))
+    for table in facts.get("tables", []):
+        if isinstance(table, dict):
+            parts.append(json.dumps(table, ensure_ascii=True))
+    for summary in facts.get("numeric_summaries", []):
+        if isinstance(summary, dict):
+            parts.append(json.dumps(summary, ensure_ascii=True))
+    metadata = dict(facts.get("metadata") or {})
+    for key in ("file_name", "window"):
+        if metadata.get(key):
+            parts.append(str(metadata.get(key)))
+    for key in ("citation", "document_id"):
+        if facts.get(key):
+            parts.append(str(facts.get(key)))
+    return " ".join(part for part in parts if part).strip()
+
+
+def _retrieved_evidence_is_sufficient(source_bundle: SourceBundle, facts: dict[str, Any]) -> bool:
+    content_text = _retrieval_content_text(facts)
+    if not content_text:
+        return False
+    content_tokens = set(_retrieval_tokens(content_text))
+    if not content_tokens:
+        return False
+
+    focus_query = re.sub(r"\s+", " ", (source_bundle.focus_query or "").lower()).strip()
+    if focus_query and len(focus_query) >= 8 and focus_query in content_text.lower():
+        return True
+
+    focus_tokens = _retrieval_focus_tokens(source_bundle)
+    overlap = set(focus_tokens).intersection(content_tokens)
+    if not overlap:
+        return False
+
+    period = str(source_bundle.target_period or "").strip()
+    has_period = not period or period in content_tokens or period in content_text
+    entity_tokens = {
+        token
+        for entity in source_bundle.entities[:6]
+        for token in _retrieval_tokens(entity)
+        if len(token) > 2
+    }
+    has_entity = not entity_tokens or bool(entity_tokens.intersection(content_tokens))
+    has_structured_signal = bool(facts.get("tables") or facts.get("numeric_summaries") or re.search(r"\d", content_text))
+    focus_core_tokens = [
+        token
+        for token in _retrieval_tokens(source_bundle.focus_query or "")
+        if token not in entity_tokens and token != period
+    ]
+    primary_tokens = focus_core_tokens or focus_tokens
+    primary_overlap = set(primary_tokens).intersection(content_tokens)
+
+    if not primary_overlap:
+        return False
+
+    if has_entity and has_period and len(primary_overlap) >= 1 and has_structured_signal:
+        return True
+
+    minimum_overlap = 2 if len(primary_tokens) >= 3 else 1
+    return len(primary_overlap) >= minimum_overlap and (has_period or has_entity or has_structured_signal)
+
+
+def _next_corpus_fetch_action(last_result: dict[str, Any]) -> RetrievalAction | None:
+    facts = dict(last_result.get("facts") or {})
+    metadata = dict(facts.get("metadata") or {})
+    assumptions = dict(last_result.get("assumptions") or {})
+    if not metadata.get("has_more_chunks"):
+        return None
+    chunk_start = int(assumptions.get("chunk_start", metadata.get("chunk_start", 0)) or 0)
+    chunk_limit = max(1, int(assumptions.get("chunk_limit", metadata.get("chunk_limit", 3)) or 3))
+    document_id = str(assumptions.get("document_id", facts.get("document_id", "")) or "")
+    path = str(assumptions.get("path", facts.get("citation", "")) or "")
+    return RetrievalAction(
+        action="tool",
+        tool_name="fetch_corpus_document",
+        document_id=document_id,
+        path=path,
+        chunk_start=chunk_start + chunk_limit,
+        chunk_limit=chunk_limit,
+        rationale="Read the next document window because the current chunk is not sufficient yet.",
+    )
+
+
+def _next_reference_fetch_action(last_result: dict[str, Any]) -> RetrievalAction | None:
+    facts = dict(last_result.get("facts") or {})
+    metadata = dict(facts.get("metadata") or {})
+    assumptions = dict(last_result.get("assumptions") or {})
+    if not metadata.get("has_more_windows"):
+        return None
+    url = str(assumptions.get("url", facts.get("citation", "")) or "")
+    if not url:
+        return None
+    window_kind = str(metadata.get("window_kind", "") or "").lower()
+    if window_kind == "pages":
+        page_start = int(assumptions.get("page_start", 0) or 0)
+        page_limit = max(1, int(assumptions.get("page_limit", 5) or 5))
+        return RetrievalAction(
+            action="tool",
+            tool_name="fetch_reference_file",
+            url=url,
+            page_start=page_start + page_limit,
+            page_limit=page_limit,
+            row_offset=int(assumptions.get("row_offset", 0) or 0),
+            row_limit=max(100, int(assumptions.get("row_limit", 200) or 200)),
+            rationale="Read the next page window because the current pages are not sufficient yet.",
+        )
+    if window_kind == "rows":
+        row_offset = int(assumptions.get("row_offset", 0) or 0)
+        row_limit = max(1, int(assumptions.get("row_limit", 200) or 200))
+        return RetrievalAction(
+            action="tool",
+            tool_name="fetch_reference_file",
+            url=url,
+            page_start=int(assumptions.get("page_start", 0) or 0),
+            page_limit=max(2, int(assumptions.get("page_limit", 5) or 5)),
+            row_offset=row_offset + row_limit,
+            row_limit=row_limit,
+            rationale="Read the next row window because the current rows are not sufficient yet.",
+        )
+    return None
+
+
 def _tool_result_citations(tool_result: dict[str, Any]) -> list[str]:
     facts = dict(tool_result.get("facts") or {})
     citations: list[str] = []
@@ -932,6 +1096,7 @@ def _search_result_candidates(tool_result: dict[str, Any]) -> list[dict[str, Any
 
 def _fallback_retrieval_action(
     *,
+    execution_mode: str,
     source_bundle: SourceBundle,
     journal: ExecutionJournal,
     tool_plan: ToolPlan,
@@ -941,6 +1106,7 @@ def _fallback_retrieval_action(
     last_type = str(last_result.get("type", ""))
     candidates = _search_result_candidates(last_result)
     seed_query = _derive_retrieval_seed_query(source_bundle)
+    corpus_grounded_only = execution_mode == "document_grounded_analysis"
 
     if not journal.tool_results:
         if source_bundle.urls and "list_reference_files" in available:
@@ -981,13 +1147,23 @@ def _fallback_retrieval_action(
 
     if last_type in {"fetch_reference_file", "fetch_corpus_document"}:
         facts = dict(last_result.get("facts") or {})
-        if facts.get("chunks") or facts.get("tables") or facts.get("numeric_summaries"):
+        if _retrieved_evidence_is_sufficient(source_bundle, facts):
             return RetrievalAction(action="answer", rationale="Retrieved document evidence is available for the final answer.")
+        if last_type == "fetch_reference_file" and "fetch_reference_file" in available:
+            next_window = _next_reference_fetch_action(last_result)
+            if next_window is not None:
+                return next_window
+        if last_type == "fetch_corpus_document" and "fetch_corpus_document" in available:
+            next_window = _next_corpus_fetch_action(last_result)
+            if next_window is not None:
+                return next_window
+        if corpus_grounded_only:
+            return RetrievalAction(action="answer", rationale="No stronger grounded document evidence is available within the allowed retrieval budget.")
 
     if journal.retrieval_iterations >= _MAX_RETRIEVAL_HOPS - 1:
         return RetrievalAction(action="answer", rationale="Retrieval hop budget exhausted.")
 
-    if "internet_search" in available and last_type != "internet_search":
+    if not corpus_grounded_only and "internet_search" in available and last_type != "internet_search":
         query = journal.retrieval_queries[-1] if journal.retrieval_queries else seed_query
         return RetrievalAction(action="tool", tool_name="internet_search", query=query, rationale="Broaden search after insufficient local evidence.")
 
@@ -1011,7 +1187,7 @@ def _validate_retrieval_action(action: RetrievalAction, tool_plan: ToolPlan) -> 
 
 def _plan_retrieval_action(
     *,
-    state: RuntimeState,
+    execution_mode: str,
     source_bundle: SourceBundle,
     tool_plan: ToolPlan,
     journal: ExecutionJournal,
@@ -1027,7 +1203,10 @@ def _plan_retrieval_action(
         return RetrievalAction(action="answer", rationale="No remaining retrieval capacity.")
 
     heuristic = _fallback_retrieval_action(
-        source_bundle=source_bundle, journal=journal, tool_plan=tool_plan
+        execution_mode=execution_mode,
+        source_bundle=source_bundle,
+        journal=journal,
+        tool_plan=tool_plan,
     )
     return _validate_retrieval_action(heuristic, tool_plan)
 
@@ -1340,7 +1519,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
 
         if intent.execution_mode in _RETRIEVAL_EXECUTION_MODES and not review_feedback and journal.retrieval_iterations < _MAX_RETRIEVAL_HOPS:
             retrieval_action = _plan_retrieval_action(
-                state=state,
+                execution_mode=intent.execution_mode,
                 source_bundle=source_bundle,
                 tool_plan=tool_plan,
                 journal=journal,

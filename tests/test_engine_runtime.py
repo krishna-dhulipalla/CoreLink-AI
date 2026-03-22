@@ -6,6 +6,8 @@ from langchain_core.messages import AIMessage
 from langchain_core.tools import tool
 
 from agent.budget import BudgetTracker
+from agent.retrieval_tools import fetch_corpus_document as fetch_corpus_document_tool
+from agent.tools.normalization import normalize_tool_output
 from agent.nodes.intake import intake
 from agent.nodes.output_adapter import output_adapter
 from agent.tracer import RunTracer
@@ -295,6 +297,300 @@ def test_engine_executor_runs_retrieval_search_then_fetch_before_final_answer(mo
     serialized_prompt = json.dumps([str(msg.content) for msg in captured[0]], ensure_ascii=True)
     assert "treasury_1945.txt" in serialized_prompt
     assert "258.7 billion" in serialized_prompt
+
+
+def test_fetch_corpus_document_rejects_paths_outside_corpus_root(monkeypatch, tmp_path):
+    corpus_root = tmp_path / "corpus"
+    corpus_root.mkdir()
+    (corpus_root / "inside.txt").write_text("inside", encoding="utf-8")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside", encoding="utf-8")
+    monkeypatch.setenv("OFFICEQA_CORPUS_DIR", str(corpus_root))
+
+    result = fetch_corpus_document_tool.invoke({"path": "..\\outside.txt"})
+
+    assert "error" in result
+    assert "not found" in result["error"].lower()
+
+
+def test_normalize_fetch_reference_file_extracts_pagination_metadata():
+    raw = (
+        "FILE: treasury_1945.pdf\n"
+        "FORMAT: PDF | SIZE: 12.3 KB\n"
+        "--------------------------------------------------\n"
+        "[Pages 1-2 of 5]\n"
+        "Treasury Bulletin overview."
+    )
+
+    result = normalize_tool_output(
+        "fetch_reference_file",
+        raw,
+        {"url": "https://example.com/treasury_1945.pdf", "page_start": 0, "page_limit": 2, "row_offset": 0, "row_limit": 200},
+    )
+
+    assert result.facts["metadata"]["window_kind"] == "pages"
+    assert result.facts["metadata"]["total_pages"] == 5
+    assert result.facts["metadata"]["has_more_windows"] is True
+
+
+def test_engine_executor_paginates_corpus_before_answering(monkeypatch):
+    @tool
+    def search_reference_corpus(query: str, top_k: int = 5, snippet_chars: int = 700) -> dict:
+        """Fake corpus search tool."""
+        return {
+            "results": [
+                {
+                    "rank": 1,
+                    "title": "treasury_1945.txt",
+                    "snippet": "Treasury Bulletin overview and publication notes.",
+                    "url": "treasury_1945.txt",
+                    "document_id": "treasury_1945_txt",
+                }
+            ],
+            "documents": [
+                {
+                    "document_id": "treasury_1945_txt",
+                    "citation": "treasury_1945.txt",
+                    "format": "txt",
+                    "path": "treasury_1945.txt",
+                }
+            ],
+        }
+
+    @tool
+    def fetch_corpus_document(document_id: str = "", path: str = "", chunk_start: int = 0, chunk_limit: int = 3) -> dict:
+        """Fake paginated corpus fetch tool."""
+        if chunk_start <= 0:
+            return {
+                "document_id": document_id or "treasury_1945_txt",
+                "citation": path or "treasury_1945.txt",
+                "metadata": {
+                    "file_name": "treasury_1945.txt",
+                    "format": "txt",
+                    "window": "chunks 1-1",
+                    "total_chunks": 2,
+                    "has_more_chunks": True,
+                    "chunk_start": 0,
+                    "chunk_limit": chunk_limit,
+                    "returned_chunks": 1,
+                },
+                "chunks": [
+                    {
+                        "locator": "chunk 1",
+                        "kind": "text_excerpt",
+                        "text": "Treasury Bulletin introduction and editorial notes.",
+                        "citation": path or "treasury_1945.txt",
+                    }
+                ],
+                "tables": [],
+                "numeric_summaries": [],
+            }
+        return {
+            "document_id": document_id or "treasury_1945_txt",
+            "citation": path or "treasury_1945.txt",
+            "metadata": {
+                "file_name": "treasury_1945.txt",
+                "format": "txt",
+                "window": "chunks 2-2",
+                "total_chunks": 2,
+                "has_more_chunks": False,
+                "chunk_start": chunk_start,
+                "chunk_limit": chunk_limit,
+                "returned_chunks": 1,
+            },
+            "chunks": [
+                {
+                    "locator": "chunk 2",
+                    "kind": "text_excerpt",
+                    "text": "In 1945, total public debt outstanding was 258.7 billion dollars.",
+                    "citation": path or "treasury_1945.txt",
+                }
+            ],
+            "tables": [],
+            "numeric_summaries": [{"metric": "public_debt", "value": 258.7}],
+        }
+
+    captured: list = []
+    monkeypatch.setattr(
+        "agent.nodes.orchestrator.ChatOpenAI",
+        lambda **kwargs: _FakeModel(
+            AIMessage(content="The total public debt outstanding in 1945 was 258.7 billion dollars. [Source: treasury_1945.txt]"),
+            captured,
+        ),
+    )
+
+    registry = build_capability_registry(
+        [CALCULATOR_TOOL, SEARCH_TOOL, search_reference_corpus, fetch_corpus_document, *BUILTIN_LEGAL_TOOLS]
+    )
+    executor = make_executor(registry)
+    state = make_state(
+        "According to the Treasury Bulletin, what was total public debt outstanding in 1945?",
+        task_profile="document_qa",
+        task_intent={
+            "task_family": "document_qa",
+            "execution_mode": "document_grounded_analysis",
+            "complexity_tier": "structured_analysis",
+            "tool_families_needed": ["document_retrieval", "external_retrieval"],
+            "evidence_strategy": "document_first",
+            "review_mode": "document_grounded",
+            "completion_mode": "document_grounded",
+            "routing_rationale": "",
+            "confidence": 0.85,
+            "planner_source": "heuristic",
+        },
+        tool_plan={
+            "tool_families_needed": ["document_retrieval", "external_retrieval"],
+            "widened_families": ["document_retrieval", "external_retrieval"],
+            "selected_tools": ["search_reference_corpus", "fetch_corpus_document", "internet_search"],
+            "pending_tools": ["search_reference_corpus"],
+            "blocked_families": [],
+            "ace_events": [],
+            "notes": [],
+            "stop_reason": "",
+        },
+        source_bundle={
+            "task_text": "According to the Treasury Bulletin, what was total public debt outstanding in 1945?",
+            "focus_query": "total public debt outstanding in 1945",
+            "target_period": "1945",
+            "entities": ["Treasury Bulletin"],
+            "urls": [],
+            "inline_facts": {},
+            "tables": [],
+            "formulas": [],
+        },
+        curated_context={
+            "objective": "total public debt outstanding in 1945",
+            "facts_in_use": [{"type": "focus_query", "value": "total public debt outstanding in 1945"}],
+            "open_questions": ["Find the exact supporting quote before finalizing."],
+            "assumptions": [],
+            "requested_output": {"format": "text"},
+            "provenance_summary": {},
+        },
+    )
+
+    first = asyncio.run(executor(state))
+    state.update(first)
+    assert first["solver_stage"] == "GATHER"
+    assert first["last_tool_result"]["type"] == "search_reference_corpus"
+
+    second = asyncio.run(executor(state))
+    state.update(second)
+    assert second["solver_stage"] == "GATHER"
+    assert second["last_tool_result"]["type"] == "fetch_corpus_document"
+    assert second["last_tool_result"]["facts"]["metadata"]["has_more_chunks"] is True
+
+    third = asyncio.run(executor(state))
+    state.update(third)
+    assert third["solver_stage"] == "GATHER"
+    assert third["last_tool_result"]["type"] == "fetch_corpus_document"
+    assert third["last_tool_result"]["facts"]["metadata"]["chunk_start"] >= 1
+
+    fourth = asyncio.run(executor(state))
+    assert fourth["solver_stage"] == "SYNTHESIZE"
+    assert "treasury_1945.txt" in str(fourth["messages"][0].content)
+    assert captured
+
+
+def test_engine_executor_paginates_reference_file_before_answering(monkeypatch):
+    @tool
+    def fetch_reference_file(
+        url: str,
+        page_start: int = 0,
+        page_limit: int = 5,
+        row_offset: int = 0,
+        row_limit: int = 200,
+        sheet: str | None = None,
+        format_hint: str | None = None,
+    ) -> str:
+        """Fake paginated reference file tool."""
+        if page_start <= 0:
+            return (
+                "FILE: treasury_1945.pdf\n"
+                "FORMAT: PDF | SIZE: 12.3 KB\n"
+                "--------------------------------------------------\n"
+                "[Pages 1-1 of 2]\n"
+                "Treasury Bulletin introduction and publication notes."
+            )
+        return (
+            "FILE: treasury_1945.pdf\n"
+            "FORMAT: PDF | SIZE: 12.3 KB\n"
+            "--------------------------------------------------\n"
+            "[Pages 2-2 of 2]\n"
+            "In 1945, total public debt outstanding was 258.7 billion dollars."
+        )
+
+    captured: list = []
+    monkeypatch.setattr(
+        "agent.nodes.orchestrator.ChatOpenAI",
+        lambda **kwargs: _FakeModel(
+            AIMessage(content="The total public debt outstanding in 1945 was 258.7 billion dollars. [Source: treasury_1945.pdf]"),
+            captured,
+        ),
+    )
+
+    registry = build_capability_registry([CALCULATOR_TOOL, SEARCH_TOOL, fetch_reference_file, *BUILTIN_LEGAL_TOOLS])
+    executor = make_executor(registry)
+    state = make_state(
+        "According to the provided Treasury Bulletin PDF, what was total public debt outstanding in 1945?",
+        task_profile="document_qa",
+        task_intent={
+            "task_family": "document_qa",
+            "execution_mode": "document_grounded_analysis",
+            "complexity_tier": "structured_analysis",
+            "tool_families_needed": ["document_retrieval"],
+            "evidence_strategy": "document_first",
+            "review_mode": "document_grounded",
+            "completion_mode": "document_grounded",
+            "routing_rationale": "",
+            "confidence": 0.85,
+            "planner_source": "heuristic",
+        },
+        tool_plan={
+            "tool_families_needed": ["document_retrieval"],
+            "widened_families": ["document_retrieval"],
+            "selected_tools": ["fetch_reference_file"],
+            "pending_tools": ["fetch_reference_file"],
+            "blocked_families": [],
+            "ace_events": [],
+            "notes": [],
+            "stop_reason": "",
+        },
+        source_bundle={
+            "task_text": "According to the provided Treasury Bulletin PDF, what was total public debt outstanding in 1945?",
+            "focus_query": "total public debt outstanding in 1945",
+            "target_period": "1945",
+            "entities": ["Treasury Bulletin"],
+            "urls": ["https://example.com/treasury_1945.pdf"],
+            "inline_facts": {},
+            "tables": [],
+            "formulas": [],
+        },
+        curated_context={
+            "objective": "total public debt outstanding in 1945",
+            "facts_in_use": [{"type": "focus_query", "value": "total public debt outstanding in 1945"}],
+            "open_questions": ["Find the exact supporting quote before finalizing."],
+            "assumptions": [],
+            "requested_output": {"format": "text"},
+            "provenance_summary": {},
+        },
+    )
+
+    first = asyncio.run(executor(state))
+    state.update(first)
+    assert first["solver_stage"] == "GATHER"
+    assert first["last_tool_result"]["type"] == "fetch_reference_file"
+    assert first["last_tool_result"]["facts"]["metadata"]["has_more_windows"] is True
+
+    second = asyncio.run(executor(state))
+    state.update(second)
+    assert second["solver_stage"] == "GATHER"
+    assert second["last_tool_result"]["type"] == "fetch_reference_file"
+    assert second["last_tool_result"]["assumptions"]["page_start"] >= 1
+
+    third = asyncio.run(executor(state))
+    assert third["solver_stage"] == "SYNTHESIZE"
+    assert "treasury_1945.pdf" in str(third["messages"][0].content)
+    assert captured
 
 
 def test_engine_executor_stops_cleanly_for_unsupported_artifact_tasks():

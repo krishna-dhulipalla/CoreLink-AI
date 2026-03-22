@@ -59,6 +59,14 @@ def _resolve_corpus_root() -> Path | None:
     return None
 
 
+def _is_within_root(candidate: Path, root: Path) -> bool:
+    try:
+        candidate.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
 def _tokenize(text: str) -> list[str]:
     """Tokenize text into lowercase alpha-numeric tokens, filtering stop words."""
     return [t for t in re.findall(r"[a-z0-9]+", (text or "").lower()) if t not in _STOP_WORDS and len(t) > 1]
@@ -129,20 +137,21 @@ def _score_document(text: str, query: str, path: Path) -> float:
     query_tokens = _tokenize(query)
     if not query_tokens:
         return 0.0
-    lowered = (text or "").lower()
     path_text = path.as_posix().lower()
-    unique_hits = {token for token in query_tokens if token in lowered or token in path_text}
+    document_tokens = set(_tokenize(text))
+    path_tokens = set(_tokenize(path_text))
+    unique_hits = {token for token in query_tokens if token in document_tokens or token in path_tokens}
     if not unique_hits:
         return 0.0
     score = float(len(unique_hits))
     for token in query_tokens:
-        if token in path_text:
+        if token in path_tokens:
             score += 0.5
-    if str(path.stem).lower() in lowered:
+    stem_tokens = set(_tokenize(path.stem))
+    if stem_tokens and stem_tokens.intersection(document_tokens):
         score += 0.2
-    year_matches = re.findall(r"\b((?:19|20)\d{2})\b", query)
-    for year in year_matches:
-        if year in lowered or year in path_text:
+    for year in re.findall(r"\b((?:19|20)\d{2})\b", query):
+        if year in document_tokens or year in path_tokens:
             score += 1.0
     return score
 
@@ -246,10 +255,11 @@ def fetch_corpus_document(
     if root is None:
         return {"error": "No local corpus directory is configured. Set OFFICEQA_CORPUS_DIR or REFERENCE_CORPUS_DIR."}
 
+    root = root.resolve()
     target: Path | None = None
     if path:
         candidate = (root / path).resolve()
-        if candidate.exists() and candidate.is_file():
+        if candidate.exists() and candidate.is_file() and _is_within_root(candidate, root):
             target = candidate
     if target is None and document_id:
         for candidate in _iter_corpus_files(root):
@@ -267,10 +277,30 @@ def fetch_corpus_document(
     relative = target.relative_to(root).as_posix()
     doc_id = _document_id(target, root)
     chunks = _text_chunks(text, max_chars=max(800, min(max_chars, 2400)))
-    selected_chunks = chunks[chunk_start: chunk_start + max(1, min(chunk_limit, 6))]
+    if not chunks:
+        return {
+            "document_id": doc_id,
+            "citation": relative,
+            "metadata": {
+                "file_name": target.name,
+                "format": target.suffix.lower().lstrip(".") or "text",
+                "window": "chunks 0-0",
+                "total_chunks": 0,
+                "has_more_chunks": False,
+                "chunk_start": 0,
+                "chunk_limit": 0,
+                "returned_chunks": 0,
+            },
+            "chunks": [],
+            "tables": [],
+            "numeric_summaries": [],
+        }
+    effective_limit = max(1, min(chunk_limit, 6))
+    start = max(0, min(chunk_start, max(0, len(chunks) - 1)))
+    selected_chunks = chunks[start: start + effective_limit]
     rendered_chunks = [
         {
-            "locator": f"chunk {chunk_start + idx + 1}",
+            "locator": f"chunk {start + idx + 1}",
             "kind": "text_excerpt",
             "text": chunk[:max_chars],
             "citation": relative,
@@ -278,7 +308,7 @@ def fetch_corpus_document(
         for idx, chunk in enumerate(selected_chunks)
     ]
     total_chunks = len(chunks)
-    has_more = chunk_start + max(1, min(chunk_limit, 6)) < total_chunks
+    has_more = start + effective_limit < total_chunks
     excerpt = "\n\n".join(chunk["text"] for chunk in rendered_chunks)[:max_chars]
     return {
         "document_id": doc_id,
@@ -286,9 +316,12 @@ def fetch_corpus_document(
         "metadata": {
             "file_name": target.name,
             "format": target.suffix.lower().lstrip(".") or "text",
-            "window": f"chunks {chunk_start + 1}-{chunk_start + len(rendered_chunks)}",
+            "window": f"chunks {start + 1}-{start + len(rendered_chunks)}",
             "total_chunks": total_chunks,
             "has_more_chunks": has_more,
+            "chunk_start": start,
+            "chunk_limit": effective_limit,
+            "returned_chunks": len(rendered_chunks),
         },
         "chunks": rendered_chunks,
         "tables": [],
