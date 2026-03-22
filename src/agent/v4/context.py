@@ -162,6 +162,7 @@ def build_curated_context(
         facts_in_use, quant_stats = _quant_facts_in_use(source_bundle)
         evidence_stats.update(quant_stats)
         open_questions: list[str] = []
+        assumptions: list[str] = []
         if not quant_stats.get("relevant_rows"):
             open_questions.append("Target row selection is ambiguous; avoid pretending the exact compute is resolved.")
     elif intent.task_family == "legal_transactional":
@@ -171,17 +172,22 @@ def build_curated_context(
             "Confirm willingness to provide indemnities, escrow, holdback, insurance, or other downside protection.",
             "Confirm whether workforce transfer, stakeholder approvals, consultations, or third-party consents create signing-to-closing constraints.",
         ]
+        assumptions = [
+            "Exact severity and curability of the execution risks are not specified.",
+            "Seller support for indemnity, escrow, or other downside protection is not yet confirmed.",
+        ]
     else:
         facts_in_use = _dedupe_facts(
             [{"type": "inline_fact", "key": key, "value": value} for key, value in list(source_bundle.inline_facts.items())[:10]]
         )
         open_questions = []
+        assumptions = []
 
     curated = CuratedContext(
         objective=source_bundle.focus_query or _normalize_text(task_text)[:300],
         facts_in_use=facts_in_use,
         open_questions=open_questions,
-        assumptions=[],
+        assumptions=assumptions,
         requested_output={
             "format": answer_contract.get("format", "text"),
             "requires_adapter": bool(answer_contract.get("requires_adapter")),
@@ -192,7 +198,6 @@ def build_curated_context(
             "source_bundle": {
                 "entities": source_bundle.entities[:6],
                 "urls": source_bundle.urls[:4],
-                "focus_query": source_bundle.focus_query,
                 "target_period": source_bundle.target_period,
             },
             "fact_count": len(facts_in_use),
@@ -244,10 +249,14 @@ def solver_context_block(
 ) -> str:
     payload = {
         "facts_in_use": _compact_prompt_value(curated_context.get("facts_in_use", [])),
-        "open_questions": _compact_prompt_value(curated_context.get("open_questions", [])),
-        "assumptions": _compact_prompt_value(curated_context.get("assumptions", [])),
         "requested_output": _compact_prompt_value(curated_context.get("requested_output", {})),
     }
+    open_questions = _compact_prompt_value(curated_context.get("open_questions", []))
+    assumptions = _compact_prompt_value(curated_context.get("assumptions", []))
+    if open_questions:
+        payload["open_questions"] = open_questions
+    if assumptions:
+        payload["assumptions"] = assumptions
     if include_objective and curated_context.get("objective"):
         payload["objective"] = _compact_prompt_value(curated_context.get("objective", ""))
     # On revision, skip tool findings — they are already reflected in the prior answer

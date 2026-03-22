@@ -1,4 +1,4 @@
-"""Graph builder for the V4 hybrid runtime."""
+"""Graph builder for the active hybrid runtime."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ def get_current_time() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def build_v4_agent_graph(external_tools: list | None = None):
+def build_runtime_graph(external_tools: list | None = None):
     all_tools: list[Any] = [CALCULATOR_TOOL, SEARCH_TOOL, get_current_time, *V4_BUILTIN_LEGAL_TOOLS, *(external_tools or [])]
     registry = build_capability_registry(all_tools)
 
@@ -63,3 +63,6 @@ def build_v4_agent_graph(external_tools: list | None = None):
     graph.add_edge("output_adapter", "reflect")
     graph.add_edge("reflect", END)
     return graph.compile()
+
+
+build_v4_agent_graph = build_runtime_graph

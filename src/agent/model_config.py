@@ -85,7 +85,8 @@ class ChatOpenAI(_BaseChatOpenAI):
     """
 
     def _uses_legacy_max_tokens(self) -> bool:
-        host = (urlparse(self.openai_api_base or "").hostname or "").lower()
+        base = getattr(self, "base_url", None) or getattr(self, "openai_api_base", "")
+        host = (urlparse(str(base)).hostname or "").lower()
         return host in _PROMPT_TOOL_HOSTS
 
     @property

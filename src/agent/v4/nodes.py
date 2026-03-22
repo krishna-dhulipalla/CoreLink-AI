@@ -29,7 +29,7 @@ from agent.solver.quant import deterministic_quant_final_answer
 from agent.tools.normalization import normalize_tool_output
 from agent.tracer import format_messages_for_trace, get_tracer
 from agent.v4.capabilities import resolve_tool_plan
-from agent.v4.context import build_curated_context, build_source_bundle, solver_context_block
+from agent.v4.context import _compact_tool_findings, build_curated_context, build_source_bundle, solver_context_block
 from agent.v4.contracts import CuratedContext, ExecutionJournal, QualityReport, SourceBundle, TaskIntent, ToolPlan
 from agent.v4.v4_prompts import (
     PLANNER_SYSTEM,
@@ -87,12 +87,12 @@ def _record_event(workpad: dict[str, Any], node: str, action: str) -> dict[str, 
     return updated
 
 
-def _v4_template_stub(intent: TaskIntent, allowed_tools: list[str] | None = None) -> dict[str, Any]:
+def _template_stub(intent: TaskIntent, allowed_tools: list[str] | None = None) -> dict[str, Any]:
     review_stages = ["SYNTHESIZE"]
     if intent.execution_mode == "exact_fast_path":
         review_stages = ["COMPUTE", "SYNTHESIZE"]
     return {
-        "template_id": f"v4_{intent.execution_mode}",
+        "template_id": intent.execution_mode,
         "description": f"V4 execution mode: {intent.execution_mode}",
         "allowed_stages": ["COMPUTE", "SYNTHESIZE", "REVISE", "COMPLETE"],
         "default_initial_stage": "COMPUTE" if intent.execution_mode == "exact_fast_path" else "SYNTHESIZE",
@@ -291,13 +291,13 @@ def task_planner(state: V4AgentState) -> dict[str, Any]:
                 "task_planner",
                 {
                     "intent": intent.model_dump(),
-                    "template_id": f"v4_{intent.execution_mode}",
+                    "template_id": intent.execution_mode,
                     "planner_source": "fast_path_reuse",
                 },
             )
         return {
             "task_intent": intent.model_dump(),
-            "execution_template": _v4_template_stub(intent),
+            "execution_template": _template_stub(intent),
             "workpad": workpad,
         }
 
@@ -342,7 +342,7 @@ def task_planner(state: V4AgentState) -> dict[str, Any]:
             "task_planner",
             {
                 "intent": intent.model_dump(),
-                "template_id": f"v4_{intent.execution_mode}",
+                "template_id": intent.execution_mode,
                 "planner_source": intent.planner_source,
             },
         )
@@ -350,7 +350,7 @@ def task_planner(state: V4AgentState) -> dict[str, Any]:
     return {
         "task_intent": intent.model_dump(),
         "task_profile": intent.task_family,
-        "execution_template": _v4_template_stub(intent),
+        "execution_template": _template_stub(intent),
         "workpad": workpad,
     }
 
@@ -381,7 +381,7 @@ def make_capability_resolver(registry: dict[str, dict[str, Any]]):
                     "ace_events": tool_plan.ace_events,
                 },
             )
-        template = _v4_template_stub(intent, tool_plan.selected_tools)
+        template = _template_stub(intent, tool_plan.selected_tools)
         logger.info("[Step %s] v4 capability_resolver -> selected=%s", step, tool_plan.selected_tools)
         return {
             "source_bundle": source_bundle.model_dump(),
@@ -582,7 +582,7 @@ def _exact_quant_answer(state: V4AgentState) -> str | None:
     return deterministic_quant_final_answer(adapter_state)
 
 
-def _v4_options_final_answer(state: V4AgentState) -> str | None:
+def _options_final_answer(state: V4AgentState) -> str | None:
     source_bundle = SourceBundle.model_validate(state.get("source_bundle") or {})
     inline_facts = dict(source_bundle.inline_facts)
     market_snapshot, derived = derive_market_snapshot(source_bundle.task_text, inline_facts)
@@ -633,11 +633,11 @@ def make_executor(registry: dict[str, dict[str, Any]]):
             answer = _exact_quant_answer(state)
             if answer:
                 journal.final_artifact_signature = _artifact_signature(answer)
-                workpad["v4_review_ready"] = True
+                workpad["review_ready"] = True
                 workpad = _record_event(workpad, "executor", "exact_fast_path -> final draft ready")
                 if tracer:
                     tracer.record(
-                        "v4_executor",
+                        "executor",
                         {
                             "intent": intent.model_dump(),
                             "used_llm": False,
@@ -672,12 +672,12 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                 if tool_plan.pending_tools and intent.execution_mode in {"advisory_analysis", "document_grounded_analysis", "tool_compute"}:
                     if tracer:
                         tracer.record(
-                            "v4_executor",
+                            "executor",
                             {
                                 "intent": intent.model_dump(),
                                 "used_llm": False,
                                 "tools_ran": tools_ran_this_call,
-                                "tool_results": journal.tool_results,
+                                "tool_results": _compact_tool_findings(journal.tool_results),
                                 "output_preview": "",
                                 "completion_budget": 0,
                             },
@@ -692,20 +692,20 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                     }
 
         if intent.task_family == "finance_options" and journal.tool_results:
-            answer = _v4_options_final_answer({**state, "execution_journal": journal.model_dump()})
+            answer = _options_final_answer({**state, "execution_journal": journal.model_dump()})
             if answer:
                 journal.final_artifact_signature = _artifact_signature(answer)
                 workpad["completion_budget"] = 0
-                workpad["v4_review_ready"] = True
+                workpad["review_ready"] = True
                 workpad = _record_event(workpad, "executor", "deterministic options final ready")
                 if tracer:
                     tracer.record(
-                        "v4_executor",
+                        "executor",
                         {
                             "intent": intent.model_dump(),
                             "used_llm": False,
                             "tools_ran": tools_ran_this_call,
-                            "tool_results": journal.tool_results,
+                            "tool_results": _compact_tool_findings(journal.tool_results),
                             "output_preview": answer[:2000],
                             "completion_budget": 0,
                         },
@@ -770,7 +770,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
         content = str(getattr(response, "content", "") or "").strip()
         if tracker:
             tracker.record(
-                operator="v4_executor",
+                operator="executor",
                 model_name=model_name,
                 tokens_in=prompt_tokens,
                 tokens_out=count_tokens([AIMessage(content=content)]),
@@ -780,16 +780,16 @@ def make_executor(registry: dict[str, dict[str, Any]]):
 
         journal.final_artifact_signature = _artifact_signature(content)
         workpad["completion_budget"] = max_tokens
-        workpad["v4_review_ready"] = True
+        workpad["review_ready"] = True
         workpad = _record_event(workpad, "executor", "final draft ready")
         if tracer:
             tracer.record(
-                "v4_executor",
+                "executor",
                 {
                     "intent": intent.model_dump(),
                     "used_llm": True,
                     "tools_ran": tools_ran_this_call,
-                    "tool_results": journal.tool_results,
+                    "tool_results": _compact_tool_findings(journal.tool_results),
                     "prompt": format_messages_for_trace(prompt_messages),
                     "output_preview": content[:2000],
                     "completion_budget": max_tokens,
@@ -815,7 +815,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
 
 def route_from_executor(state: V4AgentState) -> str:
     workpad = state.get("workpad", {}) or {}
-    if workpad.get("v4_review_ready"):
+    if workpad.get("review_ready"):
         return "reviewer"
     if state.get("solver_stage") == "COMPLETE":
         if state.get("answer_contract", {}).get("requires_adapter"):
@@ -898,7 +898,7 @@ def reviewer(state: V4AgentState) -> dict[str, Any]:
         score=score,
     )
 
-    workpad["v4_review_ready"] = False
+    workpad["review_ready"] = False
     workpad["review_mode"] = intent.review_mode
     workpad = _record_event(workpad, "reviewer", f"{verdict.upper()}: {reasoning}")
     tracer = get_tracer()
@@ -954,6 +954,9 @@ def route_from_reviewer(state: V4AgentState) -> str:
         intent = TaskIntent.model_validate(state.get("task_intent") or {})
         report = QualityReport.model_validate(state.get("quality_report") or {})
         if report.verdict == "fail":
+            journal = ExecutionJournal.model_validate(state.get("execution_journal") or {})
+            if intent.complexity_tier == "complex_qualitative" and journal.self_reflection_count < 1:
+                return "self_reflection"
             if state.get("answer_contract", {}).get("requires_adapter"):
                 return "output_adapter"
             return "reflect"
@@ -1013,6 +1016,41 @@ def self_reflection(state: V4AgentState) -> dict[str, Any]:
 
     journal.self_reflection_count += 1
 
+    if report.verdict == "fail" and intent.complexity_tier == "complex_qualitative":
+        workpad = _record_event(workpad, "self_reflection", "REVISE after failed review ceiling")
+        tracer = get_tracer()
+        if tracer:
+            tracer.record(
+                "self_reflection",
+                {
+                    "score": report.score,
+                    "complete": False,
+                    "missing_dimensions": list(report.missing_dimensions),
+                    "improve_prompt": report.targeted_fix_prompt,
+                    "used_llm": False,
+                    "salvage_path": True,
+                },
+            )
+        return {
+            "execution_journal": journal.model_dump(),
+            "reflection_feedback": {
+                "score": report.score,
+                "complete": False,
+                "missing_dimensions": list(report.missing_dimensions),
+                "improve_prompt": report.targeted_fix_prompt,
+            },
+            "review_feedback": {
+                "verdict": "revise",
+                "reasoning": report.targeted_fix_prompt or report.reasoning or "Add the missing legal detail and return the final answer.",
+                "missing_dimensions": list(report.missing_dimensions) or ["completeness"],
+                "improve_hint": report.targeted_fix_prompt,
+                "repair_target": "final",
+                "repair_class": "missing_section",
+            },
+            "solver_stage": "REVISE",
+            "workpad": workpad,
+        }
+
     # Non-complex or already has missing-dimensions from reviewer → skip LLM reflection
     if report.missing_dimensions or intent.complexity_tier != "complex_qualitative":
         flagged_complete = not bool(report.missing_dimensions)
@@ -1040,7 +1078,7 @@ def self_reflection(state: V4AgentState) -> dict[str, Any]:
                 "missing_dimensions": [] if flagged_complete else list(report.missing_dimensions),
                 "improve_prompt": "",
             },
-            "solver_stage": "COMPLETE",
+            "solver_stage": "COMPLETE" if flagged_complete else "REVISE",
             "workpad": workpad,
         }
 

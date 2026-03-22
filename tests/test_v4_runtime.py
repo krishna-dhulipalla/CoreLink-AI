@@ -34,11 +34,10 @@ class _FakeModel:
         return self._response
 
 
-def test_build_agent_graph_selects_v4_when_env_enabled(monkeypatch):
-    monkeypatch.setenv("AGENT_RUNTIME_VERSION", "v4")
-    monkeypatch.setattr("agent.v4.graph.build_v4_agent_graph", lambda external_tools=None: "v4_graph")
+def test_build_agent_graph_uses_active_runtime(monkeypatch):
+    monkeypatch.setattr("agent.graph.build_runtime_graph", lambda external_tools=None: "runtime_graph")
 
-    assert graph_module.build_agent_graph() == "v4_graph"
+    assert graph_module.build_agent_graph() == "runtime_graph"
 
 
 def _exact_quant_prompt() -> str:
@@ -129,7 +128,7 @@ def test_v4_legal_planner_binds_legal_capability_tools_not_calculator_only():
     assert "transaction_structure_checklist" in result["tool_plan"]["selected_tools"]
     assert "regulatory_execution_checklist" in result["tool_plan"]["selected_tools"]
     assert "tax_structure_checklist" in result["tool_plan"]["selected_tools"]
-    assert result["execution_template"]["template_id"] == "v4_advisory_analysis"
+    assert result["execution_template"]["template_id"] == "advisory_analysis"
 
 
 def test_v4_executor_returns_deterministic_exact_quant_answer():
@@ -146,7 +145,7 @@ def test_v4_executor_returns_deterministic_exact_quant_answer():
 
     assert result["messages"]
     assert str(result["messages"][0].content).startswith('{"answer":')
-    assert result["workpad"]["v4_review_ready"] is True
+    assert result["workpad"]["review_ready"] is True
 
 
 def test_v4_executor_dedupes_legal_prompt_and_uses_higher_legal_completion_budget(monkeypatch):
@@ -280,7 +279,7 @@ def test_v4_reviewer_revises_legal_once_then_stops_cleanly():
             "planner_source": "heuristic",
         },
         execution_journal={"events": [], "tool_results": [], "routed_tool_families": [], "revision_count": 0, "self_reflection_count": 0, "final_artifact_signature": ""},
-        workpad={"events": [], "stage_outputs": {}, "tool_results": [], "v4_review_ready": True},
+        workpad={"events": [], "stage_outputs": {}, "tool_results": [], "review_ready": True},
     )
     state["messages"].append(AIMessage(content="Recommendation: use an asset deal. Tax: stock may help deferral. Liability: use indemnities. Next steps: move quickly."))
 
@@ -312,7 +311,7 @@ def test_v4_reviewer_rejects_single_recommended_legal_structure():
             "planner_source": "heuristic",
         },
         execution_journal={"events": [], "tool_results": [], "routed_tool_families": [], "revision_count": 0, "self_reflection_count": 0, "final_artifact_signature": ""},
-        workpad={"events": [], "stage_outputs": {}, "tool_results": [], "v4_review_ready": True},
+        workpad={"events": [], "stage_outputs": {}, "tool_results": [], "review_ready": True},
     )
     state["messages"].append(
         AIMessage(
@@ -348,7 +347,7 @@ def test_v4_reviewer_flags_when_option_snapshot_is_not_front_loaded():
             "planner_source": "heuristic",
         },
         execution_journal={"events": [], "tool_results": [], "routed_tool_families": [], "revision_count": 0, "self_reflection_count": 0, "final_artifact_signature": ""},
-        workpad={"events": [], "stage_outputs": {}, "tool_results": [], "v4_review_ready": True},
+        workpad={"events": [], "stage_outputs": {}, "tool_results": [], "review_ready": True},
     )
     state["messages"].append(
         AIMessage(
@@ -370,7 +369,7 @@ def test_v4_reviewer_flags_when_option_snapshot_is_not_front_loaded():
     assert "opening summary with multiple viable paths" in " ".join(result["review_feedback"]["missing_dimensions"]).lower()
 
 
-def test_v4_failed_reviewer_path_skips_self_reflection():
+def test_failed_reviewer_path_uses_one_bounded_salvage_pass():
     state = make_state(
         "Need acquisition structure advice.",
         task_intent={
@@ -395,7 +394,7 @@ def test_v4_failed_reviewer_path_skips_self_reflection():
         },
     )
 
-    assert route_from_reviewer(state) == "reflect"
+    assert route_from_reviewer(state) == "self_reflection"
 
 
 def test_v4_self_reflection_requests_one_extra_legal_deepen_pass(monkeypatch):
@@ -454,10 +453,10 @@ def test_v4_tracer_captures_v4_headers_and_counts(monkeypatch):
 
     tracer.set_task("Need legal structure options.")
     tracer.record("fast_path_gate", {"task_family": "legal_transactional", "execution_mode": "advisory_analysis", "complexity_tier": "complex_qualitative"})
-    tracer.record("task_planner", {"intent": {"task_family": "legal_transactional", "execution_mode": "advisory_analysis", "complexity_tier": "complex_qualitative"}, "template_id": "v4_advisory_analysis"})
+    tracer.record("task_planner", {"intent": {"task_family": "legal_transactional", "execution_mode": "advisory_analysis", "complexity_tier": "complex_qualitative"}, "template_id": "advisory_analysis"})
     tracer.record("capability_resolver", {"selected_tools": ["legal_playbook_retrieval"], "pending_tools": [], "blocked_families": []})
     tracer.record(
-        "v4_executor",
+        "executor",
         {
             "intent": {"task_family": "legal_transactional", "execution_mode": "advisory_analysis", "complexity_tier": "complex_qualitative"},
             "used_llm": True,
@@ -470,7 +469,7 @@ def test_v4_tracer_captures_v4_headers_and_counts(monkeypatch):
     payload = captured["payload"]
 
     assert payload["final_profile"] == "legal_transactional"
-    assert payload["final_template"] == "v4_advisory_analysis"
+    assert payload["final_template"] == "advisory_analysis"
     assert payload["complexity_tier"] == "complex_qualitative"
     assert payload["total_llm_calls"] == 1
     assert payload["total_tool_calls"] == 2

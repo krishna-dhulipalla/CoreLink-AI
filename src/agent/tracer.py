@@ -100,7 +100,7 @@ class RunTracer:
             if not self._profile:
                 self._profile = data.get("task_family", "")
             if not self._template_id and data.get("execution_mode"):
-                self._template_id = f"v4_{data.get('execution_mode', '')}"
+                self._template_id = data.get("execution_mode", "")
             if not self._complexity_tier:
                 self._complexity_tier = data.get("complexity_tier", "")
         elif node == "task_planner":
@@ -109,16 +109,16 @@ class RunTracer:
                 if not self._profile:
                     self._profile = intent.get("task_family", "")
                 if not self._template_id:
-                    self._template_id = data.get("template_id", "") or f"v4_{intent.get('execution_mode', '')}"
+                    self._template_id = data.get("template_id", "") or intent.get("execution_mode", "")
                 if not self._complexity_tier:
                     self._complexity_tier = intent.get("complexity_tier", "")
-        elif node == "v4_executor":
+        elif node == "executor":
             intent = data.get("intent", {})
             if intent and isinstance(intent, dict):
                 if not self._profile:
                     self._profile = intent.get("task_family", "")
                 if not self._template_id:
-                    self._template_id = f"v4_{intent.get('execution_mode', '')}"
+                    self._template_id = intent.get("execution_mode", "")
                 if not self._complexity_tier:
                     self._complexity_tier = intent.get("complexity_tier", "")
 
@@ -136,17 +136,17 @@ class RunTracer:
             if tokens and isinstance(tokens, dict):
                 total_prompt += tokens.get("prompt", 0)
                 total_completion += tokens.get("completion", 0)
-            # Count LLM calls from solver, reviewer, self_reflection, and v4_executor
+            # Count LLM calls from solver, reviewer, self_reflection, and executor
             if entry.get("node") == "solver" and entry.get("llm_call"):
                 llm_calls += 1
             elif entry.get("node") in {"reviewer", "self_reflection"} and entry.get("used_llm"):
                 llm_calls += 1
-            elif entry.get("node") == "v4_executor" and entry.get("used_llm"):
+            elif entry.get("node") == "executor" and entry.get("used_llm"):
                 llm_calls += 1
-            # Count tool calls from tool_runner (V3) or v4_executor tool_results (V4)
+            # Count tool calls from tool_runner (legacy) or executor tool_results
             if entry.get("node") == "tool_runner":
                 tool_calls += 1
-            elif entry.get("node") == "v4_executor":
+            elif entry.get("node") == "executor":
                 tools_ran = entry.get("tools_ran")
                 if tools_ran and isinstance(tools_ran, list):
                     tool_calls += len(tools_ran)
