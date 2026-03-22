@@ -6,6 +6,7 @@ from langchain_core.messages import AIMessage
 
 from agent.budget import BudgetTracker
 from agent.nodes.intake import intake
+from agent.nodes.output_adapter import output_adapter
 from agent.tracer import RunTracer
 from agent.capabilities import BUILTIN_LEGAL_TOOLS, build_capability_registry
 from agent.curated_context import solver_context_block
@@ -146,6 +147,94 @@ def test_engine_executor_returns_deterministic_exact_quant_answer():
     assert result["messages"]
     assert str(result["messages"][0].content).startswith('{"answer":')
     assert result["workpad"]["review_ready"] is True
+
+
+def test_engine_capability_resolver_widens_live_finance_retrieval_to_search_tool():
+    prompt = "What was AAPL's EBITDA in fiscal year 2024? Use current source-backed data."
+    state = make_state(prompt)
+    state.update(intake(state))
+    state.update(fast_path_gate(state))
+    state.update(task_planner(state))
+    resolver = make_capability_resolver(build_capability_registry([CALCULATOR_TOOL, SEARCH_TOOL, *BUILTIN_LEGAL_TOOLS]))
+    result = resolver(state)
+
+    assert "market_data_retrieval" in result["tool_plan"]["widened_families"]
+    assert "external_retrieval" in result["tool_plan"]["widened_families"]
+    assert "internet_search" in result["tool_plan"]["selected_tools"]
+    assert result["tool_plan"]["stop_reason"] == ""
+
+
+def test_engine_executor_stops_cleanly_for_unsupported_artifact_tasks():
+    prompt = "Create a .wav file synced to the uploaded drum loop."
+    state = make_state(
+        prompt,
+        task_profile="unsupported_artifact",
+        task_intent={
+            "task_family": "unsupported_artifact",
+            "execution_mode": "advisory_analysis",
+            "complexity_tier": "structured_analysis",
+            "tool_families_needed": [],
+            "evidence_strategy": "compact_prompt",
+            "review_mode": "qualitative_advisory",
+            "completion_mode": "capability_gap",
+            "routing_rationale": "",
+            "confidence": 0.95,
+            "planner_source": "heuristic",
+        },
+        tool_plan={
+            "tool_families_needed": [],
+            "widened_families": [],
+            "selected_tools": [],
+            "pending_tools": [],
+            "blocked_families": [],
+            "ace_events": [],
+            "notes": [],
+            "stop_reason": "unsupported_capability",
+        },
+        curated_context={"objective": prompt, "facts_in_use": [], "open_questions": [], "assumptions": [], "requested_output": {"format": "text"}, "provenance_summary": {}},
+        source_bundle={"task_text": prompt, "focus_query": prompt, "target_period": "", "entities": [], "urls": [], "inline_facts": {}, "tables": [], "formulas": []},
+    )
+    executor = make_executor(build_capability_registry([CALCULATOR_TOOL, SEARCH_TOOL, *BUILTIN_LEGAL_TOOLS]))
+    result = asyncio.run(executor(state))
+
+    assert result["solver_stage"] == "COMPLETE"
+    assert "does not support" in str(result["messages"][0].content).lower()
+
+
+def test_engine_reviewer_collapses_exact_output_to_adapter_instead_of_looping():
+    prompt = "Use Gordon Growth Model and return JSON as {\"answer\": <value>}."
+    state = make_state(
+        prompt,
+        task_profile="analytical_reasoning",
+        task_intent={
+            "task_family": "analytical_reasoning",
+            "execution_mode": "advisory_analysis",
+            "complexity_tier": "simple_exact",
+            "tool_families_needed": ["analytical_reasoning", "exact_compute"],
+            "evidence_strategy": "compact_prompt",
+            "review_mode": "exact_quant",
+            "completion_mode": "scalar_or_json",
+            "routing_rationale": "",
+            "confidence": 0.9,
+            "planner_source": "heuristic",
+        },
+        answer_contract={"format": "json", "requires_adapter": True, "wrapper_key": "answer"},
+        tool_plan={"tool_families_needed": [], "widened_families": [], "selected_tools": [], "pending_tools": [], "blocked_families": [], "ace_events": [], "notes": [], "stop_reason": ""},
+        execution_journal={"events": [], "tool_results": [], "routed_tool_families": [], "revision_count": 0, "self_reflection_count": 0, "final_artifact_signature": "abc", "progress_signatures": [], "stop_reason": "", "contract_collapse_attempts": 0},
+        curated_context={"objective": prompt, "facts_in_use": [], "open_questions": [], "assumptions": [], "requested_output": {"format": "json", "requires_adapter": True, "wrapper_key": "answer"}, "provenance_summary": {}},
+        workpad={"events": [], "stage_outputs": {}, "tool_results": [], "review_ready": True},
+    )
+    state["messages"].append(AIMessage(content="The fair value under the Gordon Growth Model is $53.00 per share."))
+
+    reviewed = reviewer(state)
+    state.update(reviewed)
+
+    assert reviewed["solver_stage"] == "COMPLETE"
+    assert reviewed["quality_report"]["stop_reason"] == "exact_output_collapse"
+    assert route_from_reviewer(state) == "output_adapter"
+
+    adapted = output_adapter({**state, "messages": state["messages"]})
+    assert str(adapted["messages"][0].content).startswith('{"answer":')
 
 
 def test_engine_executor_dedupes_legal_prompt_and_uses_higher_legal_completion_budget(monkeypatch):

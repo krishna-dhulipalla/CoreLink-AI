@@ -15,10 +15,13 @@ from agent.contracts import (
     AnswerContract,
     CuratedContext,
     ExecutionJournal,
+    ProgressSignature,
     QualityReport,
+    ReviewPacket,
     SourceBundle,
     TaskIntent,
     ToolPlan,
+    UnsupportedCapabilityReport,
 )
 from agent.context.evidence import _extract_policy_context
 from agent.context.extraction import derive_market_snapshot
@@ -36,7 +39,7 @@ from agent.solver.quant import deterministic_quant_final_answer
 from agent.tools.normalization import normalize_tool_output
 from agent.tracer import format_messages_for_trace, get_tracer
 from agent.capabilities import resolve_tool_plan
-from agent.curated_context import _compact_tool_findings, build_curated_context, build_source_bundle, solver_context_block
+from agent.curated_context import _compact_tool_findings, build_curated_context, build_review_packet, build_source_bundle, solver_context_block
 from agent.prompts import (
     PLANNER_SYSTEM,
     EXECUTOR_SYSTEM,
@@ -95,6 +98,192 @@ def _record_event(workpad: dict[str, Any], node: str, action: str) -> dict[str, 
     return updated
 
 
+def _market_options_signal_count(task_text: str) -> int:
+    normalized = (task_text or "").lower()
+    signals = [
+        any(token in normalized for token in ("iv percentile", "implied volatility", "historical volatility", "skew", "term structure")),
+        any(token in normalized for token in ("delta", "gamma", "theta", "vega", "greeks")),
+        any(token in normalized for token in ("straddle", "strangle", "iron condor", "credit spread", "vertical spread", "covered call")),
+        any(token in normalized for token in ("expiry", "expiration", "days to expiry", "dte", "calls and puts")),
+        bool(re.search(r"\b[A-Z]{1,5}\b", task_text or "")),
+        any(token in normalized for token in ("premium", "breakeven", "vol seller", "vol buyer")),
+    ]
+    return sum(1 for signal in signals if signal)
+
+
+def _looks_like_insurance_or_nonlisted_option(task_text: str) -> bool:
+    normalized = (task_text or "").lower()
+    return any(
+        token in normalized
+        for token in (
+            "crop",
+            "frost",
+            "weather insurance",
+            "insurance payout",
+            "insurance contract",
+            "farmer",
+            "freeze",
+        )
+    )
+
+
+def _supports_options_fast_path(task_text: str) -> bool:
+    if _looks_like_insurance_or_nonlisted_option(task_text):
+        return False
+    return _market_options_signal_count(task_text) >= 2
+
+
+def _looks_like_analytical_reasoning(task_text: str, capability_flags: list[str]) -> bool:
+    normalized = (task_text or "").lower()
+    if "needs_analytical_reasoning" in capability_flags:
+        return True
+    return any(
+        token in normalized
+        for token in (
+            "differentiate",
+            "derivative",
+            "marginal cost",
+            "marginal revenue",
+            "integral",
+            "optimize",
+            "maximise",
+            "maximize",
+            "minimise",
+            "minimize",
+        )
+    )
+
+
+def _looks_like_market_scenario(task_text: str, capability_flags: list[str]) -> bool:
+    normalized = (task_text or "").lower()
+    if "needs_market_scenario" in capability_flags:
+        return True
+    return any(
+        token in normalized
+        for token in (
+            "crypto",
+            "flash crash",
+            "liquidity crisis",
+            "stress scenario",
+            "scenario validation",
+            "drawdown scenario",
+        )
+    )
+
+
+def _looks_like_unsupported_artifact(task_text: str, capability_flags: list[str]) -> bool:
+    normalized = (task_text or "").lower()
+    if "needs_artifact_generation" in capability_flags:
+        return True
+    return any(
+        token in normalized
+        for token in (".wav", ".mp3", "audio file", "music producer", "render audio", "generate a track", "zip file")
+    )
+
+
+def _source_requests_live_data(task_text: str) -> bool:
+    normalized = (task_text or "").lower()
+    return any(
+        token in normalized
+        for token in ("latest", "today", "recent", "look up", "search", "source-backed", "current ", "as of ", "what was", "what is")
+    )
+
+
+def _normalize_tool_families(intent: TaskIntent, task_text: str) -> list[str]:
+    normalized: list[str] = []
+    mapping = {
+        "finance_quant": "market_data_retrieval" if _source_requests_live_data(task_text) else "exact_compute",
+        "mathematical_analysis": "analytical_reasoning",
+        "transaction_structure_checklist": "transaction_structure_analysis",
+        "regulatory_execution_checklist": "regulatory_execution_analysis",
+        "tax_structure_checklist": "tax_structure_analysis",
+        "risk_analysis": "market_scenario_analysis",
+    }
+    for family in intent.tool_families_needed:
+        value = mapping.get(str(family), str(family))
+        if value and value not in normalized:
+            normalized.append(value)
+    return normalized
+
+
+def _normalize_task_intent(intent: TaskIntent, task_text: str, heuristic_intent: TaskIntent) -> TaskIntent:
+    candidate = intent.model_copy(deep=True)
+    if candidate.task_family == "finance_options" and not _supports_options_fast_path(task_text):
+        if _looks_like_market_scenario(task_text, []):
+            candidate.task_family = "market_scenario"
+            candidate.execution_mode = "advisory_analysis"
+            candidate.review_mode = "qualitative_advisory"
+            candidate.completion_mode = "compact_sections"
+            candidate.tool_families_needed = ["market_scenario_analysis"]
+        elif _looks_like_analytical_reasoning(task_text, []):
+            candidate.task_family = "analytical_reasoning"
+            candidate.execution_mode = "advisory_analysis"
+            candidate.review_mode = "analytical_reasoning"
+            candidate.completion_mode = "long_form_derivation"
+            candidate.tool_families_needed = ["analytical_reasoning", "exact_compute"]
+        else:
+            candidate.task_family = heuristic_intent.task_family
+            candidate.execution_mode = heuristic_intent.execution_mode
+            candidate.review_mode = heuristic_intent.review_mode
+            candidate.completion_mode = heuristic_intent.completion_mode
+            candidate.tool_families_needed = list(heuristic_intent.tool_families_needed)
+    if candidate.task_family == "unsupported_artifact":
+        candidate.execution_mode = "advisory_analysis"
+        candidate.review_mode = "qualitative_advisory"
+        candidate.completion_mode = "capability_gap"
+        candidate.tool_families_needed = []
+    candidate.tool_families_needed = _normalize_tool_families(candidate, task_text)
+    if candidate.task_family == "legal_transactional":
+        candidate.tool_families_needed = list(
+            dict.fromkeys(
+                [
+                    *candidate.tool_families_needed,
+                    "legal_playbook_retrieval",
+                    "transaction_structure_analysis",
+                    "regulatory_execution_analysis",
+                    "tax_structure_analysis",
+                ]
+            )
+        )
+    if candidate.task_family == "external_retrieval":
+        candidate.tool_families_needed = list(dict.fromkeys([*candidate.tool_families_needed, "market_data_retrieval", "external_retrieval"]))
+    if candidate.task_family == "analytical_reasoning":
+        candidate.review_mode = "analytical_reasoning"
+        candidate.completion_mode = "long_form_derivation"
+        candidate.tool_families_needed = list(dict.fromkeys([*candidate.tool_families_needed, "analytical_reasoning", "exact_compute"]))
+    if candidate.task_family == "market_scenario":
+        candidate.tool_families_needed = list(dict.fromkeys([*candidate.tool_families_needed, "market_scenario_analysis"]))
+        candidate.evidence_strategy = "scenario_first"
+    return candidate
+
+
+def _contract_status(answer_text: str, answer_contract: dict[str, Any], review_mode: str) -> str:
+    if review_mode == "exact_quant":
+        return "contract_ok" if matches_exact_json_contract(answer_text, answer_contract) else "contract_mismatch"
+    if looks_truncated(answer_text):
+        return "truncated"
+    return "not_applicable"
+
+
+def _build_progress_signature(
+    *,
+    execution_mode: str,
+    selected_tools: list[str],
+    missing_dimensions: list[str],
+    artifact_signature: str,
+    contract_status: str,
+) -> ProgressSignature:
+    payload = {
+        "execution_mode": execution_mode,
+        "selected_tools": sorted(selected_tools),
+        "missing_dimensions": sorted(str(item) for item in missing_dimensions),
+        "artifact_signature": artifact_signature,
+        "contract_status": contract_status,
+    }
+    signature = hashlib.sha1(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+    return ProgressSignature(signature=signature, **payload)
+
+
 def _template_stub(intent: TaskIntent, allowed_tools: list[str] | None = None) -> dict[str, Any]:
     review_stages = ["SYNTHESIZE"]
     if intent.execution_mode == "exact_fast_path":
@@ -122,6 +311,24 @@ def _heuristic_intent(task_text: str, answer_contract: dict[str, Any]) -> tuple[
     has_table = "|---" in task_text
     exact_contract = bool(answer_contract.get("requires_adapter")) and answer_contract.get("format") == "json"
 
+    if _looks_like_unsupported_artifact(task_text, capability_flags) or task_family == "unsupported_artifact":
+        return (
+            TaskIntent(
+                task_family="unsupported_artifact",
+                execution_mode="advisory_analysis",
+                complexity_tier="structured_analysis",
+                tool_families_needed=[],
+                evidence_strategy="compact_prompt",
+                review_mode="qualitative_advisory",
+                completion_mode="capability_gap",
+                routing_rationale="Prompt requests a non-finance artifact outside the active engine scope.",
+                confidence=0.95,
+                planner_source="heuristic",
+            ),
+            capability_flags,
+            ambiguity_flags,
+        )
+
     if task_family == "finance_quant" and has_formula and has_table and exact_contract and "needs_live_data" not in capability_flags:
         return (
             TaskIntent(
@@ -140,7 +347,7 @@ def _heuristic_intent(task_text: str, answer_contract: dict[str, Any]) -> tuple[
             ambiguity_flags,
         )
 
-    if task_family == "finance_options" and "needs_options_engine" in capability_flags:
+    if task_family == "finance_options" and "needs_options_engine" in capability_flags and _supports_options_fast_path(task_text):
         return (
             TaskIntent(
                 task_family="finance_options",
@@ -158,13 +365,49 @@ def _heuristic_intent(task_text: str, answer_contract: dict[str, Any]) -> tuple[
             ambiguity_flags,
         )
 
+    if _looks_like_market_scenario(task_text, capability_flags) or task_family == "market_scenario":
+        return (
+            TaskIntent(
+                task_family="market_scenario",
+                execution_mode="advisory_analysis",
+                complexity_tier="complex_qualitative",
+                tool_families_needed=["market_scenario_analysis"],
+                evidence_strategy="scenario_first",
+                review_mode="qualitative_advisory",
+                completion_mode="compact_sections",
+                routing_rationale="Scenario-driven trading and stress tasks need scenario analysis rather than generic advisory prose.",
+                confidence=0.85,
+                planner_source="heuristic",
+            ),
+            capability_flags,
+            ambiguity_flags,
+        )
+
+    if _looks_like_analytical_reasoning(task_text, capability_flags) or task_family == "analytical_reasoning":
+        return (
+            TaskIntent(
+                task_family="analytical_reasoning",
+                execution_mode="advisory_analysis",
+                complexity_tier="structured_analysis",
+                tool_families_needed=["analytical_reasoning", "exact_compute"],
+                evidence_strategy="compact_prompt",
+                review_mode="analytical_reasoning",
+                completion_mode="long_form_derivation",
+                routing_rationale="The task requires stepwise symbolic or numerical derivation instead of generic advisory output.",
+                confidence=0.84,
+                planner_source="heuristic",
+            ),
+            capability_flags,
+            ambiguity_flags,
+        )
+
     if task_family == "legal_transactional":
         execution_mode = "document_grounded_analysis" if ("needs_files" in capability_flags or "http" in lowered) else "advisory_analysis"
         tool_families = [
             "legal_playbook_retrieval",
-            "transaction_structure_checklist",
-            "regulatory_execution_checklist",
-            "tax_structure_checklist",
+            "transaction_structure_analysis",
+            "regulatory_execution_analysis",
+            "tax_structure_analysis",
         ]
         if execution_mode == "document_grounded_analysis":
             tool_families.insert(0, "document_retrieval")
@@ -209,7 +452,7 @@ def _heuristic_intent(task_text: str, answer_contract: dict[str, Any]) -> tuple[
                 task_family="external_retrieval",
                 execution_mode="retrieval_augmented_analysis",
                 complexity_tier="structured_analysis",
-                tool_families_needed=["external_retrieval", "market_data_retrieval"],
+                tool_families_needed=["market_data_retrieval", "external_retrieval"],
                 evidence_strategy="retrieval_first",
                 review_mode="document_grounded",
                 completion_mode="compact_sections",
@@ -226,7 +469,7 @@ def _heuristic_intent(task_text: str, answer_contract: dict[str, Any]) -> tuple[
             task_family=task_family,  # type: ignore[arg-type]
             execution_mode="advisory_analysis",
             complexity_tier="complex_qualitative" if ambiguity_flags else "structured_analysis",
-            tool_families_needed=[],
+            tool_families_needed=["market_data_retrieval"] if _source_requests_live_data(task_text) else [],
             evidence_strategy="compact_prompt",
             review_mode="qualitative_advisory",
             completion_mode="compact_sections",
@@ -247,7 +490,7 @@ def fast_path_gate(state: RuntimeState) -> dict[str, Any]:
     workpad = dict(state.get("workpad", {}))
     workpad.setdefault("stage_history", [])
     workpad["stage_history"].append("FAST_PATH_GATE")
-    workpad["routing_mode"] = "v4"
+    workpad["routing_mode"] = "engine"
     workpad["fast_path_used"] = intent.planner_source == "fast_path"
     workpad = _record_event(
         workpad,
@@ -268,7 +511,7 @@ def fast_path_gate(state: RuntimeState) -> dict[str, Any]:
                 "ambiguity_flags": ambiguity_flags,
             },
         )
-    logger.info("[Step %s] v4 fast_path_gate -> fast_path=%s family=%s mode=%s", step, workpad["fast_path_used"], intent.task_family, intent.execution_mode)
+    logger.info("[Step %s] engine fast_path_gate -> fast_path=%s family=%s mode=%s", step, workpad["fast_path_used"], intent.task_family, intent.execution_mode)
     return {
         "task_intent": intent.model_dump() if intent.planner_source == "fast_path" else {},
         "task_profile": intent.task_family,
@@ -289,7 +532,7 @@ def task_planner(state: RuntimeState) -> dict[str, Any]:
     ambiguity_flags = list(state.get("ambiguity_flags", []))
 
     if existing:
-        intent = TaskIntent.model_validate(existing)
+        intent = _normalize_task_intent(TaskIntent.model_validate(existing), task_text, TaskIntent.model_validate(existing))
         workpad["planner_output"] = intent.model_dump()
         workpad["review_mode"] = intent.review_mode
         workpad = _record_event(workpad, "task_planner", f"reused fast path intent -> {intent.execution_mode}")
@@ -330,16 +573,13 @@ def task_planner(state: RuntimeState) -> dict[str, Any]:
         try:
             parsed, _ = invoke_structured_output("profiler", TaskIntent, messages, temperature=0, max_tokens=220)
             candidate = TaskIntent.model_validate(parsed)
-            if candidate.task_family == "legal_transactional" and "transaction_structure_checklist" not in candidate.tool_families_needed:
-                candidate.tool_families_needed.extend(
-                    ["legal_playbook_retrieval", "transaction_structure_checklist", "regulatory_execution_checklist", "tax_structure_checklist"]
-                )
             if candidate.execution_mode == "exact_fast_path" and heuristic_intent.task_family != "finance_quant":
                 candidate.execution_mode = heuristic_intent.execution_mode
             candidate.planner_source = "llm"
-            intent = candidate
+            intent = _normalize_task_intent(candidate, task_text, heuristic_intent)
         except Exception as exc:
             logger.info("Planner LLM fallback used heuristic intent: %s", exc)
+    intent = _normalize_task_intent(intent, task_text, heuristic_intent)
 
     workpad["planner_output"] = intent.model_dump()
     workpad["review_mode"] = intent.review_mode
@@ -354,7 +594,7 @@ def task_planner(state: RuntimeState) -> dict[str, Any]:
                 "planner_source": intent.planner_source,
             },
         )
-    logger.info("[Step %s] v4 task_planner -> family=%s mode=%s", step, intent.task_family, intent.execution_mode)
+    logger.info("[Step %s] engine task_planner -> family=%s mode=%s", step, intent.task_family, intent.execution_mode)
     return {
         "task_intent": intent.model_dump(),
         "task_profile": intent.task_family,
@@ -373,10 +613,17 @@ def make_capability_resolver(registry: dict[str, dict[str, Any]]):
         workpad = dict(state.get("workpad", {}))
         workpad["tool_plan"] = tool_plan.model_dump()
         workpad["ace_events"] = list(tool_plan.ace_events)
+        unsupported_report: dict[str, Any] = {}
+        if tool_plan.stop_reason == "unsupported_capability":
+            unsupported_report = UnsupportedCapabilityReport(
+                task_family=intent.task_family,
+                requested_capability="non_finance_artifact_generation",
+                reason="Task requires a capability outside the finance-first engine scope.",
+            ).model_dump()
         workpad = _record_event(
             workpad,
             "capability_resolver",
-            f"tools={','.join(tool_plan.selected_tools) if tool_plan.selected_tools else 'none'} blocked={','.join(tool_plan.blocked_families) if tool_plan.blocked_families else 'none'}",
+            f"tools={','.join(tool_plan.selected_tools) if tool_plan.selected_tools else 'none'} blocked={','.join(tool_plan.blocked_families) if tool_plan.blocked_families else 'none'} stop={tool_plan.stop_reason or 'none'}",
         )
         tracer = get_tracer()
         if tracer:
@@ -386,15 +633,18 @@ def make_capability_resolver(registry: dict[str, dict[str, Any]]):
                     "selected_tools": tool_plan.selected_tools,
                     "pending_tools": tool_plan.pending_tools,
                     "blocked_families": tool_plan.blocked_families,
+                    "widened_families": tool_plan.widened_families,
                     "ace_events": tool_plan.ace_events,
+                    "stop_reason": tool_plan.stop_reason,
                 },
             )
         template = _template_stub(intent, tool_plan.selected_tools)
-        logger.info("[Step %s] v4 capability_resolver -> selected=%s", step, tool_plan.selected_tools)
+        logger.info("[Step %s] engine capability_resolver -> selected=%s", step, tool_plan.selected_tools)
         return {
             "source_bundle": source_bundle.model_dump(),
             "tool_plan": tool_plan.model_dump(),
             "execution_template": template,
+            "unsupported_capability_report": unsupported_report,
             "workpad": workpad,
         }
 
@@ -429,11 +679,23 @@ def context_curator(state: RuntimeState) -> dict[str, Any]:
         )
     budget = state.get("budget_tracker")
     if budget:
-        budget.configure(complexity_tier=intent.complexity_tier, template_id=str((state.get("execution_template") or {}).get("template_id", "")))
-    logger.info("[Step %s] v4 context_curator -> facts=%s", step, len(curated_context.facts_in_use))
+        budget.configure(
+            complexity_tier=intent.complexity_tier,
+            template_id=str((state.get("execution_template") or {}).get("template_id", "")),
+            execution_mode=intent.execution_mode,
+        )
+    review_packet = build_review_packet(
+        task_text=task_text,
+        answer_text="",
+        answer_contract=answer_contract,
+        curated_context=curated_context.model_dump(),
+        tool_results=[],
+    )
+    logger.info("[Step %s] engine context_curator -> facts=%s", step, len(curated_context.facts_in_use))
     return {
         "source_bundle": source_bundle.model_dump(),
         "curated_context": curated_context.model_dump(),
+        "review_packet": review_packet.model_dump(),
         "evidence_pack": {
             "curated_context": curated_context.model_dump(),
             "source_bundle_summary": {
@@ -534,21 +796,36 @@ def _adaptive_completion_budget(
     *,
     task_family: str = "",
     review_feedback: bool = False,
+    task_text: str = "",
 ) -> int:
+    normalized = (task_text or "").lower()
+    derivation_heavy = task_family == "analytical_reasoning" or any(
+        token in normalized for token in ("differentiate", "derivative", "integral", "marginal cost", "marginal revenue", "\\frac", "prove")
+    )
+    if mode == "scalar_or_json":
+        return 600 if review_feedback else 400
+    if mode == "long_form_derivation":
+        if prompt_tokens >= 2400 or derivation_heavy:
+            return 2800
+        return 2200
     if mode in {"advisory_memo", "document_grounded"}:
         if task_family == "legal_transactional":
-            if prompt_tokens >= 1800:
+            if prompt_tokens >= 2400 or review_feedback:
+                return 2800
+            if prompt_tokens >= 1400:
                 return 2400
-            if prompt_tokens >= 1200 or review_feedback:
-                return 2000
-            return 1600
-        if prompt_tokens >= 1800:
-            return 2000
-        if prompt_tokens >= 1100 or review_feedback:
-            return 1600
-        return 1200
+            return 2200
+        if prompt_tokens >= 2000 or review_feedback:
+            return 2200
+        return 1800
     if mode == "compact_sections":
-        return 1100 if review_feedback else 900
+        if task_family == "market_scenario":
+            return 1800 if review_feedback else 1400
+        if prompt_tokens >= 1800 or derivation_heavy:
+            return 1800
+        return 1200 if review_feedback else 1100
+    if mode == "capability_gap":
+        return 220
     return 400
 
 
@@ -629,6 +906,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
         intent = TaskIntent.model_validate(state.get("task_intent") or {})
         tool_plan = ToolPlan.model_validate(state.get("tool_plan") or {})
         curated = CuratedContext.model_validate(state.get("curated_context") or {})
+        source_bundle = SourceBundle.model_validate(state.get("source_bundle") or {})
         journal = ExecutionJournal.model_validate(state.get("execution_journal") or {})
         workpad = dict(state.get("workpad", {}))
         review_feedback = dict(state.get("review_feedback") or {})
@@ -636,6 +914,66 @@ def make_executor(registry: dict[str, dict[str, Any]]):
         tracker = state.get("cost_tracker")
         tracer = get_tracer()
         tools_ran_this_call: list[str] = []
+        task_text = latest_human_text(state["messages"])
+
+        if intent.task_family == "finance_options" and not _supports_options_fast_path(task_text):
+            heuristic_intent, _, _ = _heuristic_intent(task_text, state.get("answer_contract", {}) or {})
+            intent = _normalize_task_intent(heuristic_intent, task_text, heuristic_intent)
+            tool_plan, _ = resolve_tool_plan(intent, source_bundle, registry)
+            workpad = _record_event(workpad, "executor", f"rerouted before tool execution -> {intent.task_family}")
+
+        if tool_plan.stop_reason == "unsupported_capability":
+            journal.final_artifact_signature = _artifact_signature(
+                "This task requires non-finance artifact generation that the active finance-first engine does not support."
+            )
+            journal.stop_reason = tool_plan.stop_reason
+            content = (
+                "This task requires non-finance artifact generation that the active finance-first engine does not support. "
+                "I can analyze the request, but I cannot produce the requested media artifact."
+            )
+            workpad["completion_budget"] = 0
+            workpad = _record_event(workpad, "executor", "unsupported capability -> clean stop")
+            return {
+                "messages": [AIMessage(content=content)],
+                "task_intent": intent.model_dump(),
+                "tool_plan": tool_plan.model_dump(),
+                "execution_journal": journal.model_dump(),
+                "review_packet": build_review_packet(
+                    task_text=task_text,
+                    answer_text=content,
+                    answer_contract=state.get("answer_contract", {}) or {},
+                    curated_context=curated.model_dump(),
+                    tool_results=[],
+                ).model_dump(),
+                "solver_stage": "COMPLETE",
+                "workpad": workpad,
+            }
+
+        if tool_plan.stop_reason == "no_bindable_capability" and not tool_plan.pending_tools and not review_feedback:
+            journal.final_artifact_signature = _artifact_signature(
+                "I could not bind a safe retrieval or analysis capability for this task, so I am stopping instead of guessing."
+            )
+            journal.stop_reason = tool_plan.stop_reason
+            content = (
+                "I could not bind a safe retrieval or analysis capability for this task, so I am stopping instead of guessing."
+            )
+            workpad["completion_budget"] = 0
+            workpad = _record_event(workpad, "executor", "no bindable capability -> clean stop")
+            return {
+                "messages": [AIMessage(content=content)],
+                "task_intent": intent.model_dump(),
+                "tool_plan": tool_plan.model_dump(),
+                "execution_journal": journal.model_dump(),
+                "review_packet": build_review_packet(
+                    task_text=task_text,
+                    answer_text=content,
+                    answer_contract=state.get("answer_contract", {}) or {},
+                    curated_context=curated.model_dump(),
+                    tool_results=[],
+                ).model_dump(),
+                "solver_stage": "COMPLETE",
+                "workpad": workpad,
+            }
 
         if intent.execution_mode == "exact_fast_path" and intent.task_family == "finance_quant":
             answer = _exact_quant_answer(state)
@@ -656,8 +994,16 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                     )
                 return {
                     "messages": [AIMessage(content=answer)],
+                    "task_intent": intent.model_dump(),
                     "execution_journal": journal.model_dump(),
                     "tool_plan": tool_plan.model_dump(),
+                    "review_packet": build_review_packet(
+                        task_text=task_text,
+                        answer_text=answer,
+                        answer_contract=state.get("answer_contract", {}) or {},
+                        curated_context=curated.model_dump(),
+                        tool_results=[],
+                    ).model_dump(),
                     "solver_stage": "SYNTHESIZE",
                     "workpad": workpad,
                 }
@@ -692,6 +1038,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                         )
                     return {
                         "last_tool_result": tool_result.model_dump(),
+                        "task_intent": intent.model_dump(),
                         "tool_plan": tool_plan.model_dump(),
                         "execution_journal": journal.model_dump(),
                         "curated_context": curated.model_dump(),
@@ -721,8 +1068,16 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                 return {
                     "messages": [AIMessage(content=answer)],
                     "last_tool_result": journal.tool_results[-1] if journal.tool_results else None,
+                    "task_intent": intent.model_dump(),
                     "tool_plan": tool_plan.model_dump(),
                     "execution_journal": journal.model_dump(),
+                    "review_packet": build_review_packet(
+                        task_text=task_text,
+                        answer_text=answer,
+                        answer_contract=state.get("answer_contract", {}) or {},
+                        curated_context=curated.model_dump(),
+                        tool_results=journal.tool_results,
+                    ).model_dump(),
                     "solver_stage": "SYNTHESIZE",
                     "review_feedback": None,
                     "workpad": workpad,
@@ -759,7 +1114,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                 )
             )
         )
-        prompt_messages.append(HumanMessage(content=latest_human_text(state["messages"])))
+        prompt_messages.append(HumanMessage(content=task_text))
 
         prompt_tokens = count_tokens(prompt_messages)
         if budget:
@@ -769,6 +1124,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
             prompt_tokens,
             task_family=intent.task_family,
             review_feedback=bool(review_feedback),
+            task_text=task_text,
         )
         model_name = get_model_name("solver")
         model = ChatOpenAI(model=model_name, **get_client_kwargs("solver"), temperature=0, max_tokens=max_tokens)
@@ -811,8 +1167,16 @@ def make_executor(registry: dict[str, dict[str, Any]]):
         return {
             "messages": [AIMessage(content=content)],
             "last_tool_result": journal.tool_results[-1] if journal.tool_results else None,
+            "task_intent": intent.model_dump(),
             "tool_plan": tool_plan.model_dump(),
             "execution_journal": journal.model_dump(),
+            "review_packet": build_review_packet(
+                task_text=task_text,
+                answer_text=content,
+                answer_contract=state.get("answer_contract", {}) or {},
+                curated_context=curated.model_dump(),
+                tool_results=journal.tool_results,
+            ).model_dump(),
             "solver_stage": "SYNTHESIZE",
             "review_feedback": None,
             "workpad": workpad,
@@ -858,26 +1222,50 @@ def reviewer(state: RuntimeState) -> dict[str, Any]:
     step = increment_runtime_step()
     intent = TaskIntent.model_validate(state.get("task_intent") or {})
     journal = ExecutionJournal.model_validate(state.get("execution_journal") or {})
+    curated = CuratedContext.model_validate(state.get("curated_context") or {})
+    tool_plan = ToolPlan.model_validate(state.get("tool_plan") or {})
     workpad = dict(state.get("workpad", {}))
     answer = _latest_public_answer(state)
     answer_contract = state.get("answer_contract", {}) or {}
+    review_packet = build_review_packet(
+        task_text=latest_human_text(state["messages"]),
+        answer_text=answer,
+        answer_contract=answer_contract,
+        curated_context=curated.model_dump(),
+        tool_results=journal.tool_results,
+    )
 
     missing: list[str] = []
     verdict = "pass"
     reasoning = "Reviewer accepted the final artifact."
     score = 0.9
+    stop_reason = ""
 
     if looks_truncated(answer):
-        verdict = "revise"
+        verdict = "revise" if journal.revision_count < 1 else "fail"
         reasoning = "Final answer appears truncated."
         missing = ["complete final answer"]
-        score = 0.3
+        score = 0.3 if verdict == "revise" else 0.24
     elif intent.review_mode == "exact_quant":
         if not matches_exact_json_contract(answer, answer_contract):
-            verdict = "revise"
-            reasoning = "Exact quantitative answer does not satisfy the output contract."
-            missing = ["exact contract-compliant scalar output"]
-            score = 0.4
+            journal.contract_collapse_attempts += 1
+            if answer_contract.get("requires_adapter"):
+                verdict = "fail"
+                reasoning = "Exact quantitative answer should collapse through the output adapter instead of another prose revision."
+                missing = ["exact contract-compliant scalar output"]
+                stop_reason = "exact_output_collapse"
+                score = 0.52
+            else:
+                verdict = "revise"
+                reasoning = "Exact quantitative answer does not satisfy the output contract."
+                missing = ["exact contract-compliant scalar output"]
+                score = 0.4
+    elif intent.review_mode == "analytical_reasoning":
+        if looks_truncated(answer):
+            verdict = "revise" if journal.revision_count < 1 else "fail"
+            reasoning = "Analytical derivation appears truncated or incomplete."
+            missing = ["complete derivation and final result"]
+            score = 0.46 if verdict == "revise" else 0.38
     elif intent.task_family == "legal_transactional":
         missing = legal_depth_gaps(answer, latest_human_text(state["messages"]))
         if _legal_structure_option_count(answer) < 2:
@@ -898,12 +1286,27 @@ def reviewer(state: RuntimeState) -> dict[str, Any]:
             reasoning = "Options answer is missing benchmark-critical strategy or risk dimensions."
             score = 0.68 if verdict == "revise" else 0.6
 
+    progress = _build_progress_signature(
+        execution_mode=intent.execution_mode,
+        selected_tools=tool_plan.selected_tools,
+        missing_dimensions=missing,
+        artifact_signature=journal.final_artifact_signature or _artifact_signature(answer),
+        contract_status=_contract_status(answer, answer_contract, intent.review_mode),
+    )
+    if journal.progress_signatures and journal.progress_signatures[-1].get("signature") == progress.signature and verdict == "revise":
+        verdict = "fail"
+        reasoning = "Progress stalled: the answer repeated the same unresolved gap without a materially different artifact."
+        stop_reason = "progress_stalled"
+        score = min(score, 0.45)
+    journal.progress_signatures.append(progress.model_dump())
+
     report = QualityReport(
         verdict=verdict,  # type: ignore[arg-type]
         reasoning=reasoning,
         missing_dimensions=missing,
         targeted_fix_prompt=_targeted_fix_prompt(missing) if missing else "",
         score=score,
+        stop_reason=stop_reason,
     )
 
     workpad["review_ready"] = False
@@ -919,14 +1322,18 @@ def reviewer(state: RuntimeState) -> dict[str, Any]:
                 "verdict": verdict,
                 "reasoning": reasoning,
                 "missing_dimensions": missing,
+                "stop_reason": stop_reason,
                 "used_llm": False,
             },
         )
-    logger.info("[Step %s] v4 reviewer -> %s", step, verdict.upper())
+    logger.info("[Step %s] engine reviewer -> %s", step, verdict.upper())
 
     if verdict == "pass":
         return {
             "quality_report": report.model_dump(),
+            "execution_journal": journal.model_dump(),
+            "review_packet": review_packet.model_dump(),
+            "progress_signature": progress.model_dump(),
             "review_feedback": None,
             "solver_stage": "COMPLETE",
             "workpad": workpad,
@@ -935,10 +1342,14 @@ def reviewer(state: RuntimeState) -> dict[str, Any]:
     if verdict == "revise":
         return {
             "quality_report": report.model_dump(),
+            "execution_journal": journal.model_dump(),
+            "review_packet": review_packet.model_dump(),
+            "progress_signature": progress.model_dump(),
             "review_feedback": {
                 "verdict": "revise",
                 "reasoning": report.targeted_fix_prompt or reasoning,
                 "missing_dimensions": missing,
+                "improve_hint": report.targeted_fix_prompt,
                 "repair_target": "final",
                 "repair_class": "missing_section",
             },
@@ -949,6 +1360,9 @@ def reviewer(state: RuntimeState) -> dict[str, Any]:
     workpad = _record_event(workpad, "reviewer", "quality ceiling reached -> stop without another loop")
     return {
         "quality_report": report.model_dump(),
+        "execution_journal": journal.model_dump(),
+        "review_packet": review_packet.model_dump(),
+        "progress_signature": progress.model_dump(),
         "review_feedback": None,
         "solver_stage": "COMPLETE",
         "workpad": workpad,
@@ -961,6 +1375,8 @@ def route_from_reviewer(state: RuntimeState) -> str:
     if state.get("solver_stage") == "COMPLETE":
         intent = TaskIntent.model_validate(state.get("task_intent") or {})
         report = QualityReport.model_validate(state.get("quality_report") or {})
+        if report.stop_reason == "exact_output_collapse" and state.get("answer_contract", {}).get("requires_adapter"):
+            return "output_adapter"
         if report.verdict == "fail":
             journal = ExecutionJournal.model_validate(state.get("execution_journal") or {})
             if intent.complexity_tier == "complex_qualitative" and journal.self_reflection_count < 1:

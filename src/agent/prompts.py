@@ -19,12 +19,29 @@ PLANNER_SYSTEM = (
     "- finance_quant: formulas, tables, exact numeric answers (NPV, IRR, amortization)\n"
     "- finance_options: Black-Scholes, Greeks, option strategies, IV analysis\n"
     "- legal_transactional: M&A structures, deal terms, regulatory compliance, tax treatment\n"
+    "- analytical_reasoning: derivations, calculus, symbolic or numerical reasoning tied to finance/business logic\n"
+    "- market_scenario: scenario-driven trading, risk, crypto, or stress analysis\n"
     "- document_qa: questions grounded in uploaded files or reference documents\n"
     "- external_retrieval: questions requiring current market or source-backed data\n"
+    "- unsupported_artifact: requests for non-finance media/artifact generation outside this system's scope\n"
     "- general: anything that does not clearly fit above\n\n"
+    "Canonical tool families:\n"
+    "- exact_compute\n"
+    "- market_data_retrieval\n"
+    "- document_retrieval\n"
+    "- external_retrieval\n"
+    "- options_strategy_analysis\n"
+    "- options_scenario_analysis\n"
+    "- legal_playbook_retrieval\n"
+    "- transaction_structure_analysis\n"
+    "- regulatory_execution_analysis\n"
+    "- tax_structure_analysis\n"
+    "- analytical_reasoning\n"
+    "- market_scenario_analysis\n\n"
     "Be conservative with exact fast paths. Use them only when the prompt already "
     "contains the formula, the relevant table, and an exact output contract.\n"
-    "Prefer broader capability access for legal/advisory tasks instead of calculator-only reasoning.\n\n"
+    "Prefer broader capability access for finance/legal analysis instead of calculator-only reasoning.\n"
+    "Do not classify a task as finance_options unless the prompt clearly refers to listed-options market analysis.\n\n"
     "Return only JSON matching the schema."
 )
 
@@ -82,6 +99,18 @@ GENERAL_GUIDANCE = (
     "and keep the structure aligned to the requested output."
 )
 
+ANALYTICAL_REASONING_GUIDANCE = (
+    "Solve step by step and keep the derivation explicit.\n"
+    "Use equations or symbolic steps only when they advance the reasoning.\n"
+    "Finish with the exact requested result, not just intermediate work."
+)
+
+MARKET_SCENARIO_GUIDANCE = (
+    "Treat the task as a scenario-driven finance decision.\n"
+    "State the setup, stress case, base case, and risk controls.\n"
+    "Tie the recommendation to the specific scenario rather than giving a generic market memo."
+)
+
 
 def execution_guidance(task_family: str, execution_mode: str) -> str:
     """Return family-specific guidance for the executor system prompt."""
@@ -91,6 +120,10 @@ def execution_guidance(task_family: str, execution_mode: str) -> str:
         return OPTIONS_GUIDANCE
     if task_family == "finance_quant":
         return QUANT_GUIDANCE
+    if task_family == "analytical_reasoning":
+        return ANALYTICAL_REASONING_GUIDANCE
+    if task_family == "market_scenario":
+        return MARKET_SCENARIO_GUIDANCE
     if execution_mode == "document_grounded_analysis":
         return DOCUMENT_GROUNDED_GUIDANCE
     return GENERAL_GUIDANCE

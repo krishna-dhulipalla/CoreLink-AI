@@ -47,6 +47,39 @@ _TIER_CAPS: dict[str, dict[str, int]] = {
     },
 }
 
+_MODE_CAPS: dict[str, dict[str, int]] = {
+    "exact_fast_path": {
+        "tool_calls": _env_int("EXACT_FAST_PATH_MAX_TOOL_CALLS", 2),
+        "revise_cycles": _env_int("EXACT_FAST_PATH_MAX_REVISE_CYCLES", 1),
+        "backtrack_cycles": _env_int("EXACT_FAST_PATH_MAX_BACKTRACK_CYCLES", 0),
+        "context_tokens": _env_int("EXACT_FAST_PATH_MAX_CONTEXT_TOKENS", 1200),
+    },
+    "tool_compute": {
+        "tool_calls": _env_int("TOOL_COMPUTE_MAX_TOOL_CALLS", 6),
+        "revise_cycles": _env_int("TOOL_COMPUTE_MAX_REVISE_CYCLES", 1),
+        "backtrack_cycles": _env_int("TOOL_COMPUTE_MAX_BACKTRACK_CYCLES", 1),
+        "context_tokens": _env_int("TOOL_COMPUTE_MAX_CONTEXT_TOKENS", 3000),
+    },
+    "retrieval_augmented_analysis": {
+        "tool_calls": _env_int("RETRIEVAL_ANALYSIS_MAX_TOOL_CALLS", 8),
+        "revise_cycles": _env_int("RETRIEVAL_ANALYSIS_MAX_REVISE_CYCLES", 2),
+        "backtrack_cycles": _env_int("RETRIEVAL_ANALYSIS_MAX_BACKTRACK_CYCLES", 1),
+        "context_tokens": _env_int("RETRIEVAL_ANALYSIS_MAX_CONTEXT_TOKENS", 4000),
+    },
+    "document_grounded_analysis": {
+        "tool_calls": _env_int("DOCUMENT_ANALYSIS_MAX_TOOL_CALLS", 6),
+        "revise_cycles": _env_int("DOCUMENT_ANALYSIS_MAX_REVISE_CYCLES", 2),
+        "backtrack_cycles": _env_int("DOCUMENT_ANALYSIS_MAX_BACKTRACK_CYCLES", 1),
+        "context_tokens": _env_int("DOCUMENT_ANALYSIS_MAX_CONTEXT_TOKENS", 4500),
+    },
+    "advisory_analysis": {
+        "tool_calls": _env_int("ADVISORY_ANALYSIS_MAX_TOOL_CALLS", 8),
+        "revise_cycles": _env_int("ADVISORY_ANALYSIS_MAX_REVISE_CYCLES", 2),
+        "backtrack_cycles": _env_int("ADVISORY_ANALYSIS_MAX_BACKTRACK_CYCLES", 1),
+        "context_tokens": _env_int("ADVISORY_ANALYSIS_MAX_CONTEXT_TOKENS", 4500),
+    },
+}
+
 
 class BudgetTracker:
     """Tracks per-run resource consumption and enforces hard caps."""
@@ -64,15 +97,18 @@ class BudgetTracker:
         self.revise_cap: int = _BASE_REVISE_CYCLES
         self.backtrack_cap: int = _BASE_BACKTRACK_CYCLES
         self.context_tokens_cap: int = _BASE_CONTEXT_TOKENS
+        self.execution_mode: str = ""
 
-    def configure(self, *, complexity_tier: str = "structured_analysis", template_id: str = "") -> None:
+    def configure(self, *, complexity_tier: str = "structured_analysis", template_id: str = "", execution_mode: str = "") -> None:
         caps = _TIER_CAPS.get(complexity_tier, _TIER_CAPS["structured_analysis"])
+        mode_caps = _MODE_CAPS.get(execution_mode, {})
         self.complexity_tier = complexity_tier
         self.template_id = template_id
-        self.tool_calls_cap = caps["tool_calls"]
-        self.revise_cap = caps["revise_cycles"]
-        self.backtrack_cap = caps["backtrack_cycles"]
-        self.context_tokens_cap = caps["context_tokens"]
+        self.execution_mode = execution_mode
+        self.tool_calls_cap = mode_caps.get("tool_calls", caps["tool_calls"])
+        self.revise_cap = mode_caps.get("revise_cycles", caps["revise_cycles"])
+        self.backtrack_cap = mode_caps.get("backtrack_cycles", caps["backtrack_cycles"])
+        self.context_tokens_cap = mode_caps.get("context_tokens", caps["context_tokens"])
 
     # ---- recording ----
 
@@ -124,6 +160,7 @@ class BudgetTracker:
         return {
             "complexity_tier": self.complexity_tier,
             "template_id": self.template_id,
+            "execution_mode": self.execution_mode,
             "tool_calls": self.tool_calls,
             "tool_calls_cap": self.tool_calls_cap,
             "revise_cycles": self.revise_cycles,
@@ -141,6 +178,7 @@ class BudgetTracker:
         return (
             "BudgetTracker("
             f"tier={summary['complexity_tier']}, "
+            f"mode={summary['execution_mode']}, "
             f"tools={summary['tool_calls']}/{summary['tool_calls_cap']}, "
             f"revise={summary['revise_cycles']}/{summary['revise_cap']}, "
             f"backtrack={summary['backtrack_cycles']}/{summary['backtrack_cap']})"

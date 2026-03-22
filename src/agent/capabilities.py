@@ -22,6 +22,21 @@ BUILTIN_LEGAL_TOOLS = [
     tax_structure_checklist,
 ]
 
+_CANONICAL_FAMILIES = {
+    "exact_compute",
+    "market_data_retrieval",
+    "document_retrieval",
+    "external_retrieval",
+    "options_strategy_analysis",
+    "options_scenario_analysis",
+    "legal_playbook_retrieval",
+    "transaction_structure_analysis",
+    "regulatory_execution_analysis",
+    "tax_structure_analysis",
+    "analytical_reasoning",
+    "market_scenario_analysis",
+}
+
 _FAMILY_BY_TOOL: dict[str, tuple[str, int]] = {
     "calculator": ("exact_compute", 10),
     "sum_values": ("exact_compute", 20),
@@ -32,11 +47,11 @@ _FAMILY_BY_TOOL: dict[str, tuple[str, int]] = {
     "annualize_volatility": ("exact_compute", 20),
     "bond_price_yield": ("exact_compute", 25),
     "duration_convexity": ("exact_compute", 25),
-    "du_pont_analysis": ("fundamental_compute", 30),
-    "valuation_multiples_compare": ("fundamental_compute", 30),
-    "dcf_sensitivity_grid": ("fundamental_compute", 35),
-    "cashflow_waterfall": ("fundamental_compute", 35),
-    "bond_spread_duration": ("fundamental_compute", 35),
+    "du_pont_analysis": ("analytical_reasoning", 30),
+    "valuation_multiples_compare": ("analytical_reasoning", 30),
+    "dcf_sensitivity_grid": ("analytical_reasoning", 35),
+    "cashflow_waterfall": ("analytical_reasoning", 35),
+    "bond_spread_duration": ("analytical_reasoning", 35),
     "resolve_financial_entity": ("market_data_retrieval", 20),
     "get_price_history": ("market_data_retrieval", 15),
     "get_company_fundamentals": ("market_data_retrieval", 15),
@@ -54,21 +69,21 @@ _FAMILY_BY_TOOL: dict[str, tuple[str, int]] = {
     "get_expirations": ("options_strategy_analysis", 25),
     "scenario_pnl": ("options_scenario_analysis", 10),
     "calculate_portfolio_greeks": ("options_scenario_analysis", 20),
-    "calculate_var": ("risk_analysis", 20),
-    "run_stress_test": ("risk_analysis", 20),
-    "portfolio_limit_check": ("risk_analysis", 25),
-    "concentration_check": ("risk_analysis", 25),
-    "factor_exposure_summary": ("risk_analysis", 25),
-    "drawdown_risk_profile": ("risk_analysis", 25),
-    "liquidity_stress": ("risk_analysis", 25),
-    "calculate_risk_metrics": ("risk_analysis", 25),
+    "calculate_var": ("market_scenario_analysis", 20),
+    "run_stress_test": ("market_scenario_analysis", 20),
+    "portfolio_limit_check": ("market_scenario_analysis", 25),
+    "concentration_check": ("market_scenario_analysis", 25),
+    "factor_exposure_summary": ("market_scenario_analysis", 25),
+    "drawdown_risk_profile": ("market_scenario_analysis", 25),
+    "liquidity_stress": ("market_scenario_analysis", 25),
+    "calculate_risk_metrics": ("market_scenario_analysis", 25),
     "fetch_reference_file": ("document_retrieval", 15),
     "list_reference_files": ("document_retrieval", 20),
     "internet_search": ("external_retrieval", 20),
     "legal_playbook_retrieval": ("legal_playbook_retrieval", 10),
-    "transaction_structure_checklist": ("transaction_structure_checklist", 10),
-    "regulatory_execution_checklist": ("regulatory_execution_checklist", 10),
-    "tax_structure_checklist": ("tax_structure_checklist", 10),
+    "transaction_structure_checklist": ("transaction_structure_analysis", 10),
+    "regulatory_execution_checklist": ("regulatory_execution_analysis", 10),
+    "tax_structure_checklist": ("tax_structure_analysis", 10),
     "execute_options_trade": ("execution_side_effect", 100),
 }
 
@@ -76,11 +91,11 @@ _FAMILY_BY_TOOL: dict[str, tuple[str, int]] = {
 def _domain_tags(tool_name: str, family: str) -> list[str]:
     if family.startswith("options_"):
         return ["finance", "options"]
-    if family in {"risk_analysis"}:
+    if family in {"market_scenario_analysis"}:
         return ["finance", "risk"]
-    if family in {"market_data_retrieval", "fundamental_compute"}:
+    if family in {"market_data_retrieval", "analytical_reasoning"}:
         return ["finance", "market"]
-    if family.startswith("legal_") or family.endswith("_checklist") or family == "legal_playbook_retrieval":
+    if family.startswith("legal_") or family.endswith("_analysis") or family == "legal_playbook_retrieval":
         return ["legal", "transactional"]
     if family == "document_retrieval":
         return ["documents"]
@@ -140,6 +155,81 @@ def synthesize_capability(family: str) -> tuple[ACEEvent, Any | None]:
     return ACEEvent(family=family, status="skipped", reason="No bounded synthesis path is defined for this family."), None
 
 
+def _source_requests_live_data(source_bundle: SourceBundle) -> bool:
+    lowered = (source_bundle.task_text or "").lower()
+    return any(
+        token in lowered
+        for token in (
+            "latest",
+            "today",
+            "recent",
+            "look up",
+            "search",
+            "source-backed",
+            "current ",
+            "as of ",
+            "price of",
+            "what was",
+            "what is",
+        )
+    )
+
+
+def _normalize_family(raw_family: str, intent: TaskIntent, source_bundle: SourceBundle) -> str:
+    family = str(raw_family or "").strip()
+    if family in _CANONICAL_FAMILIES:
+        return family
+    mapping = {
+        "finance_quant": "market_data_retrieval" if _source_requests_live_data(source_bundle) else "exact_compute",
+        "mathematical_analysis": "analytical_reasoning",
+        "risk_analysis": "market_scenario_analysis",
+        "transaction_structure_checklist": "transaction_structure_analysis",
+        "regulatory_execution_checklist": "regulatory_execution_analysis",
+        "tax_structure_checklist": "tax_structure_analysis",
+        "market_data": "market_data_retrieval",
+        "search": "external_retrieval",
+    }
+    if family in mapping:
+        return mapping[family]
+    if intent.task_family == "analytical_reasoning":
+        return "analytical_reasoning"
+    if intent.task_family == "market_scenario":
+        return "market_scenario_analysis"
+    return family
+
+
+def _widen_families(intent: TaskIntent, source_bundle: SourceBundle, normalized: list[str]) -> list[str]:
+    widened = list(normalized)
+    if intent.task_family in {"finance_quant", "external_retrieval"} and _source_requests_live_data(source_bundle):
+        for family in ("market_data_retrieval", "external_retrieval"):
+            if family not in widened:
+                widened.append(family)
+    if intent.task_family == "legal_transactional":
+        for family in (
+            "legal_playbook_retrieval",
+            "transaction_structure_analysis",
+            "regulatory_execution_analysis",
+            "tax_structure_analysis",
+        ):
+            if family not in widened:
+                widened.append(family)
+        if source_bundle.urls and "document_retrieval" not in widened:
+            widened.insert(0, "document_retrieval")
+    if intent.task_family == "market_scenario":
+        for family in ("market_scenario_analysis", "market_data_retrieval"):
+            if family not in widened:
+                widened.append(family)
+    if intent.task_family == "analytical_reasoning":
+        for family in ("analytical_reasoning", "exact_compute"):
+            if family not in widened:
+                widened.append(family)
+    if intent.task_family == "finance_options":
+        for family in ("options_strategy_analysis", "options_scenario_analysis"):
+            if family not in widened:
+                widened.append(family)
+    return widened
+
+
 def _ordered_candidates(registry: dict[str, dict[str, Any]], family: str) -> list[tuple[dict[str, Any], Any]]:
     matches: list[tuple[dict[str, Any], Any]] = []
     for payload in registry.values():
@@ -158,13 +248,30 @@ def resolve_tool_plan(
     registry: dict[str, dict[str, Any]],
 ) -> tuple[ToolPlan, dict[str, dict[str, Any]]]:
     mutable_registry = dict(registry)
+    requested = [_normalize_family(family, intent, source_bundle) for family in intent.tool_families_needed]
+    requested = list(dict.fromkeys([family for family in requested if family]))
+    widened = _widen_families(intent, source_bundle, requested)
     selected: list[str] = []
     pending: list[str] = []
     blocked: list[str] = []
     notes: list[str] = []
     ace_events: list[dict[str, Any]] = []
+    stop_reason = ""
 
-    for family in intent.tool_families_needed:
+    if intent.task_family == "unsupported_artifact":
+        plan = ToolPlan(
+            tool_families_needed=requested,
+            widened_families=widened,
+            selected_tools=[],
+            pending_tools=[],
+            blocked_families=[],
+            ace_events=[],
+            notes=["Task requires a non-finance artifact capability outside the active engine scope."],
+            stop_reason="unsupported_capability",
+        )
+        return plan, mutable_registry
+
+    for family in widened:
         candidates = _ordered_candidates(mutable_registry, family)
         if not candidates:
             ace_event, synthesized = synthesize_capability(family)
@@ -183,9 +290,9 @@ def resolve_tool_plan(
 
         if intent.task_family == "legal_transactional" and family in {
             "legal_playbook_retrieval",
-            "transaction_structure_checklist",
-            "regulatory_execution_checklist",
-            "tax_structure_checklist",
+            "transaction_structure_analysis",
+            "regulatory_execution_analysis",
+            "tax_structure_analysis",
         }:
             family_tools = [descriptor["tool_name"] for descriptor, _ in candidates[:1]]
             selected.extend(family_tools)
@@ -206,12 +313,19 @@ def resolve_tool_plan(
                 selected.append(tool_name)
                 pending.insert(0, tool_name)
 
+    if not selected and any(family in {"market_data_retrieval", "external_retrieval", "document_retrieval"} for family in widened):
+        stop_reason = "no_bindable_capability"
+    elif blocked and len(blocked) == len(widened) and intent.task_family in {"external_retrieval", "finance_quant", "market_scenario"}:
+        stop_reason = "no_bindable_capability"
+
     plan = ToolPlan(
-        tool_families_needed=list(intent.tool_families_needed),
+        tool_families_needed=requested,
+        widened_families=widened,
         selected_tools=list(dict.fromkeys(selected)),
         pending_tools=list(dict.fromkeys(pending)),
         blocked_families=blocked,
         ace_events=ace_events,
         notes=notes,
+        stop_reason=stop_reason,
     )
     return plan, mutable_registry

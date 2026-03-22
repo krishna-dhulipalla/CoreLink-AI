@@ -15,7 +15,7 @@ from agent.context.evidence import (
 )
 from agent.context.extraction import extract_entities, extract_formulas, extract_inline_facts, extract_urls, parse_markdown_tables
 from agent.context.profiling import _extract_labeled_json_block
-from agent.contracts import CuratedContext, SourceBundle, TaskIntent
+from agent.contracts import CuratedContext, ReviewPacket, SourceBundle, TaskIntent
 
 _DEAL_SIZE_RE = re.compile(r"\$?\s*(\d+(?:\.\d+)?)\s*(M|MM|B|BN|million|billion)\b", re.IGNORECASE)
 
@@ -146,6 +146,33 @@ def _legal_facts_in_use(task_text: str, source_bundle: SourceBundle) -> list[dic
     return _dedupe_facts(facts)
 
 
+def _analytical_facts_in_use(source_bundle: SourceBundle) -> list[dict[str, Any]]:
+    facts: list[dict[str, Any]] = []
+    for formula in _select_relevant_formulas(source_bundle.formulas, source_bundle.focus_query or source_bundle.task_text):
+        facts.append({"type": "formula", "value": formula})
+    for key, value in list(source_bundle.inline_facts.items())[:10]:
+        facts.append({"type": "inline_fact", "key": key, "value": value})
+    if source_bundle.entities:
+        facts.append({"type": "entities", "value": source_bundle.entities[:6]})
+    return _dedupe_facts(facts)
+
+
+def _market_scenario_facts(task_text: str, source_bundle: SourceBundle) -> list[dict[str, Any]]:
+    facts: list[dict[str, Any]] = []
+    if source_bundle.entities:
+        facts.append({"type": "entities", "value": source_bundle.entities[:6]})
+    for key, value in list(source_bundle.inline_facts.items())[:10]:
+        facts.append({"type": "inline_fact", "key": key, "value": value})
+    lowered = (task_text or "").lower()
+    scenario_markers = []
+    for marker in ("stress", "flash crash", "liquidity", "drawdown", "hedge", "earnings", "volatility", "scenario"):
+        if marker in lowered:
+            scenario_markers.append(marker)
+    if scenario_markers:
+        facts.append({"type": "scenario_markers", "value": scenario_markers[:6]})
+    return _dedupe_facts(facts)
+
+
 def build_curated_context(
     task_text: str,
     answer_contract: dict[str, Any],
@@ -165,6 +192,18 @@ def build_curated_context(
         assumptions: list[str] = []
         if not quant_stats.get("relevant_rows"):
             open_questions.append("Target row selection is ambiguous; avoid pretending the exact compute is resolved.")
+    elif intent.task_family == "analytical_reasoning":
+        facts_in_use = _analytical_facts_in_use(source_bundle)
+        open_questions = []
+        assumptions = []
+        if not facts_in_use:
+            open_questions.append("No explicit structured evidence was extracted; derivation must stay close to the task text.")
+    elif intent.task_family == "market_scenario":
+        facts_in_use = _market_scenario_facts(task_text, source_bundle)
+        open_questions = [
+            "Confirm position sizing, mandate limits, and stress constraints if they are not explicit in the prompt."
+        ]
+        assumptions = []
     elif intent.task_family == "legal_transactional":
         facts_in_use = _legal_facts_in_use(task_text, source_bundle)
         open_questions = [
@@ -186,8 +225,8 @@ def build_curated_context(
     curated = CuratedContext(
         objective=source_bundle.focus_query or _normalize_text(task_text)[:300],
         facts_in_use=facts_in_use,
-        open_questions=open_questions,
-        assumptions=assumptions,
+        open_questions=[item for item in open_questions if item],
+        assumptions=[item for item in assumptions if item],
         requested_output={
             "format": answer_contract.get("format", "text"),
             "requires_adapter": bool(answer_contract.get("requires_adapter")),
@@ -238,6 +277,28 @@ def _compact_tool_findings(tool_results: list[dict[str, Any]] | None) -> list[di
         if finding["tool"]:
             findings.append(finding)
     return findings
+
+
+def build_review_packet(
+    *,
+    task_text: str,
+    answer_text: str,
+    answer_contract: dict[str, Any],
+    curated_context: dict[str, Any],
+    tool_results: list[dict[str, Any]] | None = None,
+) -> ReviewPacket:
+    provenance = dict(curated_context.get("provenance_summary") or {})
+    source_summary = dict(provenance.get("source_bundle") or {})
+    citations = [str(item) for item in source_summary.get("urls", []) if str(item).strip()]
+    return ReviewPacket(
+        task_text=task_text,
+        answer_text=answer_text,
+        answer_contract=answer_contract,
+        tool_findings=_compact_tool_findings(tool_results),
+        citations=citations,
+        assumptions=[str(item) for item in curated_context.get("assumptions", []) if str(item).strip()],
+        open_questions=[str(item) for item in curated_context.get("open_questions", []) if str(item).strip()],
+    )
 
 
 def solver_context_block(

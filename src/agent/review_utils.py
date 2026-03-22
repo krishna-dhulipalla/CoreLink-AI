@@ -26,6 +26,22 @@ def looks_truncated(text: str) -> bool:
     last_line = stripped.splitlines()[-1].strip()
     if last_line.startswith(("-", "*")) and len(last_line) < 8:
         return True
+    if stripped.count("(") > stripped.count(")"):
+        return True
+    if stripped.count("[") > stripped.count("]"):
+        return True
+    if stripped.count("{") > stripped.count("}"):
+        return True
+    if stripped.count("`") % 2 == 1:
+        return True
+    if "\\(" in stripped and "\\)" not in stripped:
+        return True
+    if "\\[" in stripped and "\\]" not in stripped:
+        return True
+    if re.search(r"(=|\+|-|\*|/)\s*$", stripped):
+        return True
+    if re.search(r"\b(?:therefore|thus|so|hence)\s*$", last_line.lower()):
+        return True
     return False
 
 

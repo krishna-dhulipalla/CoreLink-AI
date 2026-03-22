@@ -14,6 +14,9 @@ CapabilityFlag = Literal[
     "needs_live_data",
     "needs_options_engine",
     "needs_legal_reasoning",
+    "needs_analytical_reasoning",
+    "needs_market_scenario",
+    "needs_artifact_generation",
     "requires_exact_format",
     "needs_equity_research",
     "needs_portfolio_risk",
@@ -32,8 +35,11 @@ TaskProfile = Literal[
     "finance_quant",
     "finance_options",
     "legal_transactional",
+    "analytical_reasoning",
+    "market_scenario",
     "document_qa",
     "external_retrieval",
+    "unsupported_artifact",
     "general",
 ]
 
@@ -243,9 +249,9 @@ ExecutionMode = Literal[
 ]
 
 ComplexityTier = Literal["simple_exact", "structured_analysis", "complex_qualitative"]
-ReviewMode = Literal["exact_quant", "tool_compute", "qualitative_advisory", "document_grounded"]
-CompletionMode = Literal["scalar_or_json", "compact_sections", "advisory_memo", "document_grounded"]
-EvidenceStrategy = Literal["minimal_exact", "compact_prompt", "document_first", "retrieval_first"]
+ReviewMode = Literal["exact_quant", "tool_compute", "qualitative_advisory", "document_grounded", "analytical_reasoning"]
+CompletionMode = Literal["scalar_or_json", "compact_sections", "advisory_memo", "document_grounded", "long_form_derivation", "capability_gap"]
+EvidenceStrategy = Literal["minimal_exact", "compact_prompt", "document_first", "retrieval_first", "scenario_first"]
 SideEffectLevel = Literal["read_only", "transactional", "blocked"]
 
 
@@ -283,11 +289,13 @@ class ACEEvent(BaseModel):
 
 class ToolPlan(BaseModel):
     tool_families_needed: list[str] = Field(default_factory=list)
+    widened_families: list[str] = Field(default_factory=list)
     selected_tools: list[str] = Field(default_factory=list)
     pending_tools: list[str] = Field(default_factory=list)
     blocked_families: list[str] = Field(default_factory=list)
     ace_events: list[dict[str, Any]] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
+    stop_reason: str = ""
 
 
 class SourceBundle(BaseModel):
@@ -310,6 +318,32 @@ class CuratedContext(BaseModel):
     provenance_summary: dict[str, Any] = Field(default_factory=dict)
 
 
+class ReviewPacket(BaseModel):
+    task_text: str = ""
+    answer_text: str = ""
+    answer_contract: dict[str, Any] = Field(default_factory=dict)
+    tool_findings: list[dict[str, Any]] = Field(default_factory=list)
+    citations: list[str] = Field(default_factory=list)
+    assumptions: list[str] = Field(default_factory=list)
+    open_questions: list[str] = Field(default_factory=list)
+
+
+class ProgressSignature(BaseModel):
+    execution_mode: str = ""
+    selected_tools: list[str] = Field(default_factory=list)
+    missing_dimensions: list[str] = Field(default_factory=list)
+    artifact_signature: str = ""
+    contract_status: str = ""
+    signature: str = ""
+
+
+class UnsupportedCapabilityReport(BaseModel):
+    task_family: str = ""
+    requested_capability: str = ""
+    reason: str = ""
+    suggested_scope: str = "finance-first"
+
+
 class ExecutionJournal(BaseModel):
     events: list[dict[str, Any]] = Field(default_factory=list)
     tool_results: list[dict[str, Any]] = Field(default_factory=list)
@@ -317,6 +351,9 @@ class ExecutionJournal(BaseModel):
     revision_count: int = 0
     self_reflection_count: int = 0
     final_artifact_signature: str = ""
+    progress_signatures: list[dict[str, Any]] = Field(default_factory=list)
+    stop_reason: str = ""
+    contract_collapse_attempts: int = 0
 
 
 class QualityReport(BaseModel):
@@ -325,3 +362,4 @@ class QualityReport(BaseModel):
     missing_dimensions: list[str] = Field(default_factory=list)
     targeted_fix_prompt: str = ""
     score: float = 0.9
+    stop_reason: str = ""

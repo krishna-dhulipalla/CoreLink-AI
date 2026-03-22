@@ -153,14 +153,27 @@ async def run_agent_trace(
         "tool_plan": {},
         "source_bundle": {},
         "curated_context": {},
-        "execution_journal": {"events": [], "tool_results": [], "routed_tool_families": [], "revision_count": 0, "self_reflection_count": 0, "final_artifact_signature": ""},
+        "review_packet": {},
+        "execution_journal": {
+            "events": [],
+            "tool_results": [],
+            "routed_tool_families": [],
+            "revision_count": 0,
+            "self_reflection_count": 0,
+            "final_artifact_signature": "",
+            "progress_signatures": [],
+            "stop_reason": "",
+            "contract_collapse_attempts": 0,
+        },
         "quality_report": {},
+        "progress_signature": {},
+        "unsupported_capability_report": {},
         "fast_path_used": False,
     }
 
     last_state = initial_state
     try:
-        async for streamed_state in graph.astream(initial_state, config={"recursion_limit": 40}, stream_mode="values"):
+        async for streamed_state in graph.astream(initial_state, config={"recursion_limit": 80}, stream_mode="values"):
             if isinstance(streamed_state, dict):
                 last_state = streamed_state
         final_state = last_state

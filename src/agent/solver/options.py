@@ -7,6 +7,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from langchain_core.messages import HumanMessage
+
 from agent.solver.market import (
     infer_options_market_inputs,
     latest_successful_tool_result,
@@ -231,6 +233,22 @@ def infer_breakeven_text(primary_tool: dict[str, Any]) -> str:
     return "manage around the short strikes adjusted by collected premium"
 
 
+def _latest_task_text(state: AgentState) -> str:
+    for msg in reversed(state.get("messages", [])):
+        if isinstance(msg, HumanMessage) and msg.content:
+            return str(msg.content)
+    return ""
+
+
+def _options_prompt_context(state: AgentState) -> dict[str, bool]:
+    task_text = _latest_task_text(state).lower()
+    return {
+        "existing_position": any(token in task_text for token in ("existing position", "already short", "already long", "currently short", "currently long", "tested short strangle", "tested short straddle")),
+        "adjustment_focused": any(token in task_text for token in ("defend", "adjust", "roll", "manage", "repair")),
+        "event_driven": any(token in task_text for token in ("earnings", "event", "catalyst", "announcement")),
+    }
+
+
 def primary_tool_is_policy_compliant(primary_tool: dict[str, Any], policy_context: dict[str, Any]) -> bool:
     if not primary_tool:
         return False
@@ -345,9 +363,14 @@ def deterministic_options_final_answer(state: AgentState) -> str | None:
     worst_case_pnl = scenario_facts.get("worst_case_pnl")
     best_case_pnl = scenario_facts.get("best_case_pnl")
     reference_price = reference_price_from_tool(primary_tool)
+    prompt_context = _options_prompt_context(state)
 
     alternative = "iron condor with defined wings" if strategy_label in {"short straddle", "short strangle"} else "defined-risk spread"
     tradeoff = "lower premium but better tail-risk control" if alternative == "iron condor with defined wings" else "more controlled downside at the cost of smaller carry"
+    if prompt_context["adjustment_focused"] or prompt_context["existing_position"]:
+        recommendation = "maintain a short-vol stance only if the position is actively managed with tighter exits and defined-risk alternatives in view"
+    elif prompt_context["event_driven"]:
+        recommendation = "net seller of options only if the event premium is rich enough to justify disciplined event-risk controls"
 
     disclosures: list[str] = []
     for item in risk_requirements.get("required_disclosures", []):
@@ -376,7 +399,10 @@ def deterministic_options_final_answer(state: AgentState) -> str | None:
         seen_assumptions.add(signature)
         assumption_lines.append(assumption_text)
 
-    lines = ["**Recommendation**", f"Be a {recommendation}.", "", "**Primary Strategy**", f"{strategy_label.title()} with {premium_direction.lower()} premium" + (f" of {float(net_premium):.2f}." if isinstance(net_premium, (int, float)) else "."), "", "**Alternative Strategy Comparison**", f"{alternative.title()} is the cleaner alternative when you want {tradeoff}.", "", "**Key Greeks and Breakevens**"]
+    lines = ["**Recommendation**", f"Be a {recommendation}." if not prompt_context["adjustment_focused"] else f"Recommendation: {recommendation}.", "", "**Primary Strategy**", f"{strategy_label.title()} with {premium_direction.lower()} premium" + (f" of {float(net_premium):.2f}." if isinstance(net_premium, (int, float)) else ".")]
+    if prompt_context["existing_position"]:
+        lines.append("Frame this as an adjustment or defense of the current short-vol position rather than a fresh blind entry.")
+    lines.extend(["", "**Alternative Strategy Comparison**", f"{alternative.title()} is the cleaner alternative when you want {tradeoff}.", "", "**Key Greeks and Breakevens**"])
     if isinstance(delta, (int, float)):
         lines.append(f"- Delta: {float(delta):.3f}")
     if isinstance(gamma, (int, float)):
@@ -389,6 +415,8 @@ def deterministic_options_final_answer(state: AgentState) -> str | None:
     if isinstance(max_loss, (int, float)):
         lines.append(f"Max loss reference: {float(max_loss):.2f}.")
     lines.extend(["", "**Risk Management**", "Use 1-2% position sizing, predefine a stop-loss at a breakeven breach or roughly a 1x premium loss, and hedge or reduce exposure if delta/gamma expands."])
+    if prompt_context["event_driven"]:
+        lines.append("Event risk matters here: tighten exits, reduce size ahead of the catalyst if needed, and prefer defined-risk adjustments if realized volatility starts to outrun the implied-vol edge.")
     if isinstance(best_case_pnl, (int, float)) or isinstance(worst_case_pnl, (int, float)):
         parts = []
         if isinstance(best_case_pnl, (int, float)):
@@ -453,6 +481,7 @@ def deterministic_policy_options_final_answer(state: AgentState) -> str | None:
     worst_case_pnl = scenario_facts.get("worst_case_pnl")
     best_case_pnl = scenario_facts.get("best_case_pnl")
     risk_cap = policy_context.get("max_position_risk_pct")
+    prompt_context = _options_prompt_context(state)
     disclosures: list[str] = []
     for item in risk_requirements.get("required_disclosures", []):
         normalized = str(item).lower()
@@ -469,6 +498,8 @@ def deterministic_policy_options_final_answer(state: AgentState) -> str | None:
                 disclosures.append(f"Max loss reference is approximately {float(max_loss):.2f}.")
 
     lines = ["**Recommendation**", f"{recommendation}. This mandate requires defined-risk only and prohibits naked options.", "", "**Primary Strategy**", f"Defined-risk {strategy_label} with {premium_direction.lower()} premium" + (f" of {float(net_premium):.2f}." if isinstance(net_premium, (int, float)) else "."), "", "**Alternative Strategy Comparison**", f"{alternative.title()} is the cleaner backup when you want {tradeoff}.", "", "**Key Greeks and Breakevens**"]
+    if prompt_context["event_driven"]:
+        lines.insert(4, "This should be managed as an event-sensitive structure, not a passive carry trade.")
     if isinstance(delta, (int, float)):
         lines.append(f"- Delta: {float(delta):.3f}")
     if isinstance(gamma, (int, float)):

@@ -48,13 +48,29 @@ def transaction_structure_checklist(
 ) -> str:
     """Return structure options and liability-allocation checklist items."""
     structures = [
-        "asset purchase with selective assumed liabilities",
-        "carve-out sale of clean IP/business line",
-        "reverse triangular merger with aggressive indemnity and escrow package",
-        "hybrid structure with contingent consideration and pre-close remediation covenants",
+        {
+            "structure": "asset purchase with selective assumed liabilities",
+            "tradeoff": "best liability ring-fencing but can trigger tax leakage and transfer-consent friction",
+            "timeline_dependency": "works best if assets and contracts can be cleanly separated on an accelerated timeline",
+        },
+        {
+            "structure": "carve-out sale of clean IP or business line",
+            "tradeoff": "isolates contaminated operations but requires pre-close separation work and diligence clarity",
+            "timeline_dependency": "depends on whether the seller can separate the clean perimeter before signing or closing",
+        },
+        {
+            "structure": "reverse triangular merger with aggressive indemnity and escrow package",
+            "tradeoff": "supports equity consideration more naturally but exposes the buyer to more inherited liability risk",
+            "timeline_dependency": "requires stronger closing conditions, indemnity, and remediation covenants if diligence is compressed",
+        },
+        {
+            "structure": "hybrid structure with contingent consideration and pre-close remediation covenants",
+            "tradeoff": "balances economics and risk sharing but adds negotiation and milestone complexity",
+            "timeline_dependency": "depends on whether the parties can define measurable cure and release triggers quickly",
+        },
     ]
     facts = {
-        "structures": structures,
+        "candidate_structures": structures,
         "allocation_mechanics": [
             "specific indemnities for known compliance gaps",
             "escrow or holdback with milestone release mechanics",
@@ -77,7 +93,7 @@ def regulatory_execution_checklist(jurisdictions_json: str = "[]", regulatory_ga
         jurisdictions = [jurisdictions_json] if jurisdictions_json else []
     facts = {
         "jurisdictions": jurisdictions,
-        "execution_items": [
+        "execution_dependencies": [
             "map approvals, filings, and consultation obligations by jurisdiction",
             "separate pre-closing cure items from post-closing remediation covenants",
             "decide which compliance issues become closing conditions versus price protections",
@@ -92,7 +108,7 @@ def regulatory_execution_checklist(jurisdictions_json: str = "[]", regulatory_ga
 def tax_structure_checklist(consideration_preference: str = "", cross_border: bool = False) -> str:
     """Return tax execution checklist items for structure selection."""
     facts = {
-        "tax_execution_items": [
+        "tax_structure_comparison": [
             "identify who receives the tax benefit under each structure",
             "identify required elections, qualification conditions, or rollover mechanics",
             "spell out what breaks the intended tax treatment",

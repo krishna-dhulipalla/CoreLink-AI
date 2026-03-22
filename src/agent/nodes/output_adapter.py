@@ -32,6 +32,15 @@ def _coerce_scalar(text: str):
             return float(value)
         return int(value)
     except ValueError:
+        match = re.search(r"[-+]?\$?\d[\d,]*(?:\.\d+)?", value)
+        if match:
+            candidate = match.group(0).replace("$", "").replace(",", "")
+            try:
+                if "." in candidate:
+                    return float(candidate)
+                return int(candidate)
+            except ValueError:
+                return candidate
         return value
 
 

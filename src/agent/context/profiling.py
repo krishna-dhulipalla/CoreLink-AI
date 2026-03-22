@@ -210,6 +210,51 @@ def detect_capability_flags(task_text: str, answer_contract: AnswerContract) -> 
         )
     ):
         flags.add("needs_event_analysis")
+    if any(
+        token in normalized
+        for token in (
+            "derivative of",
+            "differentiate",
+            "marginal cost",
+            "marginal revenue",
+            "integral",
+            "optimize",
+            "maximise",
+            "maximize",
+            "minimise",
+            "minimize",
+            "prove that",
+        )
+    ):
+        flags.add("needs_analytical_reasoning")
+    if any(
+        token in normalized
+        for token in (
+            "flash crash",
+            "liquidity crisis",
+            "stress scenario",
+            "scenario validation",
+            "crypto",
+            "drawdown scenario",
+        )
+    ):
+        flags.add("needs_market_scenario")
+    if any(
+        token in normalized
+        for token in (
+            ".wav",
+            ".mp3",
+            "audio file",
+            "music producer",
+            "render audio",
+            "generate audio",
+            "create a track",
+            "zip file",
+            "video file",
+            "image file",
+        )
+    ):
+        flags.add("needs_artifact_generation")
     if answer_contract.requires_adapter:
         flags.add("requires_exact_format")
 
@@ -270,10 +315,16 @@ def infer_task_profile(task_text: str, capability_flags: list[str]) -> TaskProfi
         "corporate actions",
     )
 
+    if "needs_artifact_generation" in flags:
+        return "unsupported_artifact"
+    if "needs_market_scenario" in flags:
+        return "market_scenario"
     if "needs_options_engine" in flags:
         return "finance_options"
     if "needs_legal_reasoning" in flags:
         return "legal_transactional"
+    if "needs_analytical_reasoning" in flags and "needs_live_data" not in flags:
+        return "analytical_reasoning"
     if {"needs_equity_research", "needs_portfolio_risk", "needs_event_analysis"} & flags:
         return "finance_quant"
     if any(marker in normalized for marker in finance_data_markers):

@@ -31,6 +31,9 @@ def make_state(
     curated_context: dict | None = None,
     execution_journal: dict | None = None,
     quality_report: dict | None = None,
+    review_packet: dict | None = None,
+    progress_signature: dict | None = None,
+    unsupported_capability_report: dict | None = None,
     fast_path_used: bool = False,
 ):
     return {
@@ -62,6 +65,7 @@ def make_state(
         "tool_plan": tool_plan or {},
         "source_bundle": source_bundle or {},
         "curated_context": curated_context or {},
+        "review_packet": review_packet or {},
         "execution_journal": execution_journal or {
             "events": [],
             "tool_results": [],
@@ -69,7 +73,12 @@ def make_state(
             "revision_count": 0,
             "self_reflection_count": 0,
             "final_artifact_signature": "",
+            "progress_signatures": [],
+            "stop_reason": "",
+            "contract_collapse_attempts": 0,
         },
         "quality_report": quality_report or {},
+        "progress_signature": progress_signature or {},
+        "unsupported_capability_report": unsupported_capability_report or {},
         "fast_path_used": fast_path_used,
     }
