@@ -13,7 +13,7 @@ from agent.legal_tools import (
     tax_structure_checklist,
     transaction_structure_checklist,
 )
-from agent.workflow_models import ACEEvent, CapabilityDescriptor, SourceBundle, TaskIntent, ToolPlan
+from agent.contracts import ACEEvent, CapabilityDescriptor, SourceBundle, TaskIntent, ToolPlan
 
 BUILTIN_LEGAL_TOOLS = [
     legal_playbook_retrieval,

@@ -10,9 +10,7 @@ from langgraph.graph import END, StateGraph
 
 from agent.capabilities import BUILTIN_LEGAL_TOOLS, build_capability_registry
 from agent.nodes.intake import intake
-from agent.nodes.output_adapter import output_adapter
-from agent.nodes.reflect import reflect
-from agent.workflow_nodes import (
+from agent.nodes.orchestrator import (
     context_curator,
     fast_path_gate,
     make_capability_resolver,
@@ -24,7 +22,9 @@ from agent.workflow_nodes import (
     self_reflection,
     task_planner,
 )
-from agent.workflow_state import RuntimeState
+from agent.nodes.output_adapter import output_adapter
+from agent.nodes.reflect import reflect
+from agent.state import AgentState
 from tools import CALCULATOR_TOOL, SEARCH_TOOL
 
 load_dotenv(override=False)
@@ -42,7 +42,7 @@ def build_agent_graph(external_tools: list | None = None):
     all_tools: list[Any] = [CALCULATOR_TOOL, SEARCH_TOOL, get_current_time, *BUILTIN_LEGAL_TOOLS, *(external_tools or [])]
     registry = build_capability_registry(all_tools)
 
-    graph = StateGraph(RuntimeState)
+    graph = StateGraph(AgentState)
     graph.add_node("intake", intake)
     graph.add_node("fast_path_gate", fast_path_gate)
     graph.add_node("task_planner", task_planner)

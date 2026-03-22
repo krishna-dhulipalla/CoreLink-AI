@@ -9,7 +9,7 @@ from agent.nodes.intake import intake
 from agent.tracer import RunTracer
 from agent.capabilities import BUILTIN_LEGAL_TOOLS, build_capability_registry
 from agent.curated_context import solver_context_block
-from agent.workflow_nodes import (
+from agent.nodes.orchestrator import (
     context_curator,
     fast_path_gate,
     make_capability_resolver,
@@ -175,7 +175,7 @@ def test_engine_executor_dedupes_legal_prompt_and_uses_higher_legal_completion_b
 
     captured: list = []
     monkeypatch.setattr(
-        "agent.workflow_nodes.ChatOpenAI",
+        "agent.nodes.orchestrator.ChatOpenAI",
         lambda **kwargs: _FakeModel(AIMessage(content="Structured legal answer with multiple options."), captured),
     )
 
@@ -247,7 +247,7 @@ def test_engine_executor_uses_deterministic_options_final_without_llm(monkeypatc
             "final_artifact_signature": "",
         },
     )
-    monkeypatch.setattr("agent.workflow_nodes.ChatOpenAI", lambda **kwargs: (_ for _ in ()).throw(AssertionError("LLM should not run")))
+    monkeypatch.setattr("agent.nodes.orchestrator.ChatOpenAI", lambda **kwargs: (_ for _ in ()).throw(AssertionError("LLM should not run")))
 
     executor = make_executor(build_capability_registry([CALCULATOR_TOOL, SEARCH_TOOL, *BUILTIN_LEGAL_TOOLS]))
     result = asyncio.run(executor(state))
@@ -422,7 +422,7 @@ def test_engine_self_reflection_requests_one_extra_legal_deepen_pass(monkeypatch
     # LLM self-reflection finds missing items
     reflection_response = '{"score": 0.55, "complete": false, "missing": ["execution-specific next steps", "risk allocation detail"], "improve_prompt": "Add execution-specific next steps and risk-allocation detail."}'
     monkeypatch.setattr(
-        "agent.workflow_nodes.ChatOpenAI",
+        "agent.nodes.orchestrator.ChatOpenAI",
         lambda **kwargs: _FakeModel(AIMessage(content=reflection_response)),
     )
 

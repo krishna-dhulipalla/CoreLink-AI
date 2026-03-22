@@ -11,7 +11,15 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-from agent.contracts import AnswerContract
+from agent.contracts import (
+    AnswerContract,
+    CuratedContext,
+    ExecutionJournal,
+    QualityReport,
+    SourceBundle,
+    TaskIntent,
+    ToolPlan,
+)
 from agent.context.evidence import _extract_policy_context
 from agent.context.extraction import derive_market_snapshot
 from agent.model_config import ChatOpenAI, get_client_kwargs, get_model_name, invoke_structured_output
@@ -39,11 +47,11 @@ from agent.prompts import (
     REUSABLE_TOOL_FAMILIES,
 )
 from agent.review_utils import legal_depth_gaps, looks_truncated, matches_exact_json_contract, options_gaps
-from agent.workflow_models import CuratedContext, ExecutionJournal, QualityReport, SourceBundle, TaskIntent, ToolPlan
-from agent.workflow_state import RuntimeState
+from agent.state import AgentState
 from context_manager import count_tokens
 
 logger = logging.getLogger(__name__)
+RuntimeState = AgentState
 
 # Prompts are centralized in runtime_prompts.py — no inline prompt strings here.
 

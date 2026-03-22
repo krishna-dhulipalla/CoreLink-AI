@@ -56,3 +56,6 @@ class AgentState(TypedDict):
     execution_journal: dict[str, Any]
     quality_report: dict[str, Any]
     fast_path_used: bool
+
+
+RuntimeState = AgentState
