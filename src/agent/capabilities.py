@@ -93,6 +93,58 @@ _FAMILY_BY_TOOL: dict[str, tuple[str, int]] = {
     "tax_structure_checklist": ("tax_structure_analysis", 10),
     "execute_options_trade": ("execution_side_effect", 100),
 }
+_ROLE_BY_TOOL: dict[str, str] = {
+    "internet_search": "search",
+    "search_reference_corpus": "search",
+    "list_reference_files": "discover",
+    "fetch_reference_file": "fetch",
+    "fetch_corpus_document": "fetch",
+}
+
+
+def _infer_external_family_and_role(tool_obj: Any) -> tuple[str, str, int]:
+    tool_name = str(getattr(tool_obj, "name", "") or "")
+    description = str(getattr(tool_obj, "description", "") or "")
+    normalized = f"{tool_name} {description}".lower()
+
+    doc_terms = (
+        "document",
+        "pdf",
+        "bulletin",
+        "report",
+        "filing",
+        "corpus",
+        "treasury",
+        "reference file",
+        "10-k",
+        "10q",
+    )
+    search_terms = ("search", "find", "lookup", "query", "retrieve")
+    fetch_terms = ("fetch", "read", "open", "load", "download", "extract")
+    discover_terms = ("list", "discover", "enumerate", "available files", "available documents")
+
+    if any(term in normalized for term in doc_terms):
+        if any(term in normalized for term in discover_terms):
+            return "document_retrieval", "discover", 8
+        if any(term in normalized for term in search_terms):
+            return "document_retrieval", "search", 8
+        if any(term in normalized for term in fetch_terms):
+            return "document_retrieval", "fetch", 9
+        return "document_retrieval", "", 12
+
+    if any(term in normalized for term in ("web search", "internet", "google", "serp", "browse", "browser search")):
+        return "external_retrieval", "search", 20
+
+    if any(term in normalized for term in ("black-scholes", "black scholes", "option greeks", "iv surface", "options chain")):
+        return "options_strategy_analysis", "", 20
+
+    if any(term in normalized for term in ("scenario pnl", "stress", "scenario analysis", "drawdown", "liquidity shock")):
+        return "market_scenario_analysis", "", 25
+
+    if any(term in normalized for term in ("amortization", "loan schedule", "npv", "irr", "present value", "discount rate", "pricing")):
+        return "exact_compute", "", 25
+
+    return "general", "", 50
 
 
 def _domain_tags(tool_name: str, family: str) -> list[str]:
@@ -113,11 +165,15 @@ def _domain_tags(tool_name: str, family: str) -> list[str]:
 
 def _descriptor_for_tool(tool_obj: Any) -> CapabilityDescriptor:
     tool_name = str(getattr(tool_obj, "name", ""))
-    family, priority = _FAMILY_BY_TOOL.get(tool_name, ("general", 50))
+    family, priority = _FAMILY_BY_TOOL.get(tool_name, ("", 0))
+    role = _ROLE_BY_TOOL.get(tool_name, "")
+    if not family:
+        family, role, priority = _infer_external_family_and_role(tool_obj)
     side_effect = "blocked" if family == "execution_side_effect" else "read_only"
     return CapabilityDescriptor(
         tool_name=tool_name,
         tool_family=family,
+        tool_role=role,
         domain_tags=_domain_tags(tool_name, family),
         input_shape="structured_args",
         side_effect_level=side_effect,
@@ -277,16 +333,27 @@ def _document_retrieval_candidates(
     registry: dict[str, dict[str, Any]],
     source_bundle: SourceBundle,
 ) -> list[str]:
-    candidate_names = [descriptor["tool_name"] for descriptor, _ in _ordered_candidates(registry, "document_retrieval")]
+    candidates = [descriptor for descriptor, _ in _ordered_candidates(registry, "document_retrieval")]
+    search_tools = [item["tool_name"] for item in candidates if str(item.get("tool_role", "")) == "search"]
+    discover_tools = [item["tool_name"] for item in candidates if str(item.get("tool_role", "")) == "discover"]
+    fetch_tools = [item["tool_name"] for item in candidates if str(item.get("tool_role", "")) == "fetch"]
+    other_tools = [
+        item["tool_name"]
+        for item in candidates
+        if item["tool_name"] not in {*search_tools, *discover_tools, *fetch_tools}
+    ]
     selected: list[str] = []
     if source_bundle.urls:
-        for tool_name in ("list_reference_files", "fetch_reference_file"):
-            if tool_name in candidate_names and tool_name not in selected:
+        for tool_name in [*discover_tools, *fetch_tools]:
+            if tool_name not in selected:
                 selected.append(tool_name)
-    for tool_name in ("search_reference_corpus", "fetch_corpus_document"):
-        if tool_name in candidate_names and tool_name not in selected:
+    for tool_name in search_tools:
+        if tool_name not in selected:
             selected.append(tool_name)
-    for tool_name in candidate_names:
+    for tool_name in fetch_tools:
+        if tool_name not in selected:
+            selected.append(tool_name)
+    for tool_name in other_tools:
         if tool_name not in selected:
             selected.append(tool_name)
     return selected
@@ -344,8 +411,11 @@ def resolve_tool_plan(
             initial_pending = [
                 tool_name
                 for tool_name in document_tools
-                if tool_name in {"search_reference_corpus", "list_reference_files"}
-                or (tool_name == "fetch_reference_file" and bool(source_bundle.urls))
+                if str(mutable_registry.get(tool_name, {}).get("descriptor", {}).get("tool_role", "")) in {"search", "discover"}
+                or (
+                    str(mutable_registry.get(tool_name, {}).get("descriptor", {}).get("tool_role", "")) == "fetch"
+                    and bool(source_bundle.urls)
+                )
             ]
             for tool_name in initial_pending:
                 if tool_name not in pending:
@@ -382,6 +452,8 @@ def resolve_tool_plan(
         descriptor, _ = candidates[0]
         tool_name = str(descriptor["tool_name"])
         selected.append(tool_name)
+        if intent.execution_mode == "document_grounded_analysis" and family == "external_retrieval":
+            continue
         if tool_name not in pending:
             pending.append(tool_name)
 

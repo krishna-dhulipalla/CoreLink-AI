@@ -74,8 +74,20 @@ class Executor(AgentExecutor):
                 f"MCP tools loaded: {[t.name for t in self._mcp_tools]}"
             )
 
+        self._runtime_mcp_refresh_attempted = False
         self.graph = build_agent_graph(external_tools=self._mcp_tools)
         self.conversations = ConversationStore()
+
+    async def _refresh_mcp_tools(self) -> None:
+        tools = await load_mcp_tools_from_env()
+        current_names = [tool.name for tool in self._mcp_tools]
+        loaded_names = [tool.name for tool in tools]
+        self._mcp_loaded = True
+        if loaded_names != current_names:
+            self._mcp_tools = tools
+            if self._mcp_tools:
+                logger.info("MCP tools refreshed: %s", loaded_names)
+            self.graph = build_agent_graph(external_tools=self._mcp_tools)
 
     async def execute(
         self, context: RequestContext, event_queue: EventQueue
@@ -107,6 +119,10 @@ class Executor(AgentExecutor):
         try:
             input_text = get_message_text(msg)
             context_id = task.context_id
+
+            if not self._mcp_tools and not self._runtime_mcp_refresh_attempted:
+                self._runtime_mcp_refresh_attempted = True
+                await self._refresh_mcp_tools()
 
             # Retrieve prior conversation history for multi-turn support
             history = []

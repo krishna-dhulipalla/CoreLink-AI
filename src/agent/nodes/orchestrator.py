@@ -780,7 +780,59 @@ def _tool_lookup(registry: dict[str, dict[str, Any]], tool_name: str) -> Any | N
     return payload.get("tool")
 
 
-def _structured_tool_args(state: RuntimeState, tool_name: str) -> dict[str, Any]:
+def _tool_descriptor(registry: dict[str, dict[str, Any]], tool_name: str) -> dict[str, Any]:
+    payload = registry.get(tool_name) or {}
+    return dict(payload.get("descriptor") or {})
+
+
+def _tool_family(registry: dict[str, dict[str, Any]], tool_name: str) -> str:
+    return str(_tool_descriptor(registry, tool_name).get("tool_family", "") or "")
+
+
+def _tool_role(registry: dict[str, dict[str, Any]], tool_name: str) -> str:
+    return str(_tool_descriptor(registry, tool_name).get("tool_role", "") or "")
+
+
+def _generic_tool_args(
+    registry: dict[str, dict[str, Any]],
+    tool_name: str,
+    source_bundle: SourceBundle,
+) -> dict[str, Any]:
+    tool_obj = _tool_lookup(registry, tool_name)
+    descriptor = _tool_descriptor(registry, tool_name)
+    arg_schema = dict(getattr(tool_obj, "args", {}) or {})
+    if not arg_schema:
+        return {}
+
+    task_text = source_bundle.task_text
+    focus_query = source_bundle.focus_query or task_text[:240]
+    args: dict[str, Any] = {}
+    tool_role = str(descriptor.get("tool_role", "") or "")
+
+    for field_name in arg_schema.keys():
+        lowered = str(field_name).lower()
+        if lowered in {"query", "search_query", "q", "question"}:
+            args[field_name] = focus_query
+        elif lowered in {"prompt_text", "task", "task_text", "text", "input"}:
+            args[field_name] = task_text
+        elif lowered in {"url", "document_url", "source_url", "file_url"} and source_bundle.urls:
+            args[field_name] = source_bundle.urls[0]
+        elif lowered in {"top_k", "k", "limit", "max_results"} and tool_role == "search":
+            args[field_name] = 5
+        elif lowered in {"snippet_chars", "max_chars"} and tool_role == "search":
+            args[field_name] = 700
+        elif lowered == "page_start":
+            args[field_name] = 0
+        elif lowered == "page_limit":
+            args[field_name] = 5
+        elif lowered == "row_offset":
+            args[field_name] = 0
+        elif lowered == "row_limit":
+            args[field_name] = 200
+    return args
+
+
+def _structured_tool_args(state: RuntimeState, registry: dict[str, dict[str, Any]], tool_name: str) -> dict[str, Any]:
     source_bundle = SourceBundle.model_validate(state.get("source_bundle") or {})
     task_text = source_bundle.task_text
     if tool_name == "legal_playbook_retrieval":
@@ -844,7 +896,7 @@ def _structured_tool_args(state: RuntimeState, tool_name: str) -> dict[str, Any]
             if args:
                 return args
         return {}
-    return {}
+    return _generic_tool_args(registry, tool_name, source_bundle)
 
 
 async def _invoke_tool(tool_obj: Any, args: dict[str, Any]) -> Any:
@@ -855,7 +907,7 @@ async def _invoke_tool(tool_obj: Any, args: dict[str, Any]) -> Any:
 
 async def _run_tool_step(state: RuntimeState, registry: dict[str, dict[str, Any]], tool_name: str) -> tuple[dict[str, Any], Any]:
     tool_obj = _tool_lookup(registry, tool_name)
-    args = _structured_tool_args(state, tool_name)
+    args = _structured_tool_args(state, registry, tool_name)
     if tool_obj is None:
         return args, normalize_tool_output(tool_name, {"error": f"Tool '{tool_name}' is not registered."}, args)
     raw = await _invoke_tool(tool_obj, args)
@@ -875,18 +927,28 @@ async def _run_tool_step_with_args(
     return args_override, normalize_tool_output(tool_name, raw, args_override)
 
 
-def _retrieval_tools_available(tool_plan: ToolPlan) -> list[str]:
+def _retrieval_tools_available(
+    tool_plan: ToolPlan,
+    registry: dict[str, dict[str, Any]],
+) -> list[str]:
     retrieval_tools = []
     for tool_name in tool_plan.selected_tools:
-        if tool_name in {
-            "internet_search",
-            "search_reference_corpus",
-            "fetch_corpus_document",
-            "list_reference_files",
-            "fetch_reference_file",
-        }:
+        descriptor = _tool_descriptor(registry, tool_name)
+        if descriptor.get("tool_family") in {"document_retrieval", "external_retrieval"}:
             retrieval_tools.append(tool_name)
     return retrieval_tools
+
+
+def _retrieval_tools_by_role(
+    tool_plan: ToolPlan,
+    registry: dict[str, dict[str, Any]],
+) -> dict[str, list[str]]:
+    grouped: dict[str, list[str]] = {"discover": [], "search": [], "fetch": [], "other": []}
+    for tool_name in _retrieval_tools_available(tool_plan, registry):
+        role = str(_tool_descriptor(registry, tool_name).get("tool_role", "") or "")
+        bucket = role if role in grouped else "other"
+        grouped[bucket].append(tool_name)
+    return grouped
 
 
 def _derive_retrieval_seed_query(source_bundle: SourceBundle) -> str:
@@ -1008,14 +1070,16 @@ def _next_corpus_fetch_action(last_result: dict[str, Any]) -> RetrievalAction | 
     )
 
 
-def _next_reference_fetch_action(last_result: dict[str, Any]) -> RetrievalAction | None:
+def _next_reference_fetch_action(last_result: dict[str, Any], tool_name: str) -> RetrievalAction | None:
     facts = dict(last_result.get("facts") or {})
     metadata = dict(facts.get("metadata") or {})
     assumptions = dict(last_result.get("assumptions") or {})
     if not metadata.get("has_more_windows"):
         return None
     url = str(assumptions.get("url", facts.get("citation", "")) or "")
-    if not url:
+    document_id = str(assumptions.get("document_id", facts.get("document_id", "")) or "")
+    path = str(assumptions.get("path", facts.get("citation", "")) or "")
+    if not (url or document_id or path):
         return None
     window_kind = str(metadata.get("window_kind", "") or "").lower()
     if window_kind == "pages":
@@ -1023,8 +1087,10 @@ def _next_reference_fetch_action(last_result: dict[str, Any]) -> RetrievalAction
         page_limit = max(1, int(assumptions.get("page_limit", 5) or 5))
         return RetrievalAction(
             action="tool",
-            tool_name="fetch_reference_file",
+            tool_name=tool_name,
             url=url,
+            document_id=document_id,
+            path=path,
             page_start=page_start + page_limit,
             page_limit=page_limit,
             row_offset=int(assumptions.get("row_offset", 0) or 0),
@@ -1036,8 +1102,10 @@ def _next_reference_fetch_action(last_result: dict[str, Any]) -> RetrievalAction
         row_limit = max(1, int(assumptions.get("row_limit", 200) or 200))
         return RetrievalAction(
             action="tool",
-            tool_name="fetch_reference_file",
+            tool_name=tool_name,
             url=url,
+            document_id=document_id,
+            path=path,
             page_start=int(assumptions.get("page_start", 0) or 0),
             page_limit=max(2, int(assumptions.get("page_limit", 5) or 5)),
             row_offset=row_offset + row_limit,
@@ -1100,8 +1168,14 @@ def _fallback_retrieval_action(
     source_bundle: SourceBundle,
     journal: ExecutionJournal,
     tool_plan: ToolPlan,
+    registry: dict[str, dict[str, Any]],
 ) -> RetrievalAction:
-    available = _retrieval_tools_available(tool_plan)
+    available = _retrieval_tools_available(tool_plan, registry)
+    roles = _retrieval_tools_by_role(tool_plan, registry)
+    document_search_tools = [name for name in roles["search"] if _tool_family(registry, name) == "document_retrieval"]
+    document_fetch_tools = [name for name in roles["fetch"] if _tool_family(registry, name) == "document_retrieval"]
+    discover_tools = [name for name in roles["discover"] if _tool_family(registry, name) == "document_retrieval"]
+    external_search_tools = [name for name in roles["search"] if _tool_family(registry, name) == "external_retrieval"]
     last_result = journal.tool_results[-1] if journal.tool_results else {}
     last_type = str(last_result.get("type", ""))
     candidates = _search_result_candidates(last_result)
@@ -1109,51 +1183,51 @@ def _fallback_retrieval_action(
     corpus_grounded_only = execution_mode == "document_grounded_analysis"
 
     if not journal.tool_results:
-        if source_bundle.urls and "list_reference_files" in available:
-            return RetrievalAction(action="tool", tool_name="list_reference_files", query=source_bundle.task_text, rationale="Discover prompt-supplied reference files.")
-        if "search_reference_corpus" in available:
-            return RetrievalAction(action="tool", tool_name="search_reference_corpus", query=seed_query, rationale="Search the local document corpus first.")
-        if source_bundle.urls and "fetch_reference_file" in available:
-            return RetrievalAction(action="tool", tool_name="fetch_reference_file", url=source_bundle.urls[0], rationale="Read the first supplied reference file.")
-        if "internet_search" in available:
-            return RetrievalAction(action="tool", tool_name="internet_search", query=seed_query, rationale="Search the web for a supporting source.")
+        if source_bundle.urls and discover_tools:
+            return RetrievalAction(action="tool", tool_name=discover_tools[0], query=source_bundle.task_text, rationale="Discover prompt-supplied reference files.")
+        if document_search_tools:
+            return RetrievalAction(action="tool", tool_name=document_search_tools[0], query=seed_query, rationale="Search the grounded document source first.")
+        if source_bundle.urls and document_fetch_tools:
+            return RetrievalAction(action="tool", tool_name=document_fetch_tools[0], url=source_bundle.urls[0], rationale="Read the first supplied reference document.")
+        if external_search_tools:
+            return RetrievalAction(action="tool", tool_name=external_search_tools[0], query=seed_query, rationale="Search the web for a supporting source.")
         return RetrievalAction(action="answer", rationale="No retrieval tools are available.")
 
-    if last_type in {"search_reference_corpus", "list_reference_files"} and candidates:
+    if _tool_role(registry, last_type) in {"search", "discover"} and candidates:
         first = candidates[0]
-        if last_type == "search_reference_corpus" and "fetch_corpus_document" in available:
+        if _tool_family(registry, last_type) == "document_retrieval" and document_fetch_tools:
             return RetrievalAction(
                 action="tool",
-                tool_name="fetch_corpus_document",
+                tool_name=document_fetch_tools[0],
                 document_id=first.get("document_id", ""),
                 path=first.get("path", "") or first.get("citation", ""),
                 rationale="Read the top matching corpus document.",
             )
-        if "fetch_reference_file" in available:
+        if document_fetch_tools:
             return RetrievalAction(
                 action="tool",
-                tool_name="fetch_reference_file",
+                tool_name=document_fetch_tools[0],
                 url=first.get("citation", ""),
                 rationale="Read the top matching reference document.",
             )
 
-    if last_type == "internet_search" and candidates and "fetch_reference_file" in available:
+    if _tool_family(registry, last_type) == "external_retrieval" and candidates and document_fetch_tools:
         return RetrievalAction(
             action="tool",
-            tool_name="fetch_reference_file",
+            tool_name=document_fetch_tools[0],
             url=candidates[0].get("citation", ""),
             rationale="Open the top search result for grounded evidence.",
         )
 
-    if last_type in {"fetch_reference_file", "fetch_corpus_document"}:
+    if _tool_role(registry, last_type) == "fetch":
         facts = dict(last_result.get("facts") or {})
         if _retrieved_evidence_is_sufficient(source_bundle, facts):
             return RetrievalAction(action="answer", rationale="Retrieved document evidence is available for the final answer.")
-        if last_type == "fetch_reference_file" and "fetch_reference_file" in available:
-            next_window = _next_reference_fetch_action(last_result)
+        if last_type == "fetch_reference_file" or _tool_family(registry, last_type) == "document_retrieval":
+            next_window = _next_reference_fetch_action(last_result, last_type)
             if next_window is not None:
                 return next_window
-        if last_type == "fetch_corpus_document" and "fetch_corpus_document" in available:
+        if last_type == "fetch_corpus_document":
             next_window = _next_corpus_fetch_action(last_result)
             if next_window is not None:
                 return next_window
@@ -1163,24 +1237,26 @@ def _fallback_retrieval_action(
     if journal.retrieval_iterations >= _MAX_RETRIEVAL_HOPS - 1:
         return RetrievalAction(action="answer", rationale="Retrieval hop budget exhausted.")
 
-    if not corpus_grounded_only and "internet_search" in available and last_type != "internet_search":
+    if not corpus_grounded_only and external_search_tools and last_type != external_search_tools[0]:
         query = journal.retrieval_queries[-1] if journal.retrieval_queries else seed_query
-        return RetrievalAction(action="tool", tool_name="internet_search", query=query, rationale="Broaden search after insufficient local evidence.")
+        return RetrievalAction(action="tool", tool_name=external_search_tools[0], query=query, rationale="Broaden search after insufficient local evidence.")
 
     return RetrievalAction(action="answer", rationale="No better retrieval action is available.")
 
 
-def _validate_retrieval_action(action: RetrievalAction, tool_plan: ToolPlan) -> RetrievalAction:
-    allowed_tools = set(_retrieval_tools_available(tool_plan))
+def _validate_retrieval_action(
+    action: RetrievalAction,
+    tool_plan: ToolPlan,
+    registry: dict[str, dict[str, Any]],
+) -> RetrievalAction:
+    allowed_tools = set(_retrieval_tools_available(tool_plan, registry))
     if action.action != "tool":
         return action
     if action.tool_name not in allowed_tools:
         return RetrievalAction(action="answer", rationale="Planned retrieval tool is not available in the current tool plan.")
-    if action.tool_name in {"internet_search", "search_reference_corpus"} and not action.query.strip():
+    if _tool_role(registry, action.tool_name) == "search" and not action.query.strip():
         return RetrievalAction(action="answer", rationale="Search action did not produce a usable query.")
-    if action.tool_name == "fetch_reference_file" and not action.url.strip():
-        return RetrievalAction(action="answer", rationale="Fetch action did not produce a usable URL.")
-    if action.tool_name == "fetch_corpus_document" and not (action.document_id.strip() or action.path.strip()):
+    if _tool_role(registry, action.tool_name) == "fetch" and not (action.url.strip() or action.document_id.strip() or action.path.strip()):
         return RetrievalAction(action="answer", rationale="Corpus fetch action did not identify a document.")
     return action
 
@@ -1191,6 +1267,7 @@ def _plan_retrieval_action(
     source_bundle: SourceBundle,
     tool_plan: ToolPlan,
     journal: ExecutionJournal,
+    registry: dict[str, dict[str, Any]],
 ) -> RetrievalAction:
     """Deterministic retrieval planner — no inner LLM call.
 
@@ -1198,7 +1275,7 @@ def _plan_retrieval_action(
     the next atomic tool action.  This keeps the executor node fast and
     avoids un-traced blocking API calls inside the graph step.
     """
-    available_tools = _retrieval_tools_available(tool_plan)
+    available_tools = _retrieval_tools_available(tool_plan, registry)
     if not available_tools or journal.retrieval_iterations >= _MAX_RETRIEVAL_HOPS:
         return RetrievalAction(action="answer", rationale="No remaining retrieval capacity.")
 
@@ -1207,12 +1284,17 @@ def _plan_retrieval_action(
         source_bundle=source_bundle,
         journal=journal,
         tool_plan=tool_plan,
+        registry=registry,
     )
-    return _validate_retrieval_action(heuristic, tool_plan)
+    return _validate_retrieval_action(heuristic, tool_plan, registry)
 
 
 
-def _tool_args_from_retrieval_action(action: RetrievalAction, source_bundle: SourceBundle) -> dict[str, Any]:
+def _tool_args_from_retrieval_action(
+    action: RetrievalAction,
+    source_bundle: SourceBundle,
+    registry: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
     if action.tool_name == "internet_search":
         return {"query": action.query or _derive_retrieval_seed_query(source_bundle)}
     if action.tool_name == "search_reference_corpus":
@@ -1234,7 +1316,32 @@ def _tool_args_from_retrieval_action(action: RetrievalAction, source_bundle: Sou
             "chunk_start": action.chunk_start,
             "chunk_limit": max(1, action.chunk_limit),
         }
-    return {}
+    args = _generic_tool_args(registry, action.tool_name, source_bundle)
+    tool_obj = _tool_lookup(registry, action.tool_name)
+    arg_schema = dict(getattr(tool_obj, "args", {}) or {})
+    for field_name in arg_schema.keys():
+        lowered = str(field_name).lower()
+        if lowered in {"query", "search_query", "q", "question"} and action.query:
+            args[field_name] = action.query
+        elif lowered in {"url", "document_url", "source_url", "file_url"} and action.url:
+            args[field_name] = action.url
+        elif lowered in {"document_id", "doc_id"} and action.document_id:
+            args[field_name] = action.document_id
+        elif lowered in {"path", "file_path", "citation"} and action.path:
+            args[field_name] = action.path
+        elif lowered == "page_start":
+            args[field_name] = action.page_start
+        elif lowered == "page_limit":
+            args[field_name] = max(2, action.page_limit)
+        elif lowered == "row_offset":
+            args[field_name] = action.row_offset
+        elif lowered == "row_limit":
+            args[field_name] = max(100, action.row_limit)
+        elif lowered == "chunk_start":
+            args[field_name] = action.chunk_start
+        elif lowered == "chunk_limit":
+            args[field_name] = max(1, action.chunk_limit)
+    return args
 
 
 def _adaptive_completion_budget(
@@ -1523,12 +1630,13 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                 source_bundle=source_bundle,
                 tool_plan=tool_plan,
                 journal=journal,
+                registry=registry,
             )
             if retrieval_action.action == "tool":
                 if budget and budget.tool_calls_exhausted():
                     budget.log_budget_exit("tool_budget_exhausted", f"Blocked tool '{retrieval_action.tool_name}' after reaching tool-call cap.")
                 else:
-                    tool_args = _tool_args_from_retrieval_action(retrieval_action, source_bundle)
+                    tool_args = _tool_args_from_retrieval_action(retrieval_action, source_bundle, registry)
                     _, tool_result = await _run_tool_step_with_args(state, registry, retrieval_action.tool_name, tool_args)
                     if tracker:
                         tracker.record_mcp_call()

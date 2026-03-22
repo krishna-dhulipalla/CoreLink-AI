@@ -183,6 +183,103 @@ def test_engine_document_query_prefers_document_grounded_retrieval_tools():
     assert "search_reference_corpus" in result["tool_plan"]["selected_tools"]
 
 
+def test_engine_document_query_uses_external_document_tools_with_inferred_roles(monkeypatch):
+    @tool
+    def search_treasury_bulletins(query: str, top_k: int = 5) -> dict:
+        """Search the Treasury Bulletin corpus for matching documents."""
+        return {
+            "results": [
+                {
+                    "rank": 1,
+                    "title": "treasury_1945.pdf",
+                    "snippet": "Treasury Bulletin result for 1945 debt.",
+                    "url": "https://example.com/treasury_1945.pdf",
+                    "document_id": "treasury_1945_pdf",
+                }
+            ],
+            "documents": [
+                {
+                    "document_id": "treasury_1945_pdf",
+                    "citation": "https://example.com/treasury_1945.pdf",
+                    "format": "pdf",
+                }
+            ],
+        }
+
+    @tool
+    def read_treasury_bulletin(
+        document_id: str = "",
+        url: str = "",
+        page_start: int = 0,
+        page_limit: int = 5,
+        row_offset: int = 0,
+        row_limit: int = 200,
+    ) -> str:
+        """Read a Treasury Bulletin PDF by document id or URL."""
+        if page_start <= 0:
+            return (
+                "FILE: treasury_1945.pdf\n"
+                "FORMAT: PDF | SIZE: 12.3 KB\n"
+                "--------------------------------------------------\n"
+                "[Pages 1-1 of 2]\n"
+                "Treasury Bulletin overview and publication notes."
+            )
+        return (
+            "FILE: treasury_1945.pdf\n"
+            "FORMAT: PDF | SIZE: 12.3 KB\n"
+            "--------------------------------------------------\n"
+            "[Pages 2-2 of 2]\n"
+            "In 1945, total public debt outstanding was 258.7 billion dollars."
+        )
+
+    captured: list = []
+    monkeypatch.setattr(
+        "agent.nodes.orchestrator.ChatOpenAI",
+        lambda **kwargs: _FakeModel(
+            AIMessage(content="The total public debt outstanding in 1945 was 258.7 billion dollars. [Source: treasury_1945.pdf]"),
+            captured,
+        ),
+    )
+
+    prompt = "According to the Treasury Bulletin, what was total public debt outstanding in 1945?"
+    registry = build_capability_registry([CALCULATOR_TOOL, SEARCH_TOOL, search_treasury_bulletins, read_treasury_bulletin, *BUILTIN_LEGAL_TOOLS])
+    state = make_state(prompt)
+    state.update(intake(state))
+    state.update(fast_path_gate(state))
+    state.update(task_planner(state))
+    resolver = make_capability_resolver(registry)
+    state.update(resolver(state))
+    state.update(context_curator(state))
+
+    assert "search_treasury_bulletins" in state["tool_plan"]["selected_tools"]
+    assert "read_treasury_bulletin" in state["tool_plan"]["selected_tools"]
+    assert "search_treasury_bulletins" in state["tool_plan"]["pending_tools"]
+
+    executor = make_executor(registry)
+
+    first = asyncio.run(executor(state))
+    state.update(first)
+    assert first["solver_stage"] == "GATHER"
+    assert first["last_tool_result"]["type"] == "search_treasury_bulletins"
+
+    second = asyncio.run(executor(state))
+    state.update(second)
+    assert second["solver_stage"] == "GATHER"
+    assert second["last_tool_result"]["type"] == "read_treasury_bulletin"
+    assert second["last_tool_result"]["assumptions"]["document_id"] == "treasury_1945_pdf"
+
+    third = asyncio.run(executor(state))
+    state.update(third)
+    assert third["solver_stage"] == "GATHER"
+    assert third["last_tool_result"]["type"] == "read_treasury_bulletin"
+    assert third["last_tool_result"]["assumptions"]["page_start"] >= 1
+
+    fourth = asyncio.run(executor(state))
+    assert fourth["solver_stage"] == "SYNTHESIZE"
+    assert "treasury_1945.pdf" in str(fourth["messages"][0].content)
+    assert captured
+
+
 def test_engine_executor_runs_retrieval_search_then_fetch_before_final_answer(monkeypatch):
     @tool
     def search_reference_corpus(query: str, top_k: int = 5, snippet_chars: int = 700) -> dict:

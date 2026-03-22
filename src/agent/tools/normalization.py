@@ -127,6 +127,13 @@ def _parse_document_rows(text: str) -> list[list[str]]:
     return rows
 
 
+def _looks_like_file_fetch_payload(raw: str) -> bool:
+    normalized = raw or ""
+    return "FILE:" in normalized and "FORMAT:" in normalized and (
+        "[Pages" in normalized or "[Rows" in normalized or "--------------------------------------------------" in normalized
+    )
+
+
 def _parse_file_fetch(raw: str) -> dict[str, Any]:
     facts: dict[str, Any] = {}
     file_match = re.search(r"FILE:\s*(.+)", raw or "")
@@ -445,6 +452,8 @@ def normalize_tool_output(tool_name: str, raw_content: Any, args: dict[str, Any]
         facts = _parse_file_fetch(text)
     elif not facts and tool_name == "internet_search":
         facts = _parse_search_results(text)
+    elif not facts and (tool_name == "fetch_reference_file" or _looks_like_file_fetch_payload(text)):
+        facts = _parse_file_fetch(text)
     elif not facts and tool_name == "calculator":
         facts = {"result": _normalize_scalar(text)}
 

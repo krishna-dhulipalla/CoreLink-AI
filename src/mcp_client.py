@@ -26,6 +26,13 @@ load_dotenv(override=False)
 logger = logging.getLogger(__name__)
 
 
+def _normalize_mcp_url(url: str) -> str:
+    normalized = (url or "").strip().rstrip("/")
+    if normalized.endswith("/tools"):
+        normalized = normalized[: -len("/tools")]
+    return normalized
+
+
 def _parse_legacy_stdio_args(cmd_args: str) -> tuple[str, list[str]]:
     """Parse legacy colon-delimited stdio config.
 
@@ -90,7 +97,7 @@ def _parse_server_config() -> dict[str, dict[str, Any]]:
                 continue
             name, url = entry.split("=", 1)
             config[name.strip()] = {
-                "url": url.strip(),
+                "url": _normalize_mcp_url(url),
                 "transport": "http",
             }
 
@@ -111,6 +118,20 @@ def _parse_server_config() -> dict[str, dict[str, Any]]:
                 "command": command,
                 "args": args,
                 "transport": "stdio",
+            }
+
+    judge_enabled = os.getenv("ENABLE_JUDGE_MCP_DISCOVERY", "1").strip().lower() not in {"0", "false", "no", "off"}
+    if judge_enabled:
+        judge_url = (
+            os.getenv("BENCHMARK_JUDGE_MCP_URL", "").strip()
+            or os.getenv("JUDGE_MCP_URL", "").strip()
+            or "http://judge:9009/mcp"
+        )
+        judge_url = _normalize_mcp_url(judge_url)
+        if judge_url and "judge" not in config:
+            config["judge"] = {
+                "url": judge_url,
+                "transport": "http",
             }
 
     return config

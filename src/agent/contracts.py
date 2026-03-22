@@ -271,6 +271,7 @@ class TaskIntent(BaseModel):
 class CapabilityDescriptor(BaseModel):
     tool_name: str
     tool_family: str
+    tool_role: str = ""
     domain_tags: list[str] = Field(default_factory=list)
     input_shape: str = "generic"
     side_effect_level: SideEffectLevel = "read_only"
