@@ -69,6 +69,31 @@ class RunTracer:
             self._complexity_tier = data.get("complexity_tier", "")
         elif node == "template_selector":
             self._template_id = data.get("template_id", "")
+        elif node == "fast_path_gate":
+            if not self._profile:
+                self._profile = data.get("task_family", "")
+            if not self._template_id and data.get("execution_mode"):
+                self._template_id = f"v4_{data.get('execution_mode', '')}"
+            if not self._complexity_tier:
+                self._complexity_tier = data.get("complexity_tier", "")
+        elif node == "task_planner":
+            intent = data.get("intent", {})
+            if intent and isinstance(intent, dict):
+                if not self._profile:
+                    self._profile = intent.get("task_family", "")
+                if not self._template_id:
+                    self._template_id = data.get("template_id", "") or f"v4_{intent.get('execution_mode', '')}"
+                if not self._complexity_tier:
+                    self._complexity_tier = intent.get("complexity_tier", "")
+        elif node == "v4_executor":
+            intent = data.get("intent", {})
+            if intent and isinstance(intent, dict):
+                if not self._profile:
+                    self._profile = intent.get("task_family", "")
+                if not self._template_id:
+                    self._template_id = f"v4_{intent.get('execution_mode', '')}"
+                if not self._complexity_tier:
+                    self._complexity_tier = intent.get("complexity_tier", "")
 
     def finalize(self, final_answer: str = "", cost_summary: dict | None = None, budget_summary: dict | None = None) -> str | None:
         """Build the final JSON payload and write it to disk. Returns the file path or None."""
@@ -84,13 +109,20 @@ class RunTracer:
             if tokens and isinstance(tokens, dict):
                 total_prompt += tokens.get("prompt", 0)
                 total_completion += tokens.get("completion", 0)
-            # Count LLM calls from solver, reviewer, and self_reflection
+            # Count LLM calls from solver, reviewer, self_reflection, and v4_executor
             if entry.get("node") == "solver" and entry.get("llm_call"):
                 llm_calls += 1
             elif entry.get("node") in {"reviewer", "self_reflection"} and entry.get("used_llm"):
                 llm_calls += 1
+            elif entry.get("node") == "v4_executor" and entry.get("used_llm"):
+                llm_calls += 1
+            # Count tool calls from tool_runner (V3) or v4_executor tool_results (V4)
             if entry.get("node") == "tool_runner":
                 tool_calls += 1
+            elif entry.get("node") == "v4_executor":
+                tools_ran = entry.get("tools_ran")
+                if tools_ran and isinstance(tools_ran, list):
+                    tool_calls += len(tools_ran)
 
         payload: dict[str, Any] = {
             "run_id": self._run_id,
@@ -107,7 +139,7 @@ class RunTracer:
                 "completion": total_completion,
                 "total": total_prompt + total_completion,
             },
-            "final_answer_preview": (final_answer or "")[:500],
+            "final_answer_preview": (final_answer or "")[:4000],
             "cost_summary": cost_summary or {},
             "budget_summary": budget_summary or {},
             "nodes": _make_readable(self._nodes),

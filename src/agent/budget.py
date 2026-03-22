@@ -43,7 +43,7 @@ _TIER_CAPS: dict[str, dict[str, int]] = {
         "tool_calls": _env_int("COMPLEX_QUALITATIVE_MAX_TOOL_CALLS", 14),
         "revise_cycles": _env_int("COMPLEX_QUALITATIVE_MAX_REVISE_CYCLES", 6),
         "backtrack_cycles": _env_int("COMPLEX_QUALITATIVE_MAX_BACKTRACK_CYCLES", 3),
-        "context_tokens": _env_int("COMPLEX_QUALITATIVE_MAX_CONTEXT_TOKENS", 1400),
+        "context_tokens": _env_int("COMPLEX_QUALITATIVE_MAX_CONTEXT_TOKENS", 2200),
     },
 }
 
@@ -56,6 +56,7 @@ class BudgetTracker:
         self.revise_cycles: int = 0
         self.backtrack_cycles: int = 0
         self.context_tokens_used: int = 0
+        self.context_tokens_total: int = 0
         self.budget_exits: list[dict] = []
         self.complexity_tier: str = "structured_analysis"
         self.template_id: str = ""
@@ -85,7 +86,9 @@ class BudgetTracker:
         self.backtrack_cycles += 1
 
     def record_context_tokens(self, n: int) -> None:
-        self.context_tokens_used += n
+        safe_n = max(0, int(n))
+        self.context_tokens_total += safe_n
+        self.context_tokens_used = max(self.context_tokens_used, safe_n)
 
     def record_hint_tokens(self, n: int) -> None:
         self.record_context_tokens(n)
@@ -128,6 +131,7 @@ class BudgetTracker:
             "backtrack_cycles": self.backtrack_cycles,
             "backtrack_cap": self.backtrack_cap,
             "context_tokens_used": self.context_tokens_used,
+            "context_tokens_total": self.context_tokens_total,
             "context_tokens_cap": self.context_tokens_cap,
             "budget_exits": self.budget_exits,
         }

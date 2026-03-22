@@ -137,7 +137,7 @@ def _legal_facts_in_use(task_text: str, source_bundle: SourceBundle) -> list[dic
         facts.append({"type": "urgency", "value": _urgency_hint(task_text)})
     if _jurisdictions(task_text):
         facts.append({"type": "jurisdictions", "value": _jurisdictions(task_text)})
-    if policy_context:
+    if policy_context and set(policy_context.keys()) - {"jurisdictions"}:
         facts.append({"type": "policy_context", "value": policy_context})
     return _dedupe_facts(facts)
 
@@ -197,13 +197,55 @@ def build_curated_context(
     return curated, evidence_stats
 
 
-def solver_context_block(curated_context: dict[str, Any], tool_results: list[dict[str, Any]] | None = None) -> str:
+def _compact_prompt_value(value: Any) -> Any:
+    if isinstance(value, str):
+        compact = _normalize_text(value)
+        return compact[:240] + "..." if len(compact) > 240 else compact
+    if isinstance(value, list):
+        compact_items = [_compact_prompt_value(item) for item in value]
+        compact_items = [item for item in compact_items if item not in ("", [], {}, None)]
+        return compact_items[:6]
+    if isinstance(value, dict):
+        compact_dict = {str(key): _compact_prompt_value(val) for key, val in value.items()}
+        return {key: val for key, val in compact_dict.items() if val not in ("", [], {}, None)}
+    return value
+
+
+def _compact_tool_findings(tool_results: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    findings: list[dict[str, Any]] = []
+    for result in tool_results or []:
+        if not isinstance(result, dict):
+            continue
+        facts = dict(result.get("facts") or {})
+        facts.pop("query", None)
+        if not facts.get("deal_size_hint"):
+            facts.pop("deal_size_hint", None)
+        if not facts.get("urgency"):
+            facts.pop("urgency", None)
+        finding = {
+            "tool": str(result.get("type", "") or result.get("tool_name", "")),
+            "facts": _compact_prompt_value(facts),
+        }
+        if finding["tool"]:
+            findings.append(finding)
+    return findings
+
+
+def solver_context_block(
+    curated_context: dict[str, Any],
+    tool_results: list[dict[str, Any]] | None = None,
+    *,
+    include_objective: bool = False,
+) -> str:
     payload = {
-        "objective": curated_context.get("objective", ""),
-        "facts_in_use": curated_context.get("facts_in_use", []),
-        "open_questions": curated_context.get("open_questions", []),
-        "assumptions": curated_context.get("assumptions", []),
-        "requested_output": curated_context.get("requested_output", {}),
-        "tool_results": tool_results or [],
+        "facts_in_use": _compact_prompt_value(curated_context.get("facts_in_use", [])),
+        "open_questions": _compact_prompt_value(curated_context.get("open_questions", [])),
+        "assumptions": _compact_prompt_value(curated_context.get("assumptions", [])),
+        "requested_output": _compact_prompt_value(curated_context.get("requested_output", {})),
     }
+    if include_objective and curated_context.get("objective"):
+        payload["objective"] = _compact_prompt_value(curated_context.get("objective", ""))
+    tool_findings = _compact_tool_findings(tool_results)
+    if tool_findings:
+        payload["tool_findings"] = tool_findings
     return json.dumps(payload, ensure_ascii=True)

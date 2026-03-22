@@ -17,7 +17,13 @@ from agent.model_config import ChatOpenAI, get_client_kwargs, get_model_name, in
 from agent.nodes.reviewer import _legal_depth_gaps, _looks_truncated, _matches_exact_json_contract, _options_gaps
 from agent.runtime_clock import increment_runtime_step
 from agent.runtime_support import detect_ambiguity_flags, detect_capability_flags, infer_task_profile, latest_human_text
-from agent.solver.options import deterministic_policy_options_tool_call, deterministic_standard_options_tool_call, scenario_args_from_primary_tool
+from agent.solver.options import (
+    deterministic_options_final_answer,
+    deterministic_policy_options_final_answer,
+    deterministic_policy_options_tool_call,
+    deterministic_standard_options_tool_call,
+    scenario_args_from_primary_tool,
+)
 from agent.solver.quant import deterministic_quant_final_answer
 from agent.tools.normalization import normalize_tool_output
 from agent.tracer import format_messages_for_trace, get_tracer
@@ -36,15 +42,38 @@ Prefer broader capability access for legal/advisory tasks instead of calculator-
 Return only JSON matching the schema.
 """
 
-_EXECUTOR_PROMPT = """You are the V4 execution node.
-Produce a concise, actionable answer grounded in the curated context and structured tool findings.
-Prioritize objective, evidence, and requested output.
-Do not narrate your chain of thought.
-Hard prohibitions:
-- do not invent statutes, filings, or source documents
-- do not claim current external facts unless they came from a tool result
-- do not repeat the full user prompt back to the user
+_EXECUTOR_PROMPT = """Produce a concise, decision-ready answer grounded in the curated context and tool findings.
+Use only tool-provided external facts, state material assumptions explicitly, and keep internal reasoning implicit.
 """
+
+
+def _execution_guidance(intent: TaskIntent) -> str:
+    if intent.task_family == "legal_transactional":
+        return (
+            "Present multiple viable structure options first, then recommend the preferred path. "
+            "Cover tax treatment, liability-allocation mechanics, regulatory and employee-transfer execution, "
+            "and a rapid next-step plan."
+        )
+    if intent.task_family == "finance_options":
+        return (
+            "Give a direct recommendation, primary strategy, alternative strategy comparison, explicit Greek values, "
+            "breakevens, and concrete risk controls."
+        )
+    if intent.execution_mode == "document_grounded_analysis":
+        return "Ground the answer in retrieved evidence and keep the unsupported parts clearly marked as open questions."
+    return "Answer directly using the provided context and keep the structure aligned to the requested output."
+
+
+def _legal_structure_option_count(answer: str) -> int:
+    normalized = re.sub(r"\s+", " ", (answer or "").lower())
+    patterns = {
+        "asset_purchase": r"\basset purchase\b|\basset deal\b",
+        "carve_out": r"\bcarve[- ]out\b",
+        "reverse_triangular_merger": r"\breverse triangular merger\b|\brtm\b",
+        "hybrid_structure": r"\bhybrid\b|\bcontingent consideration\b|\bearn[- ]?out\b",
+        "joint_venture": r"\bjoint venture\b|\bpartnership\b",
+    }
+    return sum(1 for pattern in patterns.values() if re.search(pattern, normalized))
 
 
 def _record_event(workpad: dict[str, Any], node: str, action: str) -> dict[str, Any]:
@@ -214,6 +243,20 @@ def fast_path_gate(state: V4AgentState) -> dict[str, Any]:
         "fast_path_gate",
         f"fast_path={workpad['fast_path_used']} family={intent.task_family} mode={intent.execution_mode}",
     )
+    tracer = get_tracer()
+    if tracer:
+        tracer.record(
+            "fast_path_gate",
+            {
+                "task_family": intent.task_family,
+                "execution_mode": intent.execution_mode,
+                "complexity_tier": intent.complexity_tier,
+                "planner_source": intent.planner_source,
+                "fast_path_used": workpad["fast_path_used"],
+                "capability_flags": capability_flags,
+                "ambiguity_flags": ambiguity_flags,
+            },
+        )
     logger.info("[Step %s] v4 fast_path_gate -> fast_path=%s family=%s mode=%s", step, workpad["fast_path_used"], intent.task_family, intent.execution_mode)
     return {
         "task_intent": intent.model_dump() if intent.planner_source == "fast_path" else {},
@@ -239,6 +282,16 @@ def task_planner(state: V4AgentState) -> dict[str, Any]:
         workpad["planner_output"] = intent.model_dump()
         workpad["review_mode"] = intent.review_mode
         workpad = _record_event(workpad, "task_planner", f"reused fast path intent -> {intent.execution_mode}")
+        tracer = get_tracer()
+        if tracer:
+            tracer.record(
+                "task_planner",
+                {
+                    "intent": intent.model_dump(),
+                    "template_id": f"v4_{intent.execution_mode}",
+                    "planner_source": "fast_path_reuse",
+                },
+            )
         return {
             "task_intent": intent.model_dump(),
             "execution_template": _v4_template_stub(intent),
@@ -280,6 +333,16 @@ def task_planner(state: V4AgentState) -> dict[str, Any]:
     workpad["planner_output"] = intent.model_dump()
     workpad["review_mode"] = intent.review_mode
     workpad = _record_event(workpad, "task_planner", f"family={intent.task_family} mode={intent.execution_mode} source={intent.planner_source}")
+    tracer = get_tracer()
+    if tracer:
+        tracer.record(
+            "task_planner",
+            {
+                "intent": intent.model_dump(),
+                "template_id": f"v4_{intent.execution_mode}",
+                "planner_source": intent.planner_source,
+            },
+        )
     logger.info("[Step %s] v4 task_planner -> family=%s mode=%s", step, intent.task_family, intent.execution_mode)
     return {
         "task_intent": intent.model_dump(),
@@ -304,6 +367,17 @@ def make_capability_resolver(registry: dict[str, dict[str, Any]]):
             "capability_resolver",
             f"tools={','.join(tool_plan.selected_tools) if tool_plan.selected_tools else 'none'} blocked={','.join(tool_plan.blocked_families) if tool_plan.blocked_families else 'none'}",
         )
+        tracer = get_tracer()
+        if tracer:
+            tracer.record(
+                "capability_resolver",
+                {
+                    "selected_tools": tool_plan.selected_tools,
+                    "pending_tools": tool_plan.pending_tools,
+                    "blocked_families": tool_plan.blocked_families,
+                    "ace_events": tool_plan.ace_events,
+                },
+            )
         template = _v4_template_stub(intent, tool_plan.selected_tools)
         logger.info("[Step %s] v4 capability_resolver -> selected=%s", step, tool_plan.selected_tools)
         return {
@@ -331,6 +405,17 @@ def context_curator(state: V4AgentState) -> dict[str, Any]:
         "context_curator",
         f"facts={len(curated_context.facts_in_use)} raw_tables={evidence_stats['raw_tables']} raw_formulas={evidence_stats['raw_formulas']}",
     )
+    tracer = get_tracer()
+    if tracer:
+        tracer.record(
+            "context_curator",
+            {
+                "objective_preview": curated_context.objective[:220],
+                "fact_count": len(curated_context.facts_in_use),
+                "evidence_stats": evidence_stats,
+                "requested_output": curated_context.requested_output,
+            },
+        )
     budget = state.get("budget_tracker")
     if budget:
         budget.configure(complexity_tier=intent.complexity_tier, template_id=str((state.get("execution_template") or {}).get("template_id", "")))
@@ -432,15 +517,27 @@ async def _run_tool_step(state: V4AgentState, registry: dict[str, dict[str, Any]
     return args, normalize_tool_output(tool_name, raw, args)
 
 
-def _adaptive_completion_budget(mode: str, prompt_tokens: int) -> int:
+def _adaptive_completion_budget(
+    mode: str,
+    prompt_tokens: int,
+    *,
+    task_family: str = "",
+    review_feedback: bool = False,
+) -> int:
     if mode in {"advisory_memo", "document_grounded"}:
+        if task_family == "legal_transactional":
+            if prompt_tokens >= 1800:
+                return 2400
+            if prompt_tokens >= 1200 or review_feedback:
+                return 2000
+            return 1600
         if prompt_tokens >= 1800:
-            return 1800
-        if prompt_tokens >= 1100:
-            return 1400
-        return 1100
+            return 2000
+        if prompt_tokens >= 1100 or review_feedback:
+            return 1600
+        return 1200
     if mode == "compact_sections":
-        return 900
+        return 1100 if review_feedback else 900
     return 400
 
 
@@ -482,6 +579,36 @@ def _exact_quant_answer(state: V4AgentState) -> str | None:
     return deterministic_quant_final_answer(adapter_state)
 
 
+def _v4_options_final_answer(state: V4AgentState) -> str | None:
+    source_bundle = SourceBundle.model_validate(state.get("source_bundle") or {})
+    inline_facts = dict(source_bundle.inline_facts)
+    market_snapshot, derived = derive_market_snapshot(source_bundle.task_text, inline_facts)
+    evidence_pack = {
+        "derived_facts": derived,
+        "prompt_facts": inline_facts,
+        "market_snapshot": market_snapshot,
+        "policy_context": {},
+    }
+    option_state = {
+        "messages": state.get("messages", []),
+        "evidence_pack": evidence_pack,
+        "assumption_ledger": state.get("assumption_ledger", []),
+        "workpad": {
+            "tool_results": ExecutionJournal.model_validate(state.get("execution_journal") or {}).tool_results,
+            "risk_results": [{"verdict": "pass"}],
+            "risk_requirements": {
+                "required_disclosures": [
+                    "short-volatility / volatility-spike risk",
+                    "tail loss / gap risk",
+                    "downside scenario loss",
+                ],
+                "recommendation_class": "scenario_dependent_recommendation",
+            },
+        },
+    }
+    return deterministic_policy_options_final_answer(option_state) or deterministic_options_final_answer(option_state)
+
+
 def make_executor(registry: dict[str, dict[str, Any]]):
     async def executor(state: V4AgentState) -> dict[str, Any]:
         step = increment_runtime_step()
@@ -493,6 +620,8 @@ def make_executor(registry: dict[str, dict[str, Any]]):
         review_feedback = dict(state.get("review_feedback") or {})
         budget = state.get("budget_tracker")
         tracker = state.get("cost_tracker")
+        tracer = get_tracer()
+        tools_ran_this_call: list[str] = []
 
         if intent.execution_mode == "exact_fast_path" and intent.task_family == "finance_quant":
             answer = _exact_quant_answer(state)
@@ -500,9 +629,21 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                 journal.final_artifact_signature = _artifact_signature(answer)
                 workpad["v4_review_ready"] = True
                 workpad = _record_event(workpad, "executor", "exact_fast_path -> final draft ready")
+                if tracer:
+                    tracer.record(
+                        "v4_executor",
+                        {
+                            "intent": intent.model_dump(),
+                            "used_llm": False,
+                            "tools_ran": [],
+                            "completion_budget": 0,
+                            "output_preview": answer[:2000],
+                        },
+                    )
                 return {
                     "messages": [AIMessage(content=answer)],
                     "execution_journal": journal.model_dump(),
+                    "tool_plan": tool_plan.model_dump(),
                     "solver_stage": "SYNTHESIZE",
                     "workpad": workpad,
                 }
@@ -517,47 +658,100 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                     tracker.record_mcp_call()
                 if budget:
                     budget.record_tool_call()
+                tools_ran_this_call.append(next_tool)
                 journal.tool_results.append(tool_result.model_dump())
                 journal.routed_tool_families = list(dict.fromkeys([*journal.routed_tool_families, *tool_plan.tool_families_needed]))
                 workpad = _record_event(workpad, "executor", f"ran tool {next_tool}")
                 tool_plan.pending_tools = tool_plan.pending_tools[1:]
-                updated_context = curated.model_dump()
-                facts_in_use = list(updated_context.get("facts_in_use", []))
-                facts_in_use.append({"type": "tool_result", "tool_name": next_tool, "value": tool_result.facts})
-                updated_context["facts_in_use"] = facts_in_use
                 if tool_plan.pending_tools and intent.execution_mode in {"advisory_analysis", "document_grounded_analysis", "tool_compute"}:
+                    if tracer:
+                        tracer.record(
+                            "v4_executor",
+                            {
+                                "intent": intent.model_dump(),
+                                "used_llm": False,
+                                "tools_ran": tools_ran_this_call,
+                                "tool_results": journal.tool_results,
+                                "output_preview": "",
+                                "completion_budget": 0,
+                            },
+                        )
                     return {
                         "last_tool_result": tool_result.model_dump(),
                         "tool_plan": tool_plan.model_dump(),
                         "execution_journal": journal.model_dump(),
-                        "curated_context": updated_context,
+                        "curated_context": curated.model_dump(),
                         "solver_stage": "COMPUTE",
                         "workpad": workpad,
                     }
-                curated = CuratedContext.model_validate(updated_context)
+
+        if intent.task_family == "finance_options" and journal.tool_results:
+            answer = _v4_options_final_answer({**state, "execution_journal": journal.model_dump()})
+            if answer:
+                journal.final_artifact_signature = _artifact_signature(answer)
+                workpad["completion_budget"] = 0
+                workpad["v4_review_ready"] = True
+                workpad = _record_event(workpad, "executor", "deterministic options final ready")
+                if tracer:
+                    tracer.record(
+                        "v4_executor",
+                        {
+                            "intent": intent.model_dump(),
+                            "used_llm": False,
+                            "tools_ran": tools_ran_this_call,
+                            "tool_results": journal.tool_results,
+                            "output_preview": answer[:2000],
+                            "completion_budget": 0,
+                        },
+                    )
+                return {
+                    "messages": [AIMessage(content=answer)],
+                    "last_tool_result": journal.tool_results[-1] if journal.tool_results else None,
+                    "tool_plan": tool_plan.model_dump(),
+                    "execution_journal": journal.model_dump(),
+                    "solver_stage": "SYNTHESIZE",
+                    "review_feedback": None,
+                    "workpad": workpad,
+                }
 
         prompt_messages = [
             SystemMessage(content=_EXECUTOR_PROMPT),
-            SystemMessage(content=f"Execution mode: {intent.execution_mode}\nReview mode: {intent.review_mode}\nCompletion mode: {intent.completion_mode}"),
         ]
+        guidance = _execution_guidance(intent)
+        if guidance:
+            prompt_messages.append(SystemMessage(content=guidance))
         if review_feedback:
             prompt_messages.append(
                 SystemMessage(
                     content=(
                         "Targeted revision request:\n"
-                        f"{json.dumps(review_feedback, ensure_ascii=True)}\n"
-                        "Preserve valid content and deepen only the missing dimensions."
+                        f"{review_feedback.get('reasoning', '')}\n"
+                        f"Missing dimensions: {', '.join(review_feedback.get('missing_dimensions', [])) or 'none specified'}.\n"
+                        "Preserve valid content, add only the missing detail, and avoid repeating the prompt."
                     )
                 )
             )
             journal.revision_count += 1
-        prompt_messages.append(SystemMessage(content=solver_context_block(curated.model_dump(), journal.tool_results)))
-        prompt_messages.append(HumanMessage(content=curated.objective or latest_human_text(state["messages"])))
+        prompt_messages.append(
+            SystemMessage(
+                content=solver_context_block(
+                    curated.model_dump(),
+                    journal.tool_results,
+                    include_objective=False,
+                )
+            )
+        )
+        prompt_messages.append(HumanMessage(content=latest_human_text(state["messages"])))
 
         prompt_tokens = count_tokens(prompt_messages)
         if budget:
             budget.record_context_tokens(prompt_tokens)
-        max_tokens = _adaptive_completion_budget(intent.completion_mode, prompt_tokens)
+        max_tokens = _adaptive_completion_budget(
+            intent.completion_mode,
+            prompt_tokens,
+            task_family=intent.task_family,
+            review_feedback=bool(review_feedback),
+        )
         model_name = get_model_name("solver")
         model = ChatOpenAI(model=model_name, **get_client_kwargs("solver"), temperature=0, max_tokens=max_tokens)
         t0 = time.monotonic()
@@ -578,21 +772,28 @@ def make_executor(registry: dict[str, dict[str, Any]]):
         workpad["completion_budget"] = max_tokens
         workpad["v4_review_ready"] = True
         workpad = _record_event(workpad, "executor", "final draft ready")
-        tracer = get_tracer()
         if tracer:
             tracer.record(
                 "v4_executor",
                 {
                     "intent": intent.model_dump(),
+                    "used_llm": True,
+                    "tools_ran": tools_ran_this_call,
                     "tool_results": journal.tool_results,
                     "prompt": format_messages_for_trace(prompt_messages),
-                    "output_preview": content[:500],
+                    "output_preview": content[:2000],
                     "completion_budget": max_tokens,
+                    "tokens": {
+                        "prompt": prompt_tokens,
+                        "completion": count_tokens([AIMessage(content=content)]),
+                    },
                 },
             )
         logger.info("[Step %s] v4 executor -> final draft", step)
         return {
             "messages": [AIMessage(content=content)],
+            "last_tool_result": journal.tool_results[-1] if journal.tool_results else None,
+            "tool_plan": tool_plan.model_dump(),
             "execution_journal": journal.model_dump(),
             "solver_stage": "SYNTHESIZE",
             "review_feedback": None,
@@ -616,6 +817,8 @@ def route_from_executor(state: V4AgentState) -> str:
 def _targeted_fix_prompt(missing_dimensions: list[str]) -> str:
     normalized = [str(item).lower() for item in missing_dimensions]
     additions: list[str] = []
+    if any("multiple structure alternatives" in item or "structure alternatives" in item for item in normalized):
+        additions.append("at least three distinct structure alternatives with tradeoffs and a clear recommendation")
     if any("liability allocation" in item for item in normalized):
         additions.append("explicit indemnities, escrow or holdback, caps or baskets, and survival periods")
     if any("regulatory execution" in item for item in normalized):
@@ -657,9 +860,11 @@ def reviewer(state: V4AgentState) -> dict[str, Any]:
             score = 0.4
     elif intent.task_family == "legal_transactional":
         missing = _legal_depth_gaps(answer, latest_human_text(state["messages"]))
+        if _legal_structure_option_count(answer) < 2:
+            missing = sorted(set([*missing, "multiple structure alternatives with tradeoffs"]))
         if missing:
             verdict = "revise" if journal.revision_count < 1 else "fail"
-            reasoning = "Final legal answer is directionally correct but still missing actionable execution depth."
+            reasoning = "Final legal answer is directionally correct but still missing actionable execution depth or structure coverage."
             score = 0.62 if verdict == "revise" else 0.58
     elif intent.task_family == "finance_options":
         option_missing = _options_gaps(answer)
@@ -682,6 +887,19 @@ def reviewer(state: V4AgentState) -> dict[str, Any]:
     workpad["v4_review_ready"] = False
     workpad["review_mode"] = intent.review_mode
     workpad = _record_event(workpad, "reviewer", f"{verdict.upper()}: {reasoning}")
+    tracer = get_tracer()
+    if tracer:
+        tracer.record(
+            "reviewer",
+            {
+                "review_mode": intent.review_mode,
+                "task_family": intent.task_family,
+                "verdict": verdict,
+                "reasoning": reasoning,
+                "missing_dimensions": missing,
+                "used_llm": False,
+            },
+        )
     logger.info("[Step %s] v4 reviewer -> %s", step, verdict.upper())
 
     if verdict == "pass":
@@ -739,6 +957,17 @@ def self_reflection(state: V4AgentState) -> dict[str, Any]:
     journal.self_reflection_count += 1
     if report.missing_dimensions or intent.complexity_tier != "complex_qualitative":
         workpad = _record_event(workpad, "self_reflection", "PASS")
+        tracer = get_tracer()
+        if tracer:
+            tracer.record(
+                "self_reflection",
+                {
+                    "score": report.score,
+                    "complete": True,
+                    "missing_dimensions": [],
+                    "used_llm": False,
+                },
+            )
         return {
             "execution_journal": journal.model_dump(),
             "reflection_feedback": {"score": report.score, "complete": True, "missing_dimensions": [], "improve_prompt": ""},
@@ -753,6 +982,18 @@ def self_reflection(state: V4AgentState) -> dict[str, Any]:
         improve_prompt = "Add one concise layer of execution-specific next steps and risk-allocation detail."
 
     workpad = _record_event(workpad, "self_reflection", "PASS" if score >= 0.8 else "REVISE")
+    tracer = get_tracer()
+    if tracer:
+        tracer.record(
+            "self_reflection",
+            {
+                "score": score,
+                "complete": score >= 0.8,
+                "missing_dimensions": [] if score >= 0.8 else ["actionable next steps"],
+                "improve_prompt": improve_prompt,
+                "used_llm": False,
+            },
+        )
     logger.info("[Step %s] v4 self_reflection -> %s", step, "PASS" if score >= 0.8 else "REVISE")
     if score >= 0.8 or journal.self_reflection_count > 1:
         return {
