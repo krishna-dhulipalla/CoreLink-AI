@@ -24,6 +24,7 @@ from agent.nodes.orchestrator import (
 )
 from agent.nodes.output_adapter import output_adapter
 from agent.nodes.reflect import reflect
+from agent.retrieval_tools import local_corpus_available
 from agent.state import AgentState
 from tools import CALCULATOR_TOOL, SEARCH_TOOL
 
@@ -39,11 +40,12 @@ def get_current_time() -> str:
 
 
 def build_agent_graph(external_tools: list | None = None):
+    retrieval_tools = BUILTIN_RETRIEVAL_TOOLS if local_corpus_available() else []
     all_tools: list[Any] = [
         CALCULATOR_TOOL,
         SEARCH_TOOL,
         get_current_time,
-        *BUILTIN_RETRIEVAL_TOOLS,
+        *retrieval_tools,
         *BUILTIN_LEGAL_TOOLS,
         *(external_tools or []),
     ]

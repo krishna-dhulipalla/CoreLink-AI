@@ -322,3 +322,10 @@ Rules:
 - **Fix:** Added focused regressions in [tests/test_output_adapter.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_output_adapter.py) and [tests/test_mcp_client.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_mcp_client.py). Verified with:
   - `python -m py_compile src/agent/context/profiling.py src/agent/prompts.py src/agent/nodes/orchestrator.py src/agent/nodes/output_adapter.py src/mcp_client.py src/executor.py tests/test_output_adapter.py tests/test_mcp_client.py`
   - `pytest tests/test_output_adapter.py tests/test_mcp_client.py -q`
+
+### Chat 39: Local Corpus Tool Gating For Judge-Only OfficeQA Runs
+
+- **Role:** Coder
+- **Actions Taken:** Added [local_corpus_available()](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\retrieval_tools.py) and updated [graph.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\graph.py) so built-in local corpus tools are only registered when a real local corpus directory is configured. Judge-only OfficeQA runs now prefer benchmark-provided MCP document tools instead of hitting the built-in `search_reference_corpus` / `fetch_corpus_document` tools and failing with “No local corpus directory is configured.”
+- **Critical Bug Solved:** The runtime still exposed local corpus tools even when no local corpus existed, which let the planner choose a guaranteed-to-fail retrieval path instead of the Judge MCP path.
+- **Fix:** Verified with `python -m py_compile src/agent/retrieval_tools.py src/agent/graph.py`.

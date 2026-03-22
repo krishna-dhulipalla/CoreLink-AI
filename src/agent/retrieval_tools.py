@@ -42,6 +42,10 @@ _STOP_WORDS = frozenset({
 })
 
 
+def local_corpus_available() -> bool:
+    return _resolve_corpus_root() is not None
+
+
 def _resolve_corpus_root() -> Path | None:
     for env_name in _CORPUS_ENV_NAMES:
         raw = os.getenv(env_name, "").strip()
