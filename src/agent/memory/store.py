@@ -4,7 +4,7 @@ Memory Store
 Versioned SQLite-backed store for staged-runtime execution memory.
 
 Design goals:
-- Persist compact staged-runtime artifacts, not legacy coordinator telemetry.
+- Persist compact engine artifacts, not legacy coordinator telemetry.
 - Reset incompatible schemas automatically so stale DB files do not poison the
   active runtime after architecture changes.
 - Keep the on-disk format simple enough to evolve again later.

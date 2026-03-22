@@ -1,8 +1,4 @@
-"""
-Agent State: TypedDict & Custom Reducer
-======================================
-Defines the shared runtime state for the staged finance-first graph.
-"""
+"""Shared engine state and message reducer."""
 
 from typing import Annotated, Any, TypedDict
 
@@ -28,11 +24,7 @@ def _messages_reducer(
 
 
 class AgentState(TypedDict):
-    """Typed state for the staged runtime.
-
-    The runtime now moves explicit artifacts between nodes instead of
-    passing coordinator telemetry through the whole graph.
-    """
+    """Typed state for the active engine graph."""
     messages: Annotated[list[BaseMessage], _messages_reducer]
     profile_decision: dict[str, Any]
     task_profile: str

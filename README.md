@@ -6,7 +6,7 @@ It is designed for tasks where a plain chat workflow is not enough: quantitative
 
 ## What It Does
 
-- Runs a staged reasoning pipeline instead of a single prompt-heavy loop
+- Runs a modular reasoning engine instead of a single prompt-heavy loop
 - Uses structured evidence and normalized tool outputs for finance tasks
 - Supports finance-specific templates for quant, options, research, portfolio risk, and event-driven analysis
 - Applies risk and compliance gates on actionable finance paths
@@ -19,10 +19,10 @@ It is designed for tasks where a plain chat workflow is not enough: quantitative
 At a high level, the system works in five steps:
 
 1. `Intake` normalizes the request and detects output requirements.
-2. `Profile + Template` selects the execution path for the task.
-3. `Context Builder` assembles evidence from the prompt, tools, and documents.
-4. `Solver` reasons stage by stage and calls tools only when exact data or computation is needed.
-5. `Review Gates`, `Output Adapter`, and `Reflect` finish the answer and persist run records.
+2. `Planner + Capability Resolver` chooses the execution mode and safe tool families for the task.
+3. `Context Curator` assembles compact evidence from the prompt, tools, and documents.
+4. `Executor` reasons with the curated context and calls tools only when exact data or computation is needed.
+5. `Reviewer`, `Self-Reflection`, `Output Adapter`, and `Reflect` finish the answer and persist run records.
 
 ## Supported Workloads
 
@@ -68,7 +68,7 @@ MCP_SERVER_URLS=
 
 Model role env vars:
 - `PROFILER_MODEL` controls task profiling fallback
-- `SOLVER_MODEL` controls the main staged reasoning path
+- `SOLVER_MODEL` controls the main engine reasoning path
 - `REVIEWER_MODEL` controls ambiguous final review only
 
 Legacy env names like `COORDINATOR_MODEL`, `EXECUTOR_MODEL`, and `VERIFIER_MODEL` still work, but the canonical names above are preferred.
@@ -90,13 +90,13 @@ http://127.0.0.1:9010/.well-known/agent-card.json
 Deterministic smoke:
 
 ```bash
-uv run python scripts/run_staged_runtime_smoke.py
+uv run pytest tests/test_engine_runtime.py -q
 ```
 
 Live LLM smoke:
 
 ```bash
-uv run python scripts/run_live_staged_smoke.py
+uv run python scripts/run_live_engine_smoke.py
 ```
 
 Benchmark/stateless smoke:

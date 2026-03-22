@@ -38,7 +38,7 @@ def test_reflect_persists_run_tool_and_review_memory():
             {
                 "key": "spot_price",
                 "assumption": "Spot price must be disclosed if introduced later.",
-                "source": "context_builder_open_question",
+                "source": "context_curator_open_question",
                 "confidence": "low",
                 "requires_user_visible_disclosure": True,
                 "review_status": "pending",
@@ -56,7 +56,7 @@ def test_reflect_persists_run_tool_and_review_memory():
         "workpad": {
             "events": [
                 {"node": "intake", "action": "Detected output format=json"},
-                {"node": "task_profiler", "action": "profile=finance_quant flags=needs_math"},
+                {"node": "task_planner", "action": "family=finance_quant flags=needs_math"},
             ],
             "stage_history": ["PLAN", "COMPUTE", "SYNTHESIZE"],
             "tool_results": [

@@ -1,4 +1,4 @@
-"""Typed state for the V4 runtime."""
+"""Typed state for the active runtime."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from langchain_core.messages import BaseMessage
 from agent.state import ReplaceMessages, _messages_reducer
 
 
-class V4AgentState(TypedDict):
+class RuntimeState(TypedDict):
     messages: Annotated[list[BaseMessage], _messages_reducer]
     profile_decision: dict[str, Any]
     task_profile: str

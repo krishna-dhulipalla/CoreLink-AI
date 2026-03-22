@@ -1,7 +1,7 @@
 from langchain_core.messages import AIMessage
 
 from agent.nodes.output_adapter import output_adapter
-from staged_test_utils import make_state
+from test_utils import make_state
 
 
 def test_output_adapter_wraps_json_answer():

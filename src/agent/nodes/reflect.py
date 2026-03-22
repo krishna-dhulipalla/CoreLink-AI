@@ -1,8 +1,4 @@
-"""
-Reflect Node
-============
-Post-run persistence hook for the staged runtime.
-"""
+"""Post-run persistence hook for the active engine."""
 
 from __future__ import annotations
 
@@ -163,7 +159,7 @@ def reflect(state: AgentState) -> dict:
         _persist_reviews(state, task_text, workpad)
         _persist_curation(state, task_text, workpad)
     except Exception as exc:
-        logger.warning("[Memory] Failed to persist staged runtime memory: %s", exc)
+        logger.warning("[Memory] Failed to persist engine memory: %s", exc)
 
     route_path = list(dict.fromkeys(
         event.get("node", "") for event in workpad.get("events", []) if event.get("node")

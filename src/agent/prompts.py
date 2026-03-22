@@ -1,4 +1,4 @@
-"""Centralized prompt templates for V4 roles.
+"""Centralized prompt templates for the active runtime.
 
 Every LLM-facing string lives here so that nodes.py stays logic-only.
 Prompt design follows patterns from top-scoring finance agents:

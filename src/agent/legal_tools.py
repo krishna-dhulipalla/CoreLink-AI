@@ -1,4 +1,4 @@
-"""Built-in legal advisory tools for the V4 runtime."""
+"""Built-in legal advisory tools for the active engine."""
 
 from __future__ import annotations
 

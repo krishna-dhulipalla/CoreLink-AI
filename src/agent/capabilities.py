@@ -1,4 +1,4 @@
-"""Capability registry and dynamic tool resolution for V4."""
+"""Capability registry and dynamic tool resolution for the active runtime."""
 
 from __future__ import annotations
 
@@ -7,15 +7,15 @@ from typing import Any, Callable
 
 from langchain_core.tools import BaseTool, tool
 
-from agent.v4.contracts import ACEEvent, CapabilityDescriptor, SourceBundle, TaskIntent, ToolPlan
-from agent.v4.legal_tools import (
+from agent.legal_tools import (
     legal_playbook_retrieval,
     regulatory_execution_checklist,
     tax_structure_checklist,
     transaction_structure_checklist,
 )
+from agent.workflow_models import ACEEvent, CapabilityDescriptor, SourceBundle, TaskIntent, ToolPlan
 
-V4_BUILTIN_LEGAL_TOOLS = [
+BUILTIN_LEGAL_TOOLS = [
     legal_playbook_retrieval,
     transaction_structure_checklist,
     regulatory_execution_checklist,
@@ -136,7 +136,7 @@ def synthesize_capability(family: str) -> tuple[ACEEvent, Any | None]:
         tool_obj = _schema_bridge_tool()
         return ACEEvent(family=family, status="synthesized", reason="Generated safe schema-bridge helper.", tool_name=tool_obj.name), tool_obj
     if family in {"network_client", "file_writer", "browser_automation", "execution_side_effect"}:
-        return ACEEvent(family=family, status="blocked", reason="Unsafe capability synthesis is disabled in V4."), None
+        return ACEEvent(family=family, status="blocked", reason="Unsafe capability synthesis is disabled in the active engine."), None
     return ACEEvent(family=family, status="skipped", reason="No bounded synthesis path is defined for this family."), None
 
 

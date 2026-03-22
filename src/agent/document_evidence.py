@@ -1,7 +1,7 @@
 """
 Document Evidence Helpers
 =========================
-Structured document-evidence helpers used by the staged runtime.
+Structured document-evidence helpers used by the active engine.
 """
 
 from __future__ import annotations

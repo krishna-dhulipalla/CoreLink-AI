@@ -1,8 +1,4 @@
-"""
-Profile Context Packs
-=====================
-Explicit domain guidance and review rules for the staged finance-first runtime.
-"""
+"""Profile context packs for shared domain guidance and review rules."""
 
 from __future__ import annotations
 

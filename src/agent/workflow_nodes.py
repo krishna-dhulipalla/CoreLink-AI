@@ -1,4 +1,4 @@
-"""Nodes for the V4 hybrid routing runtime."""
+"""Nodes for the active hybrid routing engine."""
 
 from __future__ import annotations
 
@@ -15,7 +15,6 @@ from agent.contracts import AnswerContract
 from agent.context.evidence import _extract_policy_context
 from agent.context.extraction import derive_market_snapshot
 from agent.model_config import ChatOpenAI, get_client_kwargs, get_model_name, invoke_structured_output
-from agent.nodes.reviewer import _legal_depth_gaps, _looks_truncated, _matches_exact_json_contract, _options_gaps
 from agent.runtime_clock import increment_runtime_step
 from agent.runtime_support import detect_ambiguity_flags, detect_capability_flags, infer_task_profile, latest_human_text
 from agent.solver.options import (
@@ -28,10 +27,9 @@ from agent.solver.options import (
 from agent.solver.quant import deterministic_quant_final_answer
 from agent.tools.normalization import normalize_tool_output
 from agent.tracer import format_messages_for_trace, get_tracer
-from agent.v4.capabilities import resolve_tool_plan
-from agent.v4.context import _compact_tool_findings, build_curated_context, build_source_bundle, solver_context_block
-from agent.v4.contracts import CuratedContext, ExecutionJournal, QualityReport, SourceBundle, TaskIntent, ToolPlan
-from agent.v4.v4_prompts import (
+from agent.capabilities import resolve_tool_plan
+from agent.curated_context import _compact_tool_findings, build_curated_context, build_source_bundle, solver_context_block
+from agent.prompts import (
     PLANNER_SYSTEM,
     EXECUTOR_SYSTEM,
     SELF_REFLECTION_SYSTEM,
@@ -40,12 +38,14 @@ from agent.v4.v4_prompts import (
     heuristic_self_score,
     REUSABLE_TOOL_FAMILIES,
 )
-from agent.v4.state import V4AgentState
+from agent.review_utils import legal_depth_gaps, looks_truncated, matches_exact_json_contract, options_gaps
+from agent.workflow_models import CuratedContext, ExecutionJournal, QualityReport, SourceBundle, TaskIntent, ToolPlan
+from agent.workflow_state import RuntimeState
 from context_manager import count_tokens
 
 logger = logging.getLogger(__name__)
 
-# Prompts are centralized in v4_prompts.py — no inline prompt strings here.
+# Prompts are centralized in runtime_prompts.py — no inline prompt strings here.
 
 
 def _legal_structure_option_count(answer: str) -> int:
@@ -93,7 +93,7 @@ def _template_stub(intent: TaskIntent, allowed_tools: list[str] | None = None) -
         review_stages = ["COMPUTE", "SYNTHESIZE"]
     return {
         "template_id": intent.execution_mode,
-        "description": f"V4 execution mode: {intent.execution_mode}",
+        "description": f"Execution mode: {intent.execution_mode}",
         "allowed_stages": ["COMPUTE", "SYNTHESIZE", "REVISE", "COMPLETE"],
         "default_initial_stage": "COMPUTE" if intent.execution_mode == "exact_fast_path" else "SYNTHESIZE",
         "allowed_tool_names": list(allowed_tools or []),
@@ -231,7 +231,7 @@ def _heuristic_intent(task_text: str, answer_contract: dict[str, Any]) -> tuple[
     )
 
 
-def fast_path_gate(state: V4AgentState) -> dict[str, Any]:
+def fast_path_gate(state: RuntimeState) -> dict[str, Any]:
     step = increment_runtime_step()
     task_text = latest_human_text(state["messages"])
     answer_contract = state.get("answer_contract", {}) or {}
@@ -271,7 +271,7 @@ def fast_path_gate(state: V4AgentState) -> dict[str, Any]:
     }
 
 
-def task_planner(state: V4AgentState) -> dict[str, Any]:
+def task_planner(state: RuntimeState) -> dict[str, Any]:
     step = increment_runtime_step()
     existing = state.get("task_intent") or {}
     workpad = dict(state.get("workpad", {}))
@@ -331,7 +331,7 @@ def task_planner(state: V4AgentState) -> dict[str, Any]:
             candidate.planner_source = "llm"
             intent = candidate
         except Exception as exc:
-            logger.info("V4 planner LLM fallback used heuristic intent: %s", exc)
+            logger.info("Planner LLM fallback used heuristic intent: %s", exc)
 
     workpad["planner_output"] = intent.model_dump()
     workpad["review_mode"] = intent.review_mode
@@ -356,7 +356,7 @@ def task_planner(state: V4AgentState) -> dict[str, Any]:
 
 
 def make_capability_resolver(registry: dict[str, dict[str, Any]]):
-    def capability_resolver(state: V4AgentState) -> dict[str, Any]:
+    def capability_resolver(state: RuntimeState) -> dict[str, Any]:
         step = increment_runtime_step()
         task_text = latest_human_text(state["messages"])
         source_bundle = SourceBundle.model_validate(state.get("source_bundle") or build_source_bundle(task_text).model_dump())
@@ -393,7 +393,7 @@ def make_capability_resolver(registry: dict[str, dict[str, Any]]):
     return capability_resolver
 
 
-def context_curator(state: V4AgentState) -> dict[str, Any]:
+def context_curator(state: RuntimeState) -> dict[str, Any]:
     step = increment_runtime_step()
     task_text = latest_human_text(state["messages"])
     answer_contract = state.get("answer_contract", {}) or {}
@@ -444,7 +444,7 @@ def _tool_lookup(registry: dict[str, dict[str, Any]], tool_name: str) -> Any | N
     return payload.get("tool")
 
 
-def _structured_tool_args(state: V4AgentState, tool_name: str) -> dict[str, Any]:
+def _structured_tool_args(state: RuntimeState, tool_name: str) -> dict[str, Any]:
     source_bundle = SourceBundle.model_validate(state.get("source_bundle") or {})
     task_text = source_bundle.task_text
     if tool_name == "legal_playbook_retrieval":
@@ -481,7 +481,7 @@ def _structured_tool_args(state: V4AgentState, tool_name: str) -> dict[str, Any]
         prompt_facts = dict(inline_facts)
         if market_snapshot:
             prompt_facts["market_snapshot"] = market_snapshot
-        v3_like_state = {
+        compat_state = {
             "messages": state.get("messages", []),
             "evidence_pack": {
                 "prompt_facts": prompt_facts,
@@ -491,7 +491,7 @@ def _structured_tool_args(state: V4AgentState, tool_name: str) -> dict[str, Any]
             "workpad": {"tool_results": []},
             "assumption_ledger": state.get("assumption_ledger", []),
         }
-        tool_call = deterministic_policy_options_tool_call(v3_like_state) or deterministic_standard_options_tool_call(v3_like_state)
+        tool_call = deterministic_policy_options_tool_call(compat_state) or deterministic_standard_options_tool_call(compat_state)
         if tool_call:
             return dict(tool_call.get("arguments", {}))
         return {}
@@ -511,7 +511,7 @@ async def _invoke_tool(tool_obj: Any, args: dict[str, Any]) -> Any:
     return tool_obj.invoke(args)
 
 
-async def _run_tool_step(state: V4AgentState, registry: dict[str, dict[str, Any]], tool_name: str) -> tuple[dict[str, Any], Any]:
+async def _run_tool_step(state: RuntimeState, registry: dict[str, dict[str, Any]], tool_name: str) -> tuple[dict[str, Any], Any]:
     tool_obj = _tool_lookup(registry, tool_name)
     args = _structured_tool_args(state, tool_name)
     if tool_obj is None:
@@ -549,14 +549,14 @@ def _artifact_signature(text: str) -> str:
     return hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:16]
 
 
-def _latest_public_answer(state: V4AgentState) -> str:
+def _latest_public_answer(state: RuntimeState) -> str:
     for msg in reversed(state.get("messages", [])):
         if isinstance(msg, AIMessage) and msg.content and not msg.tool_calls:
             return str(msg.content)
     return ""
 
 
-def _exact_quant_answer(state: V4AgentState) -> str | None:
+def _exact_quant_answer(state: RuntimeState) -> str | None:
     source_bundle = SourceBundle.model_validate(state.get("source_bundle") or {})
     curated_context = CuratedContext.model_validate(state.get("curated_context") or {})
     relevant_rows = [fact["value"] for fact in curated_context.facts_in_use if fact.get("type") == "table_rows"]
@@ -582,7 +582,7 @@ def _exact_quant_answer(state: V4AgentState) -> str | None:
     return deterministic_quant_final_answer(adapter_state)
 
 
-def _options_final_answer(state: V4AgentState) -> str | None:
+def _options_final_answer(state: RuntimeState) -> str | None:
     source_bundle = SourceBundle.model_validate(state.get("source_bundle") or {})
     inline_facts = dict(source_bundle.inline_facts)
     market_snapshot, derived = derive_market_snapshot(source_bundle.task_text, inline_facts)
@@ -616,7 +616,7 @@ def _options_final_answer(state: V4AgentState) -> str | None:
 
 
 def make_executor(registry: dict[str, dict[str, Any]]):
-    async def executor(state: V4AgentState) -> dict[str, Any]:
+    async def executor(state: RuntimeState) -> dict[str, Any]:
         step = increment_runtime_step()
         intent = TaskIntent.model_validate(state.get("task_intent") or {})
         tool_plan = ToolPlan.model_validate(state.get("tool_plan") or {})
@@ -813,7 +813,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
     return executor
 
 
-def route_from_executor(state: V4AgentState) -> str:
+def route_from_executor(state: RuntimeState) -> str:
     workpad = state.get("workpad", {}) or {}
     if workpad.get("review_ready"):
         return "reviewer"
@@ -846,7 +846,7 @@ def _targeted_fix_prompt(missing_dimensions: list[str]) -> str:
     return "Add concise execution detail covering " + ", ".join(additions[:3]) + "."
 
 
-def reviewer(state: V4AgentState) -> dict[str, Any]:
+def reviewer(state: RuntimeState) -> dict[str, Any]:
     step = increment_runtime_step()
     intent = TaskIntent.model_validate(state.get("task_intent") or {})
     journal = ExecutionJournal.model_validate(state.get("execution_journal") or {})
@@ -856,22 +856,22 @@ def reviewer(state: V4AgentState) -> dict[str, Any]:
 
     missing: list[str] = []
     verdict = "pass"
-    reasoning = "V4 reviewer accepted the final artifact."
+    reasoning = "Reviewer accepted the final artifact."
     score = 0.9
 
-    if _looks_truncated(answer):
+    if looks_truncated(answer):
         verdict = "revise"
         reasoning = "Final answer appears truncated."
         missing = ["complete final answer"]
         score = 0.3
     elif intent.review_mode == "exact_quant":
-        if not _matches_exact_json_contract(answer, answer_contract):
+        if not matches_exact_json_contract(answer, answer_contract):
             verdict = "revise"
             reasoning = "Exact quantitative answer does not satisfy the output contract."
             missing = ["exact contract-compliant scalar output"]
             score = 0.4
     elif intent.task_family == "legal_transactional":
-        missing = _legal_depth_gaps(answer, latest_human_text(state["messages"]))
+        missing = legal_depth_gaps(answer, latest_human_text(state["messages"]))
         if _legal_structure_option_count(answer) < 2:
             missing = sorted(set([*missing, "multiple structure alternatives with tradeoffs"]))
         if _legal_frontload_gap(answer):
@@ -881,7 +881,7 @@ def reviewer(state: V4AgentState) -> dict[str, Any]:
             reasoning = "Final legal answer is directionally correct but still missing actionable execution depth or structure coverage."
             score = 0.62 if verdict == "revise" else 0.58
     elif intent.task_family == "finance_options":
-        option_missing = _options_gaps(answer)
+        option_missing = options_gaps(answer)
         if not journal.tool_results:
             option_missing.insert(0, "tool-backed strategy analysis")
         missing = sorted(set(option_missing))
@@ -947,7 +947,7 @@ def reviewer(state: V4AgentState) -> dict[str, Any]:
     }
 
 
-def route_from_reviewer(state: V4AgentState) -> str:
+def route_from_reviewer(state: RuntimeState) -> str:
     if state.get("solver_stage") == "REVISE":
         return "executor"
     if state.get("solver_stage") == "COMPLETE":
@@ -1005,7 +1005,7 @@ def _llm_self_reflection(task_text: str, answer: str, tool_count: int) -> dict[s
     return {"score": 0.8, "complete": True, "missing": [], "improve_prompt": ""}
 
 
-def self_reflection(state: V4AgentState) -> dict[str, Any]:
+def self_reflection(state: RuntimeState) -> dict[str, Any]:
     step = increment_runtime_step()
     journal = ExecutionJournal.model_validate(state.get("execution_journal") or {})
     report = QualityReport.model_validate(state.get("quality_report") or {})
@@ -1146,7 +1146,7 @@ def self_reflection(state: V4AgentState) -> dict[str, Any]:
     }
 
 
-def route_from_self_reflection(state: V4AgentState) -> str:
+def route_from_self_reflection(state: RuntimeState) -> str:
     if state.get("solver_stage") == "REVISE":
         return "executor"
     if state.get("answer_contract", {}).get("requires_adapter"):

@@ -45,7 +45,7 @@ def test_memory_store_persists_staged_records():
             task_profile="finance_quant",
             task_family="finance",
             capability_flags=["needs_math"],
-            route_path=["intake", "task_profiler", "context_builder", "solver", "reviewer", "reflect"],
+            route_path=["intake", "fast_path_gate", "task_planner", "context_curator", "executor", "reviewer", "reflect"],
             stage_history=["PLAN", "COMPUTE", "SYNTHESIZE"],
             answer_format="json",
             success=True,

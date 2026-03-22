@@ -1,8 +1,4 @@
-"""
-Agent Runner
-============
-Executes the staged finance-first graph and returns the final answer plus trace.
-"""
+"""Agent runner for the active engine graph."""
 
 from __future__ import annotations
 
@@ -81,7 +77,7 @@ def _extract_steps(final_state: AgentState, tracker: CostTracker, budget: Budget
     steps = list(final_state.get("workpad", {}).get("events", []))
     for msg in final_state.get("messages", []):
         if isinstance(msg, ToolMessage):
-            steps.append({"node": "tool_runner", "action": f"Tool result: {msg.name}"})
+            steps.append({"node": "executor", "action": f"Tool result: {msg.name}"})
     steps.append({"node": "cost_summary", **tracker.summary()})
     steps.append({"node": "budget_summary", **budget.summary()})
     return steps

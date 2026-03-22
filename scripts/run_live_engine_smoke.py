@@ -1,7 +1,7 @@
 """
-Live Staged Runtime Smoke
-=========================
-Runs a few representative prompts through the active staged runtime with the
+Live engine smoke.
+
+Runs a few representative prompts through the active engine with the
 configured live LLM and tool surface, then prints compact trace summaries.
 """
 
@@ -26,7 +26,6 @@ if str(SRC) not in sys.path:
 
 from agent.graph import build_agent_graph
 from agent.runner import run_agent_trace
-from agent.runtime_version import get_runtime_version
 from mcp_client import load_mcp_tools_from_env
 
 
@@ -103,7 +102,7 @@ def _summarize(trace: dict) -> dict:
     state = trace["final_state"]
     workpad = state.get("workpad", {})
     return {
-        "runtime_version": get_runtime_version(),
+        "runtime_version": "engine",
         "answer": trace["answer"],
         "task_profile": state.get("task_profile"),
         "capability_flags": state.get("capability_flags"),
@@ -140,7 +139,7 @@ async def main() -> None:
     payload = {
         "ok": True,
         "saved_at": datetime.now(timezone.utc).isoformat(),
-        "runtime_version": get_runtime_version(),
+        "runtime_version": "engine",
         "loaded_tools": sorted(getattr(tool, "name", "") for tool in tools if getattr(tool, "name", "")),
         "results": results,
     }

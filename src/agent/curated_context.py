@@ -1,4 +1,4 @@
-"""Source-bundle and curated-context helpers for V4."""
+"""Source-bundle and curated-context helpers for the active runtime."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from agent.context.evidence import (
 )
 from agent.context.extraction import extract_entities, extract_formulas, extract_inline_facts, extract_urls, parse_markdown_tables
 from agent.context.profiling import _extract_labeled_json_block
-from agent.v4.contracts import CuratedContext, SourceBundle, TaskIntent
+from agent.workflow_models import CuratedContext, SourceBundle, TaskIntent
 
 _DEAL_SIZE_RE = re.compile(r"\$?\s*(\d+(?:\.\d+)?)\s*(M|MM|B|BN|million|billion)\b", re.IGNORECASE)
 

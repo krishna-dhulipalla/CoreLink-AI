@@ -1,8 +1,4 @@
-"""
-CoreLink AI - A2A Server
-========================
-Serves the staged finance-first runtime over the A2A protocol.
-"""
+"""CoreLink AI A2A server."""
 
 import argparse
 
@@ -26,11 +22,11 @@ def main() -> None:
         id="finance-first-reasoning",
         name="Finance-First Reasoning",
         description=(
-            "A staged reasoning engine that builds task-specific context, uses structured "
+            "A modular reasoning engine that builds task-specific context, uses structured "
             "tools when needed, and returns normalized answers for finance, legal, and "
             "document-oriented tasks."
         ),
-        tags=["reasoning", "finance", "tool-use", "staged-runtime"],
+        tags=["reasoning", "finance", "tool-use", "engine"],
         examples=[
             "Calculate a finance metric from inline table data.",
             "Design an options strategy from volatility inputs.",
@@ -41,9 +37,9 @@ def main() -> None:
     agent_card = AgentCard(
         name="CoreLink AI",
         description=(
-            "A staged finance-first reasoning engine built on LangGraph and MCP. "
-            "It profiles each request, assembles structured evidence, runs solver/tool "
-            "stages, reviews milestone outputs, and applies final answer normalization."
+            "A finance-first reasoning engine built on LangGraph and MCP. "
+            "It plans each request, assembles structured evidence, executes safe tool-backed "
+            "reasoning, reviews the final artifact, and applies answer normalization."
         ),
         url=args.card_url or f"http://{args.host}:{args.port}/",
         version="0.1.0",

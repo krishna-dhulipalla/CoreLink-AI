@@ -27,8 +27,6 @@ if str(SRC) not in sys.path:
 from langchain_core.messages import AIMessage, HumanMessage
 
 from agent.runner import run_agent_trace
-from agent.runtime_version import get_runtime_version
-
 TRACE_DIR = ROOT / "Results&traces"
 
 
@@ -70,7 +68,7 @@ async def main():
     payload = {
         "ok": True,
         "benchmark_stateless": True,
-        "runtime_version": get_runtime_version(),
+        "runtime_version": "engine",
         "initial_messages": initial_messages,
         "updated_history": updated_history,
         "budget_summary": budget_summary,
@@ -79,7 +77,7 @@ async def main():
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     output_path = TRACE_DIR / f"benchmark_stateless_smoke_{stamp}.json"
     output_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
-    print(json.dumps({"ok": True, "saved_path": str(output_path), "runtime_version": get_runtime_version()}, ensure_ascii=True))
+    print(json.dumps({"ok": True, "saved_path": str(output_path), "runtime_version": "engine"}, ensure_ascii=True))
 
 
 if __name__ == "__main__":

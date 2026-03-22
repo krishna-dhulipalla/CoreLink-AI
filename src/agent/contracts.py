@@ -1,8 +1,4 @@
-"""
-Typed Runtime Contracts
-=======================
-Typed artifacts shared across the staged finance-first runtime.
-"""
+"""Typed contracts shared across the active engine."""
 
 from __future__ import annotations
 

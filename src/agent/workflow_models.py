@@ -1,4 +1,4 @@
-"""Contracts for the V4 hybrid routing runtime."""
+"""Contracts for the active hybrid routing runtime."""
 
 from __future__ import annotations
 

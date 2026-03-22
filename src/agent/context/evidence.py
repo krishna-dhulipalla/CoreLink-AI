@@ -516,7 +516,7 @@ def build_evidence_pack(
             "derived_facts",
             derived,
             source_class="derived",
-            source_id="context_builder",
+            source_id="evidence_builder",
             extraction_method="derive_market_snapshot",
         )
     )

@@ -1,7 +1,7 @@
 """
 Memory Schemas
 ==============
-Versioned persistence records for the staged finance-first runtime.
+Versioned persistence records for the active engine.
 
 The active runtime persists four compact record types:
   - RunMemory:    one record per completed graph run

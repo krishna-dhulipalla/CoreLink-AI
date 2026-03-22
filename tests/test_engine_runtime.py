@@ -7,9 +7,9 @@ from langchain_core.messages import AIMessage
 from agent.budget import BudgetTracker
 from agent.nodes.intake import intake
 from agent.tracer import RunTracer
-from agent.v4.capabilities import V4_BUILTIN_LEGAL_TOOLS, build_capability_registry
-from agent.v4.context import solver_context_block
-from agent.v4.nodes import (
+from agent.capabilities import BUILTIN_LEGAL_TOOLS, build_capability_registry
+from agent.curated_context import solver_context_block
+from agent.workflow_nodes import (
     context_curator,
     fast_path_gate,
     make_capability_resolver,
@@ -19,8 +19,8 @@ from agent.v4.nodes import (
     self_reflection,
     task_planner,
 )
-from agent.v4.v4_prompts import build_revision_prompt
-from staged_test_utils import make_state
+from agent.prompts import build_revision_prompt
+from test_utils import make_state
 from tools import CALCULATOR_TOOL, SEARCH_TOOL
 
 
@@ -35,9 +35,9 @@ class _FakeModel:
 
 
 def test_build_agent_graph_uses_active_runtime(monkeypatch):
-    monkeypatch.setattr("agent.graph.build_runtime_graph", lambda external_tools=None: "runtime_graph")
+    monkeypatch.setattr("agent.graph.build_agent_graph", lambda external_tools=None: "engine_graph")
 
-    assert graph_module.build_agent_graph() == "runtime_graph"
+    assert graph_module.build_agent_graph() == "engine_graph"
 
 
 def _exact_quant_prompt() -> str:
@@ -62,12 +62,12 @@ def _exact_quant_prompt() -> str:
     """
 
 
-def test_v4_exact_quant_fast_path_curates_without_duplicate_solver_payload():
+def test_engine_exact_quant_fast_path_curates_without_duplicate_solver_payload():
     state = make_state(_exact_quant_prompt())
     state.update(intake(state))
     state.update(fast_path_gate(state))
     state.update(task_planner(state))
-    resolver = make_capability_resolver(build_capability_registry([CALCULATOR_TOOL, SEARCH_TOOL, *V4_BUILTIN_LEGAL_TOOLS]))
+    resolver = make_capability_resolver(build_capability_registry([CALCULATOR_TOOL, SEARCH_TOOL, *BUILTIN_LEGAL_TOOLS]))
     state.update(resolver(state))
     result = context_curator(state)
 
@@ -80,7 +80,7 @@ def test_v4_exact_quant_fast_path_curates_without_duplicate_solver_payload():
     assert any(fact["type"] == "table_rows" for fact in result["curated_context"]["facts_in_use"])
 
 
-def test_v4_solver_context_block_removes_redundant_objective_and_tool_query_noise():
+def test_engine_solver_context_block_removes_redundant_objective_and_tool_query_noise():
     payload = solver_context_block(
         {
             "objective": "repeat me",
@@ -110,7 +110,7 @@ def test_v4_solver_context_block_removes_redundant_objective_and_tool_query_nois
     assert "repeat me" not in payload
 
 
-def test_v4_legal_planner_binds_legal_capability_tools_not_calculator_only():
+def test_engine_legal_planner_binds_legal_capability_tools_not_calculator_only():
     prompt = (
         "target company we're acquiring has some clean IP but also regulatory compliance gaps in EU and US. "
         "their board wants stock consideration for tax reasons but we can't risk inheriting the compliance liabilities. "
@@ -120,7 +120,7 @@ def test_v4_legal_planner_binds_legal_capability_tools_not_calculator_only():
     state.update(intake(state))
     state.update(fast_path_gate(state))
     state.update(task_planner(state))
-    resolver = make_capability_resolver(build_capability_registry([CALCULATOR_TOOL, SEARCH_TOOL, *V4_BUILTIN_LEGAL_TOOLS]))
+    resolver = make_capability_resolver(build_capability_registry([CALCULATOR_TOOL, SEARCH_TOOL, *BUILTIN_LEGAL_TOOLS]))
     result = resolver(state)
 
     assert result["tool_plan"]["selected_tools"]
@@ -131,16 +131,16 @@ def test_v4_legal_planner_binds_legal_capability_tools_not_calculator_only():
     assert result["execution_template"]["template_id"] == "advisory_analysis"
 
 
-def test_v4_executor_returns_deterministic_exact_quant_answer():
+def test_engine_executor_returns_deterministic_exact_quant_answer():
     state = make_state(_exact_quant_prompt())
     state.update(intake(state))
     state.update(fast_path_gate(state))
     state.update(task_planner(state))
-    resolver = make_capability_resolver(build_capability_registry([CALCULATOR_TOOL, SEARCH_TOOL, *V4_BUILTIN_LEGAL_TOOLS]))
+    resolver = make_capability_resolver(build_capability_registry([CALCULATOR_TOOL, SEARCH_TOOL, *BUILTIN_LEGAL_TOOLS]))
     state.update(resolver(state))
     state.update(context_curator(state))
 
-    executor = make_executor(build_capability_registry([CALCULATOR_TOOL, SEARCH_TOOL, *V4_BUILTIN_LEGAL_TOOLS]))
+    executor = make_executor(build_capability_registry([CALCULATOR_TOOL, SEARCH_TOOL, *BUILTIN_LEGAL_TOOLS]))
     result = asyncio.run(executor(state))
 
     assert result["messages"]
@@ -148,7 +148,7 @@ def test_v4_executor_returns_deterministic_exact_quant_answer():
     assert result["workpad"]["review_ready"] is True
 
 
-def test_v4_executor_dedupes_legal_prompt_and_uses_higher_legal_completion_budget(monkeypatch):
+def test_engine_executor_dedupes_legal_prompt_and_uses_higher_legal_completion_budget(monkeypatch):
     prompt = (
         "target company we're acquiring has some clean IP but also regulatory compliance gaps in EU and US. "
         "their board wants stock consideration for tax reasons but we can't risk inheriting the compliance liabilities. "
@@ -158,7 +158,7 @@ def test_v4_executor_dedupes_legal_prompt_and_uses_higher_legal_completion_budge
     state.update(intake(state))
     state.update(fast_path_gate(state))
     state.update(task_planner(state))
-    resolver = make_capability_resolver(build_capability_registry([CALCULATOR_TOOL, SEARCH_TOOL, *V4_BUILTIN_LEGAL_TOOLS]))
+    resolver = make_capability_resolver(build_capability_registry([CALCULATOR_TOOL, SEARCH_TOOL, *BUILTIN_LEGAL_TOOLS]))
     state.update(resolver(state))
     state.update(context_curator(state))
     state["tool_plan"]["pending_tools"] = []
@@ -175,11 +175,11 @@ def test_v4_executor_dedupes_legal_prompt_and_uses_higher_legal_completion_budge
 
     captured: list = []
     monkeypatch.setattr(
-        "agent.v4.nodes.ChatOpenAI",
+        "agent.workflow_nodes.ChatOpenAI",
         lambda **kwargs: _FakeModel(AIMessage(content="Structured legal answer with multiple options."), captured),
     )
 
-    executor = make_executor(build_capability_registry([CALCULATOR_TOOL, SEARCH_TOOL, *V4_BUILTIN_LEGAL_TOOLS]))
+    executor = make_executor(build_capability_registry([CALCULATOR_TOOL, SEARCH_TOOL, *BUILTIN_LEGAL_TOOLS]))
     result = asyncio.run(executor(state))
 
     assert result["workpad"]["completion_budget"] >= 1600
@@ -190,7 +190,7 @@ def test_v4_executor_dedupes_legal_prompt_and_uses_higher_legal_completion_budge
     assert '"tool_results"' not in serialized
 
 
-def test_v4_executor_uses_deterministic_options_final_without_llm(monkeypatch):
+def test_engine_executor_uses_deterministic_options_final_without_llm(monkeypatch):
     prompt = (
         "META's current IV is 35% while its 30-day historical volatility is 28%. "
         "The IV percentile is 75%. Should you be a net buyer or seller of options? Design a strategy accordingly."
@@ -247,9 +247,9 @@ def test_v4_executor_uses_deterministic_options_final_without_llm(monkeypatch):
             "final_artifact_signature": "",
         },
     )
-    monkeypatch.setattr("agent.v4.nodes.ChatOpenAI", lambda **kwargs: (_ for _ in ()).throw(AssertionError("LLM should not run")))
+    monkeypatch.setattr("agent.workflow_nodes.ChatOpenAI", lambda **kwargs: (_ for _ in ()).throw(AssertionError("LLM should not run")))
 
-    executor = make_executor(build_capability_registry([CALCULATOR_TOOL, SEARCH_TOOL, *V4_BUILTIN_LEGAL_TOOLS]))
+    executor = make_executor(build_capability_registry([CALCULATOR_TOOL, SEARCH_TOOL, *BUILTIN_LEGAL_TOOLS]))
     result = asyncio.run(executor(state))
     answer = str(result["messages"][0].content)
 
@@ -259,7 +259,7 @@ def test_v4_executor_uses_deterministic_options_final_without_llm(monkeypatch):
     assert "- vega: -0.683" in answer.lower()
 
 
-def test_v4_reviewer_revises_legal_once_then_stops_cleanly():
+def test_engine_reviewer_revises_legal_once_then_stops_cleanly():
     prompt = (
         "Need acquisition structure options with stock consideration, liability protection, and cross-border compliance handling."
     )
@@ -293,7 +293,7 @@ def test_v4_reviewer_revises_legal_once_then_stops_cleanly():
     assert second["quality_report"]["verdict"] == "fail"
 
 
-def test_v4_reviewer_rejects_single_recommended_legal_structure():
+def test_engine_reviewer_rejects_single_recommended_legal_structure():
     prompt = "Need structure options for a cross-border acquisition with stock consideration and compliance risk."
     state = make_state(
         prompt,
@@ -328,7 +328,7 @@ def test_v4_reviewer_rejects_single_recommended_legal_structure():
     assert "multiple structure alternatives" in " ".join(result["review_feedback"]["missing_dimensions"]).lower()
 
 
-def test_v4_reviewer_flags_when_option_snapshot_is_not_front_loaded():
+def test_engine_reviewer_flags_when_option_snapshot_is_not_front_loaded():
     prompt = "Need structure options for a cross-border acquisition with stock consideration and compliance risk."
     repetitive_prefix = "Recommended structure: reverse triangular merger. " * 80
     state = make_state(
@@ -397,7 +397,7 @@ def test_failed_reviewer_path_uses_one_bounded_salvage_pass():
     assert route_from_reviewer(state) == "self_reflection"
 
 
-def test_v4_self_reflection_requests_one_extra_legal_deepen_pass(monkeypatch):
+def test_engine_self_reflection_requests_one_extra_legal_deepen_pass(monkeypatch):
     state = make_state(
         "Advise on acquisition structure.",
         task_profile="legal_transactional",
@@ -422,7 +422,7 @@ def test_v4_self_reflection_requests_one_extra_legal_deepen_pass(monkeypatch):
     # LLM self-reflection finds missing items
     reflection_response = '{"score": 0.55, "complete": false, "missing": ["execution-specific next steps", "risk allocation detail"], "improve_prompt": "Add execution-specific next steps and risk-allocation detail."}'
     monkeypatch.setattr(
-        "agent.v4.nodes.ChatOpenAI",
+        "agent.workflow_nodes.ChatOpenAI",
         lambda **kwargs: _FakeModel(AIMessage(content=reflection_response)),
     )
 
@@ -432,7 +432,7 @@ def test_v4_self_reflection_requests_one_extra_legal_deepen_pass(monkeypatch):
     assert "next steps" in " ".join(result["review_feedback"]["missing_dimensions"]).lower()
 
 
-def test_v4_legal_revision_prompt_requires_front_loaded_snapshot():
+def test_engine_legal_revision_prompt_requires_front_loaded_snapshot():
     prompt = build_revision_prompt(
         ["opening summary with multiple viable paths before the deep dive", "regulatory execution specifics"],
         improve_hint="Add approvals, consultation timing, and closing conditions.",
@@ -443,7 +443,7 @@ def test_v4_legal_revision_prompt_requires_front_loaded_snapshot():
     assert "multiple viable structures" in prompt.lower()
 
 
-def test_v4_tracer_captures_v4_headers_and_counts(monkeypatch):
+def test_engine_tracer_captures_engine_headers_and_counts(monkeypatch):
     tracer = RunTracer()
     captured: dict[str, object] = {}
     monkeypatch.setattr(

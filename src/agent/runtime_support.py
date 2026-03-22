@@ -1,7 +1,7 @@
 """
-Compatibility facade for staged runtime support helpers.
+Compatibility facade for shared engine support helpers.
 
-The active implementations now live under ``agent.context``.
+The active implementations live under ``agent.context``.
 """
 
 from agent.context import evidence as _evidence

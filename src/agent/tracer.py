@@ -90,13 +90,8 @@ class RunTracer:
         entry.update(data)
         self._nodes.append(entry)
 
-        # Cache top-level summaries so the header doesn't need a second pass
-        if node == "task_profiler":
-            self._profile = data.get("profile", "")
-            self._complexity_tier = data.get("complexity_tier", "")
-        elif node == "template_selector":
-            self._template_id = data.get("template_id", "")
-        elif node == "fast_path_gate":
+        # Cache top-level summaries so the header doesn't need a second pass.
+        if node == "fast_path_gate":
             if not self._profile:
                 self._profile = data.get("task_family", "")
             if not self._template_id and data.get("execution_mode"):
@@ -143,10 +138,7 @@ class RunTracer:
                 llm_calls += 1
             elif entry.get("node") == "executor" and entry.get("used_llm"):
                 llm_calls += 1
-            # Count tool calls from tool_runner (legacy) or executor tool_results
-            if entry.get("node") == "tool_runner":
-                tool_calls += 1
-            elif entry.get("node") == "executor":
+            if entry.get("node") == "executor":
                 tools_ran = entry.get("tools_ran")
                 if tools_ran and isinstance(tools_ran, list):
                     tool_calls += len(tools_ran)
