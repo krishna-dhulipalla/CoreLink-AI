@@ -47,6 +47,7 @@ from agent.prompts import (
     EXECUTOR_SYSTEM,
     SELF_REFLECTION_SYSTEM,
     build_revision_prompt,
+    contract_guidance,
     execution_guidance,
     heuristic_self_score,
     REUSABLE_TOOL_FAMILIES,
@@ -1722,6 +1723,9 @@ def make_executor(registry: dict[str, dict[str, Any]]):
         guidance = execution_guidance(intent.task_family, intent.execution_mode)
         if guidance:
             prompt_messages.append(SystemMessage(content=guidance))
+        formatting_guidance = contract_guidance(state.get("answer_contract", {}) or {})
+        if formatting_guidance:
+            prompt_messages.append(SystemMessage(content=formatting_guidance))
         if is_revision:
             revision_text = build_revision_prompt(
                 missing_dimensions=review_feedback.get("missing_dimensions", []),

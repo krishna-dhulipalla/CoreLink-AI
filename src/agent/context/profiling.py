@@ -5,6 +5,7 @@ Profiling and answer-contract helpers.
 from __future__ import annotations
 
 import json
+import os
 import re
 from typing import Any
 
@@ -16,6 +17,20 @@ from agent.profile_packs import get_profile_pack
 from agent.template_library import get_execution_template
 
 _XML_TAG_RE = re.compile(r"<([A-Za-z][A-Za-z0-9_\-]*)>")
+
+
+def _truthy_env(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _officeqa_xml_contract_enabled() -> bool:
+    if _truthy_env("OFFICEQA_FINAL_ANSWER_TAGS") or _truthy_env("OFFICEQA_XML_OUTPUT"):
+        return True
+    if os.getenv("BENCHMARK_NAME", "").strip().lower() == "officeqa":
+        return True
+    if _truthy_env("BENCHMARK_STATELESS") and os.getenv("OFFICEQA_CORPUS_DIR", "").strip():
+        return True
+    return False
 
 
 def _extract_labeled_json_block(text: str, label: str) -> Any | None:
@@ -88,6 +103,26 @@ def normalize_whitespace(text: str) -> str:
 def extract_answer_contract(task_text: str) -> AnswerContract:
     text = task_text or ""
     lowered = text.lower()
+
+    if _officeqa_xml_contract_enabled():
+        return AnswerContract(
+            format="xml",
+            requires_adapter=True,
+            raw_instruction="OfficeQA benchmark requires <REASONING> and <FINAL_ANSWER> XML tags.",
+            xml_root_tag="FINAL_ANSWER",
+            section_requirements=["REASONING", "FINAL_ANSWER"],
+            content_rules=[
+                "Place step-by-step reasoning inside <REASONING> tags.",
+                "Place only the final exact value or exact string answer inside <FINAL_ANSWER> tags.",
+                "Do not include units, labels, or extra explanation inside <FINAL_ANSWER>.",
+            ],
+            value_rules={
+                "reasoning_tag": "REASONING",
+                "final_answer_tag": "FINAL_ANSWER",
+                "final_answer_only": True,
+                "preserve_numeric_format": True,
+            },
+        )
 
     if "output format" in lowered or "json format" in lowered or '{"answer"' in text:
         wrapper = None

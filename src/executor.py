@@ -33,7 +33,7 @@ from a2a.utils import (
 from agent import build_agent_graph, run_agent
 from agent.model_config import startup_compatibility_warnings
 from conversation_store import ConversationStore
-from mcp_client import load_mcp_tools_from_env
+from mcp_client import judge_mcp_discovery_enabled, load_mcp_tools_from_env
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +89,13 @@ class Executor(AgentExecutor):
                 logger.info("MCP tools refreshed: %s", loaded_names)
             self.graph = build_agent_graph(external_tools=self._mcp_tools)
 
+    def _should_refresh_mcp_tools(self) -> bool:
+        if self._runtime_mcp_refresh_attempted:
+            return False
+        if judge_mcp_discovery_enabled():
+            return True
+        return not self._mcp_loaded
+
     async def execute(
         self, context: RequestContext, event_queue: EventQueue
     ) -> None:
@@ -120,7 +127,7 @@ class Executor(AgentExecutor):
             input_text = get_message_text(msg)
             context_id = task.context_id
 
-            if not self._mcp_tools and not self._runtime_mcp_refresh_attempted:
+            if self._should_refresh_mcp_tools():
                 self._runtime_mcp_refresh_attempted = True
                 await self._refresh_mcp_tools()
 

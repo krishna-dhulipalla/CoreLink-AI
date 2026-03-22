@@ -16,6 +16,8 @@ from agent.runtime_clock import increment_runtime_step
 from agent.state import AgentState
 
 logger = logging.getLogger(__name__)
+_NUMERIC_TOKEN_RE = re.compile(r"[-+]?\d[\d,]*(?:\.\d+)?%?")
+_TAG_BLOCK_RE = re.compile(r"<(?P<tag>[A-Za-z][A-Za-z0-9_\-]*)>.*?</(?P=tag)>\s*", re.DOTALL)
 
 
 def _latest_answer(messages) -> str:
@@ -44,6 +46,92 @@ def _coerce_scalar(text: str):
         return value
 
 
+def _extract_tag_contents(text: str, tag: str) -> str:
+    if not tag:
+        return ""
+    match = re.search(rf"<{re.escape(tag)}>\s*(.*?)\s*</{re.escape(tag)}>", text or "", re.DOTALL)
+    return str(match.group(1)).strip() if match else ""
+
+
+def _escape_xml(text: str) -> str:
+    return (
+        str(text or "")
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
+def _strip_xml_blocks(text: str) -> str:
+    return _TAG_BLOCK_RE.sub("", text or "").strip()
+
+
+def _extract_labeled_final_value(text: str) -> str:
+    patterns = (
+        r"(?im)^\s*(?:final answer|answer|conclusion|result)\s*:\s*(.+?)\s*$",
+        r"(?im)^\s*\*\*(?:final answer|answer|conclusion|result)\*\*\s*:\s*(.+?)\s*$",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text or "")
+        if not match:
+            continue
+        candidate = str(match.group(1)).strip().strip("`").strip("*")
+        if candidate:
+            return candidate
+    return ""
+
+
+def _infer_final_answer_value(text: str) -> str:
+    source = str(text or "").strip()
+    if not source:
+        return ""
+
+    explicit = _extract_labeled_final_value(source)
+    if explicit:
+        numeric_match = _NUMERIC_TOKEN_RE.search(explicit)
+        if numeric_match and numeric_match.group(0) == explicit.strip().rstrip("."):
+            return numeric_match.group(0)
+        return explicit.rstrip(".")
+
+    numeric_tokens = _NUMERIC_TOKEN_RE.findall(source)
+    if numeric_tokens:
+        for line in reversed([part.strip() for part in source.splitlines() if part.strip()]):
+            labeled = _extract_labeled_final_value(line)
+            if labeled:
+                return labeled.rstrip(".")
+            line_numbers = _NUMERIC_TOKEN_RE.findall(line)
+            if line_numbers:
+                return line_numbers[-1]
+        return numeric_tokens[-1]
+
+    tail_lines = [part.strip() for part in source.splitlines() if part.strip()]
+    if tail_lines:
+        return tail_lines[-1].strip().strip("`").rstrip(".")
+    return source
+
+
+def _adapt_final_answer_tags(source_text: str, contract: dict) -> str:
+    value_rules = dict(contract.get("value_rules") or {})
+    reasoning_tag = str(value_rules.get("reasoning_tag") or "REASONING")
+    final_answer_tag = str(value_rules.get("final_answer_tag") or contract.get("xml_root_tag") or "FINAL_ANSWER")
+
+    existing_final = _extract_tag_contents(source_text, final_answer_tag)
+    existing_reasoning = _extract_tag_contents(source_text, reasoning_tag)
+    final_value = existing_final or _infer_final_answer_value(_strip_xml_blocks(source_text))
+
+    if existing_reasoning:
+        reasoning_text = existing_reasoning
+    else:
+        reasoning_text = _strip_xml_blocks(source_text)
+        if not reasoning_text:
+            reasoning_text = f"The final answer is {final_value}."
+
+    return (
+        f"<{reasoning_tag}>\n{_escape_xml(reasoning_text)}\n</{reasoning_tag}>\n"
+        f"<{final_answer_tag}>\n{_escape_xml(final_value)}\n</{final_answer_tag}>"
+    )
+
+
 def output_adapter(state: AgentState) -> dict:
     step = increment_runtime_step()
     contract = dict(state.get("answer_contract", {}))
@@ -67,13 +155,12 @@ def output_adapter(state: AgentState) -> dict:
             wrapper = contract.get("wrapper_key") or "answer"
             adapted = json.dumps({wrapper: _coerce_scalar(source_text)}, ensure_ascii=True)
     elif fmt == "xml":
-        root = contract.get("xml_root_tag") or "answer"
-        escaped = (
-            source_text.replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-        )
-        adapted = f"<{root}>{escaped}</{root}>"
+        value_rules = dict(contract.get("value_rules") or {})
+        if str(value_rules.get("final_answer_tag") or contract.get("xml_root_tag") or "") == "FINAL_ANSWER":
+            adapted = _adapt_final_answer_tags(source_text, contract)
+        else:
+            root = contract.get("xml_root_tag") or "answer"
+            adapted = f"<{root}>{_escape_xml(source_text)}</{root}>"
     else:
         example = contract.get("exact_output_example")
         if example and re.fullmatch(r"\{.*\}", example.strip()):

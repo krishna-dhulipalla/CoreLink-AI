@@ -33,6 +33,10 @@ def _normalize_mcp_url(url: str) -> str:
     return normalized
 
 
+def judge_mcp_discovery_enabled() -> bool:
+    return os.getenv("ENABLE_JUDGE_MCP_DISCOVERY", "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
 def _parse_legacy_stdio_args(cmd_args: str) -> tuple[str, list[str]]:
     """Parse legacy colon-delimited stdio config.
 
@@ -120,8 +124,7 @@ def _parse_server_config() -> dict[str, dict[str, Any]]:
                 "transport": "stdio",
             }
 
-    judge_enabled = os.getenv("ENABLE_JUDGE_MCP_DISCOVERY", "1").strip().lower() not in {"0", "false", "no", "off"}
-    if judge_enabled:
+    if judge_mcp_discovery_enabled():
         judge_url = (
             os.getenv("BENCHMARK_JUDGE_MCP_URL", "").strip()
             or os.getenv("JUDGE_MCP_URL", "").strip()
@@ -151,22 +154,37 @@ async def load_mcp_tools_from_env() -> list:
 
     try:
         from langchain_mcp_adapters.client import MultiServerMCPClient
-
-        logger.info(f"Connecting to MCP servers: {list(config.keys())}")
-        client = MultiServerMCPClient(config)
-        tools = await client.get_tools()
-        logger.info(
-            f"Loaded {len(tools)} tools from MCP servers: "
-            f"{[t.name for t in tools]}"
-        )
-        return tools
-
     except ImportError:
         logger.error(
             "langchain-mcp-adapters not installed. "
             "Run: uv add langchain-mcp-adapters"
         )
         return []
-    except Exception as e:
-        logger.error(f"Failed to load MCP tools: {e}")
+
+    loaded_tools: list[Any] = []
+    seen_names: set[str] = set()
+    for server_name, server_config in config.items():
+        try:
+            logger.info("Connecting to MCP server '%s'", server_name)
+            client = MultiServerMCPClient({server_name: server_config})
+            server_tools = await client.get_tools()
+            logger.info(
+                "Loaded %s MCP tools from '%s': %s",
+                len(server_tools),
+                server_name,
+                [tool.name for tool in server_tools],
+            )
+            for tool in server_tools:
+                tool_name = str(getattr(tool, "name", "") or "")
+                if not tool_name or tool_name in seen_names:
+                    continue
+                seen_names.add(tool_name)
+                loaded_tools.append(tool)
+        except Exception as exc:
+            logger.error("Failed to load MCP tools from server '%s': %s", server_name, exc)
+
+    if not loaded_tools:
+        logger.warning("No MCP tools were loaded successfully from configured servers: %s", list(config.keys()))
         return []
+
+    return loaded_tools

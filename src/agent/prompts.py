@@ -9,6 +9,8 @@ Prompt design follows patterns from top-scoring finance agents:
 
 from __future__ import annotations
 
+from typing import Any
+
 # ---------------------------------------------------------------------------
 # Planner
 # ---------------------------------------------------------------------------
@@ -128,6 +130,33 @@ MARKET_SCENARIO_GUIDANCE = (
     "State the setup, stress case, base case, and risk controls.\n"
     "Tie the recommendation to the specific scenario rather than giving a generic market memo."
 )
+
+
+def contract_guidance(answer_contract: dict[str, Any]) -> str:
+    """Return contract-specific formatting guidance for the executor."""
+    contract = dict(answer_contract or {})
+    value_rules = dict(contract.get("value_rules") or {})
+    final_answer_tag = str(value_rules.get("final_answer_tag", "") or contract.get("xml_root_tag", "") or "")
+    reasoning_tag = str(value_rules.get("reasoning_tag", "") or "")
+
+    if final_answer_tag == "FINAL_ANSWER":
+        reasoning_tag = reasoning_tag or "REASONING"
+        return (
+            "Benchmark formatting is strict.\n"
+            f"Put step-by-step reasoning inside <{reasoning_tag}>...</{reasoning_tag}>.\n"
+            f"Put ONLY the final exact value or exact string inside <{final_answer_tag}>...</{final_answer_tag}>.\n"
+            f"Inside <{final_answer_tag}> include no units, labels, prefixes, suffixes, or explanation.\n"
+            "Preserve commas, decimals, and percent signs only when they are part of the exact answer."
+        )
+
+    if contract.get("requires_adapter") and contract.get("format") == "json":
+        wrapper_key = str(contract.get("wrapper_key") or "answer")
+        return (
+            "The final answer must match the exact JSON contract.\n"
+            f"Return the final result as a JSON object with the key \"{wrapper_key}\"."
+        )
+
+    return ""
 
 
 def execution_guidance(task_family: str, execution_mode: str) -> str:
