@@ -77,3 +77,34 @@ def test_output_adapter_wraps_officeqa_reasoning_and_final_answer_tags():
     assert "<FINAL_ANSWER>" in content
     assert "2,602" in content
     assert "million nominal dollars" not in content.split("<FINAL_ANSWER>", 1)[1]
+
+
+def test_output_adapter_normalizes_overlong_existing_final_answer_block():
+    state = make_state(
+        "OfficeQA numeric answer.",
+        answer_contract={
+            "format": "xml",
+            "requires_adapter": True,
+            "xml_root_tag": "FINAL_ANSWER",
+            "value_rules": {
+                "reasoning_tag": "REASONING",
+                "final_answer_tag": "FINAL_ANSWER",
+                "final_answer_only": True,
+            },
+        },
+    )
+    state["messages"].append(
+        AIMessage(
+            content=(
+                "<REASONING>Work shown here.</REASONING>\n"
+                "<FINAL_ANSWER>Thus, the answer is 40.90.\n"
+                "&lt;FINAL_ANSWER&gt;40.90&lt;/FINAL_ANSWER&gt;</FINAL_ANSWER>"
+            )
+        )
+    )
+
+    result = output_adapter(state)
+    content = result["messages"][0].content
+    final_block = content.split("<FINAL_ANSWER>", 1)[1].split("</FINAL_ANSWER>", 1)[0].strip()
+
+    assert final_block == "40.90"

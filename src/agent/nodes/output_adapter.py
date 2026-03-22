@@ -110,6 +110,20 @@ def _infer_final_answer_value(text: str) -> str:
     return source
 
 
+def _final_answer_needs_normalization(text: str) -> bool:
+    candidate = str(text or "").strip()
+    if not candidate:
+        return True
+    if len(candidate) > 120:
+        return True
+    lowered = candidate.lower()
+    if any(marker in lowered for marker in ("thus,", "therefore", "final answer", "reasoning", "<final_answer>", "&lt;final_answer&gt;")):
+        return True
+    if "<" in candidate or ">" in candidate:
+        return True
+    return False
+
+
 def _adapt_final_answer_tags(source_text: str, contract: dict) -> str:
     value_rules = dict(contract.get("value_rules") or {})
     reasoning_tag = str(value_rules.get("reasoning_tag") or "REASONING")
@@ -117,7 +131,10 @@ def _adapt_final_answer_tags(source_text: str, contract: dict) -> str:
 
     existing_final = _extract_tag_contents(source_text, final_answer_tag)
     existing_reasoning = _extract_tag_contents(source_text, reasoning_tag)
-    final_value = existing_final or _infer_final_answer_value(_strip_xml_blocks(source_text))
+    if existing_final and not _final_answer_needs_normalization(existing_final):
+        final_value = existing_final
+    else:
+        final_value = _infer_final_answer_value(existing_final or _strip_xml_blocks(source_text))
 
     if existing_reasoning:
         reasoning_text = existing_reasoning

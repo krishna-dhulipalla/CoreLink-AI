@@ -350,6 +350,30 @@ def _template_stub(intent: TaskIntent, allowed_tools: list[str] | None = None) -
     }
 
 
+def _officeqa_contract_enabled(answer_contract: dict[str, Any]) -> bool:
+    value_rules = dict(answer_contract.get("value_rules") or {})
+    return str(value_rules.get("final_answer_tag") or answer_contract.get("xml_root_tag") or "") == "FINAL_ANSWER"
+
+
+def _needs_derived_calculation(task_text: str, capability_flags: list[str]) -> bool:
+    normalized = (task_text or "").lower()
+    if "needs_math" in capability_flags or "needs_analytical_reasoning" in capability_flags:
+        return True
+    return any(
+        token in normalized
+        for token in (
+            "sum",
+            "total sum",
+            "difference",
+            "absolute difference",
+            "percent change",
+            "rounded",
+            "inflation",
+            "adjusted",
+        )
+    )
+
+
 def _heuristic_intent(task_text: str, answer_contract: dict[str, Any]) -> tuple[TaskIntent, list[str], list[str]]:
     contract_obj = AnswerContract.model_validate(answer_contract or {})
     capability_flags = detect_capability_flags(task_text, contract_obj)
@@ -371,6 +395,27 @@ def _heuristic_intent(task_text: str, answer_contract: dict[str, Any]) -> tuple[
                 review_mode="qualitative_advisory",
                 completion_mode="capability_gap",
                 routing_rationale="Prompt requests a non-finance artifact outside the active engine scope.",
+                confidence=0.95,
+                planner_source="heuristic",
+            ),
+            capability_flags,
+            ambiguity_flags,
+        )
+
+    if _officeqa_contract_enabled(answer_contract):
+        tool_families = ["document_retrieval"]
+        if _needs_derived_calculation(task_text, capability_flags):
+            tool_families.extend(["analytical_reasoning", "exact_compute"])
+        return (
+            TaskIntent(
+                task_family="document_qa",
+                execution_mode="document_grounded_analysis",
+                complexity_tier="structured_analysis",
+                tool_families_needed=tool_families,
+                evidence_strategy="document_first",
+                review_mode="document_grounded",
+                completion_mode="document_grounded",
+                routing_rationale="OfficeQA-style benchmark tasks must ground the answer in provided documents before any calculation or synthesis.",
                 confidence=0.95,
                 planner_source="heuristic",
             ),
@@ -911,7 +956,10 @@ async def _run_tool_step(state: RuntimeState, registry: dict[str, dict[str, Any]
     args = _structured_tool_args(state, registry, tool_name)
     if tool_obj is None:
         return args, normalize_tool_output(tool_name, {"error": f"Tool '{tool_name}' is not registered."}, args)
-    raw = await _invoke_tool(tool_obj, args)
+    try:
+        raw = await _invoke_tool(tool_obj, args)
+    except Exception as exc:
+        raw = {"error": f"Error executing tool {tool_name}: {exc}"}
     return args, normalize_tool_output(tool_name, raw, args)
 
 
@@ -924,7 +972,10 @@ async def _run_tool_step_with_args(
     tool_obj = _tool_lookup(registry, tool_name)
     if tool_obj is None:
         return args_override, normalize_tool_output(tool_name, {"error": f"Tool '{tool_name}' is not registered."}, args_override)
-    raw = await _invoke_tool(tool_obj, args_override)
+    try:
+        raw = await _invoke_tool(tool_obj, args_override)
+    except Exception as exc:
+        raw = {"error": f"Error executing tool {tool_name}: {exc}"}
     return args_override, normalize_tool_output(tool_name, raw, args_override)
 
 

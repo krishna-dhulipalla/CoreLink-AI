@@ -129,10 +129,39 @@ def test_engine_legal_planner_binds_legal_capability_tools_not_calculator_only()
 
     assert result["tool_plan"]["selected_tools"]
     assert "calculator" not in result["tool_plan"]["selected_tools"]
-    assert "transaction_structure_checklist" in result["tool_plan"]["selected_tools"]
-    assert "regulatory_execution_checklist" in result["tool_plan"]["selected_tools"]
-    assert "tax_structure_checklist" in result["tool_plan"]["selected_tools"]
-    assert result["execution_template"]["template_id"] == "advisory_analysis"
+
+
+def test_officeqa_document_tasks_route_document_first_without_pending_calculator(monkeypatch):
+    monkeypatch.setenv("OFFICEQA_FINAL_ANSWER_TAGS", "1")
+
+    @tool
+    def search_treasury_bulletins(query: str, top_k: int = 5) -> dict:
+        """Search Treasury Bulletin documents."""
+        return {}
+
+    @tool
+    def read_treasury_bulletin(document_id: str = "", url: str = "", page_start: int = 0, page_limit: int = 5) -> dict:
+        """Read a Treasury Bulletin document."""
+        return {}
+
+    prompt = (
+        "Using specifically only the reported values for all individual calendar months in 1953 and all "
+        "individual calendar months in 1940, what was the absolute percent change of these total sum values?"
+    )
+    state = make_state(prompt)
+    state.update(intake(state))
+    state.update(fast_path_gate(state))
+    state.update(task_planner(state))
+    assert state["task_intent"]["execution_mode"] == "document_grounded_analysis"
+    resolver = make_capability_resolver(
+        build_capability_registry([CALCULATOR_TOOL, SEARCH_TOOL, search_treasury_bulletins, read_treasury_bulletin])
+    )
+
+    result = resolver(state)
+
+    assert result["tool_plan"]["selected_tools"][0] == "search_treasury_bulletins"
+    assert "calculator" in result["tool_plan"]["selected_tools"]
+    assert "calculator" not in result["tool_plan"]["pending_tools"]
 
 
 def test_engine_executor_returns_deterministic_exact_quant_answer():

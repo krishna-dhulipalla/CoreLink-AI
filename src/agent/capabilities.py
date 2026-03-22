@@ -454,6 +454,13 @@ def resolve_tool_plan(
         selected.append(tool_name)
         if intent.execution_mode == "document_grounded_analysis" and family == "external_retrieval":
             continue
+        if family in {
+            "market_data_retrieval",
+            "analytical_reasoning",
+            "exact_compute",
+            "market_scenario_analysis",
+        }:
+            continue
         if tool_name not in pending:
             pending.append(tool_name)
 
