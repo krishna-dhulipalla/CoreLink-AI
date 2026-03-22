@@ -326,7 +326,7 @@ def test_v4_reviewer_rejects_single_recommended_legal_structure():
     assert "multiple structure alternatives" in " ".join(result["review_feedback"]["missing_dimensions"]).lower()
 
 
-def test_v4_self_reflection_requests_one_extra_legal_deepen_pass():
+def test_v4_self_reflection_requests_one_extra_legal_deepen_pass(monkeypatch):
     state = make_state(
         "Advise on acquisition structure.",
         task_profile="legal_transactional",
@@ -348,10 +348,17 @@ def test_v4_self_reflection_requests_one_extra_legal_deepen_pass():
     )
     state["messages"].append(AIMessage(content="Recommendation: pursue an asset acquisition. Liability: lower inherited exposure."))
 
+    # LLM self-reflection finds missing items
+    reflection_response = '{"score": 0.55, "complete": false, "missing": ["execution-specific next steps", "risk allocation detail"], "improve_prompt": "Add execution-specific next steps and risk-allocation detail."}'
+    monkeypatch.setattr(
+        "agent.v4.nodes.ChatOpenAI",
+        lambda **kwargs: _FakeModel(AIMessage(content=reflection_response)),
+    )
+
     result = self_reflection(state)
 
     assert result["solver_stage"] == "REVISE"
-    assert "execution-specific next steps" in result["review_feedback"]["reasoning"].lower()
+    assert "next steps" in " ".join(result["review_feedback"]["missing_dimensions"]).lower()
 
 
 def test_v4_tracer_captures_v4_headers_and_counts(monkeypatch):

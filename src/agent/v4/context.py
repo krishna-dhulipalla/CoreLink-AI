@@ -236,6 +236,7 @@ def solver_context_block(
     tool_results: list[dict[str, Any]] | None = None,
     *,
     include_objective: bool = False,
+    revision_mode: bool = False,
 ) -> str:
     payload = {
         "facts_in_use": _compact_prompt_value(curated_context.get("facts_in_use", [])),
@@ -245,7 +246,10 @@ def solver_context_block(
     }
     if include_objective and curated_context.get("objective"):
         payload["objective"] = _compact_prompt_value(curated_context.get("objective", ""))
-    tool_findings = _compact_tool_findings(tool_results)
-    if tool_findings:
-        payload["tool_findings"] = tool_findings
+    # On revision, skip tool findings — they are already reflected in the prior answer
+    if not revision_mode:
+        tool_findings = _compact_tool_findings(tool_results)
+        if tool_findings:
+            payload["tool_findings"] = tool_findings
     return json.dumps(payload, ensure_ascii=True)
+

@@ -30,38 +30,21 @@ from agent.tracer import format_messages_for_trace, get_tracer
 from agent.v4.capabilities import resolve_tool_plan
 from agent.v4.context import build_curated_context, build_source_bundle, solver_context_block
 from agent.v4.contracts import CuratedContext, ExecutionJournal, QualityReport, SourceBundle, TaskIntent, ToolPlan
+from agent.v4.v4_prompts import (
+    PLANNER_SYSTEM,
+    EXECUTOR_SYSTEM,
+    SELF_REFLECTION_SYSTEM,
+    build_revision_prompt,
+    execution_guidance,
+    heuristic_self_score,
+    REUSABLE_TOOL_FAMILIES,
+)
 from agent.v4.state import V4AgentState
 from context_manager import count_tokens
 
 logger = logging.getLogger(__name__)
 
-_PLANNER_PROMPT = """You are the V4 task planner.
-Choose the execution mode, complexity tier, tool families, evidence strategy, review mode, and completion mode.
-Be conservative with exact fast paths. Use them only when the prompt already contains the formula, the relevant table, and an exact output contract.
-Prefer broader capability access for legal/advisory tasks instead of calculator-only reasoning.
-Return only JSON matching the schema.
-"""
-
-_EXECUTOR_PROMPT = """Produce a concise, decision-ready answer grounded in the curated context and tool findings.
-Use only tool-provided external facts, state material assumptions explicitly, and keep internal reasoning implicit.
-"""
-
-
-def _execution_guidance(intent: TaskIntent) -> str:
-    if intent.task_family == "legal_transactional":
-        return (
-            "Present multiple viable structure options first, then recommend the preferred path. "
-            "Cover tax treatment, liability-allocation mechanics, regulatory and employee-transfer execution, "
-            "and a rapid next-step plan."
-        )
-    if intent.task_family == "finance_options":
-        return (
-            "Give a direct recommendation, primary strategy, alternative strategy comparison, explicit Greek values, "
-            "breakevens, and concrete risk controls."
-        )
-    if intent.execution_mode == "document_grounded_analysis":
-        return "Ground the answer in retrieved evidence and keep the unsupported parts clearly marked as open questions."
-    return "Answer directly using the provided context and keep the structure aligned to the requested output."
+# Prompts are centralized in v4_prompts.py — no inline prompt strings here.
 
 
 def _legal_structure_option_count(answer: str) -> int:
@@ -302,7 +285,7 @@ def task_planner(state: V4AgentState) -> dict[str, Any]:
     intent = heuristic_intent
     if heuristic_intent.confidence < 0.9:
         messages = [
-            SystemMessage(content=_PLANNER_PROMPT),
+            SystemMessage(content=PLANNER_SYSTEM),
             HumanMessage(
                 content=json.dumps(
                     {
@@ -714,30 +697,33 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                     "workpad": workpad,
                 }
 
+        is_revision = bool(review_feedback)
         prompt_messages = [
-            SystemMessage(content=_EXECUTOR_PROMPT),
+            SystemMessage(content=EXECUTOR_SYSTEM),
         ]
-        guidance = _execution_guidance(intent)
+        guidance = execution_guidance(intent.task_family, intent.execution_mode)
         if guidance:
             prompt_messages.append(SystemMessage(content=guidance))
-        if review_feedback:
-            prompt_messages.append(
-                SystemMessage(
-                    content=(
-                        "Targeted revision request:\n"
-                        f"{review_feedback.get('reasoning', '')}\n"
-                        f"Missing dimensions: {', '.join(review_feedback.get('missing_dimensions', [])) or 'none specified'}.\n"
-                        "Preserve valid content, add only the missing detail, and avoid repeating the prompt."
-                    )
-                )
+        if is_revision:
+            revision_text = build_revision_prompt(
+                missing_dimensions=review_feedback.get("missing_dimensions", []),
+                improve_hint=review_feedback.get("improve_hint", ""),
+                reviewer_reasoning=review_feedback.get("reasoning", ""),
             )
+            prompt_messages.append(SystemMessage(content=revision_text))
             journal.revision_count += 1
+        # On revision, skip tool findings for non-live-data tools (already in prior answer)
+        skip_tools_on_revision = is_revision and all(
+            (r.get("type") or r.get("tool_name", "")) in REUSABLE_TOOL_FAMILIES
+            for r in journal.tool_results
+        ) if journal.tool_results else False
         prompt_messages.append(
             SystemMessage(
                 content=solver_context_block(
                     curated.model_dump(),
                     journal.tool_results,
                     include_objective=False,
+                    revision_mode=skip_tools_on_revision,
                 )
             )
         )
@@ -946,6 +932,43 @@ def route_from_reviewer(state: V4AgentState) -> str:
     return "executor"
 
 
+def _llm_self_reflection(task_text: str, answer: str, tool_count: int) -> dict[str, Any]:
+    """LLM-based self-reflection — cheap model, 3-question rubric.
+
+    Returns {"score": float, "complete": bool, "missing": list, "improve_prompt": str}.
+    Falls through gracefully on any error.
+    """
+    task_snippet = task_text[:500]
+    answer_snippet = answer[:800]
+    messages = [
+        SystemMessage(content=SELF_REFLECTION_SYSTEM),
+        HumanMessage(
+            content=(
+                f"Tools used: {tool_count}\n"
+                f"Task: {task_snippet}\n"
+                f"Answer: {answer_snippet}"
+            )
+        ),
+    ]
+    try:
+        model_name = get_model_name("profiler")
+        model = ChatOpenAI(model=model_name, **get_client_kwargs("profiler"), temperature=0, max_tokens=200)
+        response = model.invoke(messages)
+        raw = str(getattr(response, "content", "") or "").strip()
+        m = re.search(r"\{.*?\}", raw, re.DOTALL)
+        if m:
+            parsed = json.loads(m.group())
+            return {
+                "score": float(parsed.get("score", 0.7)),
+                "complete": bool(parsed.get("complete", True)),
+                "missing": list(parsed.get("missing", [])),
+                "improve_prompt": str(parsed.get("improve_prompt", "")),
+            }
+    except Exception as exc:
+        logger.info("LLM self-reflection fallback: %s", exc)
+    return {"score": 0.8, "complete": True, "missing": [], "improve_prompt": ""}
+
+
 def self_reflection(state: V4AgentState) -> dict[str, Any]:
     step = increment_runtime_step()
     journal = ExecutionJournal.model_validate(state.get("execution_journal") or {})
@@ -953,20 +976,18 @@ def self_reflection(state: V4AgentState) -> dict[str, Any]:
     intent = TaskIntent.model_validate(state.get("task_intent") or {})
     workpad = dict(state.get("workpad", {}))
     answer = _latest_public_answer(state)
+    task_text = latest_human_text(state["messages"])
 
     journal.self_reflection_count += 1
+
+    # Non-complex or already has missing-dimensions from reviewer → skip LLM reflection
     if report.missing_dimensions or intent.complexity_tier != "complex_qualitative":
-        workpad = _record_event(workpad, "self_reflection", "PASS")
+        workpad = _record_event(workpad, "self_reflection", "PASS (non-complex or reviewer-flagged)")
         tracer = get_tracer()
         if tracer:
             tracer.record(
                 "self_reflection",
-                {
-                    "score": report.score,
-                    "complete": True,
-                    "missing_dimensions": [],
-                    "used_llm": False,
-                },
+                {"score": report.score, "complete": True, "missing_dimensions": [], "used_llm": False},
             )
         return {
             "execution_journal": journal.model_dump(),
@@ -975,27 +996,47 @@ def self_reflection(state: V4AgentState) -> dict[str, Any]:
             "workpad": workpad,
         }
 
-    score = 0.9
-    improve_prompt = ""
-    if len(answer.strip()) < 700 and intent.task_family == "legal_transactional":
-        score = 0.74
-        improve_prompt = "Add one concise layer of execution-specific next steps and risk-allocation detail."
+    # Heuristic pre-check — skip LLM if clearly good
+    tool_count = len(journal.tool_results)
+    h_score = heuristic_self_score(answer, tool_count=tool_count, task_family=intent.task_family)
+    used_llm = False
 
-    workpad = _record_event(workpad, "self_reflection", "PASS" if score >= 0.8 else "REVISE")
+    if h_score >= 0.85:
+        # Clearly good — skip LLM call
+        score = h_score
+        missing: list[str] = []
+        improve_prompt = ""
+    elif journal.self_reflection_count > 1:
+        # Already reflected once — accept whatever we have
+        score = h_score
+        missing = []
+        improve_prompt = ""
+    else:
+        # Call LLM for detailed rubric evaluation
+        llm_result = _llm_self_reflection(task_text, answer, tool_count)
+        score = llm_result["score"]
+        missing = llm_result["missing"]
+        improve_prompt = llm_result["improve_prompt"]
+        used_llm = True
+
+    verdict = "PASS" if score >= 0.75 else "REVISE"
+    workpad = _record_event(workpad, "self_reflection", f"{verdict} score={score:.2f} llm={used_llm}")
     tracer = get_tracer()
     if tracer:
         tracer.record(
             "self_reflection",
             {
                 "score": score,
-                "complete": score >= 0.8,
-                "missing_dimensions": [] if score >= 0.8 else ["actionable next steps"],
+                "complete": verdict == "PASS",
+                "missing_dimensions": missing,
                 "improve_prompt": improve_prompt,
-                "used_llm": False,
+                "used_llm": used_llm,
+                "heuristic_score": h_score,
             },
         )
-    logger.info("[Step %s] v4 self_reflection -> %s", step, "PASS" if score >= 0.8 else "REVISE")
-    if score >= 0.8 or journal.self_reflection_count > 1:
+    logger.info("[Step %s] v4 self_reflection -> %s (score=%.2f, llm=%s)", step, verdict, score, used_llm)
+
+    if verdict == "PASS":
         return {
             "execution_journal": journal.model_dump(),
             "reflection_feedback": {"score": score, "complete": True, "missing_dimensions": [], "improve_prompt": ""},
@@ -1005,11 +1046,12 @@ def self_reflection(state: V4AgentState) -> dict[str, Any]:
 
     return {
         "execution_journal": journal.model_dump(),
-        "reflection_feedback": {"score": score, "complete": False, "missing_dimensions": ["actionable next steps"], "improve_prompt": improve_prompt},
+        "reflection_feedback": {"score": score, "complete": False, "missing_dimensions": missing, "improve_prompt": improve_prompt},
         "review_feedback": {
             "verdict": "revise",
-            "reasoning": improve_prompt,
-            "missing_dimensions": ["actionable next steps"],
+            "reasoning": improve_prompt or "Answer is incomplete — add the missing detail.",
+            "missing_dimensions": missing or ["completeness"],
+            "improve_hint": improve_prompt,
             "repair_target": "final",
             "repair_class": "missing_section",
         },
