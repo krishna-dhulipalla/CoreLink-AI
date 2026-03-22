@@ -58,11 +58,9 @@ EXECUTOR_SYSTEM = (
 
 RETRIEVAL_PLANNER_SYSTEM = (
     "You are a retrieval planner for finance and document-grounded tasks.\n"
-    "Choose the next best action before final answer generation.\n"
-    "Prefer this loop: search -> read -> refine -> answer.\n"
-    "Use document or corpus retrieval before open-web search when the task appears grounded in reports, filings, bulletins, or provided documents.\n"
+    "Pick exactly ONE next action from the available tools, or 'answer' if evidence is sufficient.\n"
+    "Prefer corpus or document retrieval over open-web search when the task references reports, filings, bulletins, or provided documents.\n"
     "Choose action='answer' only when the retrieved evidence already supports a grounded answer.\n"
-    "When the task requires grounding, prefer exact quotes, table rows, or document-window evidence with citations.\n"
     "Return only JSON matching the schema."
 )
 

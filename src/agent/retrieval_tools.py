@@ -26,6 +26,21 @@ _CORPUS_CANDIDATES = (
 _TEXT_EXTENSIONS = {".txt", ".md", ".json", ".csv", ".html", ".xml", ".tsv"}
 _MAX_FILES = 4000
 
+_STOP_WORDS = frozenset({
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would", "shall",
+    "should", "may", "might", "must", "can", "could",
+    "i", "me", "my", "we", "our", "you", "your", "he", "she", "it",
+    "they", "them", "its", "his", "her", "their",
+    "this", "that", "these", "those",
+    "of", "in", "to", "for", "with", "on", "at", "by", "from", "as",
+    "into", "about", "between", "through", "during", "before", "after",
+    "and", "but", "or", "nor", "not", "so", "if", "than", "too",
+    "what", "which", "who", "whom", "how", "when", "where", "why",
+    "all", "each", "every", "both", "few", "more", "most", "other",
+    "some", "such", "no", "only", "own", "same", "also", "just",
+})
+
 
 def _resolve_corpus_root() -> Path | None:
     for env_name in _CORPUS_ENV_NAMES:
@@ -45,7 +60,8 @@ def _resolve_corpus_root() -> Path | None:
 
 
 def _tokenize(text: str) -> list[str]:
-    return re.findall(r"[a-z0-9]+", (text or "").lower())
+    """Tokenize text into lowercase alpha-numeric tokens, filtering stop words."""
+    return [t for t in re.findall(r"[a-z0-9]+", (text or "").lower()) if t not in _STOP_WORDS and len(t) > 1]
 
 
 def _document_id(path: Path, root: Path) -> str:
@@ -261,6 +277,8 @@ def fetch_corpus_document(
         }
         for idx, chunk in enumerate(selected_chunks)
     ]
+    total_chunks = len(chunks)
+    has_more = chunk_start + max(1, min(chunk_limit, 6)) < total_chunks
     excerpt = "\n\n".join(chunk["text"] for chunk in rendered_chunks)[:max_chars]
     return {
         "document_id": doc_id,
@@ -269,6 +287,8 @@ def fetch_corpus_document(
             "file_name": target.name,
             "format": target.suffix.lower().lstrip(".") or "text",
             "window": f"chunks {chunk_start + 1}-{chunk_start + len(rendered_chunks)}",
+            "total_chunks": total_chunks,
+            "has_more_chunks": has_more,
         },
         "chunks": rendered_chunks,
         "tables": [],

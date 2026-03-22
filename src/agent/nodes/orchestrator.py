@@ -1016,35 +1016,21 @@ def _plan_retrieval_action(
     tool_plan: ToolPlan,
     journal: ExecutionJournal,
 ) -> RetrievalAction:
+    """Deterministic retrieval planner — no inner LLM call.
+
+    Uses the heuristic state machine in _fallback_retrieval_action to pick
+    the next atomic tool action.  This keeps the executor node fast and
+    avoids un-traced blocking API calls inside the graph step.
+    """
     available_tools = _retrieval_tools_available(tool_plan)
-    heuristic = _fallback_retrieval_action(source_bundle=source_bundle, journal=journal, tool_plan=tool_plan)
     if not available_tools or journal.retrieval_iterations >= _MAX_RETRIEVAL_HOPS:
         return RetrievalAction(action="answer", rationale="No remaining retrieval capacity.")
 
-    findings = _compact_tool_findings(journal.tool_results)
-    messages = [
-        SystemMessage(content=RETRIEVAL_PLANNER_SYSTEM),
-        HumanMessage(
-            content=json.dumps(
-                {
-                    "task": source_bundle.task_text,
-                    "focus_query": source_bundle.focus_query,
-                    "available_tools": available_tools,
-                    "heuristic_action": heuristic.model_dump(),
-                    "tool_findings": findings,
-                    "retrieval_iterations": journal.retrieval_iterations,
-                    "max_retrieval_hops": _MAX_RETRIEVAL_HOPS,
-                },
-                ensure_ascii=True,
-            )
-        ),
-    ]
-    try:
-        parsed, _ = invoke_structured_output("profiler", RetrievalAction, messages, temperature=0, max_tokens=220)
-        return _validate_retrieval_action(RetrievalAction.model_validate(parsed), tool_plan)
-    except Exception as exc:
-        logger.info("Retrieval planner fallback used heuristic action: %s", exc)
-        return _validate_retrieval_action(heuristic, tool_plan)
+    heuristic = _fallback_retrieval_action(
+        source_bundle=source_bundle, journal=journal, tool_plan=tool_plan
+    )
+    return _validate_retrieval_action(heuristic, tool_plan)
+
 
 
 def _tool_args_from_retrieval_action(action: RetrievalAction, source_bundle: SourceBundle) -> dict[str, Any]:
