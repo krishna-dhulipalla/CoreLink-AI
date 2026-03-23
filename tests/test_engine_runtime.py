@@ -164,6 +164,22 @@ def test_officeqa_document_tasks_route_document_first_without_pending_calculator
     assert "calculator" not in result["tool_plan"]["pending_tools"]
 
 
+def test_officeqa_env_does_not_gate_non_officeqa_finance_tasks(monkeypatch):
+    monkeypatch.setenv("BENCHMARK_NAME", "officeqa")
+
+    prompt = "What was AAPL's EBITDA in fiscal year 2024? Use current source-backed data."
+    state = make_state(prompt)
+    state.update(intake(state))
+    state.update(fast_path_gate(state))
+    state.update(task_planner(state))
+    resolver = make_capability_resolver(build_capability_registry([CALCULATOR_TOOL, SEARCH_TOOL, *BUILTIN_LEGAL_TOOLS]))
+    result = resolver(state)
+
+    assert "market_data_retrieval" in result["tool_plan"]["widened_families"]
+    assert "internet_search" in result["tool_plan"]["selected_tools"]
+    assert "calculator" not in result["tool_plan"]["pending_tools"]
+
+
 def test_engine_executor_returns_deterministic_exact_quant_answer():
     state = make_state(_exact_quant_prompt())
     state.update(intake(state))

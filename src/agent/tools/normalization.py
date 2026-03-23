@@ -1,8 +1,4 @@
-"""
-Tool Result Normalization
-=========================
-Canonical normalization for staged-runtime tool outputs.
-"""
+"""Tool result normalization."""
 
 from __future__ import annotations
 
@@ -17,8 +13,10 @@ _SEARCH_RESULT_RE = re.compile(
     r"\[(?P<rank>\d+)\]\s+(?P<title>.+?)\n\s*(?P<snippet>.+?)\n\s*URL:\s*(?P<url>https?://\S+)",
     re.DOTALL,
 )
-_PAGE_WINDOW_RE = re.compile(r"\[Pages\s+(?P<start>\d+)\s*[–—-]\s*(?P<end>\d+)\s+of\s+(?P<total>\d+)\]", re.IGNORECASE)
-_ROW_WINDOW_RE = re.compile(r"\[Rows\s+(?P<start>\d+)\s*[–—-]\s*(?P<end>\d+)\s+of\s+~?(?P<total>\d+)\]", re.IGNORECASE)
+_PAGE_WINDOW_RE = re.compile(r"\[Pages\s+(?P<start>\d+)\s*[-\u2013\u2014]\s*(?P<end>\d+)\s+of\s+(?P<total>\d+)\]", re.IGNORECASE)
+_ROW_WINDOW_RE = re.compile(r"\[Rows\s+(?P<start>\d+)\s*[-\u2013\u2014]\s*(?P<end>\d+)\s+of\s+~?(?P<total>\d+)\]", re.IGNORECASE)
+_STATUS_RE = re.compile(r"STATUS:\s*([A-Z_]+)", re.IGNORECASE)
+_ERROR_RE = re.compile(r"ERROR:\s*(.+)", re.IGNORECASE)
 
 
 def _normalize_scalar(value: str) -> Any:
@@ -45,9 +43,7 @@ def _normalize_scalar(value: str) -> Any:
         except ValueError:
             return raw
     try:
-        if "." in raw:
-            return float(raw)
-        return int(raw)
+        return float(raw) if "." in raw else int(raw)
     except ValueError:
         return raw
 
@@ -139,6 +135,8 @@ def _parse_file_fetch(raw: str) -> dict[str, Any]:
     file_match = re.search(r"FILE:\s*(.+)", raw or "")
     format_match = re.search(r"FORMAT:\s*([A-Z0-9_]+)", raw or "")
     size_match = re.search(r"SIZE:\s*([0-9.]+)\s*KB", raw or "")
+    status_match = _STATUS_RE.search(raw or "")
+    error_match = _ERROR_RE.search(raw or "")
     window_match = re.search(r"\[(Pages|Rows)\s+([^\]]+)\]", raw or "")
     metadata: dict[str, Any] = {}
     if file_match:
@@ -147,6 +145,10 @@ def _parse_file_fetch(raw: str) -> dict[str, Any]:
         metadata["format"] = format_match.group(1).strip().lower()
     if size_match:
         metadata["size_kb"] = float(size_match.group(1))
+    if status_match:
+        metadata["status"] = status_match.group(1).strip().lower()
+    if error_match:
+        metadata["error"] = error_match.group(1).strip()
     if window_match:
         metadata["window"] = f"{window_match.group(1)} {window_match.group(2)}"
     page_window = _PAGE_WINDOW_RE.search(raw or "")
@@ -174,6 +176,7 @@ def _parse_file_fetch(raw: str) -> dict[str, Any]:
     chunks: list[dict[str, Any]] = []
     tables: list[dict[str, Any]] = []
     numeric_summaries: list[dict[str, Any]] = []
+
     if rows:
         headers = rows[0] if rows else []
         data_rows = rows[1:21] if len(rows) > 1 else []
@@ -200,12 +203,7 @@ def _parse_file_fetch(raw: str) -> dict[str, Any]:
             numeric_summaries.append({"metric": "numeric_cell_count", "value": len(numeric_cells)})
         for idx, values in list(numeric_columns.items())[:4]:
             header = headers[idx] if idx < len(headers) else f"col_{idx}"
-            numeric_summaries.append(
-                {
-                    "metric": f"{header}_range",
-                    "value": {"min": min(values), "max": max(values)},
-                }
-            )
+            numeric_summaries.append({"metric": f"{header}_range", "value": {"min": min(values), "max": max(values)}})
         preview_rows = rows[: min(len(rows), 4)]
         chunks.append(
             {
@@ -231,7 +229,7 @@ def _parse_file_fetch(raw: str) -> dict[str, Any]:
             except Exception:
                 pass
     excerpt = re.sub(r"\s+", " ", body).strip()
-    if excerpt and not chunks:
+    if excerpt and not chunks and metadata.get("status") not in {"garbled_binary", "parse_error", "unsupported_format"}:
         chunks.append(
             {
                 "locator": metadata.get("window", "body"),
@@ -244,16 +242,14 @@ def _parse_file_fetch(raw: str) -> dict[str, Any]:
     if not metadata and not tables and not numeric_summaries:
         return {}
 
-    document_id = re.sub(
-        r"[^a-zA-Z0-9_]+",
-        "_",
-        str(metadata.get("file_name", "document")).split("?", 1)[0],
-    ).strip("_").lower() or "document"
+    document_id = re.sub(r"[^a-zA-Z0-9_]+", "_", str(metadata.get("file_name", "document")).split("?", 1)[0]).strip("_").lower() or "document"
     facts["document_id"] = document_id
     facts["metadata"] = metadata
     facts["chunks"] = chunks
     facts["tables"] = tables
     facts["numeric_summaries"] = numeric_summaries
+    if metadata.get("status"):
+        facts["retrieval_status"] = str(metadata.get("status"))
     return facts
 
 
@@ -273,7 +269,7 @@ def _parse_search_results(raw: str) -> dict[str, Any]:
 
 def _parse_options_chain(raw: str) -> dict[str, Any]:
     header_match = re.search(
-        r"Options Chain:\s*S=(?P<spot>[0-9.]+),\s*[\u03c3\u03c3]?=?(?P<sigma>[0-9.]+)%?,\s*T=(?P<days>\d+)d,\s*r=(?P<rate>[0-9.]+)%",
+        r"Options Chain:\s*S=(?P<spot>[0-9.]+),\s*[\u03c3]?=?(?P<sigma>[0-9.]+)%?,\s*T=(?P<days>\d+)d,\s*r=(?P<rate>[0-9.]+)%",
         raw or "",
     )
     chain = []
@@ -284,15 +280,16 @@ def _parse_options_chain(raw: str) -> dict[str, Any]:
         parts = cleaned.split()
         if len(parts) < 5:
             continue
-        record = {
-            "strike": float(parts[0]),
-            "call_price": float(parts[1]),
-            "put_price": float(parts[2]),
-            "call_delta": float(parts[3]),
-            "put_delta": float(parts[4]),
-            "is_atm": "ATM" in parts,
-        }
-        chain.append(record)
+        chain.append(
+            {
+                "strike": float(parts[0]),
+                "call_price": float(parts[1]),
+                "put_price": float(parts[2]),
+                "call_delta": float(parts[3]),
+                "put_delta": float(parts[4]),
+                "is_atm": "ATM" in parts,
+            }
+        )
     facts: dict[str, Any] = {"chain": chain}
     if header_match:
         facts.update(
@@ -310,15 +307,8 @@ def _parse_expirations(raw: str) -> dict[str, Any]:
     expirations = []
     for line in (raw or "").splitlines():
         match = re.search(r"(\d+)d\s+(\d{4}-\d{2}-\d{2})\s+\[([^\]]+)\]", line)
-        if not match:
-            continue
-        expirations.append(
-            {
-                "days": int(match.group(1)),
-                "date": match.group(2),
-                "label": match.group(3),
-            }
-        )
+        if match:
+            expirations.append({"days": int(match.group(1)), "date": match.group(2), "label": match.group(3)})
     return {"expirations": expirations}
 
 
@@ -326,17 +316,16 @@ def _parse_iv_surface(raw: str) -> dict[str, Any]:
     rows = []
     for line in (raw or "").splitlines():
         match = re.match(r"^\s*(\d+)d\s+([0-9.]+)%\s+([0-9.]+)\s+([0-9.]+)\s+([+-]?[0-9.]+)", line)
-        if not match:
-            continue
-        rows.append(
-            {
-                "days_to_expiry": int(match.group(1)),
-                "implied_volatility": float(match.group(2)) / 100.0,
-                "call_price": float(match.group(3)),
-                "put_price": float(match.group(4)),
-                "theta_per_day": float(match.group(5)),
-            }
-        )
+        if match:
+            rows.append(
+                {
+                    "days_to_expiry": int(match.group(1)),
+                    "implied_volatility": float(match.group(2)) / 100.0,
+                    "call_price": float(match.group(3)),
+                    "put_price": float(match.group(4)),
+                    "theta_per_day": float(match.group(5)),
+                }
+            )
     return {"surface": rows}
 
 
@@ -366,17 +355,61 @@ def _default_quality(
 
 
 def _looks_like_tool_envelope(payload: dict[str, Any]) -> bool:
-    return "facts" in payload and (
-        "source" in payload or "quality" in payload or "errors" in payload
-    )
+    return "facts" in payload and ("source" in payload or "quality" in payload or "errors" in payload)
+
+
+def _retrieval_status_from_text(tool_name: str, text: str, facts: dict[str, Any], errors: list[str]) -> str:
+    lowered = (text or "").lower()
+    if any(item.lower().startswith("[network error]") for item in errors) or "[network error]" in lowered:
+        return "network_error"
+    if any("unsupported format" in item.lower() for item in errors):
+        return "unsupported_format"
+    if any("parse error" in item.lower() for item in errors):
+        return "parse_error"
+    if tool_name == "fetch_reference_file":
+        status = str(facts.get("retrieval_status", "") or dict(facts.get("metadata") or {}).get("status", "")).lower()
+        if status in {"ok", "empty", "garbled_binary", "irrelevant", "parse_error", "network_error", "unsupported_format"}:
+            return status
+        if facts.get("chunks") or facts.get("tables") or facts.get("numeric_summaries"):
+            return "ok"
+        return "empty"
+    if tool_name in {"search_reference_corpus", "list_reference_files", "internet_search"}:
+        results = facts.get("results") or facts.get("documents") or []
+        if not results:
+            return "empty"
+        return "ok"
+    if tool_name == "fetch_corpus_document":
+        if errors:
+            return "parse_error"
+        if facts.get("chunks") or facts.get("tables") or facts.get("numeric_summaries"):
+            return "ok"
+        return "empty"
+    return ""
+
+
+def _retrieval_evidence_quality(tool_name: str, facts: dict[str, Any], retrieval_status: str) -> float:
+    if not retrieval_status:
+        return 0.0
+    if retrieval_status in {"garbled_binary", "parse_error", "network_error", "unsupported_format"}:
+        return 0.05
+    if retrieval_status == "empty":
+        return 0.0
+    if tool_name in {"search_reference_corpus", "internet_search", "list_reference_files"}:
+        result_count = len(facts.get("results", []) or facts.get("documents", []))
+        return min(0.55, 0.15 + 0.08 * result_count)
+    structured_hits = 0
+    if facts.get("tables"):
+        structured_hits += 2
+    if facts.get("numeric_summaries"):
+        structured_hits += 1
+    if facts.get("chunks"):
+        structured_hits += 1
+    return min(0.95, 0.35 + 0.15 * structured_hits)
 
 
 def normalize_tool_output(tool_name: str, raw_content: Any, args: dict[str, Any]) -> ToolResult:
     if isinstance(raw_content, list):
-        raw_content = "\n".join(
-            item.get("text", str(item)) if isinstance(item, dict) else str(item)
-            for item in raw_content
-        )
+        raw_content = "\n".join(item.get("text", str(item)) if isinstance(item, dict) else str(item) for item in raw_content)
     if isinstance(raw_content, dict):
         if _looks_like_tool_envelope(raw_content):
             payload = dict(raw_content)
@@ -385,23 +418,38 @@ def normalize_tool_output(tool_name: str, raw_content: Any, args: dict[str, Any]
             payload.setdefault("assumptions", args)
             payload.setdefault("source", {"tool": tool_name})
             payload.setdefault("quality", _default_quality().model_dump())
+            if not payload.get("retrieval_status"):
+                payload["retrieval_status"] = _retrieval_status_from_text(tool_name, "", dict(payload.get("facts") or {}), list(payload.get("errors") or []))
+            if not payload.get("evidence_quality_score"):
+                payload["evidence_quality_score"] = _retrieval_evidence_quality(
+                    tool_name,
+                    dict(payload.get("facts") or {}),
+                    str(payload.get("retrieval_status", "") or ""),
+                )
             payload.setdefault("errors", [])
             return ToolResult.model_validate(payload)
         if raw_content.get("error"):
+            retrieval_status = "parse_error" if tool_name in {"fetch_reference_file", "fetch_corpus_document"} else ""
             return ToolResult(
                 type=tool_name,
                 facts={},
                 assumptions=args,
                 source={"tool": tool_name},
                 quality=_default_quality(),
+                retrieval_status=retrieval_status,
+                evidence_quality_score=0.0,
                 errors=[str(raw_content["error"])],
             )
+        retrieval_status = _retrieval_status_from_text(tool_name, "", raw_content, [])
+        evidence_quality = _retrieval_evidence_quality(tool_name, raw_content, retrieval_status)
         return ToolResult(
             type=tool_name,
             facts=raw_content,
             assumptions=args,
             source={"tool": tool_name},
             quality=_default_quality(),
+            retrieval_status=retrieval_status,
+            evidence_quality_score=evidence_quality,
             errors=[],
         )
 
@@ -413,15 +461,20 @@ def normalize_tool_output(tool_name: str, raw_content: Any, args: dict[str, Any]
             assumptions=args,
             source={"tool": tool_name},
             quality=_default_quality(),
+            retrieval_status="empty" if tool_name in {"fetch_reference_file", "fetch_corpus_document", "internet_search", "search_reference_corpus"} else "",
+            evidence_quality_score=0.0,
             errors=["Empty tool output."],
         )
     if text.startswith("Error") or text.startswith("[HTTP") or text.startswith("[Network error]") or text.startswith("[Unexpected error"):
+        retrieval_status = "network_error" if text.startswith("[Network error]") else ""
         return ToolResult(
             type=tool_name,
             facts={},
             assumptions=args,
             source={"tool": tool_name},
             quality=_default_quality(),
+            retrieval_status=retrieval_status,
+            evidence_quality_score=0.0,
             errors=[text],
         )
 
@@ -432,6 +485,8 @@ def normalize_tool_output(tool_name: str, raw_content: Any, args: dict[str, Any]
         parsed_payload.setdefault("assumptions", args)
         parsed_payload.setdefault("source", {"tool": tool_name})
         parsed_payload.setdefault("quality", _default_quality().model_dump())
+        parsed_payload.setdefault("retrieval_status", "")
+        parsed_payload.setdefault("evidence_quality_score", 0.0)
         parsed_payload.setdefault("errors", [])
         return ToolResult.model_validate(parsed_payload)
 
@@ -472,11 +527,16 @@ def normalize_tool_output(tool_name: str, raw_content: Any, args: dict[str, Any]
             for table in facts.get("tables", []):
                 if isinstance(table, dict):
                     table.setdefault("citation", citation)
+
+    retrieval_status = _retrieval_status_from_text(tool_name, text, facts, errors)
+    evidence_quality = _retrieval_evidence_quality(tool_name, facts, retrieval_status)
     return ToolResult(
         type=tool_name,
         facts=facts,
         assumptions=args,
         source={"tool": tool_name, "raw_preview": text[:240]},
         quality=_default_quality(),
+        retrieval_status=retrieval_status,
+        evidence_quality_score=evidence_quality,
         errors=errors,
     )

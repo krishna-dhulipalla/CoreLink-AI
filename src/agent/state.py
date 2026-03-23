@@ -52,12 +52,15 @@ class AgentState(TypedDict):
     task_intent: dict[str, Any]
     tool_plan: dict[str, Any]
     source_bundle: dict[str, Any]
+    retrieval_intent: dict[str, Any]
     curated_context: dict[str, Any]
     review_packet: dict[str, Any]
+    evidence_sufficiency: dict[str, Any]
     execution_journal: dict[str, Any]
     quality_report: dict[str, Any]
     progress_signature: dict[str, Any]
     unsupported_capability_report: dict[str, Any]
+    trace_identity: dict[str, Any]
     fast_path_used: bool
 
 

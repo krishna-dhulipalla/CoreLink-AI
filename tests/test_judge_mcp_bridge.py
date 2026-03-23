@@ -55,6 +55,22 @@ class _FailingAsyncClient:
         raise httpx.ConnectError("[Errno 11001] getaddrinfo failed")
 
 
+class _NotFoundAsyncClient:
+    def __init__(self, timeout=None):
+        self.timeout = timeout
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def get(self, url, params=None):
+        request = httpx.Request("GET", url, params=params)
+        response = httpx.Response(404, request=request)
+        raise httpx.HTTPStatusError("404 Not Found", request=request, response=response)
+
+
 def test_discover_judge_tools_uses_session_scoped_tools_endpoint(monkeypatch):
     monkeypatch.setenv("ENABLE_JUDGE_MCP_DISCOVERY", "1")
     monkeypatch.setenv("BENCHMARK_JUDGE_MCP_URL", "http://judge:9009/mcp/tools")
@@ -125,9 +141,32 @@ def test_call_judge_tool_posts_expected_payload(monkeypatch):
     }
 
 
-def test_discover_judge_tools_wraps_connection_failures_with_actionable_guidance(monkeypatch):
+def test_discover_judge_tools_falls_back_on_connection_failures_by_default(monkeypatch):
     monkeypatch.setenv("ENABLE_JUDGE_MCP_DISCOVERY", "1")
     monkeypatch.setenv("BENCHMARK_JUDGE_MCP_URL", "http://judge:9009/mcp")
+    monkeypatch.delenv("STRICT_JUDGE_MCP_DISCOVERY", raising=False)
+    monkeypatch.setattr("judge_mcp_bridge.httpx.AsyncClient", _FailingAsyncClient)
+
+    tools = asyncio.run(discover_judge_tools(session_id="session-xyz"))
+
+    assert tools == []
+
+
+def test_discover_judge_tools_falls_back_on_404_for_local_lightweight_runner(monkeypatch):
+    monkeypatch.setenv("ENABLE_JUDGE_MCP_DISCOVERY", "1")
+    monkeypatch.setenv("BENCHMARK_JUDGE_MCP_URL", "http://127.0.0.1:9009/mcp")
+    monkeypatch.delenv("STRICT_JUDGE_MCP_DISCOVERY", raising=False)
+    monkeypatch.setattr("judge_mcp_bridge.httpx.AsyncClient", _NotFoundAsyncClient)
+
+    tools = asyncio.run(discover_judge_tools(session_id="session-xyz"))
+
+    assert tools == []
+
+
+def test_discover_judge_tools_strict_mode_wraps_connection_failures_with_actionable_guidance(monkeypatch):
+    monkeypatch.setenv("ENABLE_JUDGE_MCP_DISCOVERY", "1")
+    monkeypatch.setenv("BENCHMARK_JUDGE_MCP_URL", "http://judge:9009/mcp")
+    monkeypatch.setenv("STRICT_JUDGE_MCP_DISCOVERY", "1")
     monkeypatch.setattr("judge_mcp_bridge.httpx.AsyncClient", _FailingAsyncClient)
 
     with pytest.raises(JudgeMcpConnectionError) as excinfo:

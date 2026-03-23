@@ -85,6 +85,16 @@ ExecutionTemplateId = Literal[
     "live_retrieval",
 ]
 ReviewCadence = Literal["final_only", "milestone_and_final"]
+RetrievalOutcomeStatus = Literal[
+    "",
+    "ok",
+    "empty",
+    "garbled_binary",
+    "irrelevant",
+    "parse_error",
+    "network_error",
+    "unsupported_format",
+]
 
 
 class ProfileDecision(BaseModel):
@@ -197,6 +207,8 @@ class ToolResult(BaseModel):
     assumptions: dict[str, Any] = Field(default_factory=dict)
     source: dict[str, Any] = Field(default_factory=dict)
     quality: ToolQuality = Field(default_factory=ToolQuality)
+    retrieval_status: RetrievalOutcomeStatus | str = ""
+    evidence_quality_score: float = 0.0
     errors: list[str] = Field(default_factory=list)
 
 
@@ -310,6 +322,17 @@ class SourceBundle(BaseModel):
     formulas: list[str] = Field(default_factory=list)
 
 
+class RetrievalIntent(BaseModel):
+    entity: str = ""
+    metric: str = ""
+    period: str = ""
+    document_family: str = ""
+    aggregation_shape: str = ""
+    must_include_terms: list[str] = Field(default_factory=list)
+    must_exclude_terms: list[str] = Field(default_factory=list)
+    query_candidates: list[str] = Field(default_factory=list)
+
+
 class CuratedContext(BaseModel):
     objective: str = ""
     facts_in_use: list[dict[str, Any]] = Field(default_factory=list)
@@ -317,6 +340,16 @@ class CuratedContext(BaseModel):
     assumptions: list[str] = Field(default_factory=list)
     requested_output: dict[str, Any] = Field(default_factory=dict)
     provenance_summary: dict[str, Any] = Field(default_factory=dict)
+
+
+class EvidenceSufficiency(BaseModel):
+    source_family: str = ""
+    period_scope: str = ""
+    aggregation_type: str = ""
+    entity_scope: str = ""
+    is_sufficient: bool = False
+    missing_dimensions: list[str] = Field(default_factory=list)
+    rationale: str = ""
 
 
 class ReviewPacket(BaseModel):
@@ -327,6 +360,7 @@ class ReviewPacket(BaseModel):
     citations: list[str] = Field(default_factory=list)
     assumptions: list[str] = Field(default_factory=list)
     open_questions: list[str] = Field(default_factory=list)
+    evidence_sufficiency: dict[str, Any] = Field(default_factory=dict)
 
 
 class RetrievalAction(BaseModel):
@@ -359,6 +393,13 @@ class UnsupportedCapabilityReport(BaseModel):
     requested_capability: str = ""
     reason: str = ""
     suggested_scope: str = "finance-first"
+
+
+class TraceIdentity(BaseModel):
+    request_id: str = ""
+    task_id: str = ""
+    context_id: str = ""
+    benchmark_uid: str = ""
 
 
 class ExecutionJournal(BaseModel):

@@ -169,7 +169,14 @@ class Executor(AgentExecutor):
 
             graph_started = True
             final_answer, steps, updated_history = await run_agent(
-                active_graph, input_text, history=history
+                active_graph,
+                input_text,
+                history=history,
+                trace_identity={
+                    "request_id": task.id or "",
+                    "task_id": task.id or "",
+                    "context_id": task.context_id or "",
+                },
             )
 
             # Persist updated conversation history
@@ -203,6 +210,11 @@ class Executor(AgentExecutor):
                     details={
                         "session_id": task.context_id or task.id or "",
                         "benchmark_name": os.getenv("BENCHMARK_NAME", "").strip().lower(),
+                    },
+                    trace_identity={
+                        "request_id": task.id or "",
+                        "task_id": task.id or "",
+                        "context_id": task.context_id or "",
                     },
                 )
             print(f"Task failed with agent error: {e}")

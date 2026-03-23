@@ -15,7 +15,8 @@ from agent.context.evidence import (
 )
 from agent.context.extraction import extract_entities, extract_formulas, extract_inline_facts, extract_urls, parse_markdown_tables
 from agent.context.profiling import _extract_labeled_json_block
-from agent.contracts import CuratedContext, ReviewPacket, SourceBundle, TaskIntent
+from agent.contracts import CuratedContext, EvidenceSufficiency, RetrievalIntent, ReviewPacket, SourceBundle, TaskIntent
+from agent.retrieval_reasoning import assess_evidence_sufficiency, build_retrieval_intent
 
 _DEAL_SIZE_RE = re.compile(r"\$?\s*(\d+(?:\.\d+)?)\s*(M|MM|B|BN|million|billion)\b", re.IGNORECASE)
 
@@ -235,6 +236,17 @@ def build_curated_context(
         ]
     elif intent.execution_mode in {"retrieval_augmented_analysis", "document_grounded_analysis"}:
         facts_in_use = _retrieval_facts_in_use(task_text, source_bundle)
+        retrieval_intent = build_retrieval_intent(task_text, source_bundle)
+        if retrieval_intent.entity:
+            facts_in_use.append({"type": "retrieval_entity", "value": retrieval_intent.entity})
+        if retrieval_intent.period:
+            facts_in_use.append({"type": "retrieval_period", "value": retrieval_intent.period})
+        if retrieval_intent.aggregation_shape:
+            facts_in_use.append({"type": "aggregation_shape", "value": retrieval_intent.aggregation_shape})
+        if retrieval_intent.document_family:
+            facts_in_use.append({"type": "document_family", "value": retrieval_intent.document_family})
+        if retrieval_intent.query_candidates:
+            facts_in_use.append({"type": "query_candidates", "value": retrieval_intent.query_candidates[:3]})
         open_questions = [
             "Find the exact supporting quote, table row, or document window before finalizing the answer.",
         ]
@@ -246,6 +258,7 @@ def build_curated_context(
         open_questions = []
         assumptions = []
 
+    facts_in_use = _dedupe_facts(facts_in_use)
     curated = CuratedContext(
         objective=source_bundle.focus_query or _normalize_text(task_text)[:300],
         facts_in_use=facts_in_use,
@@ -289,11 +302,19 @@ def _compact_tool_findings(tool_results: list[dict[str, Any]] | None) -> list[di
         if not isinstance(result, dict):
             continue
         facts = dict(result.get("facts") or {})
+        retrieval_status = str(result.get("retrieval_status", "") or facts.get("retrieval_status", "") or "")
+        evidence_quality = float(result.get("evidence_quality_score", 0.0) or 0.0)
         facts.pop("query", None)
         if not facts.get("deal_size_hint"):
             facts.pop("deal_size_hint", None)
         if not facts.get("urgency"):
             facts.pop("urgency", None)
+        if retrieval_status in {"garbled_binary", "parse_error", "network_error", "unsupported_format"}:
+            facts = {
+                "retrieval_status": retrieval_status,
+                "metadata": _compact_prompt_value(facts.get("metadata", {})),
+                "errors": _compact_prompt_value(result.get("errors", [])),
+            }
         if "results" in facts and isinstance(facts["results"], list):
             facts["results"] = [
                 {
@@ -338,6 +359,10 @@ def _compact_tool_findings(tool_results: list[dict[str, Any]] | None) -> list[di
             "tool": str(result.get("type", "") or result.get("tool_name", "")),
             "facts": _compact_prompt_value(facts),
         }
+        if retrieval_status:
+            finding["retrieval_status"] = retrieval_status
+        if evidence_quality:
+            finding["evidence_quality_score"] = round(evidence_quality, 3)
         if finding["tool"]:
             findings.append(finding)
     return findings
@@ -376,6 +401,7 @@ def build_review_packet(
     answer_contract: dict[str, Any],
     curated_context: dict[str, Any],
     tool_results: list[dict[str, Any]] | None = None,
+    evidence_sufficiency: dict[str, Any] | None = None,
 ) -> ReviewPacket:
     provenance = dict(curated_context.get("provenance_summary") or {})
     source_summary = dict(provenance.get("source_bundle") or {})
@@ -389,6 +415,7 @@ def build_review_packet(
         citations=citations,
         assumptions=[str(item) for item in curated_context.get("assumptions", []) if str(item).strip()],
         open_questions=[str(item) for item in curated_context.get("open_questions", []) if str(item).strip()],
+        evidence_sufficiency=dict(evidence_sufficiency or {}),
     )
 
 
@@ -417,3 +444,9 @@ def solver_context_block(
         if tool_findings:
             payload["tool_findings"] = tool_findings
     return json.dumps(payload, ensure_ascii=True)
+
+
+def build_retrieval_bundle(task_text: str, source_bundle: SourceBundle) -> tuple[RetrievalIntent, EvidenceSufficiency]:
+    retrieval_intent = build_retrieval_intent(task_text, source_bundle)
+    evidence_sufficiency = assess_evidence_sufficiency(task_text, source_bundle, [])
+    return retrieval_intent, evidence_sufficiency

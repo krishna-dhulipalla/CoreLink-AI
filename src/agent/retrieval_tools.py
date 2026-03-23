@@ -25,6 +25,10 @@ _CORPUS_CANDIDATES = (
 )
 _TEXT_EXTENSIONS = {".txt", ".md", ".json", ".csv", ".html", ".xml", ".tsv"}
 _MAX_FILES = 4000
+_MONTH_TOKENS = {
+    "january", "february", "march", "april", "may", "june",
+    "july", "august", "september", "october", "november", "december",
+}
 
 _STOP_WORDS = frozenset({
     "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
@@ -137,6 +141,27 @@ def _best_snippet(text: str, query: str, snippet_chars: int) -> str:
     return compact[start:end]
 
 
+def _query_years(query: str) -> list[str]:
+    return re.findall(r"\b((?:19|20)\d{2})\b", query or "")
+
+
+def _query_has_monthly_shape(query: str) -> bool:
+    lowered = (query or "").lower()
+    return "all individual calendar months" in lowered or "monthly" in lowered or "total sum of these values" in lowered
+
+
+def _document_metadata(text: str, path: Path) -> dict[str, Any]:
+    lowered_text = (text or "").lower()
+    lowered_path = path.as_posix().lower()
+    years = list(dict.fromkeys(re.findall(r"\b((?:19|20)\d{2})\b", f"{lowered_path} {lowered_text}")[:8]))
+    return {
+        "years": years,
+        "is_treasury_bulletin": "treasury" in lowered_path or "bulletin" in lowered_path or "treasury bulletin" in lowered_text,
+        "has_month_names": any(month in lowered_text for month in _MONTH_TOKENS),
+        "has_table_like_rows": "\t" in text or sum(1 for line in text.splitlines() if "," in line) >= 3,
+    }
+
+
 def _score_document(text: str, query: str, path: Path) -> float:
     query_tokens = _tokenize(query)
     if not query_tokens:
@@ -144,6 +169,7 @@ def _score_document(text: str, query: str, path: Path) -> float:
     path_text = path.as_posix().lower()
     document_tokens = set(_tokenize(text))
     path_tokens = set(_tokenize(path_text))
+    metadata = _document_metadata(text, path)
     unique_hits = {token for token in query_tokens if token in document_tokens or token in path_tokens}
     if not unique_hits:
         return 0.0
@@ -154,9 +180,16 @@ def _score_document(text: str, query: str, path: Path) -> float:
     stem_tokens = set(_tokenize(path.stem))
     if stem_tokens and stem_tokens.intersection(document_tokens):
         score += 0.2
-    for year in re.findall(r"\b((?:19|20)\d{2})\b", query):
-        if year in document_tokens or year in path_tokens:
+    for year in _query_years(query):
+        if year in metadata["years"] or year in document_tokens or year in path_tokens:
             score += 1.0
+    if metadata["is_treasury_bulletin"] and "treasury bulletin" in (query or "").lower():
+        score += 1.4
+    if _query_has_monthly_shape(query):
+        if metadata["has_month_names"]:
+            score += 1.2
+        if metadata["has_table_like_rows"]:
+            score += 0.8
     return score
 
 
@@ -218,6 +251,7 @@ def search_reference_corpus(query: str, top_k: int = 5, snippet_chars: int = 700
         relative = path.relative_to(root).as_posix()
         doc_id = _document_id(path, root)
         citation = relative
+        metadata = _document_metadata(_read_file_text(path), path)
         results.append(
             {
                 "rank": rank,
@@ -226,6 +260,7 @@ def search_reference_corpus(query: str, top_k: int = 5, snippet_chars: int = 700
                 "url": citation,
                 "score": round(score, 3),
                 "document_id": doc_id,
+                "metadata": metadata,
             }
         )
         documents.append(
@@ -234,6 +269,7 @@ def search_reference_corpus(query: str, top_k: int = 5, snippet_chars: int = 700
                 "citation": citation,
                 "format": path.suffix.lower().lstrip(".") or "text",
                 "path": relative,
+                "metadata": metadata,
             }
         )
 

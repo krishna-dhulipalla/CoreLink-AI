@@ -136,6 +136,21 @@ def _error_result(
     )
 
 
+def _normalize_corporate_action_records(records: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for record in records or []:
+        if not isinstance(record, dict):
+            continue
+        cleaned = dict(record)
+        if "Date" not in cleaned and cleaned:
+            first_key = next(iter(cleaned))
+            cleaned["Date"] = cleaned.pop(first_key)
+        if "Date" in cleaned:
+            cleaned["Date"] = _date_to_string(cleaned.get("Date"))
+        normalized.append(cleaned)
+    return normalized
+
+
 def _get_yfinance():
     try:
         import yfinance as yf_module
@@ -477,6 +492,10 @@ def get_corporate_actions(ticker: str, as_of_date: str | None = None) -> dict:
     assumptions = {"ticker": ticker.upper(), "as_of_date": normalized_as_of}
     cached = _cache_get("get_corporate_actions", assumptions)
     if cached:
+        facts = dict(cached.get("facts", {}))
+        facts["recent_dividends"] = _normalize_corporate_action_records(facts.get("recent_dividends"))
+        facts["recent_splits"] = _normalize_corporate_action_records(facts.get("recent_splits"))
+        cached["facts"] = facts
         return cached
 
     try:
@@ -492,14 +511,16 @@ def get_corporate_actions(ticker: str, as_of_date: str | None = None) -> dict:
         recent_dividends = []
         if not dividends.empty:
             div_df = dividends.reset_index()
+            div_df.columns = ["Date", *div_df.columns[1:]]
             div_df.iloc[:, 0] = pd.to_datetime(div_df.iloc[:, 0], errors="coerce").dt.strftime("%Y-%m-%d")
-            recent_dividends = div_df.tail(20).to_dict(orient="records")
+            recent_dividends = _normalize_corporate_action_records(div_df.tail(20).to_dict(orient="records"))
 
         recent_splits = []
         if not splits.empty:
             split_df = splits.reset_index()
+            split_df.columns = ["Date", *split_df.columns[1:]]
             split_df.iloc[:, 0] = pd.to_datetime(split_df.iloc[:, 0], errors="coerce").dt.strftime("%Y-%m-%d")
-            recent_splits = split_df.tail(10).to_dict(orient="records")
+            recent_splits = _normalize_corporate_action_records(split_df.tail(10).to_dict(orient="records"))
 
         timestamp = normalized_as_of or _utc_today()
         if recent_dividends:

@@ -102,6 +102,8 @@ QUANT_GUIDANCE = (
 DOCUMENT_GROUNDED_GUIDANCE = (
     "Ground the answer in retrieved evidence.\n"
     "Use the retrieved documents or corpus content before outside knowledge.\n"
+    "Wrong-source answers are worse than saying the evidence is insufficient.\n"
+    "For benchmark-style document QA, answer only after the retrieved evidence matches the requested entity, period, and aggregation.\n"
     "Quote the exact supporting phrase, number, or table row when it materially supports the answer.\n"
     "Cite the supporting source inline using the available citation or document label.\n"
     "Keep unsupported parts clearly marked as open questions."
@@ -110,6 +112,7 @@ DOCUMENT_GROUNDED_GUIDANCE = (
 RETRIEVAL_GUIDANCE = (
     "Answer from retrieved sources rather than model memory.\n"
     "Use the available search, corpus, or document findings to ground the answer.\n"
+    "Choose the next retrieval action from evidence quality, not from general background knowledge.\n"
     "Prefer exact quotes or extracted numeric facts when they resolve the question.\n"
     "Cite the source used for the key conclusion."
 )

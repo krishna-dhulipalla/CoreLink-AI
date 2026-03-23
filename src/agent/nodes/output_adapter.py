@@ -66,6 +66,12 @@ def _strip_xml_blocks(text: str) -> str:
     return _TAG_BLOCK_RE.sub("", text or "").strip()
 
 
+def _strip_escaped_final_answer_markup(text: str) -> str:
+    cleaned = re.sub(r"&lt;/?FINAL_ANSWER&gt;", "", text or "", flags=re.IGNORECASE)
+    cleaned = re.sub(r"&lt;/?REASONING&gt;", "", cleaned, flags=re.IGNORECASE)
+    return cleaned.strip()
+
+
 def _extract_labeled_final_value(text: str) -> str:
     patterns = (
         r"(?im)^\s*(?:final answer|answer|conclusion|result)\s*:\s*(.+?)\s*$",
@@ -137,9 +143,9 @@ def _adapt_final_answer_tags(source_text: str, contract: dict) -> str:
         final_value = _infer_final_answer_value(existing_final or _strip_xml_blocks(source_text))
 
     if existing_reasoning:
-        reasoning_text = existing_reasoning
+        reasoning_text = _strip_escaped_final_answer_markup(existing_reasoning)
     else:
-        reasoning_text = _strip_xml_blocks(source_text)
+        reasoning_text = _strip_escaped_final_answer_markup(_strip_xml_blocks(source_text))
         if not reasoning_text:
             reasoning_text = f"The final answer is {final_value}."
 

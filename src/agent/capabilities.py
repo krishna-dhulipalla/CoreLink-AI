@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 from typing import Any, Callable
 
 from langchain_core.tools import BaseTool, tool
@@ -100,6 +102,31 @@ _ROLE_BY_TOOL: dict[str, str] = {
     "fetch_reference_file": "fetch",
     "fetch_corpus_document": "fetch",
 }
+
+_OFFICEQA_ALLOWED_FAMILIES = {
+    "document_retrieval",
+    "external_retrieval",
+    "analytical_reasoning",
+    "exact_compute",
+}
+
+
+def _looks_like_officeqa_prompt(text: str) -> bool:
+    lowered = re.sub(r"[^a-z0-9]+", " ", (text or "").lower())
+    return any(
+        token in lowered
+        for token in (
+            "treasury bulletin",
+            "u.s national defense",
+            "u s national defense",
+            "veterans administration",
+            "individual calendar months",
+            "bls cpi-u",
+            "bls cpi u",
+            "federal reserve bank of minneapolis",
+            "monthly treasury statement",
+        )
+    )
 
 
 def _infer_external_family_and_role(tool_obj: Any) -> tuple[str, str, int]:
@@ -259,6 +286,31 @@ def _looks_like_document_corpus_query(source_bundle: SourceBundle) -> bool:
     )
 
 
+def _officeqa_mode(intent: TaskIntent, source_bundle: SourceBundle) -> bool:
+    task_text = source_bundle.task_text or ""
+    if os.getenv("BENCHMARK_NAME", "").strip().lower() == "officeqa" and _looks_like_officeqa_prompt(task_text):
+        return True
+    lowered = task_text.lower()
+    return intent.task_family == "document_qa" and "treasury bulletin" in lowered
+
+
+def _officeqa_allowed_descriptor(descriptor: dict[str, Any]) -> bool:
+    family = str(descriptor.get("tool_family", "") or "")
+    tool_name = str(descriptor.get("tool_name", "") or "")
+    role = str(descriptor.get("tool_role", "") or "")
+    if family not in _OFFICEQA_ALLOWED_FAMILIES:
+        return False
+    if family == "document_retrieval":
+        return True
+    if family == "external_retrieval":
+        return role == "search" or tool_name == "internet_search"
+    if family == "exact_compute":
+        return tool_name in {"calculator", "sum_values", "weighted_average", "pct_change", "cagr"}
+    if family == "analytical_reasoning":
+        return False
+    return False
+
+
 def _normalize_family(raw_family: str, intent: TaskIntent, source_bundle: SourceBundle) -> str:
     family = str(raw_family or "").strip()
     if family in _CANONICAL_FAMILIES:
@@ -284,6 +336,14 @@ def _normalize_family(raw_family: str, intent: TaskIntent, source_bundle: Source
 
 def _widen_families(intent: TaskIntent, source_bundle: SourceBundle, normalized: list[str]) -> list[str]:
     widened = list(normalized)
+    if _officeqa_mode(intent, source_bundle):
+        for family in ("document_retrieval", "exact_compute"):
+            if family not in widened:
+                widened.append(family)
+        if os.getenv("OFFICEQA_ALLOW_WEB_FALLBACK", "last_fallback").strip().lower() not in {"0", "false", "no", "off", "never"}:
+            if "external_retrieval" not in widened:
+                widened.append("external_retrieval")
+        return [family for family in widened if family in _OFFICEQA_ALLOWED_FAMILIES]
     if intent.task_family in {"finance_quant", "external_retrieval"} and _source_requests_live_data(source_bundle):
         for family in ("market_data_retrieval", "external_retrieval"):
             if family not in widened:
@@ -365,6 +425,7 @@ def resolve_tool_plan(
     registry: dict[str, dict[str, Any]],
 ) -> tuple[ToolPlan, dict[str, dict[str, Any]]]:
     mutable_registry = dict(registry)
+    officeqa_mode = _officeqa_mode(intent, source_bundle)
     requested = [_normalize_family(family, intent, source_bundle) for family in intent.tool_families_needed]
     requested = list(dict.fromkeys([family for family in requested if family]))
     widened = _widen_families(intent, source_bundle, requested)
@@ -391,6 +452,12 @@ def resolve_tool_plan(
     for family in widened:
         if family == "document_retrieval":
             document_tools = _document_retrieval_candidates(mutable_registry, source_bundle)
+            if officeqa_mode:
+                document_tools = [
+                    tool_name
+                    for tool_name in document_tools
+                    if _officeqa_allowed_descriptor(dict(mutable_registry.get(tool_name, {}).get("descriptor") or {}))
+                ]
             if not document_tools:
                 ace_event, synthesized = synthesize_capability(family)
                 ace_events.append(ace_event.model_dump())
@@ -401,6 +468,12 @@ def resolve_tool_plan(
                         "tool": synthesized,
                     }
                     document_tools = _document_retrieval_candidates(mutable_registry, source_bundle)
+                    if officeqa_mode:
+                        document_tools = [
+                            tool_name
+                            for tool_name in document_tools
+                            if _officeqa_allowed_descriptor(dict(mutable_registry.get(tool_name, {}).get("descriptor") or {}))
+                        ]
             if not document_tools:
                 blocked.append(family)
                 notes.append(f"No safe tool binding found for {family}.")
@@ -423,6 +496,8 @@ def resolve_tool_plan(
             continue
 
         candidates = _ordered_candidates(mutable_registry, family)
+        if officeqa_mode:
+            candidates = [item for item in candidates if _officeqa_allowed_descriptor(item[0])]
         if not candidates:
             ace_event, synthesized = synthesize_capability(family)
             ace_events.append(ace_event.model_dump())
@@ -433,6 +508,8 @@ def resolve_tool_plan(
                     "tool": synthesized,
                 }
                 candidates = _ordered_candidates(mutable_registry, family)
+                if officeqa_mode:
+                    candidates = [item for item in candidates if _officeqa_allowed_descriptor(item[0])]
         if not candidates:
             blocked.append(family)
             notes.append(f"No safe tool binding found for {family}.")
@@ -475,6 +552,11 @@ def resolve_tool_plan(
     if not selected and any(family in {"market_data_retrieval", "external_retrieval", "document_retrieval"} for family in widened):
         stop_reason = "no_bindable_capability"
     elif blocked and len(blocked) == len(widened) and intent.task_family in {"external_retrieval", "finance_quant", "market_scenario"}:
+        stop_reason = "no_bindable_capability"
+    if officeqa_mode and not any(
+        family in {"document_retrieval", "external_retrieval"}
+        for family in widened
+    ):
         stop_reason = "no_bindable_capability"
 
     plan = ToolPlan(

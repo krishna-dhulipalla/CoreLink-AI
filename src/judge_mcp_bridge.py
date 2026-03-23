@@ -7,6 +7,7 @@ server-provided schema before each call.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from typing import Any
@@ -17,6 +18,7 @@ from pydantic import BaseModel, Field, create_model
 
 
 _TOOL_TIMEOUT = float(os.getenv("JUDGE_MCP_TIMEOUT_SECONDS", "25"))
+logger = logging.getLogger(__name__)
 
 
 class JudgeMcpConnectionError(RuntimeError):
@@ -26,6 +28,10 @@ class JudgeMcpConnectionError(RuntimeError):
 
 def _judge_enabled() -> bool:
     return os.getenv("ENABLE_JUDGE_MCP_DISCOVERY", "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _strict_judge_mcp_discovery() -> bool:
+    return os.getenv("STRICT_JUDGE_MCP_DISCOVERY", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _normalize_judge_mcp_url(url: str) -> str:
@@ -82,11 +88,11 @@ async def discover_judge_tools(session_id: str = "") -> list[dict[str, Any]]:
             resp.raise_for_status()
             payload = resp.json()
     except (httpx.HTTPError, OSError) as exc:
-        raise JudgeMcpConnectionError(
-            f"Judge MCP discovery failed at {url}: {exc}. "
-            "If this agent is running outside the benchmark Docker network, "
-            "set BENCHMARK_JUDGE_MCP_URL to a host-reachable Judge MCP URL or run the agent inside the benchmark network."
-        ) from exc
+        message = _judge_discovery_failure_message(url, exc)
+        if _strict_judge_mcp_discovery():
+            raise JudgeMcpConnectionError(message) from exc
+        logger.warning("%s Falling back to built-in/local tools.", message)
+        return []
 
     if isinstance(payload, list):
         return [item for item in payload if isinstance(item, dict)]
@@ -95,6 +101,19 @@ async def discover_judge_tools(session_id: str = "") -> list[dict[str, Any]]:
         if isinstance(tools, list):
             return [item for item in tools if isinstance(item, dict)]
     return []
+
+
+def _judge_discovery_failure_message(url: str, exc: Exception) -> str:
+    if isinstance(exc, httpx.HTTPStatusError) and exc.response is not None and exc.response.status_code == 404:
+        return (
+            f"Judge MCP endpoint not available at {url} (404). "
+            "The local lightweight benchmark runner may not expose MCP tools."
+        )
+    return (
+        f"Judge MCP discovery failed at {url}: {exc}. "
+        "If this agent is running outside the benchmark Docker network, "
+        "set BENCHMARK_JUDGE_MCP_URL to a host-reachable Judge MCP URL or run the agent inside the benchmark network."
+    )
 
 
 async def call_judge_tool(

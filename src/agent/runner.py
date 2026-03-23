@@ -94,8 +94,9 @@ async def run_agent(
     graph,
     input_text: str,
     history: list[BaseMessage] | None = None,
+    trace_identity: dict | None = None,
 ) -> tuple[str, list[dict], list[BaseMessage]]:
-    trace = await run_agent_trace(graph, input_text, history=history)
+    trace = await run_agent_trace(graph, input_text, history=history, trace_identity=trace_identity)
     return trace["answer"], trace["steps"], trace["updated_history"]
 
 
@@ -103,6 +104,7 @@ async def run_agent_trace(
     graph,
     input_text: str,
     history: list[BaseMessage] | None = None,
+    trace_identity: dict | None = None,
 ) -> dict:
     if _benchmark_stateless_mode():
         history = []
@@ -120,7 +122,7 @@ async def run_agent_trace(
     budget = BudgetTracker()
 
     # ── Start RunTracer if enabled ──
-    tracer = start_tracer()
+    tracer = start_tracer(trace_identity=trace_identity)
     if tracer:
         tracer.set_task(input_text)
 
@@ -152,8 +154,10 @@ async def run_agent_trace(
         "task_intent": {},
         "tool_plan": {},
         "source_bundle": {},
+        "retrieval_intent": {},
         "curated_context": {},
         "review_packet": {},
+        "evidence_sufficiency": {},
         "execution_journal": {
             "events": [],
             "tool_results": [],
@@ -171,6 +175,7 @@ async def run_agent_trace(
         "quality_report": {},
         "progress_signature": {},
         "unsupported_capability_report": {},
+        "trace_identity": dict(trace_identity or {}),
         "fast_path_used": False,
     }
 

@@ -15,10 +15,12 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from agent.contracts import (
     AnswerContract,
     CuratedContext,
+    EvidenceSufficiency,
     ExecutionJournal,
     ProgressSignature,
     QualityReport,
     RetrievalAction,
+    RetrievalIntent,
     ReviewPacket,
     SourceBundle,
     TaskIntent,
@@ -41,7 +43,7 @@ from agent.solver.quant import deterministic_quant_final_answer
 from agent.tools.normalization import normalize_tool_output
 from agent.tracer import format_messages_for_trace, get_tracer
 from agent.capabilities import resolve_tool_plan
-from agent.curated_context import _compact_tool_findings, build_curated_context, build_review_packet, build_source_bundle, solver_context_block
+from agent.curated_context import _compact_tool_findings, build_curated_context, build_review_packet, build_source_bundle, build_retrieval_bundle, solver_context_block
 from agent.prompts import (
     PLANNER_SYSTEM,
     EXECUTOR_SYSTEM,
@@ -53,6 +55,7 @@ from agent.prompts import (
     REUSABLE_TOOL_FAMILIES,
 )
 from agent.review_utils import legal_depth_gaps, looks_truncated, matches_exact_json_contract, options_gaps
+from agent.retrieval_reasoning import assess_evidence_sufficiency
 from agent.state import AgentState
 from context_manager import count_tokens
 
@@ -770,6 +773,7 @@ def context_curator(state: RuntimeState) -> dict[str, Any]:
     intent = TaskIntent.model_validate(state.get("task_intent") or {})
     source_bundle = SourceBundle.model_validate(state.get("source_bundle") or build_source_bundle(task_text).model_dump())
     curated_context, evidence_stats = build_curated_context(task_text, answer_contract, intent, source_bundle)
+    retrieval_intent, evidence_sufficiency = build_retrieval_bundle(task_text, source_bundle)
     workpad = dict(state.get("workpad", {}))
     workpad["evidence_stats"] = evidence_stats
     workpad["task_complexity_tier"] = intent.complexity_tier
@@ -786,6 +790,8 @@ def context_curator(state: RuntimeState) -> dict[str, Any]:
                 "objective_preview": curated_context.objective[:220],
                 "fact_count": len(curated_context.facts_in_use),
                 "evidence_stats": evidence_stats,
+                "retrieval_intent": retrieval_intent.model_dump(),
+                "evidence_sufficiency": evidence_sufficiency.model_dump(),
                 "requested_output": curated_context.requested_output,
             },
         )
@@ -802,6 +808,7 @@ def context_curator(state: RuntimeState) -> dict[str, Any]:
         answer_contract=answer_contract,
         curated_context=curated_context.model_dump(),
         tool_results=[],
+        evidence_sufficiency=evidence_sufficiency.model_dump(),
     )
     logger.info("[Step %s] engine context_curator -> facts=%s", step, len(curated_context.facts_in_use))
     return {
@@ -817,6 +824,8 @@ def context_curator(state: RuntimeState) -> dict[str, Any]:
                 "formula_count": len(source_bundle.formulas),
             },
         },
+        "retrieval_intent": retrieval_intent.model_dump(),
+        "evidence_sufficiency": evidence_sufficiency.model_dump(),
         "workpad": workpad,
     }
 
@@ -843,6 +852,7 @@ def _generic_tool_args(
     registry: dict[str, dict[str, Any]],
     tool_name: str,
     source_bundle: SourceBundle,
+    retrieval_intent: RetrievalIntent | None = None,
 ) -> dict[str, Any]:
     tool_obj = _tool_lookup(registry, tool_name)
     descriptor = _tool_descriptor(registry, tool_name)
@@ -851,7 +861,11 @@ def _generic_tool_args(
         return {}
 
     task_text = source_bundle.task_text
-    focus_query = source_bundle.focus_query or task_text[:240]
+    focus_query = (
+        (retrieval_intent.query_candidates[0] if retrieval_intent and retrieval_intent.query_candidates else "")
+        or source_bundle.focus_query
+        or task_text[:240]
+    )
     args: dict[str, Any] = {}
     tool_role = str(descriptor.get("tool_role", "") or "")
 
@@ -880,6 +894,7 @@ def _generic_tool_args(
 
 def _structured_tool_args(state: RuntimeState, registry: dict[str, dict[str, Any]], tool_name: str) -> dict[str, Any]:
     source_bundle = SourceBundle.model_validate(state.get("source_bundle") or {})
+    retrieval_intent = RetrievalIntent.model_validate(state.get("retrieval_intent") or {})
     task_text = source_bundle.task_text
     if tool_name == "legal_playbook_retrieval":
         return {"query": source_bundle.focus_query or task_text[:240], "deal_size_hint": "", "urgency": ""}
@@ -904,9 +919,11 @@ def _structured_tool_args(state: RuntimeState, registry: dict[str, dict[str, Any
             "cross_border": bool("eu" in lowered and ("us" in lowered or "united states" in lowered)),
         }
     if tool_name == "internet_search":
-        return {"query": source_bundle.focus_query or task_text[:240]}
+        query = (retrieval_intent.query_candidates[0] if retrieval_intent.query_candidates else "") or source_bundle.focus_query or task_text[:240]
+        return {"query": query}
     if tool_name == "search_reference_corpus":
-        return {"query": source_bundle.focus_query or task_text[:240], "top_k": 5, "snippet_chars": 700}
+        query = (retrieval_intent.query_candidates[0] if retrieval_intent.query_candidates else "") or source_bundle.focus_query or task_text[:240]
+        return {"query": query, "top_k": 5, "snippet_chars": 700}
     if tool_name == "fetch_reference_file":
         if source_bundle.urls:
             return {"url": source_bundle.urls[0], "page_start": 0, "page_limit": 5, "row_offset": 0, "row_limit": 200}
@@ -942,7 +959,7 @@ def _structured_tool_args(state: RuntimeState, registry: dict[str, dict[str, Any
             if args:
                 return args
         return {}
-    return _generic_tool_args(registry, tool_name, source_bundle)
+    return _generic_tool_args(registry, tool_name, source_bundle, retrieval_intent)
 
 
 async def _invoke_tool(tool_obj: Any, args: dict[str, Any]) -> Any:
@@ -1003,7 +1020,9 @@ def _retrieval_tools_by_role(
     return grouped
 
 
-def _derive_retrieval_seed_query(source_bundle: SourceBundle) -> str:
+def _derive_retrieval_seed_query(source_bundle: SourceBundle, retrieval_intent: RetrievalIntent | None = None) -> str:
+    if retrieval_intent and retrieval_intent.query_candidates:
+        return retrieval_intent.query_candidates[0]
     parts = [source_bundle.focus_query or source_bundle.task_text]
     if source_bundle.entities:
         parts.append(" ".join(source_bundle.entities[:4]))
@@ -1011,6 +1030,15 @@ def _derive_retrieval_seed_query(source_bundle: SourceBundle) -> str:
         parts.append(source_bundle.target_period)
     seed = " ".join(part.strip() for part in parts if part and part.strip())
     return re.sub(r"\s+", " ", seed).strip()[:280]
+
+
+def _next_retrieval_query(journal: ExecutionJournal, retrieval_intent: RetrievalIntent, source_bundle: SourceBundle) -> str:
+    used = {re.sub(r"\s+", " ", query).strip().lower() for query in journal.retrieval_queries}
+    for candidate in retrieval_intent.query_candidates:
+        normalized = re.sub(r"\s+", " ", candidate).strip().lower()
+        if normalized and normalized not in used:
+            return candidate
+    return _derive_retrieval_seed_query(source_bundle, retrieval_intent)
 
 
 def _retrieval_tokens(text: str) -> list[str]:
@@ -1056,49 +1084,11 @@ def _retrieval_content_text(facts: dict[str, Any]) -> str:
     return " ".join(part for part in parts if part).strip()
 
 
-def _retrieved_evidence_is_sufficient(source_bundle: SourceBundle, facts: dict[str, Any]) -> bool:
-    content_text = _retrieval_content_text(facts)
-    if not content_text:
+def _retrieved_evidence_is_sufficient(source_bundle: SourceBundle, tool_result: dict[str, Any]) -> bool:
+    if str(tool_result.get("retrieval_status", "") or "") in {"garbled_binary", "parse_error", "network_error", "unsupported_format", "empty", "irrelevant"}:
         return False
-    content_tokens = set(_retrieval_tokens(content_text))
-    if not content_tokens:
-        return False
-
-    focus_query = re.sub(r"\s+", " ", (source_bundle.focus_query or "").lower()).strip()
-    if focus_query and len(focus_query) >= 8 and focus_query in content_text.lower():
-        return True
-
-    focus_tokens = _retrieval_focus_tokens(source_bundle)
-    overlap = set(focus_tokens).intersection(content_tokens)
-    if not overlap:
-        return False
-
-    period = str(source_bundle.target_period or "").strip()
-    has_period = not period or period in content_tokens or period in content_text
-    entity_tokens = {
-        token
-        for entity in source_bundle.entities[:6]
-        for token in _retrieval_tokens(entity)
-        if len(token) > 2
-    }
-    has_entity = not entity_tokens or bool(entity_tokens.intersection(content_tokens))
-    has_structured_signal = bool(facts.get("tables") or facts.get("numeric_summaries") or re.search(r"\d", content_text))
-    focus_core_tokens = [
-        token
-        for token in _retrieval_tokens(source_bundle.focus_query or "")
-        if token not in entity_tokens and token != period
-    ]
-    primary_tokens = focus_core_tokens or focus_tokens
-    primary_overlap = set(primary_tokens).intersection(content_tokens)
-
-    if not primary_overlap:
-        return False
-
-    if has_entity and has_period and len(primary_overlap) >= 1 and has_structured_signal:
-        return True
-
-    minimum_overlap = 2 if len(primary_tokens) >= 3 else 1
-    return len(primary_overlap) >= minimum_overlap and (has_period or has_entity or has_structured_signal)
+    sufficiency = assess_evidence_sufficiency(source_bundle.task_text, source_bundle, [tool_result])
+    return bool(sufficiency.is_sufficient)
 
 
 def _next_corpus_fetch_action(last_result: dict[str, Any]) -> RetrievalAction | None:
@@ -1218,6 +1208,7 @@ def _fallback_retrieval_action(
     *,
     execution_mode: str,
     source_bundle: SourceBundle,
+    retrieval_intent: RetrievalIntent,
     journal: ExecutionJournal,
     tool_plan: ToolPlan,
     registry: dict[str, dict[str, Any]],
@@ -1230,9 +1221,12 @@ def _fallback_retrieval_action(
     external_search_tools = [name for name in roles["search"] if _tool_family(registry, name) == "external_retrieval"]
     last_result = journal.tool_results[-1] if journal.tool_results else {}
     last_type = str(last_result.get("type", ""))
+    last_status = str(last_result.get("retrieval_status", "") or "")
     candidates = _search_result_candidates(last_result)
-    seed_query = _derive_retrieval_seed_query(source_bundle)
-    corpus_grounded_only = execution_mode == "document_grounded_analysis"
+    seed_query = _next_retrieval_query(journal, retrieval_intent, source_bundle)
+    officeqa_mode = os.getenv("BENCHMARK_NAME", "").strip().lower() == "officeqa"
+    allow_web_fallback = os.getenv("OFFICEQA_ALLOW_WEB_FALLBACK", "last_fallback").strip().lower() not in {"0", "false", "no", "off", "never"}
+    corpus_grounded_only = execution_mode == "document_grounded_analysis" and officeqa_mode and not allow_web_fallback
 
     if not journal.tool_results:
         if source_bundle.urls and discover_tools:
@@ -1241,9 +1235,14 @@ def _fallback_retrieval_action(
             return RetrievalAction(action="tool", tool_name=document_search_tools[0], query=seed_query, rationale="Search the grounded document source first.")
         if source_bundle.urls and document_fetch_tools:
             return RetrievalAction(action="tool", tool_name=document_fetch_tools[0], url=source_bundle.urls[0], rationale="Read the first supplied reference document.")
-        if external_search_tools:
+        if external_search_tools and (not officeqa_mode or allow_web_fallback):
             return RetrievalAction(action="tool", tool_name=external_search_tools[0], query=seed_query, rationale="Search the web for a supporting source.")
         return RetrievalAction(action="answer", rationale="No retrieval tools are available.")
+
+    if _tool_role(registry, last_type) == "search" and last_status in {"empty", "irrelevant"}:
+        next_query = _next_retrieval_query(journal, retrieval_intent, source_bundle)
+        if next_query and next_query != (journal.retrieval_queries[-1] if journal.retrieval_queries else ""):
+            return RetrievalAction(action="tool", tool_name=last_type, query=next_query, rationale="Refine the search because the prior results were not relevant enough.")
 
     if _tool_role(registry, last_type) in {"search", "discover"} and candidates:
         first = candidates[0]
@@ -1272,8 +1271,7 @@ def _fallback_retrieval_action(
         )
 
     if _tool_role(registry, last_type) == "fetch":
-        facts = dict(last_result.get("facts") or {})
-        if _retrieved_evidence_is_sufficient(source_bundle, facts):
+        if _retrieved_evidence_is_sufficient(source_bundle, last_result):
             return RetrievalAction(action="answer", rationale="Retrieved document evidence is available for the final answer.")
         if last_type == "fetch_reference_file" or _tool_family(registry, last_type) == "document_retrieval":
             next_window = _next_reference_fetch_action(last_result, last_type)
@@ -1289,8 +1287,8 @@ def _fallback_retrieval_action(
     if journal.retrieval_iterations >= _MAX_RETRIEVAL_HOPS - 1:
         return RetrievalAction(action="answer", rationale="Retrieval hop budget exhausted.")
 
-    if not corpus_grounded_only and external_search_tools and last_type != external_search_tools[0]:
-        query = journal.retrieval_queries[-1] if journal.retrieval_queries else seed_query
+    if not corpus_grounded_only and external_search_tools and last_type != external_search_tools[0] and (not officeqa_mode or allow_web_fallback):
+        query = _next_retrieval_query(journal, retrieval_intent, source_bundle)
         return RetrievalAction(action="tool", tool_name=external_search_tools[0], query=query, rationale="Broaden search after insufficient local evidence.")
 
     return RetrievalAction(action="answer", rationale="No better retrieval action is available.")
@@ -1317,6 +1315,7 @@ def _plan_retrieval_action(
     *,
     execution_mode: str,
     source_bundle: SourceBundle,
+    retrieval_intent: RetrievalIntent,
     tool_plan: ToolPlan,
     journal: ExecutionJournal,
     registry: dict[str, dict[str, Any]],
@@ -1334,6 +1333,7 @@ def _plan_retrieval_action(
     heuristic = _fallback_retrieval_action(
         execution_mode=execution_mode,
         source_bundle=source_bundle,
+        retrieval_intent=retrieval_intent,
         journal=journal,
         tool_plan=tool_plan,
         registry=registry,
@@ -1346,11 +1346,12 @@ def _tool_args_from_retrieval_action(
     action: RetrievalAction,
     source_bundle: SourceBundle,
     registry: dict[str, dict[str, Any]],
+    retrieval_intent: RetrievalIntent,
 ) -> dict[str, Any]:
     if action.tool_name == "internet_search":
-        return {"query": action.query or _derive_retrieval_seed_query(source_bundle)}
+        return {"query": action.query or _derive_retrieval_seed_query(source_bundle, retrieval_intent)}
     if action.tool_name == "search_reference_corpus":
-        return {"query": action.query or _derive_retrieval_seed_query(source_bundle), "top_k": 5, "snippet_chars": 700}
+        return {"query": action.query or _derive_retrieval_seed_query(source_bundle, retrieval_intent), "top_k": 5, "snippet_chars": 700}
     if action.tool_name == "list_reference_files":
         return {"prompt_text": source_bundle.task_text}
     if action.tool_name == "fetch_reference_file":
@@ -1368,7 +1369,7 @@ def _tool_args_from_retrieval_action(
             "chunk_start": action.chunk_start,
             "chunk_limit": max(1, action.chunk_limit),
         }
-    args = _generic_tool_args(registry, action.tool_name, source_bundle)
+    args = _generic_tool_args(registry, action.tool_name, source_bundle, retrieval_intent)
     tool_obj = _tool_lookup(registry, action.tool_name)
     arg_schema = dict(getattr(tool_obj, "args", {}) or {})
     for field_name in arg_schema.keys():
@@ -1527,6 +1528,8 @@ def make_executor(registry: dict[str, dict[str, Any]]):
         tool_plan = ToolPlan.model_validate(state.get("tool_plan") or {})
         curated = CuratedContext.model_validate(state.get("curated_context") or {})
         source_bundle = SourceBundle.model_validate(state.get("source_bundle") or {})
+        retrieval_intent = RetrievalIntent.model_validate(state.get("retrieval_intent") or {})
+        evidence_sufficiency = EvidenceSufficiency.model_validate(state.get("evidence_sufficiency") or {})
         journal = ExecutionJournal.model_validate(state.get("execution_journal") or {})
         workpad = dict(state.get("workpad", {}))
         review_feedback = dict(state.get("review_feedback") or {})
@@ -1543,6 +1546,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
             workpad = _record_event(workpad, "executor", f"rerouted before tool execution -> {intent.task_family}")
 
         if tool_plan.stop_reason == "unsupported_capability":
+            evidence_sufficiency = assess_evidence_sufficiency(task_text, source_bundle, journal.tool_results)
             journal.final_artifact_signature = _artifact_signature(
                 "This task requires non-finance artifact generation that the active finance-first engine does not support."
             )
@@ -1564,12 +1568,15 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                     answer_contract=state.get("answer_contract", {}) or {},
                     curated_context=curated.model_dump(),
                     tool_results=[],
+                    evidence_sufficiency=evidence_sufficiency.model_dump(),
                 ).model_dump(),
+                "evidence_sufficiency": evidence_sufficiency.model_dump(),
                 "solver_stage": "COMPLETE",
                 "workpad": workpad,
             }
 
         if tool_plan.stop_reason == "no_bindable_capability" and not tool_plan.pending_tools and not review_feedback:
+            evidence_sufficiency = assess_evidence_sufficiency(task_text, source_bundle, journal.tool_results)
             journal.final_artifact_signature = _artifact_signature(
                 "I could not bind a safe retrieval or analysis capability for this task, so I am stopping instead of guessing."
             )
@@ -1590,7 +1597,9 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                     answer_contract=state.get("answer_contract", {}) or {},
                     curated_context=curated.model_dump(),
                     tool_results=[],
+                    evidence_sufficiency=evidence_sufficiency.model_dump(),
                 ).model_dump(),
+                "evidence_sufficiency": evidence_sufficiency.model_dump(),
                 "solver_stage": "COMPLETE",
                 "workpad": workpad,
             }
@@ -1598,6 +1607,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
         if intent.execution_mode == "exact_fast_path" and intent.task_family == "finance_quant":
             answer = _exact_quant_answer(state)
             if answer:
+                evidence_sufficiency = assess_evidence_sufficiency(task_text, source_bundle, journal.tool_results)
                 journal.final_artifact_signature = _artifact_signature(answer)
                 workpad["review_ready"] = True
                 workpad = _record_event(workpad, "executor", "exact_fast_path -> final draft ready")
@@ -1623,7 +1633,9 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                         answer_contract=state.get("answer_contract", {}) or {},
                         curated_context=curated.model_dump(),
                         tool_results=[],
+                        evidence_sufficiency=evidence_sufficiency.model_dump(),
                     ).model_dump(),
+                    "evidence_sufficiency": evidence_sufficiency.model_dump(),
                     "solver_stage": "SYNTHESIZE",
                     "workpad": workpad,
                 }
@@ -1652,6 +1664,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                 journal.routed_tool_families = list(dict.fromkeys([*journal.routed_tool_families, *tool_plan.tool_families_needed]))
                 workpad = _record_event(workpad, "executor", f"ran tool {next_tool}")
                 tool_plan.pending_tools = tool_plan.pending_tools[1:]
+                evidence_sufficiency = assess_evidence_sufficiency(task_text, source_bundle, journal.tool_results)
                 should_continue_after_tool = bool(tool_plan.pending_tools) or intent.execution_mode in _RETRIEVAL_EXECUTION_MODES
                 if should_continue_after_tool and intent.execution_mode in {"advisory_analysis", "document_grounded_analysis", "tool_compute", "retrieval_augmented_analysis"}:
                     if tracer:
@@ -1672,6 +1685,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                         "tool_plan": tool_plan.model_dump(),
                         "execution_journal": journal.model_dump(),
                         "curated_context": curated.model_dump(),
+                        "evidence_sufficiency": evidence_sufficiency.model_dump(),
                         "solver_stage": "GATHER" if intent.execution_mode in _RETRIEVAL_EXECUTION_MODES else "COMPUTE",
                         "workpad": workpad,
                     }
@@ -1680,6 +1694,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
             retrieval_action = _plan_retrieval_action(
                 execution_mode=intent.execution_mode,
                 source_bundle=source_bundle,
+                retrieval_intent=retrieval_intent,
                 tool_plan=tool_plan,
                 journal=journal,
                 registry=registry,
@@ -1688,7 +1703,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                 if budget and budget.tool_calls_exhausted():
                     budget.log_budget_exit("tool_budget_exhausted", f"Blocked tool '{retrieval_action.tool_name}' after reaching tool-call cap.")
                 else:
-                    tool_args = _tool_args_from_retrieval_action(retrieval_action, source_bundle, registry)
+                    tool_args = _tool_args_from_retrieval_action(retrieval_action, source_bundle, registry, retrieval_intent)
                     _, tool_result = await _run_tool_step_with_args(state, registry, retrieval_action.tool_name, tool_args)
                     if tracker:
                         tracker.record_mcp_call()
@@ -1705,6 +1720,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                     if retrieval_action.tool_name not in tool_plan.selected_tools:
                         tool_plan.selected_tools.append(retrieval_action.tool_name)
                     workpad = _record_event(workpad, "executor", f"retrieval hop -> {retrieval_action.tool_name}")
+                    evidence_sufficiency = assess_evidence_sufficiency(task_text, source_bundle, journal.tool_results)
                     if tracer:
                         tracer.record(
                             "executor",
@@ -1724,6 +1740,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                         "tool_plan": tool_plan.model_dump(),
                         "execution_journal": journal.model_dump(),
                         "curated_context": curated.model_dump(),
+                        "evidence_sufficiency": evidence_sufficiency.model_dump(),
                         "solver_stage": "GATHER",
                         "workpad": workpad,
                     }
@@ -1733,6 +1750,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
         if intent.task_family == "finance_options" and journal.tool_results:
             answer = _options_final_answer({**state, "execution_journal": journal.model_dump()})
             if answer:
+                evidence_sufficiency = assess_evidence_sufficiency(task_text, source_bundle, journal.tool_results)
                 journal.final_artifact_signature = _artifact_signature(answer)
                 workpad["completion_budget"] = 0
                 workpad["review_ready"] = True
@@ -1761,7 +1779,9 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                         answer_contract=state.get("answer_contract", {}) or {},
                         curated_context=curated.model_dump(),
                         tool_results=journal.tool_results,
+                        evidence_sufficiency=evidence_sufficiency.model_dump(),
                     ).model_dump(),
+                    "evidence_sufficiency": evidence_sufficiency.model_dump(),
                     "solver_stage": "SYNTHESIZE",
                     "review_feedback": None,
                     "workpad": workpad,
@@ -1836,6 +1856,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
             )
 
         journal.final_artifact_signature = _artifact_signature(content)
+        evidence_sufficiency = assess_evidence_sufficiency(task_text, source_bundle, journal.tool_results)
         workpad["completion_budget"] = max_tokens
         workpad["review_ready"] = True
         workpad = _record_event(workpad, "executor", "final draft ready")
@@ -1869,7 +1890,9 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                 answer_contract=state.get("answer_contract", {}) or {},
                 curated_context=curated.model_dump(),
                 tool_results=journal.tool_results,
+                evidence_sufficiency=evidence_sufficiency.model_dump(),
             ).model_dump(),
+            "evidence_sufficiency": evidence_sufficiency.model_dump(),
             "solver_stage": "SYNTHESIZE",
             "review_feedback": None,
             "workpad": workpad,
@@ -1917,6 +1940,11 @@ def reviewer(state: RuntimeState) -> dict[str, Any]:
     journal = ExecutionJournal.model_validate(state.get("execution_journal") or {})
     curated = CuratedContext.model_validate(state.get("curated_context") or {})
     tool_plan = ToolPlan.model_validate(state.get("tool_plan") or {})
+    evidence_sufficiency = assess_evidence_sufficiency(
+        latest_human_text(state["messages"]),
+        SourceBundle.model_validate(state.get("source_bundle") or {}),
+        journal.tool_results,
+    )
     workpad = dict(state.get("workpad", {}))
     answer = _latest_public_answer(state)
     answer_contract = state.get("answer_contract", {}) or {}
@@ -1926,6 +1954,7 @@ def reviewer(state: RuntimeState) -> dict[str, Any]:
         answer_contract=answer_contract,
         curated_context=curated.model_dump(),
         tool_results=journal.tool_results,
+        evidence_sufficiency=evidence_sufficiency.model_dump(),
     )
 
     missing: list[str] = []
@@ -1964,15 +1993,27 @@ def reviewer(state: RuntimeState) -> dict[str, Any]:
             missing.append("retrieved evidence")
         if not review_packet.citations:
             missing.append("source citations")
+        if not evidence_sufficiency.is_sufficient:
+            missing.extend(evidence_sufficiency.missing_dimensions)
         answer_lower = (answer or "").lower()
         has_inline_attribution = any(token in answer_lower for token in ("source:", "citation", "[source", "(source"))
         if review_packet.citations and not has_inline_attribution:
             missing.append("inline source attribution")
         if review_packet.tool_findings and not has_inline_attribution and "\"" not in answer and "quote" not in answer_lower:
             missing.append("quoted supporting evidence or extracted table row")
+        task_lower = latest_human_text(state["messages"]).lower()
+        if "calendar year" in task_lower and "fiscal year" in answer_lower and "calendar year" not in answer_lower:
+            missing.append("calendar year vs fiscal year alignment")
+        if ("all individual calendar months" in task_lower or "total sum of these values" in task_lower) and any(
+            token in answer_lower for token in ("annual total", "fiscal year total", "calendar year total")
+        ):
+            missing.append("monthly sum vs annual total alignment")
+        if "should include" in task_lower or "shouldn't contain" in task_lower:
+            if "include" not in answer_lower and "exclude" not in answer_lower and "excluding" not in answer_lower:
+                missing.append("inclusion and exclusion qualifiers")
         if missing:
             verdict = "revise" if journal.revision_count < 1 else "fail"
-            reasoning = "Grounded retrieval answer needs clearer evidence usage, attribution, or quoted support."
+            reasoning = "Grounded retrieval answer is missing evidence quality, attribution, or semantic alignment with the requested source, period, entity, or aggregation."
             score = 0.58 if verdict == "revise" else 0.48
     elif intent.task_family == "legal_transactional":
         missing = legal_depth_gaps(answer, latest_human_text(state["messages"]))
@@ -2041,6 +2082,7 @@ def reviewer(state: RuntimeState) -> dict[str, Any]:
             "quality_report": report.model_dump(),
             "execution_journal": journal.model_dump(),
             "review_packet": review_packet.model_dump(),
+            "evidence_sufficiency": evidence_sufficiency.model_dump(),
             "progress_signature": progress.model_dump(),
             "review_feedback": None,
             "solver_stage": "COMPLETE",
@@ -2052,6 +2094,7 @@ def reviewer(state: RuntimeState) -> dict[str, Any]:
             "quality_report": report.model_dump(),
             "execution_journal": journal.model_dump(),
             "review_packet": review_packet.model_dump(),
+            "evidence_sufficiency": evidence_sufficiency.model_dump(),
             "progress_signature": progress.model_dump(),
             "review_feedback": {
                 "verdict": "revise",
@@ -2070,6 +2113,7 @@ def reviewer(state: RuntimeState) -> dict[str, Any]:
         "quality_report": report.model_dump(),
         "execution_journal": journal.model_dump(),
         "review_packet": review_packet.model_dump(),
+        "evidence_sufficiency": evidence_sufficiency.model_dump(),
         "progress_signature": progress.model_dump(),
         "review_feedback": None,
         "solver_stage": "COMPLETE",

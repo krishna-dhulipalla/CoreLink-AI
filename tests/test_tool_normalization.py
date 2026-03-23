@@ -43,3 +43,38 @@ def test_normalize_tool_output_preserves_json_envelope_string():
     assert result.type == "resolve_financial_entity"
     assert result.facts["ticker"] == "MSFT"
     assert result.quality.cache_hit is False
+
+
+def test_normalize_tool_output_infers_retrieval_status_for_structured_fetch_dict():
+    result = normalize_tool_output(
+        "fetch_corpus_document",
+        {
+            "document_id": "treasury_1945_txt",
+            "citation": "treasury_1945.txt",
+            "metadata": {"file_name": "treasury_1945.txt", "format": "txt", "window": "chunks 1-1"},
+            "chunks": [{"locator": "chunk 1", "kind": "text_excerpt", "text": "Total public debt outstanding in 1945 was 258.7 billion dollars."}],
+            "tables": [],
+            "numeric_summaries": [{"metric": "public_debt", "value": 258.7}],
+        },
+        {"document_id": "treasury_1945_txt"},
+    )
+
+    assert result.retrieval_status == "ok"
+    assert result.evidence_quality_score > 0.0
+
+
+def test_normalize_tool_output_marks_garbled_binary_reference_payload():
+    raw = (
+        "FILE: treasury_1945.bin\n"
+        "FORMAT: BINARY | SIZE: 12.0 KB\n"
+        "STATUS: GARBLED_BINARY\n"
+        "ERROR: Binary payload was detected but could not be parsed as PDF, Office, CSV, JSON, or text.\n"
+        "--------------------------------------------------\n"
+        "Binary payload was detected but could not be parsed as PDF, Office, CSV, JSON, or text."
+    )
+
+    result = normalize_tool_output("fetch_reference_file", raw, {"url": "https://example.com/treasury_1945.bin"})
+
+    assert result.retrieval_status == "garbled_binary"
+    assert result.facts["metadata"]["status"] == "garbled_binary"
+    assert result.evidence_quality_score <= 0.05

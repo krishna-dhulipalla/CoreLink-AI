@@ -23,12 +23,28 @@ def _truthy_env(name: str) -> bool:
     return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _officeqa_xml_contract_enabled() -> bool:
-    if _truthy_env("OFFICEQA_FINAL_ANSWER_TAGS") or _truthy_env("OFFICEQA_XML_OUTPUT"):
+def _looks_like_officeqa_prompt(text: str) -> bool:
+    lowered = re.sub(r"[^a-z0-9]+", " ", (text or "").lower())
+    return any(
+        token in lowered
+        for token in (
+            "treasury bulletin",
+            "u.s national defense",
+            "u s national defense",
+            "veterans administration",
+            "individual calendar months",
+            "bls cpi-u",
+            "bls cpi u",
+            "federal reserve bank of minneapolis",
+        )
+    )
+
+
+def _officeqa_xml_contract_enabled(task_text: str = "") -> bool:
+    officeqa_env = _truthy_env("OFFICEQA_FINAL_ANSWER_TAGS") or _truthy_env("OFFICEQA_XML_OUTPUT") or os.getenv("BENCHMARK_NAME", "").strip().lower() == "officeqa"
+    if officeqa_env and _looks_like_officeqa_prompt(task_text):
         return True
-    if os.getenv("BENCHMARK_NAME", "").strip().lower() == "officeqa":
-        return True
-    if _truthy_env("BENCHMARK_STATELESS") and os.getenv("OFFICEQA_CORPUS_DIR", "").strip():
+    if _truthy_env("BENCHMARK_STATELESS") and os.getenv("OFFICEQA_CORPUS_DIR", "").strip() and _looks_like_officeqa_prompt(task_text):
         return True
     return False
 
@@ -104,7 +120,7 @@ def extract_answer_contract(task_text: str) -> AnswerContract:
     text = task_text or ""
     lowered = text.lower()
 
-    if _officeqa_xml_contract_enabled():
+    if _officeqa_xml_contract_enabled(text):
         return AnswerContract(
             format="xml",
             requires_adapter=True,
