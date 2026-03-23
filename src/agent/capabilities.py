@@ -601,11 +601,6 @@ def resolve_tool_plan(
         stop_reason = "no_bindable_capability"
     elif blocked and len(blocked) == len(widened) and intent.task_family in {"external_retrieval", "finance_quant", "market_scenario"}:
         stop_reason = "no_bindable_capability"
-    if officeqa_mode and not any(
-        family in {"document_retrieval", "external_retrieval"}
-        for family in widened
-    ):
-        stop_reason = "no_bindable_capability"
 
     plan = ToolPlan(
         tool_families_needed=requested,

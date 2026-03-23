@@ -89,8 +89,6 @@ async def discover_judge_tools(session_id: str = "") -> list[dict[str, Any]]:
             payload = resp.json()
     except (httpx.HTTPError, OSError) as exc:
         message = _judge_discovery_failure_message(url, exc)
-        if _strict_judge_mcp_discovery():
-            raise JudgeMcpConnectionError(message) from exc
         logger.warning("%s Falling back to built-in/local tools.", message)
         return []
 
