@@ -150,6 +150,17 @@ def _current_model_profile() -> str:
     return os.getenv("MODEL_PROFILE", "custom").strip().lower()
 
 
+def _benchmark_name() -> str:
+    return os.getenv("BENCHMARK_NAME", "").strip().lower()
+
+
+def _effective_model_profile() -> str:
+    profile = _current_model_profile()
+    if profile == "custom" and _benchmark_name() == "officeqa":
+        return "officeqa"
+    return profile
+
+
 def _profile_models() -> dict[str, dict[str, str]]:
     default_model = _current_default_model()
     return {
@@ -186,6 +197,14 @@ def _profile_models() -> dict[str, dict[str, str]]:
             "adapter": "Qwen/Qwen3-32B-fast",
             "reflection": "Qwen/Qwen3-32B-fast",
         },
+        "officeqa": {
+            "profiler": "Qwen/Qwen3-32B-fast",
+            "direct": "Qwen/Qwen3-32B-fast",
+            "solver": "deepseek-ai/DeepSeek-V3.2",
+            "reviewer": "Qwen/Qwen3-32B-fast",
+            "adapter": "Qwen/Qwen3-32B-fast",
+            "reflection": "Qwen/Qwen3-32B-fast",
+        },
     }
 
 
@@ -197,7 +216,7 @@ def get_model_name(role: str) -> str:
         if override:
             return override
 
-    profile_models = _profile_models().get(_current_model_profile(), {})
+    profile_models = _profile_models().get(_effective_model_profile(), {})
     if canonical in profile_models:
         return profile_models[canonical]
 
@@ -250,8 +269,8 @@ def get_model_name_for_task(
 def get_client_kwargs(role: str) -> dict[str, Any]:
     """Resolve shared or role-specific OpenAI-compatible client settings."""
     prefixes = _role_client_prefixes(role)
-    profile = _current_model_profile()
-    is_nebius_profile = profile in ("cheap", "balanced", "score_max")
+    profile = _effective_model_profile()
+    is_nebius_profile = profile in ("cheap", "balanced", "score_max", "officeqa")
 
     api_key = None
     base_url = None
@@ -380,8 +399,8 @@ def _tool_call_mode(role: str) -> str:
         return override
 
     # Auto-detect: Nebius profiles always need prompt mode
-    profile = _current_model_profile()
-    if profile in ("cheap", "balanced", "score_max"):
+    profile = _effective_model_profile()
+    if profile in ("cheap", "balanced", "score_max", "officeqa"):
         return "prompt"
 
     base_url = get_client_kwargs(role).get("base_url", "")

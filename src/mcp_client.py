@@ -77,7 +77,7 @@ def _parse_stdio_command(cmd_args: str) -> tuple[str, list[str]]:
     return _parse_legacy_stdio_args(raw)
 
 
-def _parse_server_config() -> dict[str, dict[str, Any]]:
+def _parse_server_config(*, include_judge: bool = True) -> dict[str, dict[str, Any]]:
     """Parse MCP server configurations from environment variables.
 
     Returns a dict compatible with MultiServerMCPClient constructor:
@@ -124,7 +124,7 @@ def _parse_server_config() -> dict[str, dict[str, Any]]:
                 "transport": "stdio",
             }
 
-    if judge_mcp_discovery_enabled():
+    if include_judge and judge_mcp_discovery_enabled():
         judge_url = (
             os.getenv("BENCHMARK_JUDGE_MCP_URL", "").strip()
             or os.getenv("JUDGE_MCP_URL", "").strip()
@@ -140,14 +140,14 @@ def _parse_server_config() -> dict[str, dict[str, Any]]:
     return config
 
 
-async def load_mcp_tools_from_env() -> list:
+async def load_mcp_tools_from_env(*, include_judge: bool = True) -> list:
     """Load tools from all MCP servers configured via environment variables.
 
     Returns:
         A list of LangChain-compatible tool objects.
         Returns an empty list if no MCP servers are configured or on error.
     """
-    config = _parse_server_config()
+    config = _parse_server_config(include_judge=include_judge)
     if not config:
         logger.info("No MCP servers configured. Using built-in tools only.")
         return []

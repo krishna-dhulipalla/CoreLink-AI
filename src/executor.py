@@ -32,7 +32,9 @@ from a2a.utils import (
 
 from agent import build_agent_graph, run_agent
 from agent.model_config import startup_compatibility_warnings
+from agent.tracer import write_preflight_failure_trace
 from conversation_store import ConversationStore
+from judge_mcp_bridge import JudgeMcpConnectionError, load_judge_tools_for_session
 from mcp_client import judge_mcp_discovery_enabled, load_mcp_tools_from_env
 
 logger = logging.getLogger(__name__)
@@ -66,7 +68,7 @@ class Executor(AgentExecutor):
                 "already running during Executor construction."
             )
         except RuntimeError:
-            self._mcp_tools = asyncio.run(load_mcp_tools_from_env())
+            self._mcp_tools = asyncio.run(load_mcp_tools_from_env(include_judge=False))
             self._mcp_loaded = True
 
         if self._mcp_tools:
@@ -79,7 +81,7 @@ class Executor(AgentExecutor):
         self.conversations = ConversationStore()
 
     async def _refresh_mcp_tools(self) -> None:
-        tools = await load_mcp_tools_from_env()
+        tools = await load_mcp_tools_from_env(include_judge=False)
         current_names = [tool.name for tool in self._mcp_tools]
         loaded_names = [tool.name for tool in tools]
         self._mcp_loaded = True
@@ -123,13 +125,28 @@ class Executor(AgentExecutor):
         await updater.start_work()
 
         # ── Run LangGraph agent ───────────────────────────────────────
+        input_text = ""
+        graph_started = False
         try:
             input_text = get_message_text(msg)
             context_id = task.context_id
+            session_id = (task.context_id or task.id or "").strip()
 
             if self._should_refresh_mcp_tools():
                 self._runtime_mcp_refresh_attempted = True
                 await self._refresh_mcp_tools()
+
+            judge_tools = []
+            if judge_mcp_discovery_enabled():
+                judge_tools, judge_tool_schemas = await load_judge_tools_for_session(session_id=session_id)
+                if judge_tools:
+                    logger.info(
+                        "Judge tools discovered for session %s: %s",
+                        session_id or "<none>",
+                        [tool.name for tool in judge_tools],
+                    )
+                elif judge_tool_schemas:
+                    logger.info("Judge tool schemas discovered but no wrappers were created for session %s", session_id or "<none>")
 
             # Retrieve prior conversation history for multi-turn support
             history = []
@@ -146,8 +163,13 @@ class Executor(AgentExecutor):
                 new_agent_text_message("Planning approach..."),
             )
 
+            active_graph = self.graph
+            if judge_tools:
+                active_graph = build_agent_graph(external_tools=[*self._mcp_tools, *judge_tools])
+
+            graph_started = True
             final_answer, steps, updated_history = await run_agent(
-                self.graph, input_text, history=history
+                active_graph, input_text, history=history
             )
 
             # Persist updated conversation history
@@ -170,6 +192,19 @@ class Executor(AgentExecutor):
             await updater.complete()
 
         except Exception as e:
+            if not graph_started:
+                write_preflight_failure_trace(
+                    input_text,
+                    str(e),
+                    profile="officeqa_preflight_failure"
+                    if os.getenv("BENCHMARK_NAME", "").strip().lower() == "officeqa"
+                    else "preflight_failure",
+                    node="judge_mcp_discovery" if isinstance(e, JudgeMcpConnectionError) else "executor",
+                    details={
+                        "session_id": task.context_id or task.id or "",
+                        "benchmark_name": os.getenv("BENCHMARK_NAME", "").strip().lower(),
+                    },
+                )
             print(f"Task failed with agent error: {e}")
             await updater.failed(
                 new_agent_text_message(

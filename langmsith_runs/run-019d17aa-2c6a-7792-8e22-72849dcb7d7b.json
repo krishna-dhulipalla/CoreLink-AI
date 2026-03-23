@@ -1,0 +1,91 @@
+{
+  "inputs": {
+    "ambiguity_flags": [],
+    "answer_contract": {},
+    "assumption_ledger": [],
+    "budget_tracker": "BudgetTracker(tier=structured_analysis, mode=retrieval_augmented_analysis, tools=1/10, revise=0/2, backtrack=0/1)",
+    "capability_flags": [],
+    "checkpoint_stack": [],
+    "compliance_feedback": null,
+    "cost_tracker": {
+      "llm_calls": 0,
+      "mcp_calls": 1,
+      "model_name": "unknown",
+      "traces": []
+    },
+    "curated_context": {},
+    "evidence_pack": {},
+    "execution_journal": {
+      "contract_collapse_attempts": 0,
+      "events": [],
+      "final_artifact_signature": "",
+      "progress_signatures": [],
+      "retrieval_iterations": 0,
+      "retrieval_queries": [],
+      "retrieved_citations": [],
+      "revision_count": 0,
+      "routed_tool_families": [],
+      "self_reflection_count": 0,
+      "stop_reason": "",
+      "tool_results": []
+    },
+    "execution_template": {},
+    "fast_path_used": false,
+    "last_tool_result": null,
+    "last_tool_signature": "",
+    "memory_store": null,
+    "messages": [
+      {
+        "additional_kwargs": {},
+        "content": "What were the total expenditures (in millions of nominal dollars) for U.S national defense in the calendar year of 1940?",
+        "response_metadata": {},
+        "type": "human"
+      }
+    ],
+    "pending_tool_call": null,
+    "profile_decision": {},
+    "progress_signature": {},
+    "provenance_map": {},
+    "quality_report": {},
+    "reflection_feedback": null,
+    "review_feedback": null,
+    "review_packet": {},
+    "risk_feedback": null,
+    "solver_stage": "PLAN",
+    "source_bundle": {},
+    "task_intent": {},
+    "task_profile": "general",
+    "tool_fail_count": 0,
+    "tool_plan": {},
+    "unsupported_capability_report": {},
+    "workpad": {
+      "events": [
+        {
+          "action": "Detected output format=xml",
+          "node": "intake"
+        }
+      ],
+      "stage_outputs": {},
+      "tool_results": []
+    }
+  },
+  "outputs": null,
+  "metadata": {
+    "ls_run_depth": 0,
+    "revision_id": "17ed439"
+  },
+  "langsmith": {
+    "organization": {
+      "name": "Personal",
+      "id": "dc492a46-2c20-44b4-a9db-bb74599c0fdc"
+    },
+    "workspace": {
+      "name": "Workspace 1",
+      "id": "11182c80-8ef5-596b-893f-673901c8eedc"
+    },
+    "tracing_project": {
+      "id": "4a374bfb-5611-4377-9b39-b31bfdcc98c2",
+      "name": "purple-agent"
+    }
+  }
+}

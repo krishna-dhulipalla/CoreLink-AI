@@ -266,6 +266,48 @@ def finalize_tracer(final_answer: str = "", cost_summary: dict | None = None, bu
     return path
 
 
+def write_preflight_failure_trace(
+    task_text: str,
+    error: str,
+    *,
+    profile: str = "preflight_failure",
+    node: str = "executor",
+    details: dict[str, Any] | None = None,
+) -> str | None:
+    """Write a minimal trace when execution fails before the graph starts."""
+    if not _tracer_enabled():
+        return None
+    if _active_session is None and os.getenv("BENCHMARK_STATELESS", "").strip().lower() in {"1", "true", "yes", "on"}:
+        start_session()
+    payload: dict[str, Any] = {
+        "run_id": "",
+        "timestamp": datetime.now(_CST).strftime("%Y-%m-%dT%H:%M:%S"),
+        "duration_seconds": 0.0,
+        "task_preview": (task_text or "")[:200],
+        "final_profile": profile,
+        "final_template": "",
+        "complexity_tier": "",
+        "total_llm_calls": 0,
+        "total_tool_calls": 0,
+        "total_tokens": {"prompt": 0, "completion": 0, "total": 0},
+        "final_answer_preview": f"Agent error: {error}",
+        "cost_summary": {},
+        "budget_summary": {},
+        "nodes": _make_readable(
+            [
+                {
+                    "node": node,
+                    "ts": datetime.now(_CST).strftime("%H:%M:%S.%f")[:-3],
+                    "preflight_failure": True,
+                    "error": error,
+                    **(details or {}),
+                }
+            ]
+        ),
+    }
+    return _write_trace_file(payload, profile, payload["timestamp"])
+
+
 # ──────────────────────── session management ──────────────────
 
 def start_session() -> str:
