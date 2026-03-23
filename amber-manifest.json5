@@ -1,0 +1,15 @@
+{
+  // CoreLink AI Amber Manifest for AgentBeats
+  name: "corelink-ai",
+  version: "0.1.0",
+  protocol: "A2A",
+  port: 9009,
+  endpoints: {
+    task: "/",
+    health: "/health",
+  },
+  entrypoint: "uv run src/server.py",
+  docker: {
+    image: "ghcr.io/krishna-dhulipalla/corelink-ai:latest",
+  },
+}
