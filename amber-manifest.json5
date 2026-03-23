@@ -1,15 +1,29 @@
 {
-  // CoreLink AI Amber Manifest for AgentBeats
-  name: "corelink-ai",
-  version: "0.1.0",
-  protocol: "A2A",
-  port: 9009,
-  endpoints: {
-    task: "/",
-    health: "/health",
-  },
-  entrypoint: "uv run src/server.py",
-  docker: {
+  manifest_version: "0.1.0",
+
+  slots: {},
+
+  program: {
     image: "ghcr.io/krishna-dhulipalla/corelink-ai:latest",
+    entrypoint: "uv run src/server.py --host 0.0.0.0 --port 9009",
+    network: {
+      endpoints: [
+        {
+          name: "a2a_endpoint",
+          port: 9009,
+        },
+      ],
+    },
+  },
+
+  provides: {
+    a2a: {
+      kind: "a2a",
+      endpoint: "a2a_endpoint",
+    },
+  },
+
+  exports: {
+    a2a: "a2a",
   },
 }
