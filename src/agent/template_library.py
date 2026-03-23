@@ -246,7 +246,14 @@ TEMPLATE_LIBRARY: dict[ExecutionTemplateId, ExecutionTemplate] = {
         description="Document-grounded QA with targeted evidence gathering first.",
         allowed_stages=["GATHER", "SYNTHESIZE", "REVISE", "COMPLETE"],
         default_initial_stage="GATHER",
-        allowed_tool_names=["calculator", "fetch_reference_file", "list_reference_files"],
+        allowed_tool_names=[
+            "calculator",
+            "internet_search",
+            "search_reference_corpus",
+            "fetch_corpus_document",
+            "fetch_reference_file",
+            "list_reference_files",
+        ],
         review_stages=["GATHER", "SYNTHESIZE"],
         review_cadence="milestone_and_final",
         answer_focus=[

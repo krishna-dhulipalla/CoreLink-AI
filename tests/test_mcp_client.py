@@ -39,6 +39,21 @@ def test_parse_server_config_normalizes_tools_suffix(monkeypatch):
     assert config["judge"]["url"] == "http://judge:9009/mcp"
 
 
+def test_parse_server_config_prunes_irrelevant_stdio_servers_for_officeqa(monkeypatch):
+    monkeypatch.setenv("BENCHMARK_NAME", "officeqa")
+    monkeypatch.setenv(
+        "MCP_SERVER_STDIO",
+        "market_data=uv run python src/mcp_servers/market_data/server.py,file_handler=uv run python src/mcp_servers/file_handler/server.py",
+    )
+    monkeypatch.delenv("MCP_SERVER_URLS", raising=False)
+    monkeypatch.setenv("ENABLE_JUDGE_MCP_DISCOVERY", "0")
+
+    config = _parse_server_config(include_judge=False)
+
+    assert "file_handler" in config
+    assert "market_data" not in config
+
+
 def test_build_capability_registry_infers_roles_for_external_document_tools():
     @tool
     def search_treasury_bulletins(query: str, top_k: int = 5) -> dict:
@@ -59,6 +74,7 @@ def test_build_capability_registry_infers_roles_for_external_document_tools():
 
 
 def test_load_mcp_tools_from_env_keeps_working_servers_when_one_server_fails(monkeypatch):
+    monkeypatch.delenv("BENCHMARK_NAME", raising=False)
     monkeypatch.delenv("MCP_SERVER_STDIO", raising=False)
     monkeypatch.setenv("MCP_SERVER_URLS", "local=http://local:9001/mcp")
     monkeypatch.setenv("ENABLE_JUDGE_MCP_DISCOVERY", "1")
@@ -97,7 +113,7 @@ def test_executor_refreshes_even_when_nonempty_tools_exist_if_judge_discovery_is
         """Local tool."""
         return "ok"
 
-    async def fake_loader():
+    async def fake_loader(*, include_judge: bool = True):
         return [local_tool]
 
     monkeypatch.setenv("ENABLE_JUDGE_MCP_DISCOVERY", "1")

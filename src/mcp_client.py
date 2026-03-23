@@ -37,6 +37,50 @@ def judge_mcp_discovery_enabled() -> bool:
     return os.getenv("ENABLE_JUDGE_MCP_DISCOVERY", "1").strip().lower() not in {"0", "false", "no", "off"}
 
 
+def _benchmark_name() -> str:
+    return os.getenv("BENCHMARK_NAME", "").strip().lower()
+
+
+def _officeqa_server_allowed(name: str, server_config: dict[str, Any]) -> bool:
+    if name == "judge":
+        return True
+    flattened = " ".join(
+        [
+            name,
+            str(server_config.get("url", "") or ""),
+            str(server_config.get("command", "") or ""),
+            " ".join(str(item) for item in (server_config.get("args", []) or [])),
+        ]
+    ).lower()
+    return any(
+        token in flattened
+        for token in (
+            "file",
+            "document",
+            "doc",
+            "corpus",
+            "reference",
+            "treasury",
+            "bulletin",
+            "archive",
+            "pdf",
+        )
+    )
+
+
+def _filter_server_config_for_benchmark(config: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    if _benchmark_name() != "officeqa":
+        return config
+    filtered = {
+        name: server_config
+        for name, server_config in config.items()
+        if _officeqa_server_allowed(name, server_config)
+    }
+    if filtered != config:
+        logger.info("Pruned MCP servers for OfficeQA benchmark: kept=%s dropped=%s", list(filtered.keys()), [name for name in config if name not in filtered])
+    return filtered
+
+
 def _parse_legacy_stdio_args(cmd_args: str) -> tuple[str, list[str]]:
     """Parse legacy colon-delimited stdio config.
 
@@ -137,7 +181,7 @@ def _parse_server_config(*, include_judge: bool = True) -> dict[str, dict[str, A
                 "transport": "http",
             }
 
-    return config
+    return _filter_server_config_for_benchmark(config)
 
 
 async def load_mcp_tools_from_env(*, include_judge: bool = True) -> list:

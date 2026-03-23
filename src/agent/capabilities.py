@@ -107,6 +107,31 @@ _OFFICEQA_ALLOWED_FAMILIES = {
     "analytical_reasoning",
     "exact_compute",
 }
+_BENCHMARK_TOOL_NAME_ALLOWLIST: dict[str, set[str]] = {
+    "officeqa": {
+        "calculator",
+        "sum_values",
+        "weighted_average",
+        "pct_change",
+        "cagr",
+        "annualize_return",
+        "annualize_volatility",
+        "bond_price_yield",
+        "duration_convexity",
+        "internet_search",
+        "search_reference_corpus",
+        "fetch_corpus_document",
+        "fetch_reference_file",
+        "list_reference_files",
+    }
+}
+_BENCHMARK_ALLOWED_FAMILIES: dict[str, set[str]] = {
+    "officeqa": {
+        "document_retrieval",
+        "external_retrieval",
+        "exact_compute",
+    }
+}
 
 
 def _infer_external_family_and_role(tool_obj: Any) -> tuple[str, str, int]:
@@ -114,23 +139,36 @@ def _infer_external_family_and_role(tool_obj: Any) -> tuple[str, str, int]:
     description = str(getattr(tool_obj, "description", "") or "")
     normalized = f"{tool_name} {description}".lower()
 
-    doc_terms = (
+    explicit_doc_terms = (
         "document",
         "pdf",
         "bulletin",
-        "report",
         "filing",
         "corpus",
         "treasury",
         "reference file",
+        "reference document",
+        "source file",
+        "table",
+        "page",
         "10-k",
         "10q",
+    )
+    contextual_doc_terms = (
+        "report",
+        "annual report",
+        "statement",
+        "archive",
     )
     search_terms = ("search", "find", "lookup", "query", "retrieve")
     fetch_terms = ("fetch", "read", "open", "load", "download", "extract")
     discover_terms = ("list", "discover", "enumerate", "available files", "available documents")
+    document_actions = (*search_terms, *fetch_terms, *discover_terms)
 
-    if any(term in normalized for term in doc_terms):
+    if any(term in normalized for term in explicit_doc_terms) or (
+        any(term in normalized for term in contextual_doc_terms)
+        and any(term in normalized for term in document_actions)
+    ):
         if any(term in normalized for term in discover_terms):
             return "document_retrieval", "discover", 8
         if any(term in normalized for term in search_terms):
@@ -200,6 +238,30 @@ def build_capability_registry(tools: list[Any]) -> dict[str, dict[str, Any]]:
             "tool": tool_obj,
         }
     return registry
+
+
+def filter_registry_for_benchmark(
+    registry: dict[str, dict[str, Any]],
+    benchmark_name: str = "",
+) -> dict[str, dict[str, Any]]:
+    normalized = str(benchmark_name or "").strip().lower()
+    if not normalized:
+        return registry
+    allowed_names = _BENCHMARK_TOOL_NAME_ALLOWLIST.get(normalized)
+    allowed_families = _BENCHMARK_ALLOWED_FAMILIES.get(normalized)
+    if not allowed_names and not allowed_families:
+        return registry
+
+    filtered: dict[str, dict[str, Any]] = {}
+    for tool_name, payload in registry.items():
+        descriptor = dict(payload.get("descriptor", {}) or {})
+        family = str(descriptor.get("tool_family", "") or "")
+        if allowed_names and tool_name in allowed_names:
+            filtered[tool_name] = payload
+            continue
+        if allowed_families and family in allowed_families:
+            filtered[tool_name] = payload
+    return filtered
 
 
 def _schema_bridge_tool() -> BaseTool:

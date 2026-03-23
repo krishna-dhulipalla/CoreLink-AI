@@ -29,7 +29,7 @@ from agent.contracts import (
 )
 from agent.context.evidence import _extract_policy_context
 from agent.context.extraction import derive_market_snapshot
-from agent.model_config import ChatOpenAI, get_client_kwargs, get_model_name, get_model_name_for_task, invoke_structured_output
+from agent.model_config import ChatOpenAI, get_client_kwargs, get_model_name, get_model_name_for_task, get_model_runtime_kwargs, invoke_structured_output
 from agent.runtime_clock import increment_runtime_step
 from agent.runtime_support import detect_ambiguity_flags, detect_capability_flags, infer_task_profile, latest_human_text
 from agent.solver.options import (
@@ -62,7 +62,8 @@ from context_manager import count_tokens
 logger = logging.getLogger(__name__)
 RuntimeState = AgentState
 _RETRIEVAL_EXECUTION_MODES = {"retrieval_augmented_analysis", "document_grounded_analysis"}
-_MAX_RETRIEVAL_HOPS = max(2, int(os.getenv("MAX_RETRIEVAL_HOPS", "4")))
+_IS_COMPETITION_MODE = os.getenv("COMPETITION_MODE", "").strip().lower() in {"1", "true", "yes", "on"} or os.getenv("BENCHMARK_NAME", "").strip().lower() == "officeqa"
+_MAX_RETRIEVAL_HOPS = max(2, int(os.getenv("MAX_RETRIEVAL_HOPS", "10" if _IS_COMPETITION_MODE else "4")))
 _RETRIEVAL_STOP_WORDS = {
     "the",
     "and",
@@ -1098,6 +1099,37 @@ def _retrieved_evidence_is_sufficient(
     return bool(sufficiency.is_sufficient)
 
 
+def _retrieved_window_is_promising(
+    source_bundle: SourceBundle,
+    retrieval_intent: RetrievalIntent,
+    tool_result: dict[str, Any],
+    benchmark_overrides: dict[str, Any] | None = None,
+) -> bool:
+    if str(tool_result.get("retrieval_status", "") or "") in {"garbled_binary", "parse_error", "network_error", "unsupported_format", "empty", "irrelevant"}:
+        return False
+    facts = dict(tool_result.get("facts") or {})
+    text = _retrieval_content_text(facts).lower()
+    entity_tokens = {token for token in _retrieval_tokens(retrieval_intent.entity) if token not in {"u", "s", "us"}}
+    metric_basis = retrieval_intent.metric
+    if retrieval_intent.aggregation_shape in {"monthly_sum_percent_change", "inflation_adjusted_monthly_difference"} or retrieval_intent.metric in {"absolute percent change", "absolute difference"}:
+        metric_basis = "expenditures"
+    metric_tokens = set(_retrieval_tokens(metric_basis))
+    period_tokens = set(_retrieval_tokens(retrieval_intent.period))
+    overlap = len((entity_tokens | metric_tokens | period_tokens) & set(_retrieval_tokens(text)))
+    citation = str(facts.get("citation", "") or dict(facts.get("metadata") or {}).get("file_name", "")).lower()
+    if not (entity_tokens or metric_tokens or period_tokens) and any(token in citation for token in ("treasury", "bulletin", "statement", "budget")):
+        return True
+    if overlap >= 3:
+        return True
+    if overlap >= 2 and any(token in citation for token in ("treasury", "budget", "census", "annual", "statement")):
+        return True
+    if any(token in citation for token in ("treasury", "bulletin", "statement", "budget")) and overlap >= 1:
+        return True
+    if benchmark_overrides and benchmark_overrides.get("officeqa_mode") and any(token in citation for token in ("treasury", "budget", "statab", "minneapolis", "cpi")):
+        return True
+    return False
+
+
 def _next_corpus_fetch_action(last_result: dict[str, Any]) -> RetrievalAction | None:
     facts = dict(last_result.get("facts") or {})
     metadata = dict(facts.get("metadata") or {})
@@ -1197,6 +1229,9 @@ def _search_result_candidates(tool_result: dict[str, Any]) -> list[dict[str, Any
                     "document_id": str(item.get("document_id", "")),
                     "citation": str(item.get("citation", "") or item.get("url", "") or item.get("path", "")),
                     "path": str(item.get("path", "")),
+                    "title": str(item.get("title", "") or item.get("document_id", "")),
+                    "snippet": str(item.get("snippet", "")),
+                    "rank": int(item.get("rank", 999) or 999),
                 }
             )
     for item in facts.get("results", []):
@@ -1206,9 +1241,99 @@ def _search_result_candidates(tool_result: dict[str, Any]) -> list[dict[str, Any
                     "document_id": str(item.get("document_id", "")),
                     "citation": str(item.get("url", "") or item.get("citation", "")),
                     "path": str(item.get("path", "")),
+                    "title": str(item.get("title", "")),
+                    "snippet": str(item.get("snippet", "")),
+                    "rank": int(item.get("rank", 999) or 999),
                 }
             )
     return [candidate for candidate in candidates if candidate.get("citation") or candidate.get("document_id") or candidate.get("path")]
+
+
+def _search_candidate_text(candidate: dict[str, Any]) -> str:
+    return " ".join(
+        str(candidate.get(key, "") or "")
+        for key in ("title", "snippet", "citation", "path", "document_id")
+    ).strip()
+
+
+def _search_candidate_score(
+    candidate: dict[str, Any],
+    retrieval_intent: RetrievalIntent,
+    source_bundle: SourceBundle,
+    benchmark_overrides: dict[str, Any] | None = None,
+) -> float:
+    text = _search_candidate_text(candidate).lower()
+    tokens = set(_retrieval_tokens(text))
+    title_tokens = set(_retrieval_tokens(str(candidate.get("title", ""))))
+    score = 0.0
+    rank = int(candidate.get("rank", 999) or 999)
+    score += max(0.0, 0.4 - 0.05 * max(0, rank - 1))
+
+    entity_tokens = {token for token in _retrieval_tokens(retrieval_intent.entity) if token not in {"u", "s", "us"}}
+    metric_basis = retrieval_intent.metric
+    if retrieval_intent.aggregation_shape in {"monthly_sum_percent_change", "inflation_adjusted_monthly_difference"} or retrieval_intent.metric in {"absolute percent change", "absolute difference"}:
+        metric_basis = "expenditures"
+    metric_tokens = {token for token in _retrieval_tokens(metric_basis)}
+    period_tokens = {token for token in _retrieval_tokens(retrieval_intent.period)}
+    must_tokens = {token for term in retrieval_intent.must_include_terms for token in _retrieval_tokens(term)}
+    query_tokens = set(_retrieval_focus_tokens(source_bundle))
+
+    overlap = len((entity_tokens | metric_tokens | period_tokens | must_tokens | query_tokens) & tokens)
+    score += 0.18 * overlap
+    score += 0.12 * len(entity_tokens & title_tokens)
+    score += 0.08 * len(metric_tokens & title_tokens)
+    score += 0.06 * len(period_tokens & title_tokens)
+
+    citation = str(candidate.get("citation", "")).lower()
+    if any(host in citation for host in ("govinfo.gov", "census.gov", "va.gov", "fraser.stlouisfed.org", ".gov/")):
+        score += 0.45
+    if citation.endswith(".pdf"):
+        score += 0.08
+
+    if retrieval_intent.aggregation_shape.startswith("monthly"):
+        if any(token in text for token in ("monthly", "month", "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")):
+            score += 0.45
+        if "receipts expenditures and balances" in text or "monthly treasury statement" in text:
+            score += 0.6
+    if retrieval_intent.aggregation_shape == "inflation_adjusted_monthly_difference" and any(token in text for token in ("cpi", "inflation", "minneapolis")):
+        score += 0.4
+    if retrieval_intent.document_family == "treasury_bulletin" and "treasury bulletin" in text:
+        score += 0.5
+
+    if any(term in text for term in retrieval_intent.must_exclude_terms):
+        score -= 0.7
+    if any(
+        bad in text
+        for bad in (
+            "monthly catalog",
+            "public documents",
+            "depository invoice",
+            "federal register",
+            "internal revenue bulletin",
+            "cumulative bulletin",
+            "flashcards",
+            "quiz",
+            "public law",
+        )
+    ):
+        score -= 1.1
+    return score
+
+
+def _rank_search_candidates(
+    candidates: list[dict[str, Any]],
+    retrieval_intent: RetrievalIntent,
+    source_bundle: SourceBundle,
+    benchmark_overrides: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    return sorted(
+        candidates,
+        key=lambda item: (
+            _search_candidate_score(item, retrieval_intent, source_bundle, benchmark_overrides),
+            -int(item.get("rank", 999) or 999),
+        ),
+        reverse=True,
+    )
 
 
 def _fallback_retrieval_action(
@@ -1230,7 +1355,12 @@ def _fallback_retrieval_action(
     last_result = journal.tool_results[-1] if journal.tool_results else {}
     last_type = str(last_result.get("type", ""))
     last_status = str(last_result.get("retrieval_status", "") or "")
-    candidates = _search_result_candidates(last_result)
+    candidates = _rank_search_candidates(
+        _search_result_candidates(last_result),
+        retrieval_intent,
+        source_bundle,
+        benchmark_overrides,
+    )
     seed_query = _next_retrieval_query(journal, retrieval_intent, source_bundle)
     overrides = dict(benchmark_overrides or {})
     officeqa_mode = bool(overrides.get("officeqa_mode"))
@@ -1255,6 +1385,15 @@ def _fallback_retrieval_action(
 
     if _tool_role(registry, last_type) in {"search", "discover"} and candidates:
         first = candidates[0]
+        best_score = _search_candidate_score(first, retrieval_intent, source_bundle, benchmark_overrides)
+        next_query = _next_retrieval_query(journal, retrieval_intent, source_bundle)
+        if best_score < 0.55 and next_query and next_query != (journal.retrieval_queries[-1] if journal.retrieval_queries else ""):
+            return RetrievalAction(
+                action="tool",
+                tool_name=last_type,
+                query=next_query,
+                rationale="Refine the search because the top result is still weak or off-target.",
+            )
         if _tool_family(registry, last_type) == "document_retrieval" and document_fetch_tools:
             return RetrievalAction(
                 action="tool",
@@ -1282,7 +1421,10 @@ def _fallback_retrieval_action(
     if _tool_role(registry, last_type) == "fetch":
         if _retrieved_evidence_is_sufficient(source_bundle, last_result, overrides):
             return RetrievalAction(action="answer", rationale="Retrieved document evidence is available for the final answer.")
-        if last_type == "fetch_reference_file" or _tool_family(registry, last_type) == "document_retrieval":
+        if (
+            last_type == "fetch_reference_file"
+            or _tool_family(registry, last_type) == "document_retrieval"
+        ) and _retrieved_window_is_promising(source_bundle, retrieval_intent, last_result, overrides):
             next_window = _next_reference_fetch_action(last_result, last_type)
             if next_window is not None:
                 return next_window
@@ -1366,13 +1508,19 @@ def _tool_args_from_retrieval_action(
     if action.tool_name == "list_reference_files":
         return {"prompt_text": source_bundle.task_text}
     if action.tool_name == "fetch_reference_file":
-        return {
+        args = {
             "url": action.url,
             "page_start": action.page_start,
             "page_limit": max(2, action.page_limit),
             "row_offset": action.row_offset,
             "row_limit": max(100, action.row_limit),
         }
+        tool_obj = _tool_lookup(registry, action.tool_name)
+        arg_schema = {str(key).lower(): key for key in dict(getattr(tool_obj, "args", {}) or {}).keys()}
+        hint = action.query or _derive_retrieval_seed_query(source_bundle, retrieval_intent)
+        if "search_hint" in arg_schema and hint:
+            args[arg_schema["search_hint"]] = hint
+        return args
     if action.tool_name == "fetch_corpus_document":
         return {
             "document_id": action.document_id,
@@ -1423,31 +1571,31 @@ def _adaptive_completion_budget(
     if mode == "scalar_or_json":
         return 600 if review_feedback else 400
     if mode == "long_form_derivation":
-        if derivation_heavy or prompt_tokens >= 5000:
-            return 3200
-        if prompt_tokens >= 2400 or review_feedback:
-            return 2800
-        return 2200
+        if derivation_heavy or prompt_tokens >= 7000:
+            return 4200 if _IS_COMPETITION_MODE else 3200
+        if prompt_tokens >= 3200 or review_feedback:
+            return 3600 if _IS_COMPETITION_MODE else 2800
+        return 2800 if _IS_COMPETITION_MODE else 2200
     if mode == "document_grounded":
         if derivation_heavy or prompt_tokens >= 7000:
-            return 3200
+            return 4400 if _IS_COMPETITION_MODE else 3200
         if prompt_tokens >= 3500 or review_feedback:
-            return 2800
-        return 2400
+            return 3800 if _IS_COMPETITION_MODE else 2800
+        return 3000 if _IS_COMPETITION_MODE else 2400
     if mode == "advisory_memo":
         if task_family == "legal_transactional":
             if prompt_tokens >= 5000:
-                return 3200
+                return 4000 if _IS_COMPETITION_MODE else 3200
             if prompt_tokens >= 2400 or review_feedback:
-                return 2800
+                return 3400 if _IS_COMPETITION_MODE else 2800
             if prompt_tokens >= 1400:
-                return 2400
-            return 2200
+                return 2800 if _IS_COMPETITION_MODE else 2400
+            return 2400 if _IS_COMPETITION_MODE else 2200
         if prompt_tokens >= 3500 or review_feedback:
-            return 2600
+            return 3200 if _IS_COMPETITION_MODE else 2600
         if prompt_tokens >= 2000:
-            return 2200
-        return 1800
+            return 2600 if _IS_COMPETITION_MODE else 2200
+        return 2200 if _IS_COMPETITION_MODE else 1800
     if mode == "compact_sections":
         if task_family == "market_scenario":
             return 2000 if review_feedback or prompt_tokens >= 2400 else 1600
@@ -1853,7 +2001,18 @@ def make_executor(registry: dict[str, dict[str, Any]]):
             task_family=intent.task_family,
             prompt_tokens=prompt_tokens,
         )
-        model = ChatOpenAI(model=model_name, **get_client_kwargs("solver"), temperature=0, max_tokens=max_tokens)
+        model = ChatOpenAI(
+            model=model_name,
+            **get_client_kwargs("solver"),
+            **get_model_runtime_kwargs(
+                "solver",
+                execution_mode=intent.execution_mode,
+                task_family=intent.task_family,
+                prompt_tokens=prompt_tokens,
+            ),
+            temperature=0,
+            max_tokens=max_tokens,
+        )
         t0 = time.monotonic()
         response = model.invoke(prompt_messages)
         latency = (time.monotonic() - t0) * 1000
@@ -2012,6 +2171,30 @@ def reviewer(state: RuntimeState) -> dict[str, Any]:
             missing.extend(evidence_sufficiency.missing_dimensions)
         answer_lower = (answer or "").lower()
         has_inline_attribution = any(token in answer_lower for token in ("source:", "citation", "[source", "(source"))
+        if any(
+            token in answer_lower
+            for token in (
+                "insufficient data",
+                "insufficient evidence",
+                "cannot determine",
+                "cannot calculate",
+                "cannot compute",
+                "not present in the provided evidence",
+                "not available in the provided evidence",
+            )
+        ):
+            missing.append("exact grounded answer instead of an insufficiency placeholder")
+        if any(
+            token in answer_lower
+            for token in (
+                "i must rely on",
+                "i recall",
+                "should be",
+                "highly promising",
+                "would be the",
+            )
+        ):
+            missing.append("unsupported inference from indirect evidence")
         if review_packet.citations and not has_inline_attribution:
             missing.append("inline source attribution")
         if review_packet.tool_findings and not has_inline_attribution and "\"" not in answer and "quote" not in answer_lower:
@@ -2026,6 +2209,8 @@ def reviewer(state: RuntimeState) -> dict[str, Any]:
         if "should include" in task_lower or "shouldn't contain" in task_lower:
             if "include" not in answer_lower and "exclude" not in answer_lower and "excluding" not in answer_lower:
                 missing.append("inclusion and exclusion qualifiers")
+        if re.search(r"\d", answer or "") and "numeric or quoted support" in evidence_sufficiency.missing_dimensions:
+            missing.append("exact numeric support from retrieved evidence")
         if missing:
             verdict = "revise" if journal.revision_count < 1 else "fail"
             reasoning = "Grounded retrieval answer is missing evidence quality, attribution, or semantic alignment with the requested source, period, entity, or aggregation."
@@ -2179,7 +2364,13 @@ def _llm_self_reflection(task_text: str, answer: str, tool_count: int) -> dict[s
     ]
     try:
         model_name = get_model_name("profiler")
-        model = ChatOpenAI(model=model_name, **get_client_kwargs("profiler"), temperature=0, max_tokens=200)
+        model = ChatOpenAI(
+            model=model_name,
+            **get_client_kwargs("profiler"),
+            **get_model_runtime_kwargs("profiler"),
+            temperature=0,
+            max_tokens=200,
+        )
         response = model.invoke(messages)
         raw = str(getattr(response, "content", "") or "").strip()
         m = re.search(r"\{.*?\}", raw, re.DOTALL)

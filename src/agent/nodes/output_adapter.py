@@ -18,6 +18,10 @@ from agent.state import AgentState
 logger = logging.getLogger(__name__)
 _NUMERIC_TOKEN_RE = re.compile(r"[-+]?\d[\d,]*(?:\.\d+)?%?")
 _TAG_BLOCK_RE = re.compile(r"<(?P<tag>[A-Za-z][A-Za-z0-9_\-]*)>.*?</(?P=tag)>\s*", re.DOTALL)
+_INSUFFICIENCY_RE = re.compile(
+    r"\b(?:insufficient data|insufficient evidence|cannot determine|cannot calculate|cannot compute|cannot answer|not present in the provided evidence|not available in the provided evidence|data is insufficient)\b",
+    re.IGNORECASE,
+)
 
 
 def _latest_answer(messages) -> str:
@@ -87,6 +91,22 @@ def _extract_labeled_final_value(text: str) -> str:
     return ""
 
 
+def _extract_insufficiency_statement(text: str) -> str:
+    source = str(text or "").strip()
+    if not source:
+        return ""
+    for line in reversed([part.strip() for part in source.splitlines() if part.strip()]):
+        cleaned = _strip_escaped_final_answer_markup(line)
+        if _INSUFFICIENCY_RE.search(cleaned):
+            return cleaned.strip().strip("`")
+    sentences = re.split(r"(?<=[.!?])\s+", source)
+    for sentence in reversed([item.strip() for item in sentences if item.strip()]):
+        cleaned = _strip_escaped_final_answer_markup(sentence)
+        if _INSUFFICIENCY_RE.search(cleaned):
+            return cleaned.strip().strip("`")
+    return ""
+
+
 def _infer_final_answer_value(text: str) -> str:
     source = str(text or "").strip()
     if not source:
@@ -94,21 +114,28 @@ def _infer_final_answer_value(text: str) -> str:
 
     explicit = _extract_labeled_final_value(source)
     if explicit:
+        if _INSUFFICIENCY_RE.search(explicit):
+            return explicit.rstrip(".")
         numeric_match = _NUMERIC_TOKEN_RE.search(explicit)
         if numeric_match and numeric_match.group(0) == explicit.strip().rstrip("."):
             return numeric_match.group(0)
         return explicit.rstrip(".")
 
-    numeric_tokens = _NUMERIC_TOKEN_RE.findall(source)
-    if numeric_tokens:
-        for line in reversed([part.strip() for part in source.splitlines() if part.strip()]):
-            labeled = _extract_labeled_final_value(line)
-            if labeled:
-                return labeled.rstrip(".")
+    insufficiency = _extract_insufficiency_statement(source)
+    if insufficiency:
+        return insufficiency.rstrip(".")
+
+    for line in reversed([part.strip() for part in source.splitlines() if part.strip()]):
+        labeled = _extract_labeled_final_value(line)
+        if labeled:
+            return labeled.rstrip(".")
+        numeric_line = line.strip().strip("`").replace("$", "")
+        if re.fullmatch(r"[-+]?\d[\d,]*(?:\.\d+)?%?", numeric_line):
+            return numeric_line
+        if re.search(r"\b(?:answer|result|total|equals|is|was)\b", line.lower()):
             line_numbers = _NUMERIC_TOKEN_RE.findall(line)
             if line_numbers:
                 return line_numbers[-1]
-        return numeric_tokens[-1]
 
     tail_lines = [part.strip() for part in source.splitlines() if part.strip()]
     if tail_lines:
@@ -140,7 +167,7 @@ def _adapt_final_answer_tags(source_text: str, contract: dict) -> str:
     if existing_final and not _final_answer_needs_normalization(existing_final):
         final_value = existing_final
     else:
-        final_value = _infer_final_answer_value(existing_final or _strip_xml_blocks(source_text))
+        final_value = _infer_final_answer_value(existing_final or existing_reasoning or _strip_xml_blocks(source_text))
 
     if existing_reasoning:
         reasoning_text = _strip_escaped_final_answer_markup(existing_reasoning)

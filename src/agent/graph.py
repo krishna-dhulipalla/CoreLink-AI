@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from dotenv import load_dotenv
 from langchain_core.tools import tool
 from langgraph.graph import END, StateGraph
 
-from agent.capabilities import BUILTIN_LEGAL_TOOLS, BUILTIN_RETRIEVAL_TOOLS, build_capability_registry
+from agent.capabilities import BUILTIN_LEGAL_TOOLS, BUILTIN_RETRIEVAL_TOOLS, build_capability_registry, filter_registry_for_benchmark
 from agent.nodes.intake import intake
 from agent.nodes.orchestrator import (
     context_curator,
@@ -50,6 +51,10 @@ def build_agent_graph(external_tools: list | None = None):
         *(external_tools or []),
     ]
     registry = build_capability_registry(all_tools)
+    registry = filter_registry_for_benchmark(
+        registry,
+        os.getenv("BENCHMARK_NAME", "").strip().lower(),
+    )
 
     graph = StateGraph(AgentState)
     graph.add_node("intake", intake)

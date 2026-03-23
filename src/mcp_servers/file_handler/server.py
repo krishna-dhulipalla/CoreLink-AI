@@ -18,6 +18,24 @@ mcp = FastMCP("File Handler")
 
 DEFAULT_TIMEOUT = 30.0
 MAX_TEXT_CHARS = 12_000
+_SEARCH_STOP_WORDS = {
+    "the",
+    "and",
+    "for",
+    "with",
+    "that",
+    "this",
+    "from",
+    "what",
+    "using",
+    "were",
+    "was",
+    "into",
+    "year",
+    "fiscal",
+    "calendar",
+    "total",
+}
 
 
 def _is_probably_binary(raw: bytes) -> bool:
@@ -114,22 +132,45 @@ def _format_header(url: str, fmt: str, size_kb: float, *, status: str = "OK", er
     return header + f"{'-' * 50}\n"
 
 
-def _parse_pdf(raw: bytes, page_start: int, page_limit: int) -> tuple[str, int]:
+def _search_tokens(text: str) -> list[str]:
+    return [
+        token
+        for token in re.findall(r"[a-z0-9]+", (text or "").lower())
+        if len(token) > 1 and token not in _SEARCH_STOP_WORDS
+    ]
+
+
+def _parse_pdf(raw: bytes, page_start: int, page_limit: int, search_hint: str | None = None) -> tuple[str, int, int]:
     try:
         from pypdf import PdfReader
 
         reader = PdfReader(io.BytesIO(raw))
         total = len(reader.pages)
-        end = min(page_start + page_limit, total)
+        actual_start = max(0, page_start)
+        hint_tokens = set(_search_tokens(search_hint or ""))
+        page_texts: list[str] = []
+        if page_start == 0 and hint_tokens:
+            best_score = 0
+            best_index = 0
+            for index, page in enumerate(reader.pages):
+                text = page.extract_text() or ""
+                page_texts.append(text)
+                score = len(hint_tokens.intersection(_search_tokens(text)))
+                if score > best_score:
+                    best_score = score
+                    best_index = index
+            if best_score >= 2:
+                actual_start = best_index
+        end = min(actual_start + page_limit, total)
         pages = []
-        for index in range(page_start, end):
-            text = reader.pages[index].extract_text() or ""
+        for index in range(actual_start, end):
+            text = page_texts[index] if index < len(page_texts) else (reader.pages[index].extract_text() or "")
             pages.append(f"[Page {index + 1}]\n{text.strip()}")
-        return "\n\n".join(pages), total
+        return "\n\n".join(pages), total, actual_start
     except ImportError:
-        return "[ERROR: pypdf not installed. Run: uv add pypdf]", 0
+        return "[ERROR: pypdf not installed. Run: uv add pypdf]", 0, 0
     except Exception as exc:
-        return f"[PDF parse error: {exc}]", 0
+        return f"[PDF parse error: {exc}]", 0, 0
 
 
 def _parse_excel(raw: bytes, sheet: Optional[str], row_offset: int, row_limit: int) -> tuple[str, int]:
@@ -194,6 +235,7 @@ def fetch_reference_file(
     row_limit: int = 200,
     sheet: Optional[str] = None,
     format_hint: Optional[str] = None,
+    search_hint: Optional[str] = None,
 ) -> str:
     """Download and parse a reference file from an evaluator-provided URL."""
     try:
@@ -208,10 +250,10 @@ def fetch_reference_file(
         header = _format_header(url, fmt, size_kb)
 
         if fmt == "pdf":
-            content, total = _parse_pdf(raw, page_start, page_limit)
+            content, total, actual_start = _parse_pdf(raw, page_start, page_limit, search_hint)
             if content.startswith("[PDF parse error:") or content.startswith("[ERROR:"):
                 return _format_header(url, fmt, size_kb, status="PARSE_ERROR", error=content) + content[:MAX_TEXT_CHARS]
-            meta = f"[Pages {page_start + 1}-{min(page_start + page_limit, total)} of {total}]\n"
+            meta = f"[Pages {actual_start + 1}-{min(actual_start + page_limit, total)} of {total}]\n"
             return header + meta + content[:MAX_TEXT_CHARS]
 
         if fmt == "excel":

@@ -14,6 +14,12 @@ import os
 
 logger = logging.getLogger(__name__)
 
+def _competition_mode() -> bool:
+    benchmark = os.getenv("BENCHMARK_NAME", "").strip().lower()
+    flag = os.getenv("COMPETITION_MODE", "").strip().lower() in {"1", "true", "yes", "on"}
+    return flag or benchmark in {"officeqa"}
+
+
 def _env_int(name: str, default: int) -> int:
     try:
         return int(os.getenv(name, str(default)))
@@ -21,10 +27,12 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-_BASE_TOOL_CALLS = _env_int("MAX_TOOL_CALLS", 30)
+_IS_COMPETITION_MODE = _competition_mode()
+
+_BASE_TOOL_CALLS = _env_int("MAX_TOOL_CALLS", 40 if _IS_COMPETITION_MODE else 30)
 _BASE_REVISE_CYCLES = _env_int("MAX_REVISE_CYCLES", 8)
 _BASE_BACKTRACK_CYCLES = _env_int("MAX_BACKTRACK_CYCLES", 5)
-_BASE_CONTEXT_TOKENS = _env_int("MAX_CONTEXT_TOKENS", _env_int("MAX_HINT_TOKENS", 800))
+_BASE_CONTEXT_TOKENS = _env_int("MAX_CONTEXT_TOKENS", _env_int("MAX_HINT_TOKENS", 4000 if _IS_COMPETITION_MODE else 800))
 
 _TIER_CAPS: dict[str, dict[str, int]] = {
     "simple_exact": {
@@ -34,16 +42,16 @@ _TIER_CAPS: dict[str, dict[str, int]] = {
         "context_tokens": _env_int("SIMPLE_EXACT_MAX_CONTEXT_TOKENS", 400),
     },
     "structured_analysis": {
-        "tool_calls": _env_int("STRUCTURED_ANALYSIS_MAX_TOOL_CALLS", 12),
+        "tool_calls": _env_int("STRUCTURED_ANALYSIS_MAX_TOOL_CALLS", 16 if _IS_COMPETITION_MODE else 12),
         "revise_cycles": _env_int("STRUCTURED_ANALYSIS_MAX_REVISE_CYCLES", 5),
-        "backtrack_cycles": _env_int("STRUCTURED_ANALYSIS_MAX_BACKTRACK_CYCLES", 2),
-        "context_tokens": _env_int("STRUCTURED_ANALYSIS_MAX_CONTEXT_TOKENS", 900),
+        "backtrack_cycles": _env_int("STRUCTURED_ANALYSIS_MAX_BACKTRACK_CYCLES", 3 if _IS_COMPETITION_MODE else 2),
+        "context_tokens": _env_int("STRUCTURED_ANALYSIS_MAX_CONTEXT_TOKENS", 3000 if _IS_COMPETITION_MODE else 900),
     },
     "complex_qualitative": {
-        "tool_calls": _env_int("COMPLEX_QUALITATIVE_MAX_TOOL_CALLS", 14),
+        "tool_calls": _env_int("COMPLEX_QUALITATIVE_MAX_TOOL_CALLS", 18 if _IS_COMPETITION_MODE else 14),
         "revise_cycles": _env_int("COMPLEX_QUALITATIVE_MAX_REVISE_CYCLES", 6),
-        "backtrack_cycles": _env_int("COMPLEX_QUALITATIVE_MAX_BACKTRACK_CYCLES", 3),
-        "context_tokens": _env_int("COMPLEX_QUALITATIVE_MAX_CONTEXT_TOKENS", 2200),
+        "backtrack_cycles": _env_int("COMPLEX_QUALITATIVE_MAX_BACKTRACK_CYCLES", 4 if _IS_COMPETITION_MODE else 3),
+        "context_tokens": _env_int("COMPLEX_QUALITATIVE_MAX_CONTEXT_TOKENS", 5000 if _IS_COMPETITION_MODE else 2200),
     },
 }
 
@@ -61,22 +69,22 @@ _MODE_CAPS: dict[str, dict[str, int]] = {
         "context_tokens": _env_int("TOOL_COMPUTE_MAX_CONTEXT_TOKENS", 3000),
     },
     "retrieval_augmented_analysis": {
-        "tool_calls": _env_int("RETRIEVAL_ANALYSIS_MAX_TOOL_CALLS", 10),
-        "revise_cycles": _env_int("RETRIEVAL_ANALYSIS_MAX_REVISE_CYCLES", 2),
-        "backtrack_cycles": _env_int("RETRIEVAL_ANALYSIS_MAX_BACKTRACK_CYCLES", 1),
-        "context_tokens": _env_int("RETRIEVAL_ANALYSIS_MAX_CONTEXT_TOKENS", 9000),
+        "tool_calls": _env_int("RETRIEVAL_ANALYSIS_MAX_TOOL_CALLS", 18 if _IS_COMPETITION_MODE else 10),
+        "revise_cycles": _env_int("RETRIEVAL_ANALYSIS_MAX_REVISE_CYCLES", 3 if _IS_COMPETITION_MODE else 2),
+        "backtrack_cycles": _env_int("RETRIEVAL_ANALYSIS_MAX_BACKTRACK_CYCLES", 2 if _IS_COMPETITION_MODE else 1),
+        "context_tokens": _env_int("RETRIEVAL_ANALYSIS_MAX_CONTEXT_TOKENS", 24000 if _IS_COMPETITION_MODE else 9000),
     },
     "document_grounded_analysis": {
-        "tool_calls": _env_int("DOCUMENT_ANALYSIS_MAX_TOOL_CALLS", 10),
-        "revise_cycles": _env_int("DOCUMENT_ANALYSIS_MAX_REVISE_CYCLES", 2),
-        "backtrack_cycles": _env_int("DOCUMENT_ANALYSIS_MAX_BACKTRACK_CYCLES", 1),
-        "context_tokens": _env_int("DOCUMENT_ANALYSIS_MAX_CONTEXT_TOKENS", 12000),
+        "tool_calls": _env_int("DOCUMENT_ANALYSIS_MAX_TOOL_CALLS", 20 if _IS_COMPETITION_MODE else 10),
+        "revise_cycles": _env_int("DOCUMENT_ANALYSIS_MAX_REVISE_CYCLES", 3 if _IS_COMPETITION_MODE else 2),
+        "backtrack_cycles": _env_int("DOCUMENT_ANALYSIS_MAX_BACKTRACK_CYCLES", 2 if _IS_COMPETITION_MODE else 1),
+        "context_tokens": _env_int("DOCUMENT_ANALYSIS_MAX_CONTEXT_TOKENS", 32000 if _IS_COMPETITION_MODE else 12000),
     },
     "advisory_analysis": {
-        "tool_calls": _env_int("ADVISORY_ANALYSIS_MAX_TOOL_CALLS", 8),
-        "revise_cycles": _env_int("ADVISORY_ANALYSIS_MAX_REVISE_CYCLES", 2),
-        "backtrack_cycles": _env_int("ADVISORY_ANALYSIS_MAX_BACKTRACK_CYCLES", 1),
-        "context_tokens": _env_int("ADVISORY_ANALYSIS_MAX_CONTEXT_TOKENS", 5500),
+        "tool_calls": _env_int("ADVISORY_ANALYSIS_MAX_TOOL_CALLS", 12 if _IS_COMPETITION_MODE else 8),
+        "revise_cycles": _env_int("ADVISORY_ANALYSIS_MAX_REVISE_CYCLES", 3 if _IS_COMPETITION_MODE else 2),
+        "backtrack_cycles": _env_int("ADVISORY_ANALYSIS_MAX_BACKTRACK_CYCLES", 2 if _IS_COMPETITION_MODE else 1),
+        "context_tokens": _env_int("ADVISORY_ANALYSIS_MAX_CONTEXT_TOKENS", 9000 if _IS_COMPETITION_MODE else 5500),
     },
 }
 

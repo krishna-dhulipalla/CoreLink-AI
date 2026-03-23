@@ -205,6 +205,22 @@ def _profile_models() -> dict[str, dict[str, str]]:
             "adapter": "Qwen/Qwen3-32B-fast",
             "reflection": "Qwen/Qwen3-32B-fast",
         },
+        "competition_gpt": {
+            "profiler": "gpt-5.4-mini",
+            "direct": "gpt-5.4",
+            "solver": "gpt-5.4",
+            "reviewer": "gpt-5.4-mini",
+            "adapter": "gpt-5.4-mini",
+            "reflection": "gpt-5.4-mini",
+        },
+        "officeqa_gpt": {
+            "profiler": "gpt-5.4-mini",
+            "direct": "gpt-5.4",
+            "solver": "gpt-5.4",
+            "reviewer": "gpt-5.4-mini",
+            "adapter": "gpt-5.4-mini",
+            "reflection": "gpt-5.4-mini",
+        },
     }
 
 
@@ -264,6 +280,81 @@ def get_model_name_for_task(
         if override:
             return override
     return get_model_name(role)
+
+
+def _role_reasoning_effort_env_names(role: str) -> list[str]:
+    canonical = _canonical_role(role)
+    names = [f"{canonical.upper()}_REASONING_EFFORT"]
+    if canonical == "solver":
+        names.append("EXECUTOR_REASONING_EFFORT")
+    elif canonical == "reviewer":
+        names.append("VERIFIER_REASONING_EFFORT")
+    elif canonical == "adapter":
+        names.append("FORMATTER_REASONING_EFFORT")
+    elif canonical == "reflection":
+        names.append("REFLECTOR_REASONING_EFFORT")
+    elif canonical == "profiler":
+        names.append("COORDINATOR_REASONING_EFFORT")
+    names.append("REASONING_EFFORT")
+    return names
+
+
+def _profile_reasoning_efforts() -> dict[str, dict[str, str]]:
+    return {
+        "competition_gpt": {
+            "profiler": "low",
+            "direct": "medium",
+            "solver": "high",
+            "reviewer": "medium",
+            "adapter": "low",
+            "reflection": "medium",
+        },
+        "officeqa_gpt": {
+            "profiler": "low",
+            "direct": "medium",
+            "solver": "high",
+            "reviewer": "medium",
+            "adapter": "low",
+            "reflection": "medium",
+        },
+    }
+
+
+def get_model_runtime_kwargs(
+    role: str,
+    *,
+    execution_mode: str = "",
+    task_family: str = "",
+    prompt_tokens: int = 0,
+) -> dict[str, Any]:
+    canonical = _canonical_role(role)
+    model_name = get_model_name_for_task(
+        canonical,
+        execution_mode=execution_mode,
+        task_family=task_family,
+        prompt_tokens=prompt_tokens,
+    )
+    if not model_name.startswith("gpt-5"):
+        return {}
+
+    for env_name in _role_reasoning_effort_env_names(canonical):
+        override = os.getenv(env_name, "").strip().lower()
+        if override:
+            return {"reasoning_effort": override}
+
+    profile = _effective_model_profile()
+    effort = _profile_reasoning_efforts().get(profile, {}).get(canonical, "")
+    if canonical == "solver":
+        if execution_mode in {"document_grounded_analysis", "retrieval_augmented_analysis"} and prompt_tokens >= 5000:
+            effort = "high"
+        elif task_family in {"analytical_reasoning", "legal_transactional"}:
+            effort = "high"
+        elif not effort:
+            effort = "medium"
+    elif not effort:
+        effort = "low"
+
+    return {"reasoning_effort": effort} if effort else {}
 
 
 def get_client_kwargs(role: str) -> dict[str, Any]:
@@ -458,6 +549,7 @@ def invoke_structured_output(
     model_init_kwargs: dict[str, Any] = {
         "model": model_name,
         **get_client_kwargs(role),
+        **get_model_runtime_kwargs(role),
         **kwargs,
     }
 
@@ -488,11 +580,29 @@ def invoke_structured_output(
     return parsed, model_name
 
 
-def build_chat_model(role: str, **kwargs: Any) -> ChatOpenAI:
+def build_chat_model(
+    role: str,
+    *,
+    execution_mode: str = "",
+    task_family: str = "",
+    prompt_tokens: int = 0,
+    **kwargs: Any,
+) -> ChatOpenAI:
     """Create a ChatOpenAI instance for the given runtime role."""
     return ChatOpenAI(
-        model=get_model_name(role),
+        model=get_model_name_for_task(
+            role,
+            execution_mode=execution_mode,
+            task_family=task_family,
+            prompt_tokens=prompt_tokens,
+        ),
         **get_client_kwargs(role),
+        **get_model_runtime_kwargs(
+            role,
+            execution_mode=execution_mode,
+            task_family=task_family,
+            prompt_tokens=prompt_tokens,
+        ),
         **kwargs,
     )
 

@@ -24,20 +24,61 @@ def _truthy_env(name: str) -> bool:
 
 
 def _looks_like_officeqa_prompt(text: str) -> bool:
-    lowered = re.sub(r"[^a-z0-9]+", " ", (text or "").lower())
-    return any(
+    lowered = re.sub(r"[^a-z0-9%]+", " ", (text or "").lower())
+    if not lowered:
+        return False
+
+    score = 0
+    if re.search(r"\b(19[3-9]\d|20[0-2]\d)\b", lowered):
+        score += 1
+    if any(
+        token in lowered
+        for token in (
+            "calendar year",
+            "fiscal year",
+            "individual calendar months",
+            "annual average",
+            "reported values",
+        )
+    ):
+        score += 1
+    if any(
+        token in lowered
+        for token in (
+            "expenditures",
+            "outlays",
+            "receipts",
+            "public debt",
+            "nominal dollars",
+            "cpi u",
+            "cpi-u",
+            "percent change",
+        )
+    ):
+        score += 1
+    if any(
+        token in lowered
+        for token in (
+            "using specifically only",
+            "according to",
+            "rounded to the nearest hundredths",
+            "reported as a percent value",
+            "million",
+        )
+    ):
+        score += 1
+    if any(
         token in lowered
         for token in (
             "treasury bulletin",
-            "u.s national defense",
-            "u s national defense",
-            "veterans administration",
-            "individual calendar months",
-            "bls cpi-u",
-            "bls cpi u",
+            "monthly treasury statement",
             "federal reserve bank of minneapolis",
+            "veterans administration",
+            "national defense",
         )
-    )
+    ):
+        score += 1
+    return score >= 3
 
 
 def _officeqa_xml_contract_enabled(task_text: str = "") -> bool:

@@ -1,17 +1,23 @@
 import asyncio
 import json
+import os
+import shutil
+import uuid
+from pathlib import Path
 
 import agent.graph as graph_module
 from langchain_core.messages import AIMessage
 from langchain_core.tools import tool
 
 from agent.budget import BudgetTracker
+from agent.contracts import SourceBundle
 from agent.retrieval_tools import fetch_corpus_document as fetch_corpus_document_tool
+from agent.retrieval_reasoning import assess_evidence_sufficiency, build_retrieval_intent
 from agent.tools.normalization import normalize_tool_output
 from agent.nodes.intake import intake
 from agent.nodes.output_adapter import output_adapter
 from agent.tracer import RunTracer
-from agent.capabilities import BUILTIN_LEGAL_TOOLS, BUILTIN_RETRIEVAL_TOOLS, build_capability_registry
+from agent.capabilities import BUILTIN_LEGAL_TOOLS, BUILTIN_RETRIEVAL_TOOLS, build_capability_registry, filter_registry_for_benchmark
 from agent.curated_context import solver_context_block
 from agent.nodes.orchestrator import (
     context_curator,
@@ -22,6 +28,7 @@ from agent.nodes.orchestrator import (
     route_from_reviewer,
     self_reflection,
     task_planner,
+    _rank_search_candidates,
 )
 from agent.prompts import build_revision_prompt
 from test_utils import make_state
@@ -164,6 +171,104 @@ def test_officeqa_document_tasks_route_document_first_without_pending_calculator
     assert "calculator" not in result["tool_plan"]["pending_tools"]
 
 
+def test_officeqa_document_tasks_do_not_infer_pnl_report_as_document_tool(monkeypatch):
+    monkeypatch.setenv("OFFICEQA_FINAL_ANSWER_TAGS", "1")
+
+    @tool
+    def search_treasury_bulletins(query: str, top_k: int = 5) -> dict:
+        """Search Treasury Bulletin documents."""
+        return {}
+
+    @tool
+    def read_treasury_bulletin(document_id: str = "", url: str = "", page_start: int = 0, page_limit: int = 5) -> dict:
+        """Read a Treasury Bulletin document."""
+        return {}
+
+    @tool
+    def get_pnl_report(portfolio_id: str) -> str:
+        """Get a comprehensive P&L trade history report from a portfolio."""
+        return ""
+
+    prompt = "What were the total expenditures for U.S. national defense in the calendar year 1940?"
+    state = make_state(prompt)
+    state.update(intake(state))
+    state.update(fast_path_gate(state))
+    state.update(task_planner(state))
+    resolver = make_capability_resolver(
+        build_capability_registry([CALCULATOR_TOOL, SEARCH_TOOL, get_pnl_report, search_treasury_bulletins, read_treasury_bulletin])
+    )
+
+    result = resolver(state)
+
+    assert "get_pnl_report" not in result["tool_plan"]["selected_tools"]
+
+
+def test_officeqa_registry_filter_prunes_irrelevant_competition_tools():
+    @tool
+    def get_pnl_report(portfolio_id: str) -> str:
+        """Get a comprehensive P&L trade history report from a portfolio."""
+        return ""
+
+    @tool
+    def search_treasury_bulletins(query: str, top_k: int = 5) -> dict:
+        """Search Treasury Bulletin documents."""
+        return {}
+
+    registry = build_capability_registry([CALCULATOR_TOOL, SEARCH_TOOL, get_pnl_report, search_treasury_bulletins, *BUILTIN_LEGAL_TOOLS])
+    filtered = filter_registry_for_benchmark(registry, "officeqa")
+
+    assert "calculator" in filtered
+    assert "internet_search" in filtered
+    assert "search_treasury_bulletins" in filtered
+    assert "get_pnl_report" not in filtered
+    assert "legal_playbook_retrieval" not in filtered
+
+
+def test_officeqa_search_ranking_prefers_semantically_relevant_sources():
+    source_bundle = SourceBundle(
+        task_text="What were the total expenditures of the Veterans Administration in FY 1934?",
+        focus_query="Veterans Administration total expenditures 1934",
+        target_period="1934",
+        entities=["Veterans Administration"],
+        urls=[],
+        inline_facts={},
+        tables=[],
+        formulas=[],
+    )
+    retrieval_intent = build_retrieval_intent(
+        source_bundle.task_text,
+        source_bundle,
+        {"officeqa_mode": True, "officeqa_like_prompt": True},
+    )
+
+    ranked = _rank_search_candidates(
+        [
+            {
+                "title": "Depository Invoice No. 1666 - GovInfo",
+                "snippet": "Monthly Statement of Capital ... VETERANS' ADMINISTRATION Medical Bulletin",
+                "citation": "https://www.govinfo.gov/content/pkg/GOVPUB-GP3-dbacb11a808d6c8ebadba8bc449dd18a/html/GOVPUB-GP3-dbacb11a808d6c8ebadba8bc449dd18a.htm",
+                "path": "",
+                "document_id": "",
+                "rank": 1,
+            },
+            {
+                "title": "[PDF] annual report - administrator of veterans' affairs",
+                "snippet": "Annual report for fiscal year 1934.",
+                "citation": "https://www.va.gov/vetdata/docs/FY1934.pdf",
+                "path": "",
+                "document_id": "",
+                "rank": 3,
+            },
+        ],
+        retrieval_intent,
+        source_bundle,
+        {"officeqa_mode": True},
+    )
+
+    assert "veterans" in ranked[0]["title"].lower()
+    assert "depository invoice" in ranked[-1]["title"].lower()
+
+
 def test_officeqa_env_does_not_gate_non_officeqa_finance_tasks(monkeypatch):
     monkeypatch.setenv("BENCHMARK_NAME", "officeqa")
 
@@ -226,6 +331,46 @@ def test_engine_document_query_prefers_document_grounded_retrieval_tools():
     assert result["execution_template"]["template_id"] == "document_grounded_analysis"
     assert "document_retrieval" in result["tool_plan"]["widened_families"]
     assert "search_reference_corpus" in result["tool_plan"]["selected_tools"]
+
+
+def test_evidence_sufficiency_ignores_generic_numeric_summary_metadata():
+    prompt = "What were the total expenditures for U.S. national defense in the calendar year 1940?"
+    source_bundle = SourceBundle(
+        task_text=prompt,
+        focus_query="U.S. national defense total expenditures 1940",
+        target_period="1940",
+        entities=["U.S. national defense"],
+        urls=[],
+        inline_facts={},
+        tables=[],
+        formulas=[],
+    )
+
+    sufficiency = assess_evidence_sufficiency(
+        prompt,
+        source_bundle,
+        [
+            {
+                "type": "fetch_reference_file",
+                "retrieval_status": "ok",
+                "facts": {
+                    "citation": "https://example.com/catalog.pdf",
+                    "metadata": {"file_name": "catalog.pdf", "format": "pdf", "status": "ok"},
+                    "chunks": [{"locator": "Pages 1-5", "text": "Monthly catalog of publications.", "citation": "https://example.com/catalog.pdf"}],
+                    "tables": [],
+                    "numeric_summaries": [
+                        {"metric": "row_count", "value": 19},
+                        {"metric": "column_count", "value": 2},
+                        {"metric": "numeric_cell_count", "value": 9},
+                    ],
+                },
+            }
+        ],
+        {"officeqa_mode": True, "officeqa_like_prompt": True},
+    )
+
+    assert sufficiency.is_sufficient is False
+    assert "numeric or quoted support" in sufficiency.missing_dimensions
 
 
 def test_engine_document_query_uses_external_document_tools_with_inferred_roles(monkeypatch):
@@ -319,9 +464,16 @@ def test_engine_document_query_uses_external_document_tools_with_inferred_roles(
     assert third["last_tool_result"]["type"] == "read_treasury_bulletin"
     assert third["last_tool_result"]["assumptions"]["page_start"] >= 1
 
-    fourth = asyncio.run(executor(state))
-    assert fourth["solver_stage"] == "SYNTHESIZE"
-    assert "treasury_1945.pdf" in str(fourth["messages"][0].content)
+    result = None
+    for _ in range(3):
+        result = asyncio.run(executor(state))
+        state.update(result)
+        if result["solver_stage"] == "SYNTHESIZE":
+            break
+
+    assert result is not None
+    assert result["solver_stage"] == "SYNTHESIZE"
+    assert "treasury_1945.pdf" in str(result["messages"][0].content)
     assert captured
 
 
@@ -441,18 +593,24 @@ def test_engine_executor_runs_retrieval_search_then_fetch_before_final_answer(mo
     assert "258.7 billion" in serialized_prompt
 
 
-def test_fetch_corpus_document_rejects_paths_outside_corpus_root(monkeypatch, tmp_path):
-    corpus_root = tmp_path / "corpus"
-    corpus_root.mkdir()
-    (corpus_root / "inside.txt").write_text("inside", encoding="utf-8")
-    outside = tmp_path / "outside.txt"
-    outside.write_text("outside", encoding="utf-8")
-    monkeypatch.setenv("OFFICEQA_CORPUS_DIR", str(corpus_root))
+def test_fetch_corpus_document_rejects_paths_outside_corpus_root(monkeypatch):
+    scratch_parent = Path("results") / "pytest_scratch"
+    scratch_parent.mkdir(parents=True, exist_ok=True)
+    tmp_root = scratch_parent / f"engine_runtime_{uuid.uuid4().hex}"
+    try:
+        corpus_root = tmp_root / "corpus"
+        corpus_root.mkdir(parents=True)
+        (corpus_root / "inside.txt").write_text("inside", encoding="utf-8")
+        outside = tmp_root / "outside.txt"
+        outside.write_text("outside", encoding="utf-8")
+        monkeypatch.setenv("OFFICEQA_CORPUS_DIR", str(corpus_root))
 
-    result = fetch_corpus_document_tool.invoke({"path": "..\\outside.txt"})
+        result = fetch_corpus_document_tool.invoke({"path": "..\\outside.txt"})
 
-    assert "error" in result
-    assert "not found" in result["error"].lower()
+        assert "error" in result
+        assert "not found" in result["error"].lower()
+    finally:
+        shutil.rmtree(tmp_root, ignore_errors=True)
 
 
 def test_normalize_fetch_reference_file_extracts_pagination_metadata():

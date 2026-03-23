@@ -54,6 +54,19 @@ class TestModelConfig:
 
         assert model_config.get_model_name("solver") == "deepseek-ai/DeepSeek-V3.2"
 
+    def test_competition_gpt_profile_uses_openai_role_split(self, monkeypatch):
+        monkeypatch.setenv("MODEL_PROFILE", "competition_gpt")
+        monkeypatch.delenv("SOLVER_MODEL", raising=False)
+        monkeypatch.delenv("REVIEWER_MODEL", raising=False)
+        monkeypatch.delenv("ADAPTER_MODEL", raising=False)
+        monkeypatch.delenv("PROFILER_MODEL", raising=False)
+        model_config = _reload_model_config()
+
+        assert model_config.get_model_name("solver") == "gpt-5.4"
+        assert model_config.get_model_name("reviewer") == "gpt-5.4-mini"
+        assert model_config.get_model_name("adapter") == "gpt-5.4-mini"
+        assert model_config.get_model_name("profiler") == "gpt-5.4-mini"
+
     def test_long_context_override_applies_to_document_solver(self, monkeypatch):
         monkeypatch.setenv("MODEL_PROFILE", "balanced")
         monkeypatch.setenv("LONG_CONTEXT_SOLVER_MODEL", "long-context-model")
@@ -68,6 +81,37 @@ class TestModelConfig:
             )
             == "long-context-model"
         )
+
+    def test_competition_gpt_solver_uses_high_reasoning_effort(self, monkeypatch):
+        monkeypatch.setenv("MODEL_PROFILE", "competition_gpt")
+        monkeypatch.delenv("SOLVER_REASONING_EFFORT", raising=False)
+        monkeypatch.delenv("REASONING_EFFORT", raising=False)
+        model_config = _reload_model_config()
+
+        kwargs = model_config.get_model_runtime_kwargs(
+            "solver",
+            execution_mode="document_grounded_analysis",
+            task_family="document_qa",
+            prompt_tokens=9000,
+        )
+
+        assert kwargs["reasoning_effort"] == "high"
+
+    def test_competition_gpt_reviewer_defaults_to_medium_reasoning_effort(self, monkeypatch):
+        monkeypatch.setenv("MODEL_PROFILE", "competition_gpt")
+        monkeypatch.delenv("REVIEWER_REASONING_EFFORT", raising=False)
+        monkeypatch.delenv("VERIFIER_REASONING_EFFORT", raising=False)
+        monkeypatch.delenv("REASONING_EFFORT", raising=False)
+        model_config = _reload_model_config()
+
+        kwargs = model_config.get_model_runtime_kwargs(
+            "reviewer",
+            execution_mode="document_grounded_analysis",
+            task_family="document_qa",
+            prompt_tokens=9000,
+        )
+
+        assert kwargs["reasoning_effort"] == "medium"
 
     def test_role_specific_client_kwargs(self, monkeypatch):
         monkeypatch.setenv("OPENAI_API_KEY", "global-key")

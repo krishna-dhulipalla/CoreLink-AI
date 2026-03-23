@@ -24,7 +24,6 @@ _OFFICEQA_EXCLUDE_TERMS = (
     "share price",
     "earnings call",
     "quarterly results",
-    "annual report",
     "10-k",
     "10q",
     "etf",
@@ -33,6 +32,11 @@ _OFFICEQA_EXCLUDE_TERMS = (
     "quiz",
     "flashcards",
 )
+_GENERIC_NUMERIC_SUMMARIES = {
+    "row_count",
+    "column_count",
+    "numeric_cell_count",
+}
 
 
 def _normalize_space(text: str) -> str:
@@ -66,12 +70,17 @@ def _extract_entity(task_text: str, source_bundle: SourceBundle) -> str:
     for pattern in (
         r"for the ([A-Za-z0-9 .,'\-&]+?) in (?:fy|fiscal year|calendar year)\b",
         r"for ([A-Za-z0-9 .,'\-&]+?) in (?:fy|fiscal year|calendar year)\b",
+        r"for the ([A-Za-z0-9 .,'\-&]+?)(?:,| specifically| rounded| using| what was| what is|\?)",
+        r"for ([A-Za-z0-9 .,'\-&]+?)(?:,| specifically| rounded| using| what was| what is|\?)",
         r"for the ([A-Za-z0-9 .,'\-&]+?)\?",
         r"for ([A-Za-z0-9 .,'\-&]+?)\?",
     ):
         match = re.search(pattern, lowered, re.IGNORECASE)
         if match:
-            return _normalize_space(match.group(1)).strip(" ,.")
+            entity = _normalize_space(match.group(1)).strip(" ,.")
+            entity = re.sub(r"\s+in\s+(?:fy|fiscal year|calendar year)\b.*$", "", entity, flags=re.IGNORECASE)
+            entity = re.sub(r"\s+(?:using|rounded)\b.*$", "", entity, flags=re.IGNORECASE)
+            return entity.strip(" ,.")
     return ""
 
 
@@ -95,7 +104,9 @@ def _extract_metric(task_text: str) -> str:
 def _document_family(task_text: str, source_bundle: SourceBundle, benchmark_overrides: dict[str, Any] | None = None) -> str:
     lowered = (task_text or "").lower()
     if _officeqa_mode(task_text, benchmark_overrides):
-        return "treasury_bulletin"
+        if "treasury bulletin" in lowered:
+            return "treasury_bulletin"
+        return "official_government_finance"
     if source_bundle.urls:
         return "reference_documents"
     if _contains_any(lowered, ("report", "filing", "document", "pdf")):
@@ -118,6 +129,36 @@ def _aggregation_shape(task_text: str) -> str:
     return "point_lookup"
 
 
+def _period_years(period: str, task_text: str) -> list[str]:
+    years = re.findall(r"\b((?:19|20)\d{2})\b", f"{period} {task_text}")
+    return list(dict.fromkeys(years[:4]))
+
+
+def _primary_retrieval_metric(metric: str, aggregation_shape: str) -> str:
+    normalized = (metric or "").strip().lower()
+    if aggregation_shape in {"monthly_sum_percent_change", "inflation_adjusted_monthly_difference"}:
+        return "expenditures"
+    if normalized in {"absolute percent change", "absolute difference"}:
+        return "expenditures"
+    return metric
+
+
+def _extract_qualifier_terms(task_text: str) -> list[str]:
+    qualifiers: list[str] = []
+    patterns = (
+        r"should include\s+(.+?)(?:,| and | but |\.|$)",
+        r"shouldn't contain\s+(.+?)(?:,| and | but |\.|$)",
+        r"should not contain\s+(.+?)(?:,| and | but |\.|$)",
+        r"excluding\s+(.+?)(?:,| and | but |\.|$)",
+    )
+    for pattern in patterns:
+        for match in re.finditer(pattern, task_text or "", re.IGNORECASE):
+            value = _normalize_space(match.group(1)).strip(" ,.")
+            if value:
+                qualifiers.append(value)
+    return list(dict.fromkeys(qualifiers[:3]))
+
+
 def build_retrieval_intent(
     task_text: str,
     source_bundle: SourceBundle,
@@ -128,14 +169,19 @@ def build_retrieval_intent(
     period = _extract_period(task_text, source_bundle)
     document_family = _document_family(task_text, source_bundle, benchmark_overrides)
     aggregation_shape = _aggregation_shape(task_text)
+    years = _period_years(period, task_text)
+    retrieval_metric = _primary_retrieval_metric(metric, aggregation_shape)
+    qualifier_terms = _extract_qualifier_terms(task_text)
 
     must_include_terms: list[str] = []
     if document_family == "treasury_bulletin":
         must_include_terms.append("Treasury Bulletin")
+    elif document_family == "official_government_finance":
+        must_include_terms.append("official government finance")
     if entity:
         must_include_terms.append(entity)
-    if metric:
-        must_include_terms.append(metric)
+    if retrieval_metric:
+        must_include_terms.append(retrieval_metric)
     if period:
         must_include_terms.extend(period.split())
     if "calendar year" in task_text.lower():
@@ -144,37 +190,61 @@ def build_retrieval_intent(
         must_include_terms.append("fiscal year")
     if aggregation_shape.startswith("monthly"):
         must_include_terms.extend(["monthly", "month"])
+    if aggregation_shape == "inflation_adjusted_monthly_difference":
+        must_include_terms.extend(["cpi", "inflation"])
+    must_include_terms.extend(qualifier_terms)
     must_include_terms = list(dict.fromkeys([item for item in must_include_terms if item]))
 
     must_exclude_terms = list(_OFFICEQA_EXCLUDE_TERMS if _officeqa_mode(task_text, benchmark_overrides) else ())
 
-    base_terms = [term for term in [document_family.replace("_", " "), entity, metric, period] if term]
+    base_terms = [term for term in [document_family.replace("_", " "), entity, retrieval_metric, period] if term]
     base_query = _normalize_space(" ".join(base_terms))
     query_candidates: list[str] = []
-    if document_family == "treasury_bulletin":
-        query_candidates.append(
-            _normalize_space(
-                f'Treasury Bulletin {entity} {metric} {period} site:govinfo.gov'
-            )
-        )
+    if document_family in {"treasury_bulletin", "official_government_finance"}:
+        source_hint = "Treasury Bulletin" if document_family == "treasury_bulletin" else "official government finance"
         if aggregation_shape.startswith("monthly"):
+            focus_entity = entity or "national defense and associated activities"
+            if years:
+                for year in years[:2]:
+                    query_candidates.append(
+                        _normalize_space(
+                            f'"{focus_entity}" "{year}" monthly expenditures site:govinfo.gov'
+                        )
+                    )
+                    query_candidates.append(
+                        _normalize_space(
+                            f'"receipts expenditures and balances" "{year}" "{focus_entity}"'
+                        )
+                    )
+            else:
+                query_candidates.append(
+                    _normalize_space(
+                        f'{source_hint} {focus_entity} monthly expenditures {period} site:govinfo.gov'
+                    )
+                )
+            if aggregation_shape == "inflation_adjusted_monthly_difference":
+                query_candidates.append(
+                    _normalize_space(
+                        f'"BLS CPI-U" {" ".join(years[:2])} "Federal Reserve Bank of Minneapolis"'
+                    )
+                )
+        else:
+            time_hint = "fiscal year" if "fiscal year" in must_include_terms else "calendar year" if "calendar year" in must_include_terms else ""
             query_candidates.append(
                 _normalize_space(
-                    f'Treasury Bulletin {entity} monthly expenditures {period} site:govinfo.gov'
+                    f'{entity} {retrieval_metric} {period} {time_hint} site:govinfo.gov'
                 )
             )
-        query_candidates.append(
-            _normalize_space(
-                f'"{entity}" "{period}" "{metric}" Treasury Bulletin'
-            )
-        )
-        if "fiscal year" in must_include_terms:
             query_candidates.append(
-                _normalize_space(f'"{entity}" FY {period.split()[0] if period else ""} Treasury Bulletin')
+                _normalize_space(
+                    f'"{entity}" "{period}" "{retrieval_metric}" {source_hint}'
+                )
             )
-        elif "calendar year" in must_include_terms:
+        for qualifier in qualifier_terms[:2]:
             query_candidates.append(
-                _normalize_space(f'"{entity}" calendar year {period.split()[0] if period else ""} Treasury Bulletin')
+                _normalize_space(
+                    f'"{entity or retrieval_metric}" "{period}" "{qualifier}" site:govinfo.gov'
+                )
             )
     elif base_query:
         query_candidates.append(base_query)
@@ -291,6 +361,20 @@ def _source_family(tool_results: list[dict[str, Any]], combined_text: str) -> st
     lowered = " ".join(citations + [combined_text.lower()])
     if "treasury bulletin" in lowered or "treasury_bulletin" in lowered or "treasury_" in lowered or "/treasury" in lowered:
         return "treasury_bulletin"
+    if any(
+        token in lowered
+        for token in (
+            "govinfo.gov",
+            "census.gov",
+            "va.gov",
+            "fraser.stlouisfed.org",
+            "federal reserve bank of minneapolis",
+            "omb",
+            "budget of the united states",
+            "statistical abstract",
+        )
+    ):
+        return "official_government_document"
     if any(item.endswith(".pdf") for item in citations):
         return "reference_file"
     if citations:
@@ -299,11 +383,16 @@ def _source_family(tool_results: list[dict[str, Any]], combined_text: str) -> st
 
 
 def _metric_scope(retrieval_intent: RetrievalIntent, combined_text: str) -> tuple[str, bool]:
-    metric_tokens = [token for token in _tokenize(retrieval_intent.metric) if len(token) > 2]
+    metric_basis = _primary_retrieval_metric(retrieval_intent.metric, retrieval_intent.aggregation_shape)
+    metric_tokens = [token for token in _tokenize(metric_basis) if len(token) > 2]
     if not metric_tokens:
         return "unknown", True
     overlap = {token for token in metric_tokens if token in _tokenize(combined_text)}
     if not overlap:
+        if retrieval_intent.aggregation_shape == "inflation_adjusted_monthly_difference" and any(
+            token in (combined_text or "").lower() for token in ("cpi", "inflation")
+        ):
+            return "matched", True
         return "missing_metric", False
     if len(overlap) >= min(2, len(metric_tokens)):
         return "matched", True
@@ -314,11 +403,19 @@ def _has_substantive_numeric_support(
     retrieval_intent: RetrievalIntent,
     relevant_results: list[dict[str, Any]],
 ) -> bool:
-    metric_tokens = {token for token in _tokenize(retrieval_intent.metric) if len(token) > 2}
+    metric_basis = _primary_retrieval_metric(retrieval_intent.metric, retrieval_intent.aggregation_shape)
+    metric_tokens = {token for token in _tokenize(metric_basis) if len(token) > 2}
     period_years = set(re.findall(r"\b((?:19|20)\d{2})\b", retrieval_intent.period or ""))
     for result in relevant_results:
         facts = dict(result.get("facts") or {})
-        if facts.get("numeric_summaries"):
+        for summary in facts.get("numeric_summaries", []):
+            if not isinstance(summary, dict):
+                continue
+            metric_name = str(summary.get("metric", "") or "")
+            if not metric_name or metric_name in _GENERIC_NUMERIC_SUMMARIES or metric_name.endswith("_range"):
+                continue
+            if metric_tokens and not metric_tokens.intersection(_tokenize(metric_name)):
+                continue
             return True
         for table in facts.get("tables", []):
             if not isinstance(table, dict):
@@ -365,7 +462,7 @@ def assess_evidence_sufficiency(
     missing_dimensions: list[str] = []
     if not relevant_results:
         missing_dimensions.append("retrieved evidence")
-    if _officeqa_mode(task_text, benchmark_overrides) and source_family not in {"treasury_bulletin", "reference_file"}:
+    if _officeqa_mode(task_text, benchmark_overrides) and source_family not in {"treasury_bulletin", "reference_file", "official_government_document"}:
         missing_dimensions.append("source family grounding")
     if not period_ok:
         missing_dimensions.append("period scope")

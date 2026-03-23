@@ -160,7 +160,14 @@ PROFILE_PACKS: dict[TaskProfile, ProfileContextPack] = {
         ],
         section_requirements=["Answer", "Evidence summary", "Source references"],
         required_evidence_types=["document_evidence", "citations"],
-        allowed_tools=["calculator", "fetch_reference_file", "list_reference_files"],
+        allowed_tools=[
+            "calculator",
+            "internet_search",
+            "search_reference_corpus",
+            "fetch_corpus_document",
+            "fetch_reference_file",
+            "list_reference_files",
+        ],
         failure_modes=[
             "Answering from raw guesses without extracted evidence.",
             "Dumping large file excerpts instead of a grounded summary.",
