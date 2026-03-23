@@ -1,15 +1,25 @@
 {
-  manifest_version: "0.1.0",
-  program: {
-    image: "ghcr.io/krishna-dhulipalla/corelink-ai:latest",
-    entrypoint: "uv run src/server.py --host 0.0.0.0 --port 9009",
-    network: {
-      endpoints: [{ name: "endpoint", port: 9009 }],
-    },
+  "manifest_version": "0.1.0",
+  "program": {
+    "image": "ghcr.io/krishna-dhulipalla/corelink-ai:latest",
+    "entrypoint": "uv run src/server.py --host 0.0.0.0 --port 9009",
+    "network": {
+      "endpoints": [
+        {
+          "name": "endpoint",
+          "port": 9009
+        }
+      ]
+    }
   },
-  slots: {},
-  provides: {
-    a2a: { kind: "a2a", endpoint: "endpoint" },
+  "slots": {},
+  "provides": {
+    "a2a": {
+      "kind": "a2a",
+      "endpoint": "endpoint"
+    }
   },
-  exports: { a2a: "a2a" },
+  "exports": {
+    "a2a": "a2a"
+  }
 }
