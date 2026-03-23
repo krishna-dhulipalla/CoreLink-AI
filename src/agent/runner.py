@@ -152,6 +152,7 @@ async def run_agent_trace(
         "cost_tracker": tracker,
         "memory_store": None,
         "task_intent": {},
+        "benchmark_overrides": {},
         "tool_plan": {},
         "source_bundle": {},
         "retrieval_intent": {},

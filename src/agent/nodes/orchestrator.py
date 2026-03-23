@@ -724,7 +724,8 @@ def make_capability_resolver(registry: dict[str, dict[str, Any]]):
         task_text = latest_human_text(state["messages"])
         source_bundle = SourceBundle.model_validate(state.get("source_bundle") or build_source_bundle(task_text).model_dump())
         intent = TaskIntent.model_validate(state.get("task_intent") or {})
-        tool_plan, _ = resolve_tool_plan(intent, source_bundle, registry)
+        benchmark_overrides = dict(state.get("benchmark_overrides") or {})
+        tool_plan, _ = resolve_tool_plan(intent, source_bundle, registry, benchmark_overrides=benchmark_overrides)
         workpad = dict(state.get("workpad", {}))
         workpad["tool_plan"] = tool_plan.model_dump()
         workpad["ace_events"] = list(tool_plan.ace_events)
@@ -770,10 +771,11 @@ def context_curator(state: RuntimeState) -> dict[str, Any]:
     step = increment_runtime_step()
     task_text = latest_human_text(state["messages"])
     answer_contract = state.get("answer_contract", {}) or {}
+    benchmark_overrides = dict(state.get("benchmark_overrides") or {})
     intent = TaskIntent.model_validate(state.get("task_intent") or {})
     source_bundle = SourceBundle.model_validate(state.get("source_bundle") or build_source_bundle(task_text).model_dump())
     curated_context, evidence_stats = build_curated_context(task_text, answer_contract, intent, source_bundle)
-    retrieval_intent, evidence_sufficiency = build_retrieval_bundle(task_text, source_bundle)
+    retrieval_intent, evidence_sufficiency = build_retrieval_bundle(task_text, source_bundle, benchmark_overrides)
     workpad = dict(state.get("workpad", {}))
     workpad["evidence_stats"] = evidence_stats
     workpad["task_complexity_tier"] = intent.complexity_tier
@@ -813,6 +815,7 @@ def context_curator(state: RuntimeState) -> dict[str, Any]:
     logger.info("[Step %s] engine context_curator -> facts=%s", step, len(curated_context.facts_in_use))
     return {
         "source_bundle": source_bundle.model_dump(),
+        "benchmark_overrides": benchmark_overrides,
         "curated_context": curated_context.model_dump(),
         "review_packet": review_packet.model_dump(),
         "evidence_pack": {
@@ -1084,10 +1087,14 @@ def _retrieval_content_text(facts: dict[str, Any]) -> str:
     return " ".join(part for part in parts if part).strip()
 
 
-def _retrieved_evidence_is_sufficient(source_bundle: SourceBundle, tool_result: dict[str, Any]) -> bool:
+def _retrieved_evidence_is_sufficient(
+    source_bundle: SourceBundle,
+    tool_result: dict[str, Any],
+    benchmark_overrides: dict[str, Any] | None = None,
+) -> bool:
     if str(tool_result.get("retrieval_status", "") or "") in {"garbled_binary", "parse_error", "network_error", "unsupported_format", "empty", "irrelevant"}:
         return False
-    sufficiency = assess_evidence_sufficiency(source_bundle.task_text, source_bundle, [tool_result])
+    sufficiency = assess_evidence_sufficiency(source_bundle.task_text, source_bundle, [tool_result], benchmark_overrides)
     return bool(sufficiency.is_sufficient)
 
 
@@ -1212,6 +1219,7 @@ def _fallback_retrieval_action(
     journal: ExecutionJournal,
     tool_plan: ToolPlan,
     registry: dict[str, dict[str, Any]],
+    benchmark_overrides: dict[str, Any] | None = None,
 ) -> RetrievalAction:
     available = _retrieval_tools_available(tool_plan, registry)
     roles = _retrieval_tools_by_role(tool_plan, registry)
@@ -1224,8 +1232,9 @@ def _fallback_retrieval_action(
     last_status = str(last_result.get("retrieval_status", "") or "")
     candidates = _search_result_candidates(last_result)
     seed_query = _next_retrieval_query(journal, retrieval_intent, source_bundle)
-    officeqa_mode = os.getenv("BENCHMARK_NAME", "").strip().lower() == "officeqa"
-    allow_web_fallback = os.getenv("OFFICEQA_ALLOW_WEB_FALLBACK", "last_fallback").strip().lower() not in {"0", "false", "no", "off", "never"}
+    overrides = dict(benchmark_overrides or {})
+    officeqa_mode = bool(overrides.get("officeqa_mode"))
+    allow_web_fallback = bool(overrides.get("officeqa_allow_web_fallback", True))
     corpus_grounded_only = execution_mode == "document_grounded_analysis" and officeqa_mode and not allow_web_fallback
 
     if not journal.tool_results:
@@ -1271,7 +1280,7 @@ def _fallback_retrieval_action(
         )
 
     if _tool_role(registry, last_type) == "fetch":
-        if _retrieved_evidence_is_sufficient(source_bundle, last_result):
+        if _retrieved_evidence_is_sufficient(source_bundle, last_result, overrides):
             return RetrievalAction(action="answer", rationale="Retrieved document evidence is available for the final answer.")
         if last_type == "fetch_reference_file" or _tool_family(registry, last_type) == "document_retrieval":
             next_window = _next_reference_fetch_action(last_result, last_type)
@@ -1319,6 +1328,7 @@ def _plan_retrieval_action(
     tool_plan: ToolPlan,
     journal: ExecutionJournal,
     registry: dict[str, dict[str, Any]],
+    benchmark_overrides: dict[str, Any] | None = None,
 ) -> RetrievalAction:
     """Deterministic retrieval planner — no inner LLM call.
 
@@ -1337,6 +1347,7 @@ def _plan_retrieval_action(
         journal=journal,
         tool_plan=tool_plan,
         registry=registry,
+        benchmark_overrides=benchmark_overrides,
     )
     return _validate_retrieval_action(heuristic, tool_plan, registry)
 
@@ -1530,6 +1541,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
         source_bundle = SourceBundle.model_validate(state.get("source_bundle") or {})
         retrieval_intent = RetrievalIntent.model_validate(state.get("retrieval_intent") or {})
         evidence_sufficiency = EvidenceSufficiency.model_validate(state.get("evidence_sufficiency") or {})
+        benchmark_overrides = dict(state.get("benchmark_overrides") or {})
         journal = ExecutionJournal.model_validate(state.get("execution_journal") or {})
         workpad = dict(state.get("workpad", {}))
         review_feedback = dict(state.get("review_feedback") or {})
@@ -1542,11 +1554,11 @@ def make_executor(registry: dict[str, dict[str, Any]]):
         if intent.task_family == "finance_options" and not _supports_options_fast_path(task_text):
             heuristic_intent, _, _ = _heuristic_intent(task_text, state.get("answer_contract", {}) or {})
             intent = _normalize_task_intent(heuristic_intent, task_text, heuristic_intent)
-            tool_plan, _ = resolve_tool_plan(intent, source_bundle, registry)
+            tool_plan, _ = resolve_tool_plan(intent, source_bundle, registry, benchmark_overrides=benchmark_overrides)
             workpad = _record_event(workpad, "executor", f"rerouted before tool execution -> {intent.task_family}")
 
         if tool_plan.stop_reason == "unsupported_capability":
-            evidence_sufficiency = assess_evidence_sufficiency(task_text, source_bundle, journal.tool_results)
+            evidence_sufficiency = assess_evidence_sufficiency(task_text, source_bundle, journal.tool_results, benchmark_overrides)
             journal.final_artifact_signature = _artifact_signature(
                 "This task requires non-finance artifact generation that the active finance-first engine does not support."
             )
@@ -1576,7 +1588,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
             }
 
         if tool_plan.stop_reason == "no_bindable_capability" and not tool_plan.pending_tools and not review_feedback:
-            evidence_sufficiency = assess_evidence_sufficiency(task_text, source_bundle, journal.tool_results)
+            evidence_sufficiency = assess_evidence_sufficiency(task_text, source_bundle, journal.tool_results, benchmark_overrides)
             journal.final_artifact_signature = _artifact_signature(
                 "I could not bind a safe retrieval or analysis capability for this task, so I am stopping instead of guessing."
             )
@@ -1607,7 +1619,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
         if intent.execution_mode == "exact_fast_path" and intent.task_family == "finance_quant":
             answer = _exact_quant_answer(state)
             if answer:
-                evidence_sufficiency = assess_evidence_sufficiency(task_text, source_bundle, journal.tool_results)
+                evidence_sufficiency = assess_evidence_sufficiency(task_text, source_bundle, journal.tool_results, benchmark_overrides)
                 journal.final_artifact_signature = _artifact_signature(answer)
                 workpad["review_ready"] = True
                 workpad = _record_event(workpad, "executor", "exact_fast_path -> final draft ready")
@@ -1664,7 +1676,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                 journal.routed_tool_families = list(dict.fromkeys([*journal.routed_tool_families, *tool_plan.tool_families_needed]))
                 workpad = _record_event(workpad, "executor", f"ran tool {next_tool}")
                 tool_plan.pending_tools = tool_plan.pending_tools[1:]
-                evidence_sufficiency = assess_evidence_sufficiency(task_text, source_bundle, journal.tool_results)
+                evidence_sufficiency = assess_evidence_sufficiency(task_text, source_bundle, journal.tool_results, benchmark_overrides)
                 should_continue_after_tool = bool(tool_plan.pending_tools) or intent.execution_mode in _RETRIEVAL_EXECUTION_MODES
                 if should_continue_after_tool and intent.execution_mode in {"advisory_analysis", "document_grounded_analysis", "tool_compute", "retrieval_augmented_analysis"}:
                     if tracer:
@@ -1698,6 +1710,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                 tool_plan=tool_plan,
                 journal=journal,
                 registry=registry,
+                benchmark_overrides=benchmark_overrides,
             )
             if retrieval_action.action == "tool":
                 if budget and budget.tool_calls_exhausted():
@@ -1720,7 +1733,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                     if retrieval_action.tool_name not in tool_plan.selected_tools:
                         tool_plan.selected_tools.append(retrieval_action.tool_name)
                     workpad = _record_event(workpad, "executor", f"retrieval hop -> {retrieval_action.tool_name}")
-                    evidence_sufficiency = assess_evidence_sufficiency(task_text, source_bundle, journal.tool_results)
+                    evidence_sufficiency = assess_evidence_sufficiency(task_text, source_bundle, journal.tool_results, benchmark_overrides)
                     if tracer:
                         tracer.record(
                             "executor",
@@ -1750,7 +1763,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
         if intent.task_family == "finance_options" and journal.tool_results:
             answer = _options_final_answer({**state, "execution_journal": journal.model_dump()})
             if answer:
-                evidence_sufficiency = assess_evidence_sufficiency(task_text, source_bundle, journal.tool_results)
+                evidence_sufficiency = assess_evidence_sufficiency(task_text, source_bundle, journal.tool_results, benchmark_overrides)
                 journal.final_artifact_signature = _artifact_signature(answer)
                 workpad["completion_budget"] = 0
                 workpad["review_ready"] = True
@@ -1856,7 +1869,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
             )
 
         journal.final_artifact_signature = _artifact_signature(content)
-        evidence_sufficiency = assess_evidence_sufficiency(task_text, source_bundle, journal.tool_results)
+        evidence_sufficiency = assess_evidence_sufficiency(task_text, source_bundle, journal.tool_results, benchmark_overrides)
         workpad["completion_budget"] = max_tokens
         workpad["review_ready"] = True
         workpad = _record_event(workpad, "executor", "final draft ready")
@@ -1940,10 +1953,12 @@ def reviewer(state: RuntimeState) -> dict[str, Any]:
     journal = ExecutionJournal.model_validate(state.get("execution_journal") or {})
     curated = CuratedContext.model_validate(state.get("curated_context") or {})
     tool_plan = ToolPlan.model_validate(state.get("tool_plan") or {})
+    benchmark_overrides = dict(state.get("benchmark_overrides") or {})
     evidence_sufficiency = assess_evidence_sufficiency(
         latest_human_text(state["messages"]),
         SourceBundle.model_validate(state.get("source_bundle") or {}),
         journal.tool_results,
+        benchmark_overrides,
     )
     workpad = dict(state.get("workpad", {}))
     answer = _latest_public_answer(state)

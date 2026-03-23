@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import re
 from typing import Any
 
@@ -48,30 +47,9 @@ def _contains_any(text: str, needles: tuple[str, ...]) -> bool:
     lowered = (text or "").lower()
     return any(needle in lowered for needle in needles)
 
-
-def _looks_like_officeqa_prompt(text: str) -> bool:
-    lowered = re.sub(r"[^a-z0-9]+", " ", (text or "").lower())
-    return any(
-        token in lowered
-        for token in (
-            "treasury bulletin",
-            "u.s national defense",
-            "u s national defense",
-            "veterans administration",
-            "individual calendar months",
-            "bls cpi-u",
-            "bls cpi u",
-            "federal reserve bank of minneapolis",
-            "monthly treasury statement",
-        )
-    )
-
-
-def _officeqa_mode(task_text: str) -> bool:
-    if os.getenv("BENCHMARK_NAME", "").strip().lower() == "officeqa" and _looks_like_officeqa_prompt(task_text):
-        return True
-    lowered = (task_text or "").lower()
-    return "treasury bulletin" in lowered or "monthly treasury statement" in lowered
+def _officeqa_mode(task_text: str, benchmark_overrides: dict[str, Any] | None = None) -> bool:
+    overrides = dict(benchmark_overrides or {})
+    return bool(overrides.get("officeqa_mode") or overrides.get("officeqa_like_prompt"))
 
 
 def _extract_period(task_text: str, source_bundle: SourceBundle) -> str:
@@ -114,9 +92,9 @@ def _extract_metric(task_text: str) -> str:
     return ""
 
 
-def _document_family(task_text: str, source_bundle: SourceBundle) -> str:
+def _document_family(task_text: str, source_bundle: SourceBundle, benchmark_overrides: dict[str, Any] | None = None) -> str:
     lowered = (task_text or "").lower()
-    if _officeqa_mode(task_text):
+    if _officeqa_mode(task_text, benchmark_overrides):
         return "treasury_bulletin"
     if source_bundle.urls:
         return "reference_documents"
@@ -140,11 +118,15 @@ def _aggregation_shape(task_text: str) -> str:
     return "point_lookup"
 
 
-def build_retrieval_intent(task_text: str, source_bundle: SourceBundle) -> RetrievalIntent:
+def build_retrieval_intent(
+    task_text: str,
+    source_bundle: SourceBundle,
+    benchmark_overrides: dict[str, Any] | None = None,
+) -> RetrievalIntent:
     entity = _extract_entity(task_text, source_bundle)
     metric = _extract_metric(task_text)
     period = _extract_period(task_text, source_bundle)
-    document_family = _document_family(task_text, source_bundle)
+    document_family = _document_family(task_text, source_bundle, benchmark_overrides)
     aggregation_shape = _aggregation_shape(task_text)
 
     must_include_terms: list[str] = []
@@ -164,7 +146,7 @@ def build_retrieval_intent(task_text: str, source_bundle: SourceBundle) -> Retri
         must_include_terms.extend(["monthly", "month"])
     must_include_terms = list(dict.fromkeys([item for item in must_include_terms if item]))
 
-    must_exclude_terms = list(_OFFICEQA_EXCLUDE_TERMS if _officeqa_mode(task_text) else ())
+    must_exclude_terms = list(_OFFICEQA_EXCLUDE_TERMS if _officeqa_mode(task_text, benchmark_overrides) else ())
 
     base_terms = [term for term in [document_family.replace("_", " "), entity, metric, period] if term]
     base_query = _normalize_space(" ".join(base_terms))
@@ -367,8 +349,9 @@ def assess_evidence_sufficiency(
     task_text: str,
     source_bundle: SourceBundle,
     tool_results: list[dict[str, Any]] | None,
+    benchmark_overrides: dict[str, Any] | None = None,
 ) -> EvidenceSufficiency:
-    retrieval_intent = build_retrieval_intent(task_text, source_bundle)
+    retrieval_intent = build_retrieval_intent(task_text, source_bundle, benchmark_overrides)
     results = list(tool_results or [])
     relevant_results = [result for result in results if str(result.get("retrieval_status", "") or "") not in {"", "empty", "irrelevant"}]
     combined_text = _normalize_space(" ".join(_tool_result_text(result) for result in relevant_results))
@@ -382,7 +365,7 @@ def assess_evidence_sufficiency(
     missing_dimensions: list[str] = []
     if not relevant_results:
         missing_dimensions.append("retrieved evidence")
-    if _officeqa_mode(task_text) and source_family not in {"treasury_bulletin", "reference_file"}:
+    if _officeqa_mode(task_text, benchmark_overrides) and source_family not in {"treasury_bulletin", "reference_file"}:
         missing_dimensions.append("source family grounding")
     if not period_ok:
         missing_dimensions.append("period scope")

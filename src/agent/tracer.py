@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -196,7 +197,7 @@ def _ensure_session() -> _Session | None:
         return _active_session
 
 
-def _write_trace_file(payload: dict[str, Any], profile: str, trace_identity: dict[str, Any]) -> str | None:
+def _write_trace_file_sync(payload: dict[str, Any], profile: str, trace_identity: dict[str, Any]) -> str | None:
     global _active_session
     try:
         session = _ensure_session()
@@ -233,6 +234,22 @@ def _write_trace_file(payload: dict[str, Any], profile: str, trace_identity: dic
     except Exception as exc:
         logger.warning("[RunTracer] Failed to save trace: %s", exc)
         return None
+
+
+def _write_trace_file(payload: dict[str, Any], profile: str, trace_identity: dict[str, Any]) -> str | None:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return _write_trace_file_sync(payload, profile, trace_identity)
+
+    thread = threading.Thread(
+        target=_write_trace_file_sync,
+        args=(dict(payload), profile, dict(trace_identity)),
+        name="run-tracer-writer",
+        daemon=True,
+    )
+    thread.start()
+    return None
 
 
 def get_tracer() -> RunTracer | None:

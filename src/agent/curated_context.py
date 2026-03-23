@@ -446,7 +446,11 @@ def solver_context_block(
     return json.dumps(payload, ensure_ascii=True)
 
 
-def build_retrieval_bundle(task_text: str, source_bundle: SourceBundle) -> tuple[RetrievalIntent, EvidenceSufficiency]:
-    retrieval_intent = build_retrieval_intent(task_text, source_bundle)
-    evidence_sufficiency = assess_evidence_sufficiency(task_text, source_bundle, [])
+def build_retrieval_bundle(
+    task_text: str,
+    source_bundle: SourceBundle,
+    benchmark_overrides: dict[str, Any] | None = None,
+) -> tuple[RetrievalIntent, EvidenceSufficiency]:
+    retrieval_intent = build_retrieval_intent(task_text, source_bundle, benchmark_overrides)
+    evidence_sufficiency = assess_evidence_sufficiency(task_text, source_bundle, [], benchmark_overrides)
     return retrieval_intent, evidence_sufficiency

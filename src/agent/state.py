@@ -50,6 +50,7 @@ class AgentState(TypedDict):
     cost_tracker: Any
     memory_store: Any
     task_intent: dict[str, Any]
+    benchmark_overrides: dict[str, Any]
     tool_plan: dict[str, Any]
     source_bundle: dict[str, Any]
     retrieval_intent: dict[str, Any]

@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
-import re
 from typing import Any, Callable
 
 from langchain_core.tools import BaseTool, tool
@@ -109,24 +107,6 @@ _OFFICEQA_ALLOWED_FAMILIES = {
     "analytical_reasoning",
     "exact_compute",
 }
-
-
-def _looks_like_officeqa_prompt(text: str) -> bool:
-    lowered = re.sub(r"[^a-z0-9]+", " ", (text or "").lower())
-    return any(
-        token in lowered
-        for token in (
-            "treasury bulletin",
-            "u.s national defense",
-            "u s national defense",
-            "veterans administration",
-            "individual calendar months",
-            "bls cpi-u",
-            "bls cpi u",
-            "federal reserve bank of minneapolis",
-            "monthly treasury statement",
-        )
-    )
 
 
 def _infer_external_family_and_role(tool_obj: Any) -> tuple[str, str, int]:
@@ -286,12 +266,11 @@ def _looks_like_document_corpus_query(source_bundle: SourceBundle) -> bool:
     )
 
 
-def _officeqa_mode(intent: TaskIntent, source_bundle: SourceBundle) -> bool:
-    task_text = source_bundle.task_text or ""
-    if os.getenv("BENCHMARK_NAME", "").strip().lower() == "officeqa" and _looks_like_officeqa_prompt(task_text):
+def _officeqa_mode(intent: TaskIntent, source_bundle: SourceBundle, benchmark_overrides: dict[str, Any] | None = None) -> bool:
+    overrides = dict(benchmark_overrides or {})
+    if overrides.get("officeqa_mode") is True:
         return True
-    lowered = task_text.lower()
-    return intent.task_family == "document_qa" and "treasury bulletin" in lowered
+    return bool(overrides.get("officeqa_like_prompt")) and intent.task_family == "document_qa"
 
 
 def _officeqa_allowed_descriptor(descriptor: dict[str, Any]) -> bool:
@@ -334,13 +313,19 @@ def _normalize_family(raw_family: str, intent: TaskIntent, source_bundle: Source
     return family
 
 
-def _widen_families(intent: TaskIntent, source_bundle: SourceBundle, normalized: list[str]) -> list[str]:
+def _widen_families(
+    intent: TaskIntent,
+    source_bundle: SourceBundle,
+    normalized: list[str],
+    benchmark_overrides: dict[str, Any] | None = None,
+) -> list[str]:
     widened = list(normalized)
-    if _officeqa_mode(intent, source_bundle):
+    overrides = dict(benchmark_overrides or {})
+    if _officeqa_mode(intent, source_bundle, overrides):
         for family in ("document_retrieval", "exact_compute"):
             if family not in widened:
                 widened.append(family)
-        if os.getenv("OFFICEQA_ALLOW_WEB_FALLBACK", "last_fallback").strip().lower() not in {"0", "false", "no", "off", "never"}:
+        if overrides.get("officeqa_allow_web_fallback", True):
             if "external_retrieval" not in widened:
                 widened.append("external_retrieval")
         return [family for family in widened if family in _OFFICEQA_ALLOWED_FAMILIES]
@@ -423,12 +408,13 @@ def resolve_tool_plan(
     intent: TaskIntent,
     source_bundle: SourceBundle,
     registry: dict[str, dict[str, Any]],
+    benchmark_overrides: dict[str, Any] | None = None,
 ) -> tuple[ToolPlan, dict[str, dict[str, Any]]]:
     mutable_registry = dict(registry)
-    officeqa_mode = _officeqa_mode(intent, source_bundle)
+    officeqa_mode = _officeqa_mode(intent, source_bundle, benchmark_overrides)
     requested = [_normalize_family(family, intent, source_bundle) for family in intent.tool_families_needed]
     requested = list(dict.fromkeys([family for family in requested if family]))
-    widened = _widen_families(intent, source_bundle, requested)
+    widened = _widen_families(intent, source_bundle, requested, benchmark_overrides)
     selected: list[str] = []
     pending: list[str] = []
     blocked: list[str] = []

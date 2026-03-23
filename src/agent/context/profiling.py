@@ -49,6 +49,26 @@ def _officeqa_xml_contract_enabled(task_text: str = "") -> bool:
     return False
 
 
+def infer_benchmark_overrides(task_text: str) -> dict[str, Any]:
+    benchmark_name = os.getenv("BENCHMARK_NAME", "").strip().lower()
+    officeqa_like = _looks_like_officeqa_prompt(task_text)
+    officeqa_mode = benchmark_name == "officeqa" and officeqa_like
+    allow_web_fallback = os.getenv("OFFICEQA_ALLOW_WEB_FALLBACK", "last_fallback").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+        "never",
+    }
+    return {
+        "benchmark_name": benchmark_name,
+        "officeqa_mode": officeqa_mode,
+        "officeqa_like_prompt": officeqa_like,
+        "officeqa_xml_contract": _officeqa_xml_contract_enabled(task_text),
+        "officeqa_allow_web_fallback": allow_web_fallback,
+    }
+
+
 def _extract_labeled_json_block(text: str, label: str) -> Any | None:
     pattern = re.compile(rf"{re.escape(label)}\s*:\s*", re.IGNORECASE)
     match = pattern.search(text or "")
@@ -116,11 +136,12 @@ def normalize_whitespace(text: str) -> str:
     return re.sub(r"\s+", " ", text or "").strip()
 
 
-def extract_answer_contract(task_text: str) -> AnswerContract:
+def extract_answer_contract(task_text: str, benchmark_overrides: dict[str, Any] | None = None) -> AnswerContract:
     text = task_text or ""
     lowered = text.lower()
+    overrides = dict(benchmark_overrides or {})
 
-    if _officeqa_xml_contract_enabled(text):
+    if overrides.get("officeqa_xml_contract") or _officeqa_xml_contract_enabled(text):
         return AnswerContract(
             format="xml",
             requires_adapter=True,

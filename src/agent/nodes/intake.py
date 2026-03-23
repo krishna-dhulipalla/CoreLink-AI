@@ -12,7 +12,7 @@ from langchain_core.messages import HumanMessage
 
 from agent.contracts import AnswerContract
 from agent.runtime_clock import increment_runtime_step
-from agent.runtime_support import extract_answer_contract, latest_human_text
+from agent.runtime_support import extract_answer_contract, infer_benchmark_overrides, latest_human_text
 from agent.state import AgentState, ReplaceMessages
 from agent.tracer import get_tracer
 
@@ -22,7 +22,8 @@ logger = logging.getLogger(__name__)
 def intake(state: AgentState) -> dict:
     step = increment_runtime_step()
     task_text = latest_human_text(state["messages"])
-    contract: AnswerContract = extract_answer_contract(task_text)
+    benchmark_overrides = infer_benchmark_overrides(task_text)
+    contract: AnswerContract = extract_answer_contract(task_text, benchmark_overrides=benchmark_overrides)
 
     workpad = dict(state.get("workpad", {}))
     workpad.setdefault("stage_history", [])
@@ -47,12 +48,14 @@ def intake(state: AgentState) -> dict:
     if tracer:
         tracer.record("intake", {
             "answer_contract": contract.model_dump(),
+            "benchmark_overrides": benchmark_overrides,
             "message_count": len(clean_messages),
         })
 
     return {
         "messages": ReplaceMessages(clean_messages),
         "answer_contract": contract.model_dump(),
+        "benchmark_overrides": benchmark_overrides,
         "solver_stage": "PLAN",
         "workpad": workpad,
     }
