@@ -54,7 +54,7 @@ class TestModelConfig:
 
         assert model_config.get_model_name("solver") == "deepseek-ai/DeepSeek-V3.2"
 
-    def test_competition_gpt_profile_uses_openai_role_split(self, monkeypatch):
+    def test_competition_gpt_profile_uses_nebius_role_split(self, monkeypatch):
         monkeypatch.setenv("MODEL_PROFILE", "competition_gpt")
         monkeypatch.delenv("SOLVER_MODEL", raising=False)
         monkeypatch.delenv("REVIEWER_MODEL", raising=False)
@@ -62,10 +62,10 @@ class TestModelConfig:
         monkeypatch.delenv("PROFILER_MODEL", raising=False)
         model_config = _reload_model_config()
 
-        assert model_config.get_model_name("solver") == "gpt-5.4"
-        assert model_config.get_model_name("reviewer") == "gpt-5.4-mini"
-        assert model_config.get_model_name("adapter") == "gpt-5.4-mini"
-        assert model_config.get_model_name("profiler") == "gpt-5.4-mini"
+        assert model_config.get_model_name("solver") == "deepseek-ai/DeepSeek-V3.2"
+        assert model_config.get_model_name("reviewer") == "Qwen/Qwen3-32B-fast"
+        assert model_config.get_model_name("adapter") == "Qwen/Qwen3-32B-fast"
+        assert model_config.get_model_name("profiler") == "Qwen/Qwen3-32B-fast"
 
     def test_long_context_override_applies_to_document_solver(self, monkeypatch):
         monkeypatch.setenv("MODEL_PROFILE", "balanced")
@@ -82,7 +82,7 @@ class TestModelConfig:
             == "long-context-model"
         )
 
-    def test_competition_gpt_solver_uses_high_reasoning_effort(self, monkeypatch):
+    def test_competition_gpt_solver_strips_reasoning_effort_for_nebius(self, monkeypatch):
         monkeypatch.setenv("MODEL_PROFILE", "competition_gpt")
         monkeypatch.delenv("SOLVER_REASONING_EFFORT", raising=False)
         monkeypatch.delenv("REASONING_EFFORT", raising=False)
@@ -95,9 +95,9 @@ class TestModelConfig:
             prompt_tokens=9000,
         )
 
-        assert kwargs["reasoning_effort"] == "high"
+        assert "reasoning_effort" not in kwargs
 
-    def test_competition_gpt_reviewer_defaults_to_medium_reasoning_effort(self, monkeypatch):
+    def test_competition_gpt_reviewer_strips_reasoning_effort_for_nebius(self, monkeypatch):
         monkeypatch.setenv("MODEL_PROFILE", "competition_gpt")
         monkeypatch.delenv("REVIEWER_REASONING_EFFORT", raising=False)
         monkeypatch.delenv("VERIFIER_REASONING_EFFORT", raising=False)
@@ -111,7 +111,7 @@ class TestModelConfig:
             prompt_tokens=9000,
         )
 
-        assert kwargs["reasoning_effort"] == "medium"
+        assert "reasoning_effort" not in kwargs
 
     def test_role_specific_client_kwargs(self, monkeypatch):
         monkeypatch.setenv("OPENAI_API_KEY", "global-key")

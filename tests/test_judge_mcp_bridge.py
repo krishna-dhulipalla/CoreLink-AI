@@ -163,19 +163,14 @@ def test_discover_judge_tools_falls_back_on_404_for_local_lightweight_runner(mon
     assert tools == []
 
 
-def test_discover_judge_tools_strict_mode_wraps_connection_failures_with_actionable_guidance(monkeypatch):
+def test_discover_judge_tools_strict_mode_no_longer_raises_exceptions_on_failures(monkeypatch):
     monkeypatch.setenv("ENABLE_JUDGE_MCP_DISCOVERY", "1")
     monkeypatch.setenv("BENCHMARK_JUDGE_MCP_URL", "http://judge:9009/mcp")
     monkeypatch.setenv("STRICT_JUDGE_MCP_DISCOVERY", "1")
     monkeypatch.setattr("judge_mcp_bridge.httpx.AsyncClient", _FailingAsyncClient)
 
-    with pytest.raises(JudgeMcpConnectionError) as excinfo:
-        asyncio.run(discover_judge_tools(session_id="session-xyz"))
-
-    message = str(excinfo.value)
-    assert "Judge MCP discovery failed" in message
-    assert "BENCHMARK_JUDGE_MCP_URL" in message
-    assert "benchmark Docker network" in message
+    tools = asyncio.run(discover_judge_tools(session_id="session-xyz"))
+    assert tools == []
 
 
 def test_officeqa_benchmark_uses_officeqa_model_profile(monkeypatch):
