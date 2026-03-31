@@ -410,3 +410,17 @@ Rules:
   - `python -m py_compile src/agent/model_config.py src/mcp_client.py src/agent/context/profiling.py src/agent/budget.py src/agent/nodes/orchestrator.py tests/test_model_config.py tests/test_mcp_client.py`
   - `pytest tests/test_model_config.py tests/test_mcp_client.py tests/test_engine_runtime.py -q -p no:cacheprovider`
   - `pytest tests -q -p no:cacheprovider`
+
+### Chat 49: OfficeQA Failure Analysis And Re-Architecture Plan
+
+- **Role:** Architect / Reviewer
+- **Actions Taken:** Performed a full postmortem on the active OfficeQA path across the current graph, retrieval stack, benchmark traces, OfficeQA benchmark materials, and the public Purple finance worker references. Wrote the synthesis into [officeqa_integration_plan.md](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\docs\officeqa_integration_plan.md), including: why the OfficeQA transition failed, concrete bottlenecks in routing / retrieval / parsing / computation, how profile and template dependence still affects failure, and a phased implementation plan to move from finance-first heuristics to a benchmark-native corpus retrieval and deterministic compute pipeline.
+- **Critical Finding:** The main failure is not "insufficient prompting" or "wrong model." The system still treats OfficeQA as a special case inside a generic finance runtime. That causes two repeated failure classes: some OfficeQA prompts never activate the document-grounded path, and others do but still rely on weak search, page-window PDF parsing, and lossy evidence compaction instead of table-first extraction and provenance-backed computation.
+- **Handoff Notes:** The recommended next move is not another prompt patch cycle. Build an explicit benchmark adapter plus an OfficeQA corpus index and table-first compute path, then move current OfficeQA-specific hardcoding out of the generic engine.
+
+### Chat 50: OfficeQA Canonical Plan And Docs Cleanup
+
+- **Role:** Architect / Coder
+- **Actions Taken:** Created the execution-grade OfficeQA backlog in [officeqa_execution_plan.md](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\docs\officeqa_execution_plan.md). The new doc is intentionally checklist-driven so other coding agents can pick task ids, mark them complete, and treat it as the canonical delivery plan derived from [officeqa_integration_plan.md](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\docs\officeqa_integration_plan.md). Updated [.gitignore](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\.gitignore) so both OfficeQA docs stay visible even though the broader `docs/` directory is still mostly ignored. Cleaned the docs directory by deleting obsolete finance/V3/V4 checkpoint and review files that would now mislead implementation work.
+- **Strategic Decision Recorded:** Do not start a brand new repository. Replatform in place: keep benchmark-agnostic infrastructure such as the executor shell, Judge bridge, tracer, budget controls, output adapter pattern, and bounded self-reflection, while replacing the finance-first routing / retrieval / parsing / compute core with an OfficeQA-first architecture.
+- **Canonical Doc Set:** Keep `docs/progress.md` for execution logging, `docs/officeqa_integration_plan.md` for failure analysis, and `docs/officeqa_execution_plan.md` for the living implementation plan.

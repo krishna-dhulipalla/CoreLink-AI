@@ -18,4 +18,8 @@ wheels/
 results/
 traces/
 results&traces/
-docs/
+!docs/
+docs/*
+!docs/progress.md
+!docs/officeqa_integration_plan.md
+!docs/officeqa_execution_plan.md

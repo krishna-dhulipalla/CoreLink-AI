@@ -167,11 +167,16 @@ class Executor(AgentExecutor):
             if judge_tools:
                 active_graph = build_agent_graph(external_tools=[*self._mcp_tools, *judge_tools])
 
+            overrides = {}
+            if task and task.metadata:
+                overrides = dict(task.metadata)
+
             graph_started = True
             final_answer, steps, updated_history = await run_agent(
                 active_graph,
                 input_text,
                 history=history,
+                benchmark_overrides=overrides,
                 trace_identity={
                     "request_id": task.id or "",
                     "task_id": task.id or "",

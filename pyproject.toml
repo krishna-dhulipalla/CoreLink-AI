@@ -1,7 +1,7 @@
 [project]
-name = "agent-template"
+name = "corelink-ai"
 version = "0.1.0"
-description = "A template for A2A agents"
+description = "A finance-first A2A reasoning engine for AgentBeats benchmarking"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
