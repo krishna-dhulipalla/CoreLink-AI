@@ -19,19 +19,6 @@ _MONTH_NAMES = (
     "november",
     "december",
 )
-_OFFICEQA_EXCLUDE_TERMS = (
-    "stock price",
-    "share price",
-    "earnings call",
-    "quarterly results",
-    "10-k",
-    "10q",
-    "etf",
-    "wikipedia",
-    "blog",
-    "quiz",
-    "flashcards",
-)
 _GENERIC_NUMERIC_SUMMARIES = {
     "row_count",
     "column_count",
@@ -50,6 +37,11 @@ def _tokenize(text: str) -> list[str]:
 def _contains_any(text: str, needles: tuple[str, ...]) -> bool:
     lowered = (text or "").lower()
     return any(needle in lowered for needle in needles)
+
+
+def _benchmark_policy(benchmark_overrides: dict[str, Any] | None = None) -> dict[str, Any]:
+    return dict((benchmark_overrides or {}).get("benchmark_policy") or {})
+
 
 def _officeqa_mode(task_text: str, benchmark_overrides: dict[str, Any] | None = None) -> bool:
     overrides = dict(benchmark_overrides or {})
@@ -195,7 +187,8 @@ def build_retrieval_intent(
     must_include_terms.extend(qualifier_terms)
     must_include_terms = list(dict.fromkeys([item for item in must_include_terms if item]))
 
-    must_exclude_terms = list(_OFFICEQA_EXCLUDE_TERMS if _officeqa_mode(task_text, benchmark_overrides) else ())
+    policy = _benchmark_policy(benchmark_overrides)
+    must_exclude_terms = list(policy.get("excluded_retrieval_terms", [])) if _officeqa_mode(task_text, benchmark_overrides) else []
 
     base_terms = [term for term in [document_family.replace("_", " "), entity, retrieval_metric, period] if term]
     base_query = _normalize_space(" ".join(base_terms))
@@ -458,11 +451,13 @@ def assess_evidence_sufficiency(
     aggregation_type, aggregation_ok = _aggregation_scope(task_text, retrieval_intent, combined_text)
     entity_scope, entity_ok = _entity_scope(task_text, retrieval_intent, combined_text)
     metric_scope, metric_ok = _metric_scope(retrieval_intent, combined_text)
+    policy = _benchmark_policy(benchmark_overrides)
+    required_source_families = set(policy.get("required_source_families", []))
 
     missing_dimensions: list[str] = []
     if not relevant_results:
         missing_dimensions.append("retrieved evidence")
-    if _officeqa_mode(task_text, benchmark_overrides) and source_family not in {"treasury_bulletin", "reference_file", "official_government_document"}:
+    if _officeqa_mode(task_text, benchmark_overrides) and required_source_families and source_family not in required_source_families:
         missing_dimensions.append("source family grounding")
     if not period_ok:
         missing_dimensions.append("period scope")

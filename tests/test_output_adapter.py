@@ -1,7 +1,7 @@
 from langchain_core.messages import AIMessage
 
 from agent.nodes.output_adapter import output_adapter
-from agent.runtime_support import extract_answer_contract
+from agent.runtime_support import extract_answer_contract, infer_benchmark_overrides
 from test_utils import make_state
 
 
@@ -50,6 +50,20 @@ def test_extract_answer_contract_enables_officeqa_xml(monkeypatch):
     assert contract.requires_adapter is True
     assert contract.xml_root_tag == "FINAL_ANSWER"
     assert contract.value_rules["reasoning_tag"] == "REASONING"
+
+
+def test_infer_benchmark_overrides_exposes_explicit_adapter_without_forcing_mode(monkeypatch):
+    monkeypatch.setenv("BENCHMARK_NAME", "officeqa")
+
+    overrides = infer_benchmark_overrides("What was AAPL's EBITDA in fiscal year 2024?")
+
+    assert overrides["benchmark_name"] == "officeqa"
+    assert overrides["benchmark_adapter"] == "officeqa"
+    assert overrides["officeqa_mode"] is False
+    assert overrides["officeqa_xml_contract"] is False
+    assert "document_retrieval" in overrides["benchmark_policy"]["allowed_families"]
+    assert "source family grounding" in overrides["benchmark_policy"]["validation_dimensions"]
+    assert overrides["benchmark_policy"]["output_normalization"]["final_answer_tag"] == "FINAL_ANSWER"
 
 
 def test_output_adapter_wraps_officeqa_reasoning_and_final_answer_tags():

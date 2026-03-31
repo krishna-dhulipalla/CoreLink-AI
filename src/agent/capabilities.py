@@ -7,6 +7,7 @@ from typing import Any, Callable
 
 from langchain_core.tools import BaseTool, tool
 
+from agent.benchmarks import benchmark_descriptor_allowed, benchmark_registry_policy, benchmark_tool_selection_active
 from agent.legal_tools import (
     legal_playbook_retrieval,
     regulatory_execution_checklist,
@@ -99,38 +100,6 @@ _ROLE_BY_TOOL: dict[str, str] = {
     "list_reference_files": "discover",
     "fetch_reference_file": "fetch",
     "fetch_corpus_document": "fetch",
-}
-
-_OFFICEQA_ALLOWED_FAMILIES = {
-    "document_retrieval",
-    "external_retrieval",
-    "analytical_reasoning",
-    "exact_compute",
-}
-_BENCHMARK_TOOL_NAME_ALLOWLIST: dict[str, set[str]] = {
-    "officeqa": {
-        "calculator",
-        "sum_values",
-        "weighted_average",
-        "pct_change",
-        "cagr",
-        "annualize_return",
-        "annualize_volatility",
-        "bond_price_yield",
-        "duration_convexity",
-        "internet_search",
-        "search_reference_corpus",
-        "fetch_corpus_document",
-        "fetch_reference_file",
-        "list_reference_files",
-    }
-}
-_BENCHMARK_ALLOWED_FAMILIES: dict[str, set[str]] = {
-    "officeqa": {
-        "document_retrieval",
-        "external_retrieval",
-        "exact_compute",
-    }
 }
 
 
@@ -247,8 +216,9 @@ def filter_registry_for_benchmark(
     normalized = str(benchmark_name or "").strip().lower()
     if not normalized:
         return registry
-    allowed_names = _BENCHMARK_TOOL_NAME_ALLOWLIST.get(normalized)
-    allowed_families = _BENCHMARK_ALLOWED_FAMILIES.get(normalized)
+    policy = benchmark_registry_policy(normalized)
+    allowed_names = set(policy.get("allowed_tool_names", []))
+    allowed_families = set(policy.get("allowed_families", []))
     if not allowed_names and not allowed_families:
         return registry
 
@@ -328,30 +298,6 @@ def _looks_like_document_corpus_query(source_bundle: SourceBundle) -> bool:
     )
 
 
-def _officeqa_mode(intent: TaskIntent, source_bundle: SourceBundle, benchmark_overrides: dict[str, Any] | None = None) -> bool:
-    overrides = dict(benchmark_overrides or {})
-    if overrides.get("officeqa_mode") is True:
-        return True
-    return bool(overrides.get("officeqa_like_prompt")) and intent.task_family == "document_qa"
-
-
-def _officeqa_allowed_descriptor(descriptor: dict[str, Any]) -> bool:
-    family = str(descriptor.get("tool_family", "") or "")
-    tool_name = str(descriptor.get("tool_name", "") or "")
-    role = str(descriptor.get("tool_role", "") or "")
-    if family not in _OFFICEQA_ALLOWED_FAMILIES:
-        return False
-    if family == "document_retrieval":
-        return True
-    if family == "external_retrieval":
-        return role == "search" or tool_name == "internet_search"
-    if family == "exact_compute":
-        return tool_name in {"calculator", "sum_values", "weighted_average", "pct_change", "cagr"}
-    if family == "analytical_reasoning":
-        return False
-    return False
-
-
 def _normalize_family(raw_family: str, intent: TaskIntent, source_bundle: SourceBundle) -> str:
     family = str(raw_family or "").strip()
     if family in _CANONICAL_FAMILIES:
@@ -383,14 +329,16 @@ def _widen_families(
 ) -> list[str]:
     widened = list(normalized)
     overrides = dict(benchmark_overrides or {})
-    if _officeqa_mode(intent, source_bundle, overrides):
+    if benchmark_tool_selection_active(intent.task_family, overrides):
+        policy = dict(overrides.get("benchmark_policy") or {})
+        allowed_families = set(policy.get("allowed_families", []))
         for family in ("document_retrieval", "exact_compute"):
             if family not in widened:
                 widened.append(family)
         if overrides.get("officeqa_allow_web_fallback", True):
             if "external_retrieval" not in widened:
                 widened.append("external_retrieval")
-        return [family for family in widened if family in _OFFICEQA_ALLOWED_FAMILIES]
+        return [family for family in widened if not allowed_families or family in allowed_families]
     if intent.task_family in {"finance_quant", "external_retrieval"} and _source_requests_live_data(source_bundle):
         for family in ("market_data_retrieval", "external_retrieval"):
             if family not in widened:
@@ -473,7 +421,7 @@ def resolve_tool_plan(
     benchmark_overrides: dict[str, Any] | None = None,
 ) -> tuple[ToolPlan, dict[str, dict[str, Any]]]:
     mutable_registry = dict(registry)
-    officeqa_mode = _officeqa_mode(intent, source_bundle, benchmark_overrides)
+    benchmark_policy_active = benchmark_tool_selection_active(intent.task_family, benchmark_overrides)
     requested = [_normalize_family(family, intent, source_bundle) for family in intent.tool_families_needed]
     requested = list(dict.fromkeys([family for family in requested if family]))
     widened = _widen_families(intent, source_bundle, requested, benchmark_overrides)
@@ -500,11 +448,11 @@ def resolve_tool_plan(
     for family in widened:
         if family == "document_retrieval":
             document_tools = _document_retrieval_candidates(mutable_registry, source_bundle)
-            if officeqa_mode:
+            if benchmark_policy_active:
                 document_tools = [
                     tool_name
                     for tool_name in document_tools
-                    if _officeqa_allowed_descriptor(dict(mutable_registry.get(tool_name, {}).get("descriptor") or {}))
+                    if benchmark_descriptor_allowed(dict(mutable_registry.get(tool_name, {}).get("descriptor") or {}), benchmark_overrides)
                 ]
             if not document_tools:
                 ace_event, synthesized = synthesize_capability(family)
@@ -516,11 +464,11 @@ def resolve_tool_plan(
                         "tool": synthesized,
                     }
                     document_tools = _document_retrieval_candidates(mutable_registry, source_bundle)
-                    if officeqa_mode:
+                    if benchmark_policy_active:
                         document_tools = [
                             tool_name
                             for tool_name in document_tools
-                            if _officeqa_allowed_descriptor(dict(mutable_registry.get(tool_name, {}).get("descriptor") or {}))
+                            if benchmark_descriptor_allowed(dict(mutable_registry.get(tool_name, {}).get("descriptor") or {}), benchmark_overrides)
                         ]
             if not document_tools:
                 blocked.append(family)
@@ -544,8 +492,8 @@ def resolve_tool_plan(
             continue
 
         candidates = _ordered_candidates(mutable_registry, family)
-        if officeqa_mode:
-            candidates = [item for item in candidates if _officeqa_allowed_descriptor(item[0])]
+        if benchmark_policy_active:
+            candidates = [item for item in candidates if benchmark_descriptor_allowed(item[0], benchmark_overrides)]
         if not candidates:
             ace_event, synthesized = synthesize_capability(family)
             ace_events.append(ace_event.model_dump())
@@ -556,8 +504,8 @@ def resolve_tool_plan(
                     "tool": synthesized,
                 }
                 candidates = _ordered_candidates(mutable_registry, family)
-                if officeqa_mode:
-                    candidates = [item for item in candidates if _officeqa_allowed_descriptor(item[0])]
+                if benchmark_policy_active:
+                    candidates = [item for item in candidates if benchmark_descriptor_allowed(item[0], benchmark_overrides)]
         if not candidates:
             blocked.append(family)
             notes.append(f"No safe tool binding found for {family}.")

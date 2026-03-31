@@ -5,12 +5,12 @@ Profiling and answer-contract helpers.
 from __future__ import annotations
 
 import json
-import os
 import re
 from typing import Any
 
 from langchain_core.messages import BaseMessage, HumanMessage
 
+from agent.benchmarks import benchmark_answer_contract, build_benchmark_overrides
 from agent.context.extraction import extract_urls
 from agent.contracts import AnswerContract, ExecutionTemplate, ProfileDecision, TaskProfile
 from agent.profile_packs import get_profile_pack
@@ -19,95 +19,8 @@ from agent.template_library import get_execution_template
 _XML_TAG_RE = re.compile(r"<([A-Za-z][A-Za-z0-9_\-]*)>")
 
 
-def _truthy_env(name: str) -> bool:
-    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _looks_like_officeqa_prompt(text: str) -> bool:
-    lowered = re.sub(r"[^a-z0-9%]+", " ", (text or "").lower())
-    if not lowered:
-        return False
-
-    score = 0
-    if re.search(r"\b(19[3-9]\d|20[0-2]\d)\b", lowered):
-        score += 1
-    if any(
-        token in lowered
-        for token in (
-            "calendar year",
-            "fiscal year",
-            "individual calendar months",
-            "annual average",
-            "reported values",
-        )
-    ):
-        score += 1
-    if any(
-        token in lowered
-        for token in (
-            "expenditures",
-            "outlays",
-            "receipts",
-            "public debt",
-            "nominal dollars",
-            "cpi u",
-            "cpi-u",
-            "percent change",
-        )
-    ):
-        score += 1
-    if any(
-        token in lowered
-        for token in (
-            "using specifically only",
-            "according to",
-            "rounded to the nearest hundredths",
-            "reported as a percent value",
-            "million",
-        )
-    ):
-        score += 1
-    if any(
-        token in lowered
-        for token in (
-            "treasury bulletin",
-            "monthly treasury statement",
-            "federal reserve bank of minneapolis",
-            "veterans administration",
-            "national defense",
-        )
-    ):
-        score += 1
-    return score >= 3
-
-
-def _officeqa_xml_contract_enabled(task_text: str = "") -> bool:
-    officeqa_env = _truthy_env("OFFICEQA_FINAL_ANSWER_TAGS") or _truthy_env("OFFICEQA_XML_OUTPUT") or os.getenv("BENCHMARK_NAME", "").strip().lower() == "officeqa"
-    if officeqa_env and _looks_like_officeqa_prompt(task_text):
-        return True
-    if _truthy_env("BENCHMARK_STATELESS") and os.getenv("OFFICEQA_CORPUS_DIR", "").strip() and _looks_like_officeqa_prompt(task_text):
-        return True
-    return False
-
-
 def infer_benchmark_overrides(task_text: str) -> dict[str, Any]:
-    benchmark_name = os.getenv("BENCHMARK_NAME", "").strip().lower()
-    officeqa_like = _looks_like_officeqa_prompt(task_text)
-    officeqa_mode = benchmark_name == "officeqa" and officeqa_like
-    allow_web_fallback = os.getenv("OFFICEQA_ALLOW_WEB_FALLBACK", "last_fallback").strip().lower() not in {
-        "0",
-        "false",
-        "no",
-        "off",
-        "never",
-    }
-    return {
-        "benchmark_name": benchmark_name,
-        "officeqa_mode": officeqa_mode,
-        "officeqa_like_prompt": officeqa_like,
-        "officeqa_xml_contract": _officeqa_xml_contract_enabled(task_text),
-        "officeqa_allow_web_fallback": allow_web_fallback,
-    }
+    return build_benchmark_overrides(task_text)
 
 
 def _extract_labeled_json_block(text: str, label: str) -> Any | None:
@@ -180,27 +93,11 @@ def normalize_whitespace(text: str) -> str:
 def extract_answer_contract(task_text: str, benchmark_overrides: dict[str, Any] | None = None) -> AnswerContract:
     text = task_text or ""
     lowered = text.lower()
-    overrides = dict(benchmark_overrides or {})
+    overrides = dict(benchmark_overrides or infer_benchmark_overrides(text))
 
-    if overrides.get("officeqa_xml_contract") or _officeqa_xml_contract_enabled(text):
-        return AnswerContract(
-            format="xml",
-            requires_adapter=True,
-            raw_instruction="OfficeQA benchmark requires <REASONING> and <FINAL_ANSWER> XML tags.",
-            xml_root_tag="FINAL_ANSWER",
-            section_requirements=["REASONING", "FINAL_ANSWER"],
-            content_rules=[
-                "Place step-by-step reasoning inside <REASONING> tags.",
-                "Place only the final exact value or exact string answer inside <FINAL_ANSWER> tags.",
-                "Do not include units, labels, or extra explanation inside <FINAL_ANSWER>.",
-            ],
-            value_rules={
-                "reasoning_tag": "REASONING",
-                "final_answer_tag": "FINAL_ANSWER",
-                "final_answer_only": True,
-                "preserve_numeric_format": True,
-            },
-        )
+    benchmark_contract = benchmark_answer_contract(text, overrides)
+    if benchmark_contract is not None:
+        return benchmark_contract
 
     if "output format" in lowered or "json format" in lowered or '{"answer"' in text:
         wrapper = None
