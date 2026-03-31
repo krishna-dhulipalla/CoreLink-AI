@@ -18,6 +18,7 @@ wheels/
 results/
 traces/
 results&traces/
+.officeqa_index/
 !docs/
 docs/*
 !docs/progress.md

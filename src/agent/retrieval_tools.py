@@ -11,19 +11,17 @@ from typing import Any
 
 from langchain_core.tools import tool
 
-_CORPUS_ENV_NAMES = (
-    "OFFICEQA_CORPUS_DIR",
-    "REFERENCE_CORPUS_DIR",
-    "DOCUMENT_CORPUS_DIR",
+from agent.benchmarks.officeqa_index import (
+    officeqa_index_available,
+    resolve_indexed_corpus_document,
+    search_officeqa_corpus_index,
 )
-_CORPUS_CANDIDATES = (
-    "treasury_bulletins_parsed",
-    "officeqa/treasury_bulletins_parsed",
-    "data/treasury_bulletins_parsed",
-    "reference_corpus",
-    "documents",
+from agent.benchmarks.officeqa_manifest import (
+    iter_officeqa_files,
+    read_officeqa_document_text,
+    resolve_officeqa_corpus_root,
 )
-_TEXT_EXTENSIONS = {".txt", ".md", ".json", ".csv", ".html", ".xml", ".tsv"}
+
 _MAX_FILES = 4000
 _MONTH_TOKENS = {
     "january", "february", "march", "april", "may", "june",
@@ -51,20 +49,7 @@ def local_corpus_available() -> bool:
 
 
 def _resolve_corpus_root() -> Path | None:
-    for env_name in _CORPUS_ENV_NAMES:
-        raw = os.getenv(env_name, "").strip()
-        if not raw:
-            continue
-        path = Path(raw).expanduser()
-        if path.exists() and path.is_dir():
-            return path
-
-    cwd = Path.cwd()
-    for candidate in _CORPUS_CANDIDATES:
-        path = cwd / candidate
-        if path.exists() and path.is_dir():
-            return path
-    return None
+    return resolve_officeqa_corpus_root()
 
 
 def _is_within_root(candidate: Path, root: Path) -> bool:
@@ -86,37 +71,11 @@ def _document_id(path: Path, root: Path) -> str:
 
 
 def _read_file_text(path: Path) -> str:
-    suffix = path.suffix.lower()
-    raw = path.read_text(encoding="utf-8", errors="replace")
-    if suffix == ".json":
-        try:
-            parsed = json.loads(raw)
-            return json.dumps(parsed, ensure_ascii=True, indent=2)
-        except Exception:
-            return raw
-    if suffix in {".csv", ".tsv"}:
-        delimiter = "\t" if suffix == ".tsv" else ","
-        rows: list[list[str]] = []
-        for line in raw.splitlines()[:200]:
-            try:
-                rows.append(next(csv.reader([line], delimiter=delimiter)))
-            except Exception:
-                rows.append([part.strip() for part in line.split(delimiter)])
-        return "\n".join(delimiter.join(cell.strip() for cell in row) for row in rows)
-    return raw
+    return read_officeqa_document_text(path)
 
 
 def _iter_corpus_files(root: Path) -> list[Path]:
-    files: list[Path] = []
-    for path in root.rglob("*"):
-        if not path.is_file():
-            continue
-        if path.suffix.lower() not in _TEXT_EXTENSIONS:
-            continue
-        files.append(path)
-        if len(files) >= _MAX_FILES:
-            break
-    return files
+    return iter_officeqa_files(root, max_files=_MAX_FILES)
 
 
 def _best_snippet(text: str, query: str, snippet_chars: int) -> str:
@@ -230,6 +189,8 @@ def search_reference_corpus(query: str, top_k: int = 5, snippet_chars: int = 700
     root = _resolve_corpus_root()
     if root is None:
         return {"error": "No local corpus directory is configured. Set OFFICEQA_CORPUS_DIR or REFERENCE_CORPUS_DIR."}
+    if officeqa_index_available(root):
+        return search_officeqa_corpus_index(query, corpus_root=root, top_k=top_k, snippet_chars=snippet_chars)
 
     scored_results: list[tuple[float, Path, str]] = []
     for path in _iter_corpus_files(root):
@@ -297,6 +258,12 @@ def fetch_corpus_document(
 
     root = root.resolve()
     target: Path | None = None
+    if officeqa_index_available(root):
+        resolved = resolve_indexed_corpus_document(document_id=document_id, path=path, corpus_root=root)
+        if resolved is not None:
+            candidate = (root / str(resolved.get("relative_path", ""))).resolve()
+            if candidate.exists() and candidate.is_file() and _is_within_root(candidate, root):
+                target = candidate
     if path:
         candidate = (root / path).resolve()
         if candidate.exists() and candidate.is_file() and _is_within_root(candidate, root):

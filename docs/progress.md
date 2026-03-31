@@ -16,19 +16,19 @@ Rules:
 ## Long-Term Memory
 
 - The repo started as an A2A/LangGraph/MCP generalist agent and grew through a prompt-heavy v2 runtime.
-- V2's main faults were:
-  - overloaded coordinator/reasoner/verifier roles
-  - weak finance/document tool contracts
-  - raw-text evidence passing
-  - too much prompt control and too little typed runtime control
-- The active runtime is now v3:
-  - staged graph
-  - typed contracts
-  - template-driven execution
-  - structured evidence and provenance
-  - store-only offline curation
-- Finance is now the main product direction. Legal and document paths still exist, but current architecture decisions should prioritize finance-first reliability.
-- Structured-output fallback still exists as a safeguard, but it is no longer the normal path on the current live backend.
+- The finance-first and benchmark-mixed history is now archive context, not the target architecture.
+- The current project direction is OfficeQA-only:
+  - explicit benchmark adapter
+  - corpus-first retrieval
+  - structured extraction and provenance
+  - deterministic compute from document values
+- Reusable infrastructure stays in place only if it is benchmark-agnostic:
+  - executor shell
+  - Judge bridge
+  - tracer
+  - budget controls
+  - output adapter
+- Any remaining prompt-luck routing, template dependence, or generic finance heuristics should be treated as technical debt to remove.
 
 ---
 
@@ -439,3 +439,25 @@ Rules:
 - **Hardcoded Logic Removed From Generic Modules:** Removed `_OFFICEQA_ALLOWED_FAMILIES`, `_BENCHMARK_TOOL_NAME_ALLOWLIST`, `_BENCHMARK_ALLOWED_FAMILIES`, `_officeqa_allowed_descriptor()`, and the old OfficeQA retrieval-exclusion constant from the shared engine code. The policy still exists, but it now lives under the OfficeQA benchmark adapter instead of contaminating the generic capability and retrieval layers.
 - **Phase Tracking:** Marked `P1.3` complete in [officeqa_execution_plan.md](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\docs\officeqa_execution_plan.md). `P1.6` remains open because OfficeQA retrieval and planning still depend on some benchmark-shaped prompt heuristics in later stages.
 - **Validation:** Ran `pytest tests/test_output_adapter.py tests/test_engine_runtime.py tests/test_mcp_client.py -k "officeqa or benchmark_overrides or output_adapter" -q` and the OfficeQA-focused adapter/capability suite passed (`14 passed`).
+
+### Chat 53: Phase 1 Prompt-Luck Removal For OfficeQA Activation
+
+- **Role:** Coder
+- **Actions Taken:** Finished `P1.6` by making explicit OfficeQA benchmark activation authoritative instead of treating OfficeQA as an XML-tag or prompt-shape special case. Updated [src/agent/benchmarks/officeqa.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\benchmarks\officeqa.py) so `BENCHMARK_NAME=officeqa` now always enables the OfficeQA runtime contract and answer adapter, and added a benchmark-owned OfficeQA task-intent builder. Added the generic bridge in [src/agent/benchmarks/__init__.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\benchmarks\__init__.py), then rewired [src/agent/nodes/orchestrator.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\orchestrator.py) so planning no longer checks for `FINAL_ANSWER` tags to decide whether a task is OfficeQA. Also cleaned [src/agent/retrieval_reasoning.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\retrieval_reasoning.py) by removing the most brittle legacy query templates and citation shortcuts such as fixed `site:govinfo.gov`, `Federal Reserve Bank of Minneapolis`, and fallback entity injection.
+- **Hardcoded Logic Removed:** Removed `_officeqa_contract_enabled()` from the orchestrator, removed the last prompt-luck dependency from `_heuristic_intent()`, removed the old citation-based OfficeQA fetch shortcut, and replaced the most benchmark-specific web-query strings with source-hint-driven query construction.
+- **Phase Tracking:** Marked `P1.6` complete in [officeqa_execution_plan.md](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\docs\officeqa_execution_plan.md). Phase 1 is now complete. Remaining retrieval-state-machine cleanup moves to Phases 2 and 3.
+- **Validation:** Added targeted regressions in [tests/test_output_adapter.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_output_adapter.py) and [tests/test_engine_runtime.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_engine_runtime.py) covering explicit benchmark activation on non-keyword prompts and removal of legacy OfficeQA search templates.
+
+### Chat 54: Keep/Replace Status Clarified Before Phase 2
+
+- **Role:** Coder
+- **Actions Taken:** Audited the execution plan's reusable-component and replace/isolate tracks against the current codebase before starting Phase 2. Updated [officeqa_execution_plan.md](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\docs\officeqa_execution_plan.md) to mark `R1-R6` complete because the A2A shell, Judge bridge, tracer, output adapter, bounded self-reflection, and budget/stop-reason infrastructure are all still present and intentionally retained. Added explicit status notes that `X1-X3` are only partially reduced after Phase 1, while `X4-X6` remain open and are the main architectural work for Phases 2-4.
+- **Handoff Notes:** Phase 2 can start without additional work on the keep-set. The true blockers are the open replace/isolate items, especially retrieval state, Treasury extraction, and structured evidence flow.
+
+### Chat 55: Phase 2 Corpus Manifest And Index Scaffold
+
+- **Role:** Coder
+- **Actions Taken:** Started Phase 2 by adding a real local corpus index layer instead of relying only on raw directory scanning. Added [src/agent/benchmarks/officeqa_manifest.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\benchmarks\officeqa_manifest.py) to resolve the OfficeQA corpus root, read parsed/text artifacts, extract metadata fields, and write a persistent manifest under `.officeqa_index/`. Added [src/agent/benchmarks/officeqa_index.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\benchmarks\officeqa_index.py) to build the index, search indexed metadata, and resolve benchmark `source_files` values to indexed artifacts. Added the build entrypoint at [scripts/build_officeqa_index.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\scripts\build_officeqa_index.py). Updated [src/agent/retrieval_tools.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\retrieval_tools.py) so `search_reference_corpus` now prefers the OfficeQA manifest/index when present, while `fetch_corpus_document` can resolve indexed `document_id` values back to the local corpus artifact. Documented the connection flow in [README.md](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\README.md) and ignored generated `.officeqa_index/` artifacts in [.gitignore](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\.gitignore).
+- **How The Corpus Connects Now:** `OFFICEQA_CORPUS_DIR` points at the local OfficeQA corpus root. `scripts/build_officeqa_index.py` reads that root and writes `.officeqa_index/manifest.jsonl` plus index metadata. At runtime, `search_reference_corpus` checks for that manifest first and searches indexed fields like years, section titles, table headers, row labels, unit hints, and preview text. Search hits return `document_id` and relative corpus path, and `fetch_corpus_document` resolves those back to the local source artifact for read-time retrieval.
+- **Phase Tracking:** Marked `P2.1`, `P2.2`, `P2.3`, and `P2.4` complete in [officeqa_execution_plan.md](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\docs\officeqa_execution_plan.md). `P2.5`, `P2.6`, and `P2.7` remain open.
+- **Validation:** Added [tests/test_officeqa_index.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_officeqa_index.py) and ran `pytest tests/test_officeqa_index.py tests/test_engine_runtime.py tests/test_output_adapter.py tests/test_mcp_client.py -k "officeqa or benchmark_overrides or output_adapter" -q` with `20 passed`.

@@ -269,20 +269,19 @@ def test_officeqa_search_ranking_prefers_semantically_relevant_sources():
     assert "depository invoice" in ranked[-1]["title"].lower()
 
 
-def test_officeqa_env_does_not_gate_non_officeqa_finance_tasks(monkeypatch):
+def test_officeqa_benchmark_env_forces_document_grounded_runtime_without_prompt_keywords(monkeypatch):
     monkeypatch.setenv("BENCHMARK_NAME", "officeqa")
 
-    prompt = "What was AAPL's EBITDA in fiscal year 2024? Use current source-backed data."
+    prompt = "Use the provided source files and compute the exact answer."
     state = make_state(prompt)
     state.update(intake(state))
     state.update(fast_path_gate(state))
     state.update(task_planner(state))
-    resolver = make_capability_resolver(build_capability_registry([CALCULATOR_TOOL, SEARCH_TOOL, *BUILTIN_LEGAL_TOOLS]))
-    result = resolver(state)
 
-    assert "market_data_retrieval" in result["tool_plan"]["widened_families"]
-    assert "internet_search" in result["tool_plan"]["selected_tools"]
-    assert "calculator" not in result["tool_plan"]["pending_tools"]
+    assert state["benchmark_overrides"]["benchmark_adapter"] == "officeqa"
+    assert state["benchmark_overrides"]["officeqa_mode"] is True
+    assert state["task_intent"]["task_family"] == "document_qa"
+    assert state["task_intent"]["execution_mode"] == "document_grounded_analysis"
 
 
 def test_engine_executor_returns_deterministic_exact_quant_answer():
@@ -371,6 +370,32 @@ def test_evidence_sufficiency_ignores_generic_numeric_summary_metadata():
 
     assert sufficiency.is_sufficient is False
     assert "numeric or quoted support" in sufficiency.missing_dimensions
+
+
+def test_officeqa_retrieval_intent_avoids_legacy_web_query_templates(monkeypatch):
+    monkeypatch.setenv("BENCHMARK_NAME", "officeqa")
+
+    prompt = (
+        "Using specifically only the reported values for all individual calendar months in 1953 and all "
+        "individual calendar months in 1940, what was the absolute percent change of these total sum values?"
+    )
+    source_bundle = SourceBundle(
+        task_text=prompt,
+        focus_query="",
+        target_period="",
+        entities=[],
+        urls=[],
+        inline_facts={},
+        tables=[],
+        formulas=[],
+    )
+
+    retrieval_intent = build_retrieval_intent(prompt, source_bundle, intake(make_state(prompt))["benchmark_overrides"])
+    joined_queries = " || ".join(retrieval_intent.query_candidates).lower()
+
+    assert "site:govinfo.gov" not in joined_queries
+    assert "federal reserve bank of minneapolis" not in joined_queries
+    assert "national defense and associated activities" not in joined_queries
 
 
 def test_engine_document_query_uses_external_document_tools_with_inferred_roles(monkeypatch):

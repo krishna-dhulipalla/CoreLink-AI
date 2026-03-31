@@ -43,6 +43,7 @@ from agent.solver.quant import deterministic_quant_final_answer
 from agent.tools.normalization import normalize_tool_output
 from agent.tracer import format_messages_for_trace, get_tracer
 from agent.capabilities import resolve_tool_plan
+from agent.benchmarks import benchmark_task_intent
 from agent.curated_context import _compact_tool_findings, build_curated_context, build_review_packet, build_source_bundle, build_retrieval_bundle, solver_context_block
 from agent.prompts import (
     PLANNER_SYSTEM,
@@ -354,31 +355,11 @@ def _template_stub(intent: TaskIntent, allowed_tools: list[str] | None = None) -
     }
 
 
-def _officeqa_contract_enabled(answer_contract: dict[str, Any]) -> bool:
-    value_rules = dict(answer_contract.get("value_rules") or {})
-    return str(value_rules.get("final_answer_tag") or answer_contract.get("xml_root_tag") or "") == "FINAL_ANSWER"
-
-
-def _needs_derived_calculation(task_text: str, capability_flags: list[str]) -> bool:
-    normalized = (task_text or "").lower()
-    if "needs_math" in capability_flags or "needs_analytical_reasoning" in capability_flags:
-        return True
-    return any(
-        token in normalized
-        for token in (
-            "sum",
-            "total sum",
-            "difference",
-            "absolute difference",
-            "percent change",
-            "rounded",
-            "inflation",
-            "adjusted",
-        )
-    )
-
-
-def _heuristic_intent(task_text: str, answer_contract: dict[str, Any]) -> tuple[TaskIntent, list[str], list[str]]:
+def _heuristic_intent(
+    task_text: str,
+    answer_contract: dict[str, Any],
+    benchmark_overrides: dict[str, Any] | None = None,
+) -> tuple[TaskIntent, list[str], list[str]]:
     contract_obj = AnswerContract.model_validate(answer_contract or {})
     capability_flags = detect_capability_flags(task_text, contract_obj)
     ambiguity_flags = detect_ambiguity_flags(task_text, capability_flags)
@@ -406,26 +387,9 @@ def _heuristic_intent(task_text: str, answer_contract: dict[str, Any]) -> tuple[
             ambiguity_flags,
         )
 
-    if _officeqa_contract_enabled(answer_contract):
-        tool_families = ["document_retrieval"]
-        if _needs_derived_calculation(task_text, capability_flags):
-            tool_families.extend(["analytical_reasoning", "exact_compute"])
-        return (
-            TaskIntent(
-                task_family="document_qa",
-                execution_mode="document_grounded_analysis",
-                complexity_tier="structured_analysis",
-                tool_families_needed=tool_families,
-                evidence_strategy="document_first",
-                review_mode="document_grounded",
-                completion_mode="document_grounded",
-                routing_rationale="OfficeQA-style benchmark tasks must ground the answer in provided documents before any calculation or synthesis.",
-                confidence=0.95,
-                planner_source="heuristic",
-            ),
-            capability_flags,
-            ambiguity_flags,
-        )
+    benchmark_intent = benchmark_task_intent(task_text, capability_flags, benchmark_overrides)
+    if benchmark_intent is not None:
+        return benchmark_intent, capability_flags, ambiguity_flags
 
     if task_family == "finance_quant" and has_formula and has_table and exact_contract and "needs_live_data" not in capability_flags:
         return (
@@ -602,7 +566,8 @@ def fast_path_gate(state: RuntimeState) -> dict[str, Any]:
     step = increment_runtime_step()
     task_text = latest_human_text(state["messages"])
     answer_contract = state.get("answer_contract", {}) or {}
-    intent, capability_flags, ambiguity_flags = _heuristic_intent(task_text, answer_contract)
+    benchmark_overrides = dict(state.get("benchmark_overrides") or {})
+    intent, capability_flags, ambiguity_flags = _heuristic_intent(task_text, answer_contract, benchmark_overrides)
     workpad = dict(state.get("workpad", {}))
     workpad.setdefault("stage_history", [])
     workpad["stage_history"].append("FAST_PATH_GATE")
@@ -644,6 +609,7 @@ def task_planner(state: RuntimeState) -> dict[str, Any]:
     workpad = dict(state.get("workpad", {}))
     task_text = latest_human_text(state["messages"])
     answer_contract = state.get("answer_contract", {}) or {}
+    benchmark_overrides = dict(state.get("benchmark_overrides") or {})
     capability_flags = list(state.get("capability_flags", []))
     ambiguity_flags = list(state.get("ambiguity_flags", []))
 
@@ -668,7 +634,7 @@ def task_planner(state: RuntimeState) -> dict[str, Any]:
             "workpad": workpad,
         }
 
-    heuristic_intent, _, _ = _heuristic_intent(task_text, answer_contract)
+    heuristic_intent, _, _ = _heuristic_intent(task_text, answer_contract, benchmark_overrides)
     intent = heuristic_intent
     if heuristic_intent.confidence < 0.9:
         messages = [
@@ -1125,8 +1091,6 @@ def _retrieved_window_is_promising(
         return True
     if any(token in citation for token in ("treasury", "bulletin", "statement", "budget")) and overlap >= 1:
         return True
-    if benchmark_overrides and benchmark_overrides.get("officeqa_mode") and any(token in citation for token in ("treasury", "budget", "statab", "minneapolis", "cpi")):
-        return True
     return False
 
 
@@ -1295,7 +1259,7 @@ def _search_candidate_score(
             score += 0.45
         if "receipts expenditures and balances" in text or "monthly treasury statement" in text:
             score += 0.6
-    if retrieval_intent.aggregation_shape == "inflation_adjusted_monthly_difference" and any(token in text for token in ("cpi", "inflation", "minneapolis")):
+    if retrieval_intent.aggregation_shape == "inflation_adjusted_monthly_difference" and any(token in text for token in ("cpi", "inflation", "price index")):
         score += 0.4
     if retrieval_intent.document_family == "treasury_bulletin" and "treasury bulletin" in text:
         score += 0.5
@@ -1363,7 +1327,7 @@ def _fallback_retrieval_action(
     )
     seed_query = _next_retrieval_query(journal, retrieval_intent, source_bundle)
     overrides = dict(benchmark_overrides or {})
-    officeqa_mode = bool(overrides.get("officeqa_mode"))
+    officeqa_mode = str(overrides.get("benchmark_adapter") or "") == "officeqa"
     allow_web_fallback = bool(overrides.get("officeqa_allow_web_fallback", True))
     corpus_grounded_only = execution_mode == "document_grounded_analysis" and officeqa_mode and not allow_web_fallback
 
@@ -1700,7 +1664,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
         task_text = latest_human_text(state["messages"])
 
         if intent.task_family == "finance_options" and not _supports_options_fast_path(task_text):
-            heuristic_intent, _, _ = _heuristic_intent(task_text, state.get("answer_contract", {}) or {})
+            heuristic_intent, _, _ = _heuristic_intent(task_text, state.get("answer_contract", {}) or {}, benchmark_overrides)
             intent = _normalize_task_intent(heuristic_intent, task_text, heuristic_intent)
             tool_plan, _ = resolve_tool_plan(intent, source_bundle, registry, benchmark_overrides=benchmark_overrides)
             workpad = _record_event(workpad, "executor", f"rerouted before tool execution -> {intent.task_family}")

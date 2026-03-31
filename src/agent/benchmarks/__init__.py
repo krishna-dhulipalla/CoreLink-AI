@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from agent.contracts import AnswerContract
+from agent.contracts import AnswerContract, TaskIntent
 
 from .base import benchmark_name_from_env
 from .officeqa import (
@@ -12,6 +12,7 @@ from .officeqa import (
     officeqa_answer_contract,
     officeqa_descriptor_allowed,
     officeqa_registry_policy,
+    officeqa_task_intent,
     officeqa_tool_selection_active,
 )
 
@@ -57,10 +58,22 @@ def benchmark_descriptor_allowed(descriptor: dict[str, Any], benchmark_overrides
     return True
 
 
+def benchmark_task_intent(
+    task_text: str,
+    capability_flags: list[str],
+    benchmark_overrides: dict[str, Any] | None = None,
+) -> TaskIntent | None:
+    overrides = dict(benchmark_overrides or build_benchmark_overrides(task_text))
+    if overrides.get("benchmark_adapter") == "officeqa":
+        return officeqa_task_intent(task_text, capability_flags, overrides)
+    return None
+
+
 __all__ = [
     "benchmark_answer_contract",
     "benchmark_descriptor_allowed",
     "benchmark_registry_policy",
+    "benchmark_task_intent",
     "benchmark_tool_selection_active",
     "build_benchmark_overrides",
 ]

@@ -6,7 +6,7 @@ import os
 import re
 from typing import Any
 
-from agent.contracts import AnswerContract
+from agent.contracts import AnswerContract, TaskIntent
 
 from .base import truthy_env
 
@@ -123,7 +123,7 @@ def looks_like_officeqa_prompt(text: str) -> bool:
 
 
 def _xml_contract_requested(task_text: str, benchmark_name: str) -> bool:
-    if benchmark_name == "officeqa" and looks_like_officeqa_prompt(task_text):
+    if benchmark_name == "officeqa":
         return True
     if truthy_env("OFFICEQA_FINAL_ANSWER_TAGS") or truthy_env("OFFICEQA_XML_OUTPUT"):
         return looks_like_officeqa_prompt(task_text)
@@ -146,7 +146,7 @@ def build_officeqa_overrides(task_text: str, benchmark_name: str) -> dict[str, A
     adapter_active = explicit_benchmark or xml_contract or officeqa_like
     return {
         "benchmark_adapter": "officeqa" if adapter_active else "",
-        "officeqa_mode": explicit_benchmark and officeqa_like,
+        "officeqa_mode": explicit_benchmark or officeqa_like,
         "officeqa_like_prompt": officeqa_like,
         "officeqa_xml_contract": xml_contract,
         "officeqa_allow_web_fallback": allow_web_fallback,
@@ -213,6 +213,8 @@ def officeqa_runtime_policy(allow_web_fallback: bool = True) -> dict[str, Any]:
 
 def officeqa_tool_selection_active(task_family: str, benchmark_overrides: dict[str, Any] | None = None) -> bool:
     overrides = dict(benchmark_overrides or {})
+    if overrides.get("benchmark_adapter") != "officeqa":
+        return False
     if overrides.get("officeqa_mode") is True:
         return True
     return bool(overrides.get("officeqa_like_prompt")) and task_family == "document_qa"
@@ -237,3 +239,38 @@ def officeqa_descriptor_allowed(descriptor: dict[str, Any], benchmark_overrides:
     if family == "analytical_reasoning":
         return False
     return False
+
+
+def officeqa_task_intent(task_text: str, capability_flags: list[str], benchmark_overrides: dict[str, Any] | None = None) -> TaskIntent | None:
+    overrides = dict(benchmark_overrides or {})
+    if overrides.get("benchmark_adapter") != "officeqa":
+        return None
+    normalized = (task_text or "").lower()
+    needs_compute = "needs_math" in capability_flags or "needs_analytical_reasoning" in capability_flags or any(
+        token in normalized
+        for token in (
+            "sum",
+            "total sum",
+            "difference",
+            "absolute difference",
+            "percent change",
+            "rounded",
+            "inflation",
+            "adjusted",
+        )
+    )
+    tool_families = ["document_retrieval"]
+    if needs_compute:
+        tool_families.extend(["analytical_reasoning", "exact_compute"])
+    return TaskIntent(
+        task_family="document_qa",
+        execution_mode="document_grounded_analysis",
+        complexity_tier="structured_analysis",
+        tool_families_needed=tool_families,
+        evidence_strategy="document_first",
+        review_mode="document_grounded",
+        completion_mode="document_grounded",
+        routing_rationale="OfficeQA runs must retrieve grounded Treasury evidence before synthesis and only compute from extracted document values.",
+        confidence=0.97 if overrides.get("benchmark_name") == "officeqa" else 0.95,
+        planner_source="heuristic",
+    )

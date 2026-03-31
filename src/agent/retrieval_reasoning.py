@@ -43,9 +43,8 @@ def _benchmark_policy(benchmark_overrides: dict[str, Any] | None = None) -> dict
     return dict((benchmark_overrides or {}).get("benchmark_policy") or {})
 
 
-def _officeqa_mode(task_text: str, benchmark_overrides: dict[str, Any] | None = None) -> bool:
-    overrides = dict(benchmark_overrides or {})
-    return bool(overrides.get("officeqa_mode") or overrides.get("officeqa_like_prompt"))
+def _officeqa_active(benchmark_overrides: dict[str, Any] | None = None) -> bool:
+    return str((benchmark_overrides or {}).get("benchmark_adapter") or "") == "officeqa"
 
 
 def _extract_period(task_text: str, source_bundle: SourceBundle) -> str:
@@ -95,7 +94,7 @@ def _extract_metric(task_text: str) -> str:
 
 def _document_family(task_text: str, source_bundle: SourceBundle, benchmark_overrides: dict[str, Any] | None = None) -> str:
     lowered = (task_text or "").lower()
-    if _officeqa_mode(task_text, benchmark_overrides):
+    if _officeqa_active(benchmark_overrides):
         if "treasury bulletin" in lowered:
             return "treasury_bulletin"
         return "official_government_finance"
@@ -188,55 +187,64 @@ def build_retrieval_intent(
     must_include_terms = list(dict.fromkeys([item for item in must_include_terms if item]))
 
     policy = _benchmark_policy(benchmark_overrides)
-    must_exclude_terms = list(policy.get("excluded_retrieval_terms", [])) if _officeqa_mode(task_text, benchmark_overrides) else []
+    must_exclude_terms = list(policy.get("excluded_retrieval_terms", [])) if _officeqa_active(benchmark_overrides) else []
 
     base_terms = [term for term in [document_family.replace("_", " "), entity, retrieval_metric, period] if term]
     base_query = _normalize_space(" ".join(base_terms))
     query_candidates: list[str] = []
     if document_family in {"treasury_bulletin", "official_government_finance"}:
         source_hint = "Treasury Bulletin" if document_family == "treasury_bulletin" else "official government finance"
+        focused_terms = [source_hint, entity, retrieval_metric, period]
+        query_candidates.append(_normalize_space(" ".join(term for term in focused_terms if term)))
+        if entity or retrieval_metric or period:
+            query_candidates.append(
+                _normalize_space(
+                    " ".join(
+                        term
+                        for term in (
+                            f'"{entity}"' if entity else "",
+                            f'"{period}"' if period else "",
+                            f'"{retrieval_metric}"' if retrieval_metric else "",
+                            f'"{source_hint}"',
+                        )
+                        if term
+                    )
+                )
+            )
         if aggregation_shape.startswith("monthly"):
-            focus_entity = entity or "national defense and associated activities"
-            if years:
-                for year in years[:2]:
-                    query_candidates.append(
-                        _normalize_space(
-                            f'"{focus_entity}" "{year}" monthly expenditures site:govinfo.gov'
-                        )
-                    )
-                    query_candidates.append(
-                        _normalize_space(
-                            f'"receipts expenditures and balances" "{year}" "{focus_entity}"'
-                        )
-                    )
-            else:
+            monthly_terms = [source_hint, entity, retrieval_metric or "expenditures", period, "monthly"]
+            query_candidates.append(_normalize_space(" ".join(term for term in monthly_terms if term)))
+            for year in years[:2]:
                 query_candidates.append(
                     _normalize_space(
-                        f'{source_hint} {focus_entity} monthly expenditures {period} site:govinfo.gov'
+                        " ".join(
+                            term
+                            for term in (
+                                f'"{entity}"' if entity else "",
+                                f'"{year}"',
+                                '"monthly"',
+                                f'"{source_hint}"',
+                            )
+                            if term
+                        )
                     )
                 )
-            if aggregation_shape == "inflation_adjusted_monthly_difference":
-                query_candidates.append(
-                    _normalize_space(
-                        f'"BLS CPI-U" {" ".join(years[:2])} "Federal Reserve Bank of Minneapolis"'
-                    )
-                )
-        else:
-            time_hint = "fiscal year" if "fiscal year" in must_include_terms else "calendar year" if "calendar year" in must_include_terms else ""
-            query_candidates.append(
-                _normalize_space(
-                    f'{entity} {retrieval_metric} {period} {time_hint} site:govinfo.gov'
-                )
-            )
-            query_candidates.append(
-                _normalize_space(
-                    f'"{entity}" "{period}" "{retrieval_metric}" {source_hint}'
-                )
-            )
+        if aggregation_shape == "inflation_adjusted_monthly_difference":
+            inflation_terms = [source_hint, entity, retrieval_metric or "expenditures", "CPI inflation", " ".join(years[:2])]
+            query_candidates.append(_normalize_space(" ".join(term for term in inflation_terms if term)))
         for qualifier in qualifier_terms[:2]:
             query_candidates.append(
                 _normalize_space(
-                    f'"{entity or retrieval_metric}" "{period}" "{qualifier}" site:govinfo.gov'
+                    " ".join(
+                        term
+                        for term in (
+                            f'"{entity or retrieval_metric}"' if (entity or retrieval_metric) else "",
+                            f'"{period}"' if period else "",
+                            f'"{qualifier}"',
+                            f'"{source_hint}"',
+                        )
+                        if term
+                    )
                 )
             )
     elif base_query:
@@ -457,7 +465,7 @@ def assess_evidence_sufficiency(
     missing_dimensions: list[str] = []
     if not relevant_results:
         missing_dimensions.append("retrieved evidence")
-    if _officeqa_mode(task_text, benchmark_overrides) and required_source_families and source_family not in required_source_families:
+    if _officeqa_active(benchmark_overrides) and required_source_families and source_family not in required_source_families:
         missing_dimensions.append("source family grounding")
     if not period_ok:
         missing_dimensions.append("period scope")
