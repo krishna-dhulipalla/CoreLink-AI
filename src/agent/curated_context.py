@@ -15,6 +15,7 @@ from agent.context.evidence import (
 )
 from agent.context.extraction import extract_entities, extract_formulas, extract_inline_facts, extract_urls, parse_markdown_tables
 from agent.context.profiling import _extract_labeled_json_block
+from agent.benchmarks.officeqa_compute import compact_officeqa_compute_result
 from agent.contracts import CuratedContext, EvidenceSufficiency, RetrievalIntent, ReviewPacket, SourceBundle, TaskIntent
 from agent.officeqa_structured_evidence import build_officeqa_structured_evidence, compact_officeqa_structured_evidence
 from agent.retrieval_reasoning import assess_evidence_sufficiency, build_retrieval_intent
@@ -442,6 +443,35 @@ def attach_structured_evidence(
     return curated
 
 
+def attach_compute_result(
+    curated_context: dict[str, Any] | CuratedContext,
+    compute_result: dict[str, Any] | None = None,
+) -> CuratedContext:
+    curated = curated_context if isinstance(curated_context, CuratedContext) else CuratedContext.model_validate(curated_context)
+    compact = compact_officeqa_compute_result(compute_result)
+    if not compact:
+        return curated
+
+    facts = list(curated.facts_in_use)
+    if compact.get("operation"):
+        facts.append({"type": "compute_operation", "value": compact.get("operation", "")})
+    if compact.get("display_value"):
+        facts.append({"type": "computed_value", "value": compact.get("display_value", "")})
+
+    provenance_summary = dict(curated.provenance_summary or {})
+    provenance_summary["compute_result"] = {
+        "status": compact.get("status", ""),
+        "operation": compact.get("operation", ""),
+        "validation_errors": list(compact.get("validation_errors", [])),
+        "provenance_complete": bool(compact.get("provenance_complete")),
+    }
+
+    curated.facts_in_use = _dedupe_facts(facts)
+    curated.provenance_summary = provenance_summary
+    curated.compute_result = dict(compute_result or {})
+    return curated
+
+
 def build_review_packet(
     *,
     task_text: str,
@@ -465,6 +495,7 @@ def build_review_packet(
         open_questions=[str(item) for item in curated_context.get("open_questions", []) if str(item).strip()],
         evidence_sufficiency=dict(evidence_sufficiency or {}),
         structured_evidence=compact_officeqa_structured_evidence(curated_context.get("structured_evidence", {})),
+        compute_result=compact_officeqa_compute_result(curated_context.get("compute_result", {})),
     )
 
 
@@ -490,6 +521,9 @@ def solver_context_block(
     structured_evidence = compact_officeqa_structured_evidence(curated_context.get("structured_evidence", {}))
     if structured_evidence:
         payload["structured_evidence"] = structured_evidence
+    compute_result = compact_officeqa_compute_result(curated_context.get("compute_result", {}))
+    if compute_result:
+        payload["compute_result"] = compute_result
     # On revision, skip tool findings — they are already reflected in the prior answer
     if not revision_mode:
         tool_findings = _compact_tool_findings(tool_results)

@@ -207,6 +207,27 @@ class OfficeQAStructuredEvidence(BaseModel):
     provenance_complete: bool = False
 
 
+class OfficeQAComputeStep(BaseModel):
+    operator: str = ""
+    description: str = ""
+    inputs: dict[str, Any] = Field(default_factory=dict)
+    output: dict[str, Any] = Field(default_factory=dict)
+    provenance_refs: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class OfficeQAComputeResult(BaseModel):
+    status: Literal["ok", "insufficient", "unsupported"] = "unsupported"
+    operation: str = ""
+    final_value: float | None = None
+    display_value: str = ""
+    answer_text: str = ""
+    unit: str = ""
+    validation_errors: list[str] = Field(default_factory=list)
+    citations: list[str] = Field(default_factory=list)
+    ledger: list[dict[str, Any]] = Field(default_factory=list)
+    provenance_complete: bool = False
+
+
 class EvidencePack(BaseModel):
     task_constraints: list[str] = Field(default_factory=list)
     target_entities: list[str] = Field(default_factory=list)
@@ -383,6 +404,7 @@ class CuratedContext(BaseModel):
     requested_output: dict[str, Any] = Field(default_factory=dict)
     provenance_summary: dict[str, Any] = Field(default_factory=dict)
     structured_evidence: dict[str, Any] = Field(default_factory=dict)
+    compute_result: dict[str, Any] = Field(default_factory=dict)
 
 
 class EvidenceSufficiency(BaseModel):
@@ -405,6 +427,7 @@ class ReviewPacket(BaseModel):
     open_questions: list[str] = Field(default_factory=list)
     evidence_sufficiency: dict[str, Any] = Field(default_factory=dict)
     structured_evidence: dict[str, Any] = Field(default_factory=dict)
+    compute_result: dict[str, Any] = Field(default_factory=dict)
 
 
 class RetrievalAction(BaseModel):

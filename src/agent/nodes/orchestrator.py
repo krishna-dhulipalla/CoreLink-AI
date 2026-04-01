@@ -43,9 +43,11 @@ from agent.solver.quant import deterministic_quant_final_answer
 from agent.tools.normalization import normalize_tool_output
 from agent.tracer import format_messages_for_trace, get_tracer
 from agent.capabilities import resolve_tool_plan
+from agent.benchmarks.officeqa_compute import compute_officeqa_result
 from agent.benchmarks import benchmark_task_intent
 from agent.curated_context import (
     _compact_tool_findings,
+    attach_compute_result,
     attach_structured_evidence,
     build_curated_context,
     build_review_packet,
@@ -2198,6 +2200,51 @@ def make_executor(registry: dict[str, dict[str, Any]]):
             else:
                 workpad = _record_event(workpad, "executor", f"retrieval ready to answer -> {retrieval_action.rationale or 'evidence collected'}")
 
+        if benchmark_overrides.get("benchmark_adapter") == "officeqa" and journal.tool_results and curated.structured_evidence:
+            compute_result = compute_officeqa_result(task_text, retrieval_intent, curated.structured_evidence)
+            curated = attach_compute_result(curated, compute_result.model_dump())
+            workpad["officeqa_compute"] = compute_result.model_dump()
+            if compute_result.status == "ok" and compute_result.answer_text:
+                answer = compute_result.answer_text
+                evidence_sufficiency = assess_evidence_sufficiency(task_text, source_bundle, journal.tool_results, benchmark_overrides)
+                journal.final_artifact_signature = _artifact_signature(answer)
+                workpad["completion_budget"] = 0
+                workpad["review_ready"] = True
+                workpad = _record_event(workpad, "executor", f"deterministic officeqa compute -> {compute_result.operation or 'answer'}")
+                if tracer:
+                    tracer.record(
+                        "executor",
+                        {
+                            "intent": intent.model_dump(),
+                            "used_llm": False,
+                            "tools_ran": tools_ran_this_call,
+                            "tool_results": _compact_tool_findings(journal.tool_results),
+                            "output_preview": answer[:2000],
+                            "completion_budget": 0,
+                            "officeqa_compute": compute_result.model_dump(),
+                        },
+                    )
+                return {
+                    "messages": [AIMessage(content=answer)],
+                    "last_tool_result": journal.tool_results[-1] if journal.tool_results else None,
+                    "task_intent": intent.model_dump(),
+                    "tool_plan": tool_plan.model_dump(),
+                    "execution_journal": journal.model_dump(),
+                    "curated_context": curated.model_dump(),
+                    "review_packet": build_review_packet(
+                        task_text=task_text,
+                        answer_text=answer,
+                        answer_contract=state.get("answer_contract", {}) or {},
+                        curated_context=curated.model_dump(),
+                        tool_results=journal.tool_results,
+                        evidence_sufficiency=evidence_sufficiency.model_dump(),
+                    ).model_dump(),
+                    "evidence_sufficiency": evidence_sufficiency.model_dump(),
+                    "solver_stage": "SYNTHESIZE",
+                    "review_feedback": None,
+                    "workpad": workpad,
+                }
+
         if intent.task_family == "finance_options" and journal.tool_results:
             answer = _options_final_answer({**state, "execution_journal": journal.model_dump()})
             if answer:
@@ -2224,6 +2271,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                     "task_intent": intent.model_dump(),
                     "tool_plan": tool_plan.model_dump(),
                     "execution_journal": journal.model_dump(),
+                    "curated_context": curated.model_dump(),
                     "review_packet": build_review_packet(
                         task_text=task_text,
                         answer_text=answer,
@@ -2346,6 +2394,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
             "task_intent": intent.model_dump(),
             "tool_plan": tool_plan.model_dump(),
             "execution_journal": journal.model_dump(),
+            "curated_context": curated.model_dump(),
             "review_packet": build_review_packet(
                 task_text=task_text,
                 answer_text=content,

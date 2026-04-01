@@ -1,41 +1,46 @@
-# CoreLink AI: Autonomous Finance Reasoning Engine
+# CoreLink AI: OfficeQA Reasoning Engine
 
-CoreLink AI is a high-precision, finance-first reasoning engine built on LangGraph and the Model Context Protocol (MCP). It is designed for autonomous Agent-to-Agent (A2A) benchmarks and complex financial research tasks that require structured evidence, multi-step planning, and rigorous self-reflection.
+CoreLink AI started as a broader finance-first reasoning engine, but the active project direction is now OfficeQA only. The repository is being reworked into a document-grounded Treasury Bulletin reasoning engine built on LangGraph and MCP-style tool execution.
 
 ## 🎯 Overview
 
-CoreLink AI is a modular system that treats every request as a structured research task. It excels in scenarios where a plain chat workflow is insufficient: quantitative finance, options strategy analysis, portfolio risk review, event-driven finance, document-backed reasoning, and policy-constrained recommendations.
+The current goal is to solve OfficeQA reliably:
+
+- retrieve from the Treasury Bulletin corpus
+- extract the correct table or page evidence
+- compute deterministically from extracted values
+- emit the exact final answer contract expected by the benchmark
+
+The canonical docs for the transition are:
+
+- `docs/officeqa_integration_plan.md`: architecture analysis and failure report
+- `docs/officeqa_execution_plan.md`: implementation backlog and phase tracker
+- `docs/progress.md`: ongoing execution log
 
 ## 🏗️ Technical Architecture
 
-![CoreLink AI architecture](docs/architecture.png)
-
-CoreLink AI follows a modular, stage-based architecture driven by a state-controlled graph. Each request passes through a specialized pipeline designed to maximize accuracy and minimize hallucinations.
+The old finance-first architecture diagram is intentionally not treated as canonical anymore. Use `docs/officeqa_integration_plan.md` and `docs/officeqa_execution_plan.md` for the current OfficeQA direction and implementation flow.
 
 ### Core Components
 
-- **Intake & Task Profiling**: Automatically identifies the financial domain (Quant, Options, Risk, etc.) and rotates the internal model profile to match the task complexity.
-- **Autonomous Capability Engine (ACE)**: The system's dynamic expansion layer. ACE synthesizes runtime-specific helper scripts in a secure sandbox when task requirements exceed the static tool registry.
-- **Reasoning Brain (URE)**: A multi-agent LangGraph system that orchestrates planning, evidence gathering, and synthesis into a final analytical artifact.
-- **Context Curator**: High-resolution evidence aggregator that extracts data from prompts, documents, and tool outputs while maintaining strict provenance.
-- **Reflective Reviewer**: A final validation gate that inspects answers against original constraints, performing automated backtracking and repair if needed.
+- **Benchmark Adapter**: Activates OfficeQA-specific runtime rules and answer contracts.
+- **Corpus Retrieval Layer**: Finds the right Treasury Bulletin pages, tables, and candidate evidence.
+- **Structured Extraction Layer**: Converts retrieved document content into provenance-backed values.
+- **Deterministic Compute Layer**: Performs exact benchmark calculations over extracted values.
+- **Validator & Output Adapter**: Checks evidence and compute support before enforcing the final answer contract.
 
 ## 💎 Handling Finance Complexity
 
-Finance tasks involve uncertainty, exact computation, risk tradeoffs, and policy constraints. CoreLink AI addresses these by:
+OfficeQA tasks involve deep document retrieval, table extraction, period alignment, and exact computation. CoreLink AI is being reworked to address these by:
 
-- **Structured Evidence**: Using market, document, and analytics tools instead of relying on free-form model recall.
-- **Phase Separation**: Explicitly separating evidence gathering from reasoning and final answer generation.
-- **Risk & Compliance Gates**: Running safety checks on actionable finance paths before final output.
-- **Assumed Transparency**: Keeping assumptions and sources explicit throughout the execution trace.
+- **Corpus-First Retrieval**: Using indexed Treasury Bulletin artifacts instead of broad web search.
+- **Phase Separation**: Explicitly separating retrieval, extraction, validation, computation, and final answer formatting.
+- **Deterministic Compute**: Preferring provenance-backed operators over prompt-only arithmetic.
+- **Assumed Transparency**: Keeping source and compute provenance explicit throughout the execution trace.
 
 ## 💼 Supported Workloads
 
-- **Quantitative Finance**: Market-data-backed analysis and metric derivation.
-- **Options Strategies**: Detailed strategy analysis with Greeks and risk scenarios.
-- **Portfolio Risk**: Policy-aware recommendations and risk limit reviews.
-- **Event-Driven Analysis**: Equity research and reaction analysis for financial events.
-- **Document-Grounded QA**: High-fidelity reasoning backed by financial filings (10-K, 10-Q, etc.).
+- **OfficeQA**: document-grounded financial reasoning over Treasury Bulletin artifacts
 
 ## 🚀 Getting Started
 
@@ -62,6 +67,43 @@ Finance tasks involve uncertainty, exact computation, risk tradeoffs, and policy
     cp .env.example .env
     # Edit .env with your API keys and model preferences
     ```
+
+### OfficeQA Corpus Connection
+
+The runtime connects to the OfficeQA corpus through a filesystem root plus a generated manifest/index.
+
+1.  Clone or download the OfficeQA corpus locally.
+2.  Point `OFFICEQA_CORPUS_DIR` at the parsed/text corpus root you want to use.
+    Example:
+    ```bash
+    OFFICEQA_CORPUS_DIR=/path/to/officeqa/treasury_bulletins_parsed
+    ```
+3.  Build the local index:
+    ```bash
+    uv run python scripts/build_officeqa_index.py --corpus-root "$OFFICEQA_CORPUS_DIR"
+    ```
+4.  The script writes a persistent manifest under `OFFICEQA_INDEX_DIR` or, by default, under `OFFICEQA_CORPUS_DIR/.officeqa_index/`.
+5.  Verify the bundle before running the server:
+    ```bash
+    uv run python scripts/verify_officeqa_corpus.py --corpus-root "$OFFICEQA_CORPUS_DIR"
+    ```
+
+Current runtime flow:
+
+- `search_reference_corpus` first looks for the OfficeQA manifest/index.
+- If the index exists, search runs against indexed metadata such as years, section titles, table headers, row labels, unit hints, and preview text.
+- Search hits return `document_id` plus the relative corpus path.
+- `fetch_corpus_document` resolves that `document_id` back to the indexed artifact and reads the source file from the local corpus root.
+
+### Competition Deployment
+
+Do not assume Judge or A2A will expose the Treasury corpus to your agent.
+
+- Keep the OfficeQA corpus out of git history.
+- Package the corpus and `.officeqa_index/` with the deployment artifact, container image, or mounted read-only volume.
+- Set `OFFICEQA_CORPUS_DIR` to that packaged or mounted path at startup.
+- When `COMPETITION_MODE=1` and `BENCHMARK_NAME=officeqa`, the server now fails fast at startup if the corpus root or built index is missing.
+- Judge MCP document tools remain optional auxiliary surfaces, not the primary data path.
 
 4.  **Start the A2A Server**:
     ```bash
