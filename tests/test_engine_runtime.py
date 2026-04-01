@@ -398,6 +398,27 @@ def test_officeqa_retrieval_intent_avoids_legacy_web_query_templates(monkeypatch
     assert "national defense and associated activities" not in joined_queries
 
 
+def test_intake_merges_source_files_from_benchmark_metadata(monkeypatch, tmp_path):
+    corpus_root = tmp_path / "treasury_bulletins_parsed"
+    corpus_root.mkdir(parents=True)
+    (corpus_root / "treasury_1940.json").write_text(json.dumps({"title": "Treasury Bulletin 1940"}), encoding="utf-8")
+    monkeypatch.setenv("OFFICEQA_CORPUS_DIR", str(corpus_root))
+
+    from agent.benchmarks.officeqa_index import build_officeqa_index
+
+    build_officeqa_index(corpus_root=corpus_root)
+
+    state = make_state(
+        "Use the provided source files to compute the exact answer.",
+        benchmark_overrides={"source_files": ["treasury_1940.json"]},
+    )
+
+    result = intake(state)
+
+    assert result["benchmark_overrides"]["source_files_expected"] == ["treasury_1940.json"]
+    assert result["benchmark_overrides"]["source_files_found"][0]["document_id"] == "treasury_1940_json"
+
+
 def test_engine_document_query_uses_external_document_tools_with_inferred_roles(monkeypatch):
     @tool
     def search_treasury_bulletins(query: str, top_k: int = 5) -> dict:

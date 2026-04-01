@@ -116,6 +116,8 @@ def test_executor_refreshes_even_when_nonempty_tools_exist_if_judge_discovery_is
     async def fake_loader(*, include_judge: bool = True):
         return [local_tool]
 
+    monkeypatch.setenv("COMPETITION_MODE", "0")
+    monkeypatch.delenv("BENCHMARK_NAME", raising=False)
     monkeypatch.setenv("ENABLE_JUDGE_MCP_DISCOVERY", "1")
     monkeypatch.setattr("executor.build_agent_graph", lambda external_tools=None: "graph")
     monkeypatch.setattr("executor.startup_compatibility_warnings", lambda: [])
@@ -127,3 +129,16 @@ def test_executor_refreshes_even_when_nonempty_tools_exist_if_judge_discovery_is
     assert executor._should_refresh_mcp_tools() is True
     executor._runtime_mcp_refresh_attempted = True
     assert executor._should_refresh_mcp_tools() is False
+
+
+def test_executor_fails_fast_when_officeqa_competition_mode_has_no_corpus(monkeypatch):
+    if Executor is None:
+        pytest.skip("A2A runtime dependencies are not installed in this environment.")
+
+    monkeypatch.setenv("BENCHMARK_NAME", "officeqa")
+    monkeypatch.setenv("COMPETITION_MODE", "1")
+    monkeypatch.setattr("executor.startup_compatibility_warnings", lambda: [])
+    monkeypatch.setattr("agent.benchmarks.officeqa_runtime.resolve_officeqa_corpus_root", lambda raw=None: None)
+
+    with pytest.raises(RuntimeError, match="requires a packaged corpus"):
+        Executor()

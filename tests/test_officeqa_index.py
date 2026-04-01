@@ -4,7 +4,9 @@ from agent.benchmarks.officeqa_index import (
     build_officeqa_index,
     resolve_source_files_to_manifest,
     search_officeqa_corpus_index,
+    validate_officeqa_index,
 )
+from agent.benchmarks.officeqa_runtime import OfficeQACorpusBootstrapError, verify_officeqa_corpus_bundle
 from agent.retrieval_tools import search_reference_corpus
 
 
@@ -37,6 +39,7 @@ def test_build_officeqa_index_persists_manifest_and_metadata(tmp_path):
     assert "national defense" in manifest_text.lower()
     assert "million dollars" in manifest_text.lower()
     assert '"years": ["1940"]' in manifest_text
+    assert '"normalized_numeric_values"' in manifest_text
 
 
 def test_search_reference_corpus_uses_officeqa_index_when_available(monkeypatch, tmp_path):
@@ -74,6 +77,32 @@ def test_search_reference_corpus_uses_officeqa_index_when_available(monkeypatch,
     assert result["index_mode"] == "officeqa_manifest"
     assert result["results"][0]["document_id"] == "treasury_1940_json"
     assert "1940" in result["results"][0]["metadata"]["years"]
+
+
+def test_search_reference_corpus_can_filter_by_source_files(monkeypatch, tmp_path):
+    corpus_root = tmp_path / "treasury_bulletins_parsed"
+    corpus_root.mkdir(parents=True)
+    (corpus_root / "treasury_1940.json").write_text(
+        json.dumps({"title": "Treasury Bulletin 1940", "section_title": "National Defense"}),
+        encoding="utf-8",
+    )
+    (corpus_root / "treasury_1953.json").write_text(
+        json.dumps({"title": "Treasury Bulletin 1953", "section_title": "Agriculture"}),
+        encoding="utf-8",
+    )
+    build_officeqa_index(corpus_root=corpus_root)
+    monkeypatch.setenv("OFFICEQA_CORPUS_DIR", str(corpus_root))
+
+    result = search_reference_corpus.invoke(
+        {
+            "query": "Treasury Bulletin 1940",
+            "top_k": 5,
+            "source_files": ["treasury_1940.json"],
+        }
+    )
+
+    assert result["source_files_filter_applied"] is True
+    assert result["results"][0]["document_id"] == "treasury_1940_json"
 
 
 def test_resolve_source_files_to_manifest_matches_relative_and_stem_names(tmp_path):
@@ -119,3 +148,46 @@ def test_search_officeqa_corpus_index_ranks_metadata_backed_match_first(tmp_path
     )
 
     assert result["results"][0]["document_id"] == "treasury_1940_json"
+
+
+def test_validate_officeqa_index_reports_partially_parsed_documents(tmp_path):
+    corpus_root = tmp_path / "treasury_bulletins_parsed"
+    corpus_root.mkdir(parents=True)
+    (corpus_root / "empty.pdf").write_bytes(b"%PDF-1.4\n%empty")
+    build_officeqa_index(corpus_root=corpus_root)
+
+    report = validate_officeqa_index(corpus_root=corpus_root)
+
+    assert report["issue_count"] >= 1
+    assert any(issue["flag"] == "pdf_extract_failed" for issue in report["issues"])
+
+
+def test_verify_officeqa_corpus_bundle_succeeds_with_built_index(tmp_path):
+    corpus_root = tmp_path / "treasury_bulletins_parsed"
+    corpus_root.mkdir(parents=True)
+    (corpus_root / "treasury_1940.json").write_text(
+        json.dumps({"title": "Treasury Bulletin 1940", "section_title": "National Defense"}),
+        encoding="utf-8",
+    )
+    build_officeqa_index(corpus_root=corpus_root)
+
+    summary = verify_officeqa_corpus_bundle(corpus_root=corpus_root)
+
+    assert summary["document_count"] == 1
+    assert summary["index_schema_version"] == 1
+
+
+def test_verify_officeqa_corpus_bundle_requires_manifest_metadata(tmp_path):
+    corpus_root = tmp_path / "treasury_bulletins_parsed"
+    corpus_root.mkdir(parents=True)
+    (corpus_root / "treasury_1940.json").write_text(
+        json.dumps({"title": "Treasury Bulletin 1940"}),
+        encoding="utf-8",
+    )
+
+    try:
+        verify_officeqa_corpus_bundle(corpus_root=corpus_root)
+    except OfficeQACorpusBootstrapError as exc:
+        assert "requires a built corpus index" in str(exc)
+    else:
+        raise AssertionError("Expected OfficeQACorpusBootstrapError when manifest metadata is missing.")

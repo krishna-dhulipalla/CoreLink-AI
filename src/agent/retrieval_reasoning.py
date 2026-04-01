@@ -150,6 +150,22 @@ def _extract_qualifier_terms(task_text: str) -> list[str]:
     return list(dict.fromkeys(qualifiers[:3]))
 
 
+def _source_file_query_terms(source_bundle: SourceBundle) -> list[str]:
+    terms: list[str] = []
+    for match in source_bundle.source_files_found[:6]:
+        relative_path = str(match.get("relative_path", "")).strip()
+        if relative_path:
+            terms.append(relative_path)
+        document_id = str(match.get("document_id", "")).strip()
+        if document_id:
+            terms.append(document_id)
+    for item in source_bundle.source_files_expected[:6]:
+        compact = str(item).strip()
+        if compact:
+            terms.append(compact)
+    return list(dict.fromkeys(terms))
+
+
 def build_retrieval_intent(
     task_text: str,
     source_bundle: SourceBundle,
@@ -184,6 +200,7 @@ def build_retrieval_intent(
     if aggregation_shape == "inflation_adjusted_monthly_difference":
         must_include_terms.extend(["cpi", "inflation"])
     must_include_terms.extend(qualifier_terms)
+    must_include_terms.extend(_source_file_query_terms(source_bundle))
     must_include_terms = list(dict.fromkeys([item for item in must_include_terms if item]))
 
     policy = _benchmark_policy(benchmark_overrides)
@@ -192,6 +209,9 @@ def build_retrieval_intent(
     base_terms = [term for term in [document_family.replace("_", " "), entity, retrieval_metric, period] if term]
     base_query = _normalize_space(" ".join(base_terms))
     query_candidates: list[str] = []
+    source_file_terms = _source_file_query_terms(source_bundle)
+    if source_file_terms:
+        query_candidates.append(_normalize_space(" ".join(source_file_terms[:2])))
     if document_family in {"treasury_bulletin", "official_government_finance"}:
         source_hint = "Treasury Bulletin" if document_family == "treasury_bulletin" else "official government finance"
         focused_terms = [source_hint, entity, retrieval_metric, period]

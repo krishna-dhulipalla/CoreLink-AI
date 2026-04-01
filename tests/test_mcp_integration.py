@@ -88,9 +88,11 @@ def test_mcp_tools_load_from_env():
     not _configured_mcp(),
     reason="No MCP server configured. Set MCP_SERVER_URLS or MCP_SERVER_STDIO.",
 )
-def test_executor_registers_mcp_tools():
+def test_executor_registers_mcp_tools(monkeypatch):
     """Verify the A2A executor wires discovered MCP tools into the graph."""
     expected_tools = _load_tools_or_skip()
+    monkeypatch.setenv("COMPETITION_MODE", "0")
+    monkeypatch.delenv("BENCHMARK_NAME", raising=False)
     executor = Executor()
 
     loaded_names = {tool.name for tool in expected_tools}

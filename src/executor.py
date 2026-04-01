@@ -31,6 +31,7 @@ from a2a.utils import (
 )
 
 from agent import build_agent_graph, run_agent
+from agent.benchmarks import verify_officeqa_competition_bootstrap
 from agent.model_config import startup_compatibility_warnings
 from agent.tracer import write_preflight_failure_trace
 from conversation_store import ConversationStore
@@ -57,6 +58,8 @@ class Executor(AgentExecutor):
     def __init__(self):
         for warning in startup_compatibility_warnings():
             logger.warning("[ModelConfig] %s", warning)
+
+        self._officeqa_corpus_bootstrap = verify_officeqa_competition_bootstrap()
 
         # Load MCP tools from a synchronous constructor.
         try:

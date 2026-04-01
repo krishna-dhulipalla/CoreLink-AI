@@ -184,13 +184,24 @@ def _extract_numeric_summaries(text: str) -> list[dict[str, Any]]:
 
 
 @tool
-def search_reference_corpus(query: str, top_k: int = 5, snippet_chars: int = 700) -> dict[str, Any]:
+def search_reference_corpus(
+    query: str,
+    top_k: int = 5,
+    snippet_chars: int = 700,
+    source_files: list[str] | None = None,
+) -> dict[str, Any]:
     """Search a configured local document corpus for relevant files and snippets."""
     root = _resolve_corpus_root()
     if root is None:
         return {"error": "No local corpus directory is configured. Set OFFICEQA_CORPUS_DIR or REFERENCE_CORPUS_DIR."}
     if officeqa_index_available(root):
-        return search_officeqa_corpus_index(query, corpus_root=root, top_k=top_k, snippet_chars=snippet_chars)
+        return search_officeqa_corpus_index(
+            query,
+            corpus_root=root,
+            top_k=top_k,
+            snippet_chars=snippet_chars,
+            source_files=source_files,
+        )
 
     scored_results: list[tuple[float, Path, str]] = []
     for path in _iter_corpus_files(root):

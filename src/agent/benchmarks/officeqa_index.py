@@ -14,6 +14,7 @@ from .officeqa_manifest import (
     normalize_source_name,
     resolve_officeqa_corpus_root,
     resolve_officeqa_index_dir,
+    validate_manifest_records,
     write_officeqa_manifest,
 )
 
@@ -44,6 +45,7 @@ def build_officeqa_index(
     resolved_index_dir = resolve_officeqa_index_dir(root, str(index_dir) if index_dir is not None else None, create=True)
     entries = [build_manifest_entry(path, root) for path in iter_officeqa_files(root, max_files=max_files)]
     summary = write_officeqa_manifest(entries, root, resolved_index_dir)
+    summary["validation"] = validate_manifest_records(entries)
     summary["index_dir"] = str(resolved_index_dir)
     return summary
 
@@ -111,13 +113,21 @@ def search_officeqa_corpus_index(
     index_dir: str | Path | None = None,
     top_k: int = 5,
     snippet_chars: int = 700,
+    source_files: list[str] | None = None,
 ) -> dict[str, Any]:
     root, records = _load_records(corpus_root, index_dir)
     if root is None or not records:
         return {"error": "No OfficeQA corpus index is available. Run scripts/build_officeqa_index.py first."}
 
+    allowed_document_ids = {
+        item.get("document_id", "")
+        for item in resolve_source_files_to_manifest(source_files or [], corpus_root=corpus_root, index_dir=index_dir)
+        if item.get("matched")
+    }
     scored = []
     for record in records:
+        if allowed_document_ids and str(record.get("document_id", "")) not in allowed_document_ids:
+            continue
         score = _score_record(record, query)
         if score <= 0:
             continue
@@ -165,6 +175,7 @@ def search_officeqa_corpus_index(
         "documents": documents,
         "result_count": len(results),
         "index_mode": "officeqa_manifest",
+        "source_files_filter_applied": bool(allowed_document_ids),
     }
 
 
@@ -197,3 +208,13 @@ def resolve_source_files_to_manifest(
     if not records:
         return []
     return match_source_files_to_records(source_files, records)
+
+
+def validate_officeqa_index(
+    corpus_root: str | Path | None = None,
+    index_dir: str | Path | None = None,
+) -> dict[str, Any]:
+    _, records = _load_records(corpus_root, index_dir)
+    if not records:
+        return {"document_count": 0, "issue_count": 0, "issues": []}
+    return validate_manifest_records(records)

@@ -10,9 +10,10 @@ import logging
 
 from langchain_core.messages import HumanMessage
 
+from agent.benchmarks import merge_benchmark_overrides
 from agent.contracts import AnswerContract
 from agent.runtime_clock import increment_runtime_step
-from agent.runtime_support import extract_answer_contract, infer_benchmark_overrides, latest_human_text
+from agent.runtime_support import extract_answer_contract, latest_human_text
 from agent.state import AgentState, ReplaceMessages
 from agent.tracer import get_tracer
 
@@ -22,7 +23,8 @@ logger = logging.getLogger(__name__)
 def intake(state: AgentState) -> dict:
     step = increment_runtime_step()
     task_text = latest_human_text(state["messages"])
-    benchmark_overrides = infer_benchmark_overrides(task_text)
+    runtime_overrides = dict(state.get("benchmark_overrides") or {})
+    benchmark_overrides = merge_benchmark_overrides(task_text, runtime_overrides)
     contract: AnswerContract = extract_answer_contract(task_text, benchmark_overrides=benchmark_overrides)
 
     workpad = dict(state.get("workpad", {}))

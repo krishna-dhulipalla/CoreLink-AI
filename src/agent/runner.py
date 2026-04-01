@@ -94,9 +94,16 @@ async def run_agent(
     graph,
     input_text: str,
     history: list[BaseMessage] | None = None,
+    benchmark_overrides: dict | None = None,
     trace_identity: dict | None = None,
 ) -> tuple[str, list[dict], list[BaseMessage]]:
-    trace = await run_agent_trace(graph, input_text, history=history, trace_identity=trace_identity)
+    trace = await run_agent_trace(
+        graph,
+        input_text,
+        history=history,
+        benchmark_overrides=benchmark_overrides,
+        trace_identity=trace_identity,
+    )
     return trace["answer"], trace["steps"], trace["updated_history"]
 
 
@@ -104,6 +111,7 @@ async def run_agent_trace(
     graph,
     input_text: str,
     history: list[BaseMessage] | None = None,
+    benchmark_overrides: dict | None = None,
     trace_identity: dict | None = None,
 ) -> dict:
     if _benchmark_stateless_mode():
@@ -152,7 +160,7 @@ async def run_agent_trace(
         "cost_tracker": tracker,
         "memory_store": None,
         "task_intent": {},
-        "benchmark_overrides": {},
+        "benchmark_overrides": dict(benchmark_overrides or {}),
         "tool_plan": {},
         "source_bundle": {},
         "retrieval_intent": {},

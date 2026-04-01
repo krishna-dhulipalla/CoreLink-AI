@@ -317,6 +317,8 @@ class SourceBundle(BaseModel):
     target_period: str = ""
     entities: list[str] = Field(default_factory=list)
     urls: list[str] = Field(default_factory=list)
+    source_files_expected: list[str] = Field(default_factory=list)
+    source_files_found: list[dict[str, Any]] = Field(default_factory=list)
     inline_facts: dict[str, Any] = Field(default_factory=dict)
     tables: list[dict[str, Any]] = Field(default_factory=list)
     formulas: list[str] = Field(default_factory=list)

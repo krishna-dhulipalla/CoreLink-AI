@@ -73,7 +73,7 @@ def _jurisdictions(task_text: str) -> list[str]:
     return jurisdictions
 
 
-def build_source_bundle(task_text: str) -> SourceBundle:
+def build_source_bundle(task_text: str, benchmark_overrides: dict[str, Any] | None = None) -> SourceBundle:
     focus_query = _extract_focus_query(task_text)
     target_period = _extract_target_period(task_text)
     entities = extract_entities(focus_query) or extract_entities(task_text)
@@ -87,6 +87,8 @@ def build_source_bundle(task_text: str) -> SourceBundle:
         target_period=target_period,
         entities=entities,
         urls=urls,
+        source_files_expected=list((benchmark_overrides or {}).get("source_files_expected", [])),
+        source_files_found=list((benchmark_overrides or {}).get("source_files_found", [])),
         inline_facts=inline_facts,
         tables=tables,
         formulas=formulas,
@@ -184,6 +186,10 @@ def _retrieval_facts_in_use(task_text: str, source_bundle: SourceBundle) -> list
         facts.append({"type": "target_period", "value": source_bundle.target_period})
     if source_bundle.urls:
         facts.append({"type": "reference_urls", "value": source_bundle.urls[:6]})
+    if source_bundle.source_files_expected:
+        facts.append({"type": "source_files_expected", "value": source_bundle.source_files_expected[:8]})
+    if source_bundle.source_files_found:
+        facts.append({"type": "source_files_found", "value": source_bundle.source_files_found[:6]})
     for key, value in list(source_bundle.inline_facts.items())[:8]:
         facts.append({"type": "inline_fact", "key": key, "value": value})
     lowered = (task_text or "").lower()
@@ -274,6 +280,8 @@ def build_curated_context(
             "source_bundle": {
                 "entities": source_bundle.entities[:6],
                 "urls": source_bundle.urls[:4],
+                "source_files_expected": source_bundle.source_files_expected[:8],
+                "source_files_found": source_bundle.source_files_found[:8],
                 "target_period": source_bundle.target_period,
             },
             "fact_count": len(facts_in_use),

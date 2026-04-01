@@ -27,6 +27,7 @@ _SUPPORTED_EXTENSIONS = {".txt", ".md", ".json", ".csv", ".html", ".xml", ".tsv"
 _INDEX_DIR_NAME = ".officeqa_index"
 _MANIFEST_FILENAME = "manifest.jsonl"
 _METADATA_FILENAME = "index_metadata.json"
+_INDEX_SCHEMA_VERSION = 1
 _MAX_FILES = 4000
 _MONTHS = (
     "january",
@@ -85,6 +86,10 @@ def manifest_path(index_dir: Path) -> Path:
 
 def metadata_path(index_dir: Path) -> Path:
     return index_dir / _METADATA_FILENAME
+
+
+def officeqa_index_schema_version() -> int:
+    return _INDEX_SCHEMA_VERSION
 
 
 def iter_officeqa_files(corpus_root: Path, max_files: int = _MAX_FILES) -> list[Path]:
@@ -253,6 +258,61 @@ def _extract_text_metadata(text: str, path: Path) -> dict[str, Any]:
     }
 
 
+def _normalized_numeric_values(text: str, unit_hints: list[str], limit: int = 40) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    multiplier_map = {
+        "thousand": 1_000.0,
+        "million": 1_000_000.0,
+        "billion": 1_000_000_000.0,
+    }
+    for match in re.finditer(
+        r"(?P<value>[-+]?\d[\d,]*(?:\.\d+)?)\s*(?P<unit>thousand|million|billion|percent|dollars|cents)?",
+        text or "",
+        re.IGNORECASE,
+    ):
+        raw_value = str(match.group("value") or "").strip()
+        if not raw_value:
+            continue
+        try:
+            parsed = float(raw_value.replace(",", ""))
+        except Exception:
+            continue
+        unit = str(match.group("unit") or "").strip().lower()
+        canonical_unit = unit or (unit_hints[0] if unit_hints else "")
+        normalized_value = parsed
+        if unit in multiplier_map:
+            normalized_value = parsed * multiplier_map[unit]
+        elif unit == "cents":
+            normalized_value = parsed / 100.0
+        normalized.append(
+            {
+                "raw": raw_value,
+                "unit": canonical_unit,
+                "normalized_value": round(normalized_value, 6),
+            }
+        )
+        if len(normalized) >= limit:
+            break
+    return normalized
+
+
+def _validation_flags(entry: dict[str, Any]) -> list[str]:
+    flags: list[str] = []
+    if not entry.get("preview_text"):
+        flags.append("empty_text")
+    if entry.get("file_format") == "pdf" and not entry.get("preview_text"):
+        flags.append("pdf_extract_failed")
+    if entry.get("file_format") == "json" and not entry.get("table_headers") and not entry.get("row_labels"):
+        flags.append("structured_json_without_tables")
+    if entry.get("is_treasury_bulletin") and not entry.get("years"):
+        flags.append("missing_years")
+    if entry.get("has_table_like_rows") and not entry.get("normalized_numeric_values"):
+        flags.append("table_without_numeric_values")
+    if entry.get("has_month_names") and len(entry.get("month_coverage", [])) < 2:
+        flags.append("partial_month_coverage")
+    return flags
+
+
 def build_manifest_entry(path: Path, corpus_root: Path) -> dict[str, Any]:
     relative_path = path.relative_to(corpus_root).as_posix()
     text = read_officeqa_document_text(path)
@@ -271,7 +331,7 @@ def build_manifest_entry(path: Path, corpus_root: Path) -> dict[str, Any]:
         normalize_source_name(path.name),
         normalize_source_name(path.stem),
     })
-    return {
+    entry = {
         "document_id": normalize_source_name(relative_path) or "document",
         "relative_path": relative_path,
         "source_key": normalize_source_name(path.stem),
@@ -289,8 +349,12 @@ def build_manifest_entry(path: Path, corpus_root: Path) -> dict[str, Any]:
         "is_treasury_bulletin": bool(text_metadata["is_treasury_bulletin"]),
         "has_month_names": bool(text_metadata["has_month_names"]),
         "has_table_like_rows": bool(text_metadata["has_table_like_rows"]),
+        "normalized_numeric_values": _normalized_numeric_values(text, list(dict.fromkeys([*json_metadata["unit_hints"], *text_metadata["unit_hints"]]))[:20]),
         "preview_text": preview,
     }
+    entry["validation_flags"] = _validation_flags(entry)
+    entry["parse_status"] = "partial" if entry["validation_flags"] else "ok"
+    return entry
 
 
 def write_officeqa_manifest(entries: list[dict[str, Any]], corpus_root: Path, index_dir: Path) -> dict[str, Any]:
@@ -300,10 +364,12 @@ def write_officeqa_manifest(entries: list[dict[str, Any]], corpus_root: Path, in
         for entry in entries:
             handle.write(json.dumps(entry, ensure_ascii=True) + "\n")
     metadata = {
+        "index_schema_version": _INDEX_SCHEMA_VERSION,
         "corpus_root": str(corpus_root),
         "manifest_path": str(manifest_file),
         "document_count": len(entries),
         "years": sorted({year for entry in entries for year in entry.get("years", [])}),
+        "partial_document_count": sum(1 for entry in entries if entry.get("parse_status") == "partial"),
     }
     metadata_file = metadata_path(index_dir)
     metadata_file.write_text(json.dumps(metadata, ensure_ascii=True, indent=2), encoding="utf-8")
@@ -331,6 +397,20 @@ def load_officeqa_manifest(corpus_root: Path | None = None, index_dir: Path | No
     return records
 
 
+def load_officeqa_index_metadata(corpus_root: Path | None = None, index_dir: Path | None = None) -> dict[str, Any]:
+    root = corpus_root or resolve_officeqa_corpus_root()
+    if root is None:
+        return {}
+    resolved_index_dir = index_dir or resolve_officeqa_index_dir(root)
+    metadata_file = metadata_path(resolved_index_dir)
+    if not metadata_file.exists():
+        return {}
+    try:
+        return json.loads(metadata_file.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
 def match_source_files_to_records(source_files: list[str], records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     matches: list[dict[str, Any]] = []
     record_by_alias: dict[str, dict[str, Any]] = {}
@@ -353,3 +433,21 @@ def match_source_files_to_records(source_files: list[str], records: list[dict[st
             }
         )
     return matches
+
+
+def validate_manifest_records(records: list[dict[str, Any]]) -> dict[str, Any]:
+    issues: list[dict[str, Any]] = []
+    for record in records:
+        for flag in record.get("validation_flags", []):
+            issues.append(
+                {
+                    "document_id": str(record.get("document_id", "")),
+                    "relative_path": str(record.get("relative_path", "")),
+                    "flag": str(flag),
+                }
+            )
+    return {
+        "document_count": len(records),
+        "issue_count": len(issues),
+        "issues": issues,
+    }

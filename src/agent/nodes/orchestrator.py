@@ -689,9 +689,11 @@ def make_capability_resolver(registry: dict[str, dict[str, Any]]):
     def capability_resolver(state: RuntimeState) -> dict[str, Any]:
         step = increment_runtime_step()
         task_text = latest_human_text(state["messages"])
-        source_bundle = SourceBundle.model_validate(state.get("source_bundle") or build_source_bundle(task_text).model_dump())
         intent = TaskIntent.model_validate(state.get("task_intent") or {})
         benchmark_overrides = dict(state.get("benchmark_overrides") or {})
+        source_bundle = SourceBundle.model_validate(
+            state.get("source_bundle") or build_source_bundle(task_text, benchmark_overrides).model_dump()
+        )
         tool_plan, _ = resolve_tool_plan(intent, source_bundle, registry, benchmark_overrides=benchmark_overrides)
         workpad = dict(state.get("workpad", {}))
         workpad["tool_plan"] = tool_plan.model_dump()
@@ -740,7 +742,9 @@ def context_curator(state: RuntimeState) -> dict[str, Any]:
     answer_contract = state.get("answer_contract", {}) or {}
     benchmark_overrides = dict(state.get("benchmark_overrides") or {})
     intent = TaskIntent.model_validate(state.get("task_intent") or {})
-    source_bundle = SourceBundle.model_validate(state.get("source_bundle") or build_source_bundle(task_text).model_dump())
+    source_bundle = SourceBundle.model_validate(
+        state.get("source_bundle") or build_source_bundle(task_text, benchmark_overrides).model_dump()
+    )
     curated_context, evidence_stats = build_curated_context(task_text, answer_contract, intent, source_bundle)
     retrieval_intent, evidence_sufficiency = build_retrieval_bundle(task_text, source_bundle, benchmark_overrides)
     workpad = dict(state.get("workpad", {}))
@@ -893,7 +897,12 @@ def _structured_tool_args(state: RuntimeState, registry: dict[str, dict[str, Any
         return {"query": query}
     if tool_name == "search_reference_corpus":
         query = (retrieval_intent.query_candidates[0] if retrieval_intent.query_candidates else "") or source_bundle.focus_query or task_text[:240]
-        return {"query": query, "top_k": 5, "snippet_chars": 700}
+        return {
+            "query": query,
+            "top_k": 5,
+            "snippet_chars": 700,
+            "source_files": source_bundle.source_files_expected[:8],
+        }
     if tool_name == "fetch_reference_file":
         if source_bundle.urls:
             return {"url": source_bundle.urls[0], "page_start": 0, "page_limit": 5, "row_offset": 0, "row_limit": 200}
@@ -1330,8 +1339,18 @@ def _fallback_retrieval_action(
     officeqa_mode = str(overrides.get("benchmark_adapter") or "") == "officeqa"
     allow_web_fallback = bool(overrides.get("officeqa_allow_web_fallback", True))
     corpus_grounded_only = execution_mode == "document_grounded_analysis" and officeqa_mode and not allow_web_fallback
+    indexed_source_matches = list(source_bundle.source_files_found[:4])
 
     if not journal.tool_results:
+        if indexed_source_matches and document_fetch_tools:
+            first_match = indexed_source_matches[0]
+            return RetrievalAction(
+                action="tool",
+                tool_name=document_fetch_tools[0],
+                document_id=str(first_match.get("document_id", "")),
+                path=str(first_match.get("relative_path", "")),
+                rationale="Read the benchmark-provided source file before broad corpus search.",
+            )
         if source_bundle.urls and discover_tools:
             return RetrievalAction(action="tool", tool_name=discover_tools[0], query=source_bundle.task_text, rationale="Discover prompt-supplied reference files.")
         if document_search_tools:
@@ -1468,7 +1487,12 @@ def _tool_args_from_retrieval_action(
     if action.tool_name == "internet_search":
         return {"query": action.query or _derive_retrieval_seed_query(source_bundle, retrieval_intent)}
     if action.tool_name == "search_reference_corpus":
-        return {"query": action.query or _derive_retrieval_seed_query(source_bundle, retrieval_intent), "top_k": 5, "snippet_chars": 700}
+        return {
+            "query": action.query or _derive_retrieval_seed_query(source_bundle, retrieval_intent),
+            "top_k": 5,
+            "snippet_chars": 700,
+            "source_files": source_bundle.source_files_expected[:8],
+        }
     if action.tool_name == "list_reference_files":
         return {"prompt_text": source_bundle.task_text}
     if action.tool_name == "fetch_reference_file":
