@@ -366,14 +366,17 @@ def _retrieval_status_from_text(tool_name: str, text: str, facts: dict[str, Any]
         return "unsupported_format"
     if any("parse error" in item.lower() for item in errors):
         return "parse_error"
-    if tool_name == "fetch_reference_file":
+    if tool_name in {"fetch_reference_file", "fetch_officeqa_pages", "fetch_officeqa_table", "lookup_officeqa_rows", "lookup_officeqa_cells"}:
         status = str(facts.get("retrieval_status", "") or dict(facts.get("metadata") or {}).get("status", "")).lower()
         if status in {"ok", "empty", "garbled_binary", "irrelevant", "parse_error", "network_error", "unsupported_format"}:
             return status
+        officeqa_status = str(dict(facts.get("metadata") or {}).get("officeqa_status", "")).lower()
+        if officeqa_status in {"missing_table", "partial_table", "missing_row", "missing_month_coverage", "unit_ambiguity"}:
+            return "ok" if facts.get("tables") or facts.get("chunks") else "empty"
         if facts.get("chunks") or facts.get("tables") or facts.get("numeric_summaries"):
             return "ok"
         return "empty"
-    if tool_name in {"search_reference_corpus", "list_reference_files", "internet_search"}:
+    if tool_name in {"search_reference_corpus", "search_officeqa_documents", "list_reference_files", "internet_search"}:
         results = facts.get("results") or facts.get("documents") or []
         if not results:
             return "empty"
@@ -394,7 +397,7 @@ def _retrieval_evidence_quality(tool_name: str, facts: dict[str, Any], retrieval
         return 0.05
     if retrieval_status == "empty":
         return 0.0
-    if tool_name in {"search_reference_corpus", "internet_search", "list_reference_files"}:
+    if tool_name in {"search_reference_corpus", "search_officeqa_documents", "internet_search", "list_reference_files"}:
         result_count = len(facts.get("results", []) or facts.get("documents", []))
         return min(0.55, 0.15 + 0.08 * result_count)
     structured_hits = 0

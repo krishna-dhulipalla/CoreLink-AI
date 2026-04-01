@@ -903,10 +903,40 @@ def _structured_tool_args(state: RuntimeState, registry: dict[str, dict[str, Any
             "snippet_chars": 700,
             "source_files": source_bundle.source_files_expected[:8],
         }
+    if tool_name == "search_officeqa_documents":
+        query = (retrieval_intent.query_candidates[0] if retrieval_intent.query_candidates else "") or source_bundle.focus_query or task_text[:240]
+        return {
+            "query": query,
+            "top_k": 5,
+            "snippet_chars": 700,
+            "source_files": source_bundle.source_files_expected[:8],
+        }
     if tool_name == "fetch_reference_file":
         if source_bundle.urls:
             return {"url": source_bundle.urls[0], "page_start": 0, "page_limit": 5, "row_offset": 0, "row_limit": 200}
         return {}
+    if tool_name == "fetch_officeqa_pages":
+        return {}
+    if tool_name == "fetch_officeqa_table":
+        query = " ".join(part for part in [retrieval_intent.entity, retrieval_intent.metric, retrieval_intent.period] if part).strip()
+        return {"table_query": query, "row_offset": 0, "row_limit": 200}
+    if tool_name == "lookup_officeqa_rows":
+        table_query = " ".join(part for part in [retrieval_intent.entity, retrieval_intent.metric, retrieval_intent.period] if part).strip()
+        return {
+            "table_query": table_query,
+            "row_query": retrieval_intent.entity or retrieval_intent.metric or table_query,
+            "row_offset": 0,
+            "row_limit": 120,
+        }
+    if tool_name == "lookup_officeqa_cells":
+        table_query = " ".join(part for part in [retrieval_intent.entity, retrieval_intent.metric, retrieval_intent.period] if part).strip()
+        return {
+            "table_query": table_query,
+            "row_query": retrieval_intent.entity or retrieval_intent.metric or table_query,
+            "column_query": retrieval_intent.metric or retrieval_intent.period or table_query,
+            "row_offset": 0,
+            "row_limit": 60,
+        }
     if tool_name == "list_reference_files":
         return {"prompt_text": source_bundle.task_text}
     if tool_name == "fetch_corpus_document":
@@ -1040,6 +1070,33 @@ def _retrieval_focus_tokens(source_bundle: SourceBundle) -> list[str]:
     return ordered[:14]
 
 
+def _officeqa_table_query(retrieval_intent: RetrievalIntent, source_bundle: SourceBundle) -> str:
+    parts = [
+        retrieval_intent.entity,
+        retrieval_intent.metric,
+        retrieval_intent.period,
+        source_bundle.focus_query,
+    ]
+    return re.sub(r"\s+", " ", " ".join(part for part in parts if part)).strip()[:280]
+
+
+def _officeqa_row_query(retrieval_intent: RetrievalIntent, source_bundle: SourceBundle) -> str:
+    return re.sub(
+        r"\s+",
+        " ",
+        " ".join(part for part in [retrieval_intent.entity, source_bundle.focus_query, retrieval_intent.period] if part),
+    ).strip()[:240]
+
+
+def _officeqa_column_query(retrieval_intent: RetrievalIntent) -> str:
+    parts = [retrieval_intent.metric]
+    if retrieval_intent.aggregation_shape.startswith("monthly"):
+        parts.append("month")
+    if retrieval_intent.period:
+        parts.append(retrieval_intent.period)
+    return re.sub(r"\s+", " ", " ".join(part for part in parts if part)).strip()[:200]
+
+
 def _retrieval_content_text(facts: dict[str, Any]) -> str:
     parts: list[str] = []
     for chunk in facts.get("chunks", []):
@@ -1116,11 +1173,33 @@ def _next_corpus_fetch_action(last_result: dict[str, Any]) -> RetrievalAction | 
     return RetrievalAction(
         action="tool",
         tool_name="fetch_corpus_document",
+        stage="locate_pages",
         document_id=document_id,
         path=path,
         chunk_start=chunk_start + chunk_limit,
         chunk_limit=chunk_limit,
         rationale="Read the next document window because the current chunk is not sufficient yet.",
+    )
+
+
+def _next_officeqa_page_action(last_result: dict[str, Any], tool_name: str = "fetch_officeqa_pages") -> RetrievalAction | None:
+    facts = dict(last_result.get("facts") or {})
+    metadata = dict(facts.get("metadata") or {})
+    assumptions = dict(last_result.get("assumptions") or {})
+    has_more = bool(metadata.get("has_more_windows") or metadata.get("has_more_chunks"))
+    if not has_more:
+        return None
+    page_start = int(assumptions.get("page_start", metadata.get("page_start", metadata.get("chunk_start", 0))) or 0)
+    page_limit = max(1, int(assumptions.get("page_limit", metadata.get("page_limit", metadata.get("chunk_limit", 5))) or 5))
+    return RetrievalAction(
+        action="tool",
+        tool_name=tool_name,
+        stage="locate_pages",
+        document_id=str(assumptions.get("document_id", facts.get("document_id", "")) or ""),
+        path=str(assumptions.get("path", facts.get("citation", "")) or ""),
+        page_start=page_start + page_limit,
+        page_limit=page_limit,
+        rationale="Read the next OfficeQA page window because the current pages are still incomplete.",
     )
 
 
@@ -1340,31 +1419,198 @@ def _fallback_retrieval_action(
     allow_web_fallback = bool(overrides.get("officeqa_allow_web_fallback", True))
     corpus_grounded_only = execution_mode == "document_grounded_analysis" and officeqa_mode and not allow_web_fallback
     indexed_source_matches = list(source_bundle.source_files_found[:4])
+    officeqa_search_tools = [name for name in document_search_tools if name == "search_officeqa_documents"]
+    officeqa_table_tools = [name for name in document_fetch_tools if name == "fetch_officeqa_table"]
+    officeqa_row_tools = [name for name in document_fetch_tools if name == "lookup_officeqa_rows"]
+    officeqa_cell_tools = [name for name in document_fetch_tools if name == "lookup_officeqa_cells"]
+    officeqa_page_tools = [name for name in document_fetch_tools if name in {"fetch_officeqa_pages", "fetch_corpus_document"}]
+    officeqa_table_query = _officeqa_table_query(retrieval_intent, source_bundle)
+    officeqa_row_query = _officeqa_row_query(retrieval_intent, source_bundle)
+    officeqa_column_query = _officeqa_column_query(retrieval_intent)
+
+    if officeqa_mode:
+        last_facts = dict(last_result.get("facts") or {})
+        last_metadata = dict(last_facts.get("metadata") or {})
+        officeqa_status = str(last_metadata.get("officeqa_status", "") or "")
+
+        if not journal.tool_results:
+            if indexed_source_matches:
+                first_match = indexed_source_matches[0]
+                if officeqa_table_tools:
+                    return RetrievalAction(
+                        action="tool",
+                        stage="locate_table",
+                        tool_name=officeqa_table_tools[0],
+                        document_id=str(first_match.get("document_id", "")),
+                        path=str(first_match.get("relative_path", "")),
+                        query=officeqa_table_query,
+                        rationale="Start from the benchmark-linked source file and extract the relevant table first.",
+                    )
+                if officeqa_page_tools:
+                    return RetrievalAction(
+                        action="tool",
+                        stage="locate_pages",
+                        tool_name=officeqa_page_tools[0],
+                        document_id=str(first_match.get("document_id", "")),
+                        path=str(first_match.get("relative_path", "")),
+                        rationale="Start from the benchmark-linked source file and read the relevant pages.",
+                    )
+            if officeqa_search_tools:
+                return RetrievalAction(
+                    action="tool",
+                    stage="identify_source",
+                    tool_name=officeqa_search_tools[0],
+                    query=seed_query,
+                    rationale="Identify the best OfficeQA source document before extraction.",
+                )
+            if document_search_tools:
+                return RetrievalAction(
+                    action="tool",
+                    stage="identify_source",
+                    tool_name=document_search_tools[0],
+                    query=seed_query,
+                    rationale="Search the packaged OfficeQA corpus for a grounded source document.",
+                )
+            if source_bundle.urls and officeqa_page_tools:
+                return RetrievalAction(
+                    action="tool",
+                    stage="locate_pages",
+                    tool_name=officeqa_page_tools[0],
+                    url=source_bundle.urls[0],
+                    rationale="Read the first supplied reference document.",
+                )
+            if external_search_tools and allow_web_fallback:
+                return RetrievalAction(action="tool", stage="identify_source", tool_name=external_search_tools[0], query=seed_query, rationale="Use web search only as an explicit OfficeQA fallback.")
+            return RetrievalAction(action="answer", stage="answer", rationale="No OfficeQA retrieval tools are available.")
+
+        if _tool_role(registry, last_type) in {"search", "discover"} and last_status in {"empty", "irrelevant"}:
+            next_query = _next_retrieval_query(journal, retrieval_intent, source_bundle)
+            if next_query and next_query != (journal.retrieval_queries[-1] if journal.retrieval_queries else ""):
+                return RetrievalAction(action="tool", stage="identify_source", tool_name=last_type, query=next_query, rationale="Refine OfficeQA source search because the prior results were weak.")
+
+        if _tool_role(registry, last_type) in {"search", "discover"} and candidates:
+            first = candidates[0]
+            best_score = _search_candidate_score(first, retrieval_intent, source_bundle, benchmark_overrides)
+            next_query = _next_retrieval_query(journal, retrieval_intent, source_bundle)
+            if best_score < 0.55 and next_query and next_query != (journal.retrieval_queries[-1] if journal.retrieval_queries else ""):
+                return RetrievalAction(action="tool", stage="identify_source", tool_name=last_type, query=next_query, rationale="Refine OfficeQA source search because the top result is still off-target.")
+            if officeqa_table_tools:
+                return RetrievalAction(
+                    action="tool",
+                    stage="locate_table",
+                    tool_name=officeqa_table_tools[0],
+                    document_id=first.get("document_id", ""),
+                    path=first.get("path", "") or first.get("citation", ""),
+                    query=officeqa_table_query,
+                    rationale="Open the best matching OfficeQA document and extract the relevant table first.",
+                )
+            if officeqa_page_tools:
+                return RetrievalAction(
+                    action="tool",
+                    stage="locate_pages",
+                    tool_name=officeqa_page_tools[0],
+                    document_id=first.get("document_id", ""),
+                    path=first.get("path", "") or first.get("citation", ""),
+                    rationale="Open the best matching OfficeQA document and inspect the relevant pages.",
+                )
+
+        if last_type == "fetch_officeqa_table":
+            if _retrieved_evidence_is_sufficient(source_bundle, last_result, overrides):
+                return RetrievalAction(action="answer", stage="answer", rationale="OfficeQA table evidence is sufficient for the final answer.")
+            if officeqa_status == "ok" and officeqa_row_tools and last_facts.get("tables"):
+                return RetrievalAction(
+                    action="tool",
+                    stage="extract_rows",
+                    tool_name=officeqa_row_tools[0],
+                    document_id=str((last_result.get("assumptions") or {}).get("document_id", last_facts.get("document_id", "")) or ""),
+                    path=str((last_result.get("assumptions") or {}).get("path", last_facts.get("citation", "")) or ""),
+                    query=officeqa_row_query,
+                    rationale="Narrow the OfficeQA table down to the target rows before computing.",
+                )
+            if officeqa_page_tools and officeqa_status in {"missing_table", "partial_table", "unit_ambiguity"}:
+                return RetrievalAction(
+                    action="tool",
+                    stage="locate_pages",
+                    tool_name=officeqa_page_tools[0],
+                    document_id=str((last_result.get("assumptions") or {}).get("document_id", last_facts.get("document_id", "")) or ""),
+                    path=str((last_result.get("assumptions") or {}).get("path", last_facts.get("citation", "")) or ""),
+                    rationale="Fallback to page inspection because OfficeQA table extraction was incomplete.",
+                )
+
+        if last_type == "lookup_officeqa_rows":
+            if _retrieved_evidence_is_sufficient(source_bundle, last_result, overrides):
+                return RetrievalAction(action="answer", stage="answer", rationale="OfficeQA row evidence is sufficient for the final answer.")
+            if officeqa_cell_tools and officeqa_status == "ok" and last_facts.get("tables"):
+                return RetrievalAction(
+                    action="tool",
+                    stage="extract_cells",
+                    tool_name=officeqa_cell_tools[0],
+                    document_id=str((last_result.get("assumptions") or {}).get("document_id", last_facts.get("document_id", "")) or ""),
+                    path=str((last_result.get("assumptions") or {}).get("path", last_facts.get("citation", "")) or ""),
+                    query=officeqa_column_query,
+                    rationale="Narrow the OfficeQA rows down to the target cells before computing.",
+                )
+            if officeqa_page_tools and officeqa_status in {"missing_row", "partial_table", "unit_ambiguity"}:
+                return RetrievalAction(
+                    action="tool",
+                    stage="locate_pages",
+                    tool_name=officeqa_page_tools[0],
+                    document_id=str((last_result.get("assumptions") or {}).get("document_id", last_facts.get("document_id", "")) or ""),
+                    path=str((last_result.get("assumptions") or {}).get("path", last_facts.get("citation", "")) or ""),
+                    rationale="Fallback to page inspection because row extraction was incomplete.",
+                )
+
+        if last_type == "lookup_officeqa_cells":
+            if _retrieved_evidence_is_sufficient(source_bundle, last_result, overrides):
+                return RetrievalAction(action="answer", stage="answer", rationale="OfficeQA cell evidence is sufficient for the final answer.")
+            if officeqa_page_tools and officeqa_status in {"partial_table", "unit_ambiguity"}:
+                return RetrievalAction(
+                    action="tool",
+                    stage="locate_pages",
+                    tool_name=officeqa_page_tools[0],
+                    document_id=str((last_result.get("assumptions") or {}).get("document_id", last_facts.get("document_id", "")) or ""),
+                    path=str((last_result.get("assumptions") or {}).get("path", last_facts.get("citation", "")) or ""),
+                    rationale="Inspect the OfficeQA pages directly because cell extraction is still ambiguous.",
+                )
+
+        if last_type in {"fetch_officeqa_pages", "fetch_corpus_document"}:
+            if _retrieved_evidence_is_sufficient(source_bundle, last_result, overrides):
+                return RetrievalAction(action="answer", stage="answer", rationale="OfficeQA page evidence is sufficient for the final answer.")
+            next_pages = _next_officeqa_page_action(last_result, last_type if last_type in {"fetch_officeqa_pages", "fetch_corpus_document"} else "fetch_officeqa_pages")
+            if next_pages is not None and _retrieved_window_is_promising(source_bundle, retrieval_intent, last_result, overrides):
+                return next_pages
+
+        if journal.retrieval_iterations >= _MAX_RETRIEVAL_HOPS - 1:
+            return RetrievalAction(action="answer", stage="answer", rationale="OfficeQA retrieval hop budget exhausted.")
+        if not corpus_grounded_only and external_search_tools and allow_web_fallback and last_type != external_search_tools[0]:
+            return RetrievalAction(action="tool", stage="identify_source", tool_name=external_search_tools[0], query=_next_retrieval_query(journal, retrieval_intent, source_bundle), rationale="Use explicit OfficeQA web fallback after corpus retrieval failed.")
+        return RetrievalAction(action="answer", stage="answer", rationale="No stronger OfficeQA retrieval action is available.")
 
     if not journal.tool_results:
         if indexed_source_matches and document_fetch_tools:
             first_match = indexed_source_matches[0]
             return RetrievalAction(
                 action="tool",
+                stage="locate_pages",
                 tool_name=document_fetch_tools[0],
                 document_id=str(first_match.get("document_id", "")),
                 path=str(first_match.get("relative_path", "")),
                 rationale="Read the benchmark-provided source file before broad corpus search.",
             )
         if source_bundle.urls and discover_tools:
-            return RetrievalAction(action="tool", tool_name=discover_tools[0], query=source_bundle.task_text, rationale="Discover prompt-supplied reference files.")
+            return RetrievalAction(action="tool", stage="identify_source", tool_name=discover_tools[0], query=source_bundle.task_text, rationale="Discover prompt-supplied reference files.")
         if document_search_tools:
-            return RetrievalAction(action="tool", tool_name=document_search_tools[0], query=seed_query, rationale="Search the grounded document source first.")
+            return RetrievalAction(action="tool", stage="identify_source", tool_name=document_search_tools[0], query=seed_query, rationale="Search the grounded document source first.")
         if source_bundle.urls and document_fetch_tools:
-            return RetrievalAction(action="tool", tool_name=document_fetch_tools[0], url=source_bundle.urls[0], rationale="Read the first supplied reference document.")
+            return RetrievalAction(action="tool", stage="locate_pages", tool_name=document_fetch_tools[0], url=source_bundle.urls[0], rationale="Read the first supplied reference document.")
         if external_search_tools and (not officeqa_mode or allow_web_fallback):
-            return RetrievalAction(action="tool", tool_name=external_search_tools[0], query=seed_query, rationale="Search the web for a supporting source.")
-        return RetrievalAction(action="answer", rationale="No retrieval tools are available.")
+            return RetrievalAction(action="tool", stage="identify_source", tool_name=external_search_tools[0], query=seed_query, rationale="Search the web for a supporting source.")
+        return RetrievalAction(action="answer", stage="answer", rationale="No retrieval tools are available.")
 
     if _tool_role(registry, last_type) == "search" and last_status in {"empty", "irrelevant"}:
         next_query = _next_retrieval_query(journal, retrieval_intent, source_bundle)
         if next_query and next_query != (journal.retrieval_queries[-1] if journal.retrieval_queries else ""):
-            return RetrievalAction(action="tool", tool_name=last_type, query=next_query, rationale="Refine the search because the prior results were not relevant enough.")
+            return RetrievalAction(action="tool", stage="identify_source", tool_name=last_type, query=next_query, rationale="Refine the search because the prior results were not relevant enough.")
 
     if _tool_role(registry, last_type) in {"search", "discover"} and candidates:
         first = candidates[0]
@@ -1373,6 +1619,7 @@ def _fallback_retrieval_action(
         if best_score < 0.55 and next_query and next_query != (journal.retrieval_queries[-1] if journal.retrieval_queries else ""):
             return RetrievalAction(
                 action="tool",
+                stage="identify_source",
                 tool_name=last_type,
                 query=next_query,
                 rationale="Refine the search because the top result is still weak or off-target.",
@@ -1380,6 +1627,7 @@ def _fallback_retrieval_action(
         if _tool_family(registry, last_type) == "document_retrieval" and document_fetch_tools:
             return RetrievalAction(
                 action="tool",
+                stage="locate_pages",
                 tool_name=document_fetch_tools[0],
                 document_id=first.get("document_id", ""),
                 path=first.get("path", "") or first.get("citation", ""),
@@ -1388,6 +1636,7 @@ def _fallback_retrieval_action(
         if document_fetch_tools:
             return RetrievalAction(
                 action="tool",
+                stage="locate_pages",
                 tool_name=document_fetch_tools[0],
                 url=first.get("citation", ""),
                 rationale="Read the top matching reference document.",
@@ -1396,6 +1645,7 @@ def _fallback_retrieval_action(
     if _tool_family(registry, last_type) == "external_retrieval" and candidates and document_fetch_tools:
         return RetrievalAction(
             action="tool",
+            stage="locate_pages",
             tool_name=document_fetch_tools[0],
             url=candidates[0].get("citation", ""),
             rationale="Open the top search result for grounded evidence.",
@@ -1403,7 +1653,7 @@ def _fallback_retrieval_action(
 
     if _tool_role(registry, last_type) == "fetch":
         if _retrieved_evidence_is_sufficient(source_bundle, last_result, overrides):
-            return RetrievalAction(action="answer", rationale="Retrieved document evidence is available for the final answer.")
+            return RetrievalAction(action="answer", stage="answer", rationale="Retrieved document evidence is available for the final answer.")
         if (
             last_type == "fetch_reference_file"
             or _tool_family(registry, last_type) == "document_retrieval"
@@ -1416,16 +1666,16 @@ def _fallback_retrieval_action(
             if next_window is not None:
                 return next_window
         if corpus_grounded_only:
-            return RetrievalAction(action="answer", rationale="No stronger grounded document evidence is available within the allowed retrieval budget.")
+            return RetrievalAction(action="answer", stage="answer", rationale="No stronger grounded document evidence is available within the allowed retrieval budget.")
 
     if journal.retrieval_iterations >= _MAX_RETRIEVAL_HOPS - 1:
-        return RetrievalAction(action="answer", rationale="Retrieval hop budget exhausted.")
+        return RetrievalAction(action="answer", stage="answer", rationale="Retrieval hop budget exhausted.")
 
     if not corpus_grounded_only and external_search_tools and last_type != external_search_tools[0] and (not officeqa_mode or allow_web_fallback):
         query = _next_retrieval_query(journal, retrieval_intent, source_bundle)
-        return RetrievalAction(action="tool", tool_name=external_search_tools[0], query=query, rationale="Broaden search after insufficient local evidence.")
+        return RetrievalAction(action="tool", stage="identify_source", tool_name=external_search_tools[0], query=query, rationale="Broaden search after insufficient local evidence.")
 
-    return RetrievalAction(action="answer", rationale="No better retrieval action is available.")
+    return RetrievalAction(action="answer", stage="answer", rationale="No better retrieval action is available.")
 
 
 def _validate_retrieval_action(
@@ -1486,6 +1736,13 @@ def _tool_args_from_retrieval_action(
 ) -> dict[str, Any]:
     if action.tool_name == "internet_search":
         return {"query": action.query or _derive_retrieval_seed_query(source_bundle, retrieval_intent)}
+    if action.tool_name == "search_officeqa_documents":
+        return {
+            "query": action.query or _derive_retrieval_seed_query(source_bundle, retrieval_intent),
+            "top_k": 5,
+            "snippet_chars": 700,
+            "source_files": source_bundle.source_files_expected[:8],
+        }
     if action.tool_name == "search_reference_corpus":
         return {
             "query": action.query or _derive_retrieval_seed_query(source_bundle, retrieval_intent),
@@ -1515,6 +1772,40 @@ def _tool_args_from_retrieval_action(
             "path": action.path,
             "chunk_start": action.chunk_start,
             "chunk_limit": max(1, action.chunk_limit),
+        }
+    if action.tool_name == "fetch_officeqa_pages":
+        return {
+            "document_id": action.document_id,
+            "path": action.path,
+            "page_start": action.page_start,
+            "page_limit": max(1, action.page_limit),
+        }
+    if action.tool_name == "fetch_officeqa_table":
+        return {
+            "document_id": action.document_id,
+            "path": action.path,
+            "table_query": action.query or _officeqa_table_query(retrieval_intent, source_bundle),
+            "row_offset": action.row_offset,
+            "row_limit": max(50, action.row_limit or 200),
+        }
+    if action.tool_name == "lookup_officeqa_rows":
+        return {
+            "document_id": action.document_id,
+            "path": action.path,
+            "table_query": _officeqa_table_query(retrieval_intent, source_bundle),
+            "row_query": action.query or _officeqa_row_query(retrieval_intent, source_bundle),
+            "row_offset": action.row_offset,
+            "row_limit": max(20, action.row_limit or 120),
+        }
+    if action.tool_name == "lookup_officeqa_cells":
+        return {
+            "document_id": action.document_id,
+            "path": action.path,
+            "table_query": _officeqa_table_query(retrieval_intent, source_bundle),
+            "row_query": _officeqa_row_query(retrieval_intent, source_bundle),
+            "column_query": action.query or _officeqa_column_query(retrieval_intent),
+            "row_offset": action.row_offset,
+            "row_limit": max(10, action.row_limit or 60),
         }
     args = _generic_tool_args(registry, action.tool_name, source_bundle, retrieval_intent)
     tool_obj = _tool_lookup(registry, action.tool_name)

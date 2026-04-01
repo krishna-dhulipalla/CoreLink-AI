@@ -16,6 +16,11 @@ OFFICEQA_REGISTRY_TOOL_NAME_ALLOWLIST = {
     "weighted_average",
     "pct_change",
     "cagr",
+    "search_officeqa_documents",
+    "fetch_officeqa_pages",
+    "fetch_officeqa_table",
+    "lookup_officeqa_rows",
+    "lookup_officeqa_cells",
     "annualize_return",
     "annualize_volatility",
     "bond_price_yield",
@@ -136,7 +141,8 @@ def build_officeqa_overrides(task_text: str, benchmark_name: str) -> dict[str, A
     officeqa_like = looks_like_officeqa_prompt(task_text)
     xml_contract = _xml_contract_requested(task_text, benchmark_name)
     explicit_benchmark = benchmark_name == "officeqa"
-    allow_web_fallback = os.getenv("OFFICEQA_ALLOW_WEB_FALLBACK", "last_fallback").strip().lower() not in {
+    allow_web_fallback = os.getenv("OFFICEQA_ALLOW_WEB_FALLBACK", "0").strip().lower() not in {
+        "",
         "0",
         "false",
         "no",

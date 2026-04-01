@@ -7,7 +7,7 @@ from agent.benchmarks.officeqa_index import (
     validate_officeqa_index,
 )
 from agent.benchmarks.officeqa_runtime import OfficeQACorpusBootstrapError, verify_officeqa_corpus_bundle
-from agent.retrieval_tools import search_reference_corpus
+from agent.retrieval_tools import fetch_officeqa_table, lookup_officeqa_cells, search_reference_corpus
 
 
 def test_build_officeqa_index_persists_manifest_and_metadata(tmp_path):
@@ -191,3 +191,37 @@ def test_verify_officeqa_corpus_bundle_requires_manifest_metadata(tmp_path):
         assert "requires a built corpus index" in str(exc)
     else:
         raise AssertionError("Expected OfficeQACorpusBootstrapError when manifest metadata is missing.")
+
+
+def test_officeqa_table_and_cell_lookup_tools_extract_structured_values(monkeypatch, tmp_path):
+    corpus_root = tmp_path / "treasury_bulletins_parsed"
+    corpus_root.mkdir(parents=True)
+    (corpus_root / "treasury_1940.json").write_text(
+        json.dumps(
+            {
+                "title": "Treasury Bulletin 1940",
+                "section_title": "National Defense",
+                "headers": ["Month", "Expenditures (million dollars)"],
+                "rows": [["January", "100.0"], ["February", "101.5"]],
+                "unit": "million dollars",
+            }
+        ),
+        encoding="utf-8",
+    )
+    build_officeqa_index(corpus_root=corpus_root)
+    monkeypatch.setenv("OFFICEQA_CORPUS_DIR", str(corpus_root))
+
+    table_result = fetch_officeqa_table.invoke({"document_id": "treasury_1940_json", "table_query": "national defense expenditures"})
+    cell_result = lookup_officeqa_cells.invoke(
+        {
+            "document_id": "treasury_1940_json",
+            "table_query": "national defense expenditures",
+            "row_query": "February",
+            "column_query": "Expenditures",
+        }
+    )
+
+    assert table_result["metadata"]["officeqa_status"] == "ok"
+    assert table_result["tables"][0]["headers"][0] == "Month"
+    assert cell_result["metadata"]["officeqa_status"] == "ok"
+    assert cell_result["cells"][0]["value"] == "101.5"

@@ -14,7 +14,15 @@ from agent.legal_tools import (
     tax_structure_checklist,
     transaction_structure_checklist,
 )
-from agent.retrieval_tools import fetch_corpus_document, search_reference_corpus
+from agent.retrieval_tools import (
+    fetch_corpus_document,
+    fetch_officeqa_pages,
+    fetch_officeqa_table,
+    lookup_officeqa_cells,
+    lookup_officeqa_rows,
+    search_officeqa_documents,
+    search_reference_corpus,
+)
 from agent.contracts import ACEEvent, CapabilityDescriptor, SourceBundle, TaskIntent, ToolPlan
 
 BUILTIN_LEGAL_TOOLS = [
@@ -24,6 +32,11 @@ BUILTIN_LEGAL_TOOLS = [
     tax_structure_checklist,
 ]
 BUILTIN_RETRIEVAL_TOOLS = [
+    search_officeqa_documents,
+    fetch_officeqa_pages,
+    fetch_officeqa_table,
+    lookup_officeqa_rows,
+    lookup_officeqa_cells,
     search_reference_corpus,
     fetch_corpus_document,
 ]
@@ -85,6 +98,11 @@ _FAMILY_BY_TOOL: dict[str, tuple[str, int]] = {
     "calculate_risk_metrics": ("market_scenario_analysis", 25),
     "fetch_reference_file": ("document_retrieval", 15),
     "list_reference_files": ("document_retrieval", 20),
+    "search_officeqa_documents": ("document_retrieval", 5),
+    "fetch_officeqa_table": ("document_retrieval", 6),
+    "lookup_officeqa_rows": ("document_retrieval", 7),
+    "lookup_officeqa_cells": ("document_retrieval", 8),
+    "fetch_officeqa_pages": ("document_retrieval", 10),
     "search_reference_corpus": ("document_retrieval", 8),
     "fetch_corpus_document": ("document_retrieval", 9),
     "internet_search": ("external_retrieval", 20),
@@ -96,6 +114,11 @@ _FAMILY_BY_TOOL: dict[str, tuple[str, int]] = {
 }
 _ROLE_BY_TOOL: dict[str, str] = {
     "internet_search": "search",
+    "search_officeqa_documents": "search",
+    "fetch_officeqa_table": "fetch",
+    "lookup_officeqa_rows": "fetch",
+    "lookup_officeqa_cells": "fetch",
+    "fetch_officeqa_pages": "fetch",
     "search_reference_corpus": "search",
     "list_reference_files": "discover",
     "fetch_reference_file": "fetch",

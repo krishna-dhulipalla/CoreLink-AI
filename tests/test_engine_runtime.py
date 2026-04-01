@@ -398,6 +398,91 @@ def test_officeqa_retrieval_intent_avoids_legacy_web_query_templates(monkeypatch
     assert "national defense and associated activities" not in joined_queries
 
 
+def test_officeqa_evidence_sufficiency_rejects_wrong_source_family(monkeypatch):
+    monkeypatch.setenv("BENCHMARK_NAME", "officeqa")
+    prompt = "According to the Treasury Bulletin, what was total public debt outstanding in 1945?"
+    source_bundle = SourceBundle(
+        task_text=prompt,
+        focus_query="total public debt outstanding 1945",
+        target_period="1945",
+        entities=["Treasury Bulletin"],
+        urls=[],
+        inline_facts={},
+        tables=[],
+        formulas=[],
+    )
+
+    sufficiency = assess_evidence_sufficiency(
+        prompt,
+        source_bundle,
+        [
+            {
+                "type": "fetch_officeqa_pages",
+                "retrieval_status": "ok",
+                "facts": {
+                    "citation": "https://quizlet.com/treasury_1945",
+                    "metadata": {"file_name": "treasury_1945.html", "format": "html", "officeqa_status": "ok"},
+                    "chunks": [{"locator": "page 1", "text": "In 1945 total public debt outstanding was 258.7 billion dollars.", "citation": "https://quizlet.com/treasury_1945"}],
+                    "tables": [],
+                    "numeric_summaries": [{"metric": "public_debt_outstanding", "value": 258.7}],
+                },
+            }
+        ],
+        intake(make_state(prompt))["benchmark_overrides"],
+    )
+
+    assert sufficiency.is_sufficient is False
+    assert "source family grounding" in sufficiency.missing_dimensions
+
+
+def test_officeqa_evidence_sufficiency_flags_missing_month_coverage(monkeypatch):
+    monkeypatch.setenv("BENCHMARK_NAME", "officeqa")
+    prompt = (
+        "Using specifically only the reported values for all individual calendar months in 1953 and all "
+        "individual calendar months in 1940, what was the absolute percent change of these total sum values?"
+    )
+    source_bundle = SourceBundle(
+        task_text=prompt,
+        focus_query="monthly expenditures 1953 1940",
+        target_period="1953 1940",
+        entities=["Treasury Bulletin"],
+        urls=[],
+        inline_facts={},
+        tables=[],
+        formulas=[],
+    )
+
+    sufficiency = assess_evidence_sufficiency(
+        prompt,
+        source_bundle,
+        [
+            {
+                "type": "fetch_officeqa_table",
+                "retrieval_status": "ok",
+                "facts": {
+                    "citation": "treasury_1953.json",
+                    "metadata": {"file_name": "treasury_1953.json", "format": "json", "officeqa_status": "ok"},
+                    "chunks": [],
+                    "tables": [
+                        {
+                            "locator": "table 1",
+                            "headers": ["Month", "Expenditures"],
+                            "rows": [["January", "100.0"], ["February", "102.0"]],
+                            "citation": "treasury_1953.json",
+                            "unit_hint": "million dollars",
+                        }
+                    ],
+                    "numeric_summaries": [{"metric": "expenditures", "value": {"min": 100.0, "max": 102.0}}],
+                },
+            }
+        ],
+        intake(make_state(prompt))["benchmark_overrides"],
+    )
+
+    assert sufficiency.is_sufficient is False
+    assert "missing month coverage" in sufficiency.missing_dimensions
+
+
 def test_intake_merges_source_files_from_benchmark_metadata(monkeypatch, tmp_path):
     corpus_root = tmp_path / "treasury_bulletins_parsed"
     corpus_root.mkdir(parents=True)
@@ -637,6 +722,98 @@ def test_engine_executor_runs_retrieval_search_then_fetch_before_final_answer(mo
     serialized_prompt = json.dumps([str(msg.content) for msg in captured[0]], ensure_ascii=True)
     assert "treasury_1945.txt" in serialized_prompt
     assert "258.7 billion" in serialized_prompt
+
+
+def test_engine_executor_prefers_officeqa_table_first_retrieval(monkeypatch):
+    @tool
+    def search_officeqa_documents(query: str, top_k: int = 5, snippet_chars: int = 700, source_files: list[str] | None = None) -> dict:
+        """Search the indexed OfficeQA corpus for candidate Treasury source documents."""
+        return {
+            "results": [
+                {
+                    "rank": 1,
+                    "title": "treasury_1945.json",
+                    "snippet": "Treasury Bulletin table for public debt outstanding.",
+                    "url": "treasury_1945.json",
+                    "document_id": "treasury_1945_json",
+                }
+            ],
+            "documents": [
+                {
+                    "document_id": "treasury_1945_json",
+                    "citation": "treasury_1945.json",
+                    "format": "json",
+                    "path": "treasury_1945.json",
+                }
+            ],
+        }
+
+    @tool
+    def fetch_officeqa_table(document_id: str = "", path: str = "", table_query: str = "", row_offset: int = 0, row_limit: int = 200) -> dict:
+        """Extract the most relevant structured table from an OfficeQA corpus artifact."""
+        return {
+            "document_id": document_id or "treasury_1945_json",
+            "citation": path or "treasury_1945.json",
+            "metadata": {
+                "file_name": "treasury_1945.json",
+                "format": "json",
+                "officeqa_status": "ok",
+                "table_count": 1,
+            },
+            "chunks": [
+                {
+                    "locator": "table 1",
+                    "kind": "table_preview",
+                    "text": "Category,Amount\nTotal public debt outstanding,258.7",
+                    "citation": path or "treasury_1945.json",
+                }
+            ],
+            "tables": [
+                {
+                    "locator": "table 1",
+                    "headers": ["Category", "Amount"],
+                    "rows": [["Total public debt outstanding", "258.7"]],
+                    "citation": path or "treasury_1945.json",
+                    "unit_hint": "billion dollars",
+                }
+            ],
+            "numeric_summaries": [{"metric": "public_debt_outstanding", "value": 258.7}],
+        }
+
+    captured: list = []
+    monkeypatch.setenv("BENCHMARK_NAME", "officeqa")
+    monkeypatch.setattr(
+        "agent.nodes.orchestrator.ChatOpenAI",
+        lambda **kwargs: _FakeModel(AIMessage(content="The total public debt outstanding in 1945 was 258.7. [Source: treasury_1945.json]"), captured),
+    )
+
+    registry = build_capability_registry([CALCULATOR_TOOL, SEARCH_TOOL, search_officeqa_documents, fetch_officeqa_table, *BUILTIN_LEGAL_TOOLS])
+    executor = make_executor(registry)
+    state = make_state(
+        "According to the Treasury Bulletin, what was total public debt outstanding in 1945?",
+        benchmark_overrides={"benchmark_name": "officeqa", "benchmark_adapter": "officeqa"},
+    )
+    state.update(intake(state))
+    state.update(fast_path_gate(state))
+    state.update(task_planner(state))
+    resolver = make_capability_resolver(registry)
+    state.update(resolver(state))
+    state.update(context_curator(state))
+
+    first = asyncio.run(executor(state))
+    state.update(first)
+    assert first["solver_stage"] == "GATHER"
+    assert first["last_tool_result"]["type"] == "search_officeqa_documents"
+
+    second = asyncio.run(executor(state))
+    state.update(second)
+    assert second["solver_stage"] == "GATHER"
+    assert second["last_tool_result"]["type"] == "fetch_officeqa_table"
+
+    third = asyncio.run(executor(state))
+    assert third["solver_stage"] == "SYNTHESIZE"
+    assert "treasury_1945.json" in str(third["messages"][0].content)
+    assert captured
 
 
 def test_fetch_corpus_document_rejects_paths_outside_corpus_root(monkeypatch):

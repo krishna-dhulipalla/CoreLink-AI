@@ -367,6 +367,7 @@ class ReviewPacket(BaseModel):
 
 class RetrievalAction(BaseModel):
     action: Literal["tool", "answer"] = "tool"
+    stage: str = ""
     tool_name: str = ""
     query: str = ""
     url: str = ""

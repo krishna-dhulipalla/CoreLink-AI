@@ -380,7 +380,17 @@ def _source_family(tool_results: list[dict[str, Any]], combined_text: str) -> st
                 direct.append(item.get("url", "") or item.get("citation", ""))
         citations.extend([str(item).lower() for item in direct if str(item).strip()])
     lowered = " ".join(citations + [combined_text.lower()])
-    if "treasury bulletin" in lowered or "treasury_bulletin" in lowered or "treasury_" in lowered or "/treasury" in lowered:
+    local_or_file_treasury = any(
+        ("treasury_bulletin" in citation or "treasury_" in citation or citation.endswith((".json", ".txt", ".csv", ".tsv", ".pdf")))
+        and not citation.startswith("http")
+        for citation in citations
+    )
+    official_treasury = any(
+        any(host in citation for host in ("govinfo.gov", "census.gov", "va.gov", "fraser.stlouisfed.org", ".gov/"))
+        and any(token in citation for token in ("treasury", "bulletin", "statement", "budget"))
+        for citation in citations
+    )
+    if "treasury bulletin" in combined_text.lower() or local_or_file_treasury or official_treasury:
         return "treasury_bulletin"
     if any(
         token in lowered
@@ -463,6 +473,56 @@ def _has_substantive_numeric_support(
     return False
 
 
+def _officeqa_failure_dimensions(
+    retrieval_intent: RetrievalIntent,
+    relevant_results: list[dict[str, Any]],
+) -> list[str]:
+    failures: list[str] = []
+    combined_tables = 0
+    combined_rows = 0
+    combined_months: set[str] = set()
+    unit_hints: set[str] = set()
+    for result in relevant_results:
+        facts = dict(result.get("facts") or {})
+        metadata = dict(facts.get("metadata") or {})
+        officeqa_status = str(metadata.get("officeqa_status", "") or "").lower()
+        if officeqa_status == "missing_table":
+            failures.append("missing table")
+        elif officeqa_status in {"partial_table", "missing_row"}:
+            failures.append("partial table")
+        elif officeqa_status == "unit_ambiguity":
+            failures.append("unit ambiguity")
+        for table in facts.get("tables", []):
+            if not isinstance(table, dict):
+                continue
+            combined_tables += 1
+            rows = list(table.get("rows", []))
+            combined_rows += len(rows)
+            unit_hint = str(table.get("unit_hint", "")).strip().lower()
+            if unit_hint:
+                unit_hints.add(unit_hint)
+            table_text = _normalize_space(
+                " ".join(
+                    [
+                        " ".join(str(item) for item in table.get("headers", [])),
+                        " ".join(" ".join(str(cell) for cell in row) for row in rows),
+                    ]
+                )
+            ).lower()
+            for month in _MONTH_NAMES:
+                if month in table_text:
+                    combined_months.add(month)
+    if combined_tables == 0:
+        failures.append("missing table")
+    elif combined_rows < 1:
+        failures.append("partial table")
+    if retrieval_intent.aggregation_shape.startswith("monthly") and len(combined_months) < 6:
+        failures.append("missing month coverage")
+    if len(unit_hints) > 1:
+        failures.append("unit ambiguity")
+    return list(dict.fromkeys(failures))
+
+
 def assess_evidence_sufficiency(
     task_text: str,
     source_bundle: SourceBundle,
@@ -497,6 +557,8 @@ def assess_evidence_sufficiency(
         missing_dimensions.append("metric scope")
     if not _has_substantive_numeric_support(retrieval_intent, relevant_results):
         missing_dimensions.append("numeric or quoted support")
+    if _officeqa_active(benchmark_overrides):
+        missing_dimensions.extend(_officeqa_failure_dimensions(retrieval_intent, relevant_results))
 
     for result in relevant_results:
         status = str(result.get("retrieval_status", "") or "")
