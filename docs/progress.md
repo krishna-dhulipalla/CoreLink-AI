@@ -15,432 +15,116 @@ Rules:
 
 ## Long-Term Memory
 
-- The repo started as an A2A/LangGraph/MCP generalist agent and grew through a prompt-heavy v2 runtime.
-- The finance-first and benchmark-mixed history is now archive context, not the target architecture.
-- The current project direction is OfficeQA-only:
-  - explicit benchmark adapter
-  - corpus-first retrieval
-  - structured extraction and provenance
-  - deterministic compute from document values
-- Reusable infrastructure stays in place only if it is benchmark-agnostic:
-  - executor shell
-  - Judge bridge
-  - tracer
-  - budget controls
-  - output adapter
-- Any remaining prompt-luck routing, template dependence, or generic finance heuristics should be treated as technical debt to remove.
+### Repository Direction
+
+- The repo started as a general A2A/LangGraph/MCP reasoning engine with finance-first routing and prompt-heavy runtime control.
+- That mixed generalist plus finance-first direction is now archive context only. The active target is an OfficeQA-only benchmark agent.
+- Current architecture goals are:
+  - explicit benchmark adapter boundary
+  - packaged or mounted OfficeQA corpus access for competition
+  - OfficeQA-native retrieval state machine
+  - structured evidence and provenance objects
+  - deterministic compute over Treasury-derived values
+  - strict output adaptation for benchmark answer contracts
+
+### Legacy Runtime Arc
+
+- Early work built V2/V3 around:
+  - task profiles
+  - template routing
+  - finance/legal prompt specialization
+  - selective checkpoints
+  - bounded reviewer and self-reflection loops
+- Finance benchmark work added:
+  - options/risk/compliance deterministic paths
+  - richer finance analytics and live MCP wiring
+  - model/profile cleanup
+  - budget and tracing improvements
+- Structural cleanup before OfficeQA added:
+  - package boundaries under `agent.context`, `agent.solver`, and `agent.tools`
+  - benchmark-stateless mode
+  - exact-quant and legal loop hardening
+  - custom tracer infrastructure
+
+### V4 History And Failure Context
+
+- V4 introduced a new hybrid runtime with:
+  - explicit planner/capability/context/executor/reviewer nodes
+  - curated context instead of duplicated evidence packs
+  - prompt and tracer hardening
+  - legal front-loading and options-output formatting fixes
+- V4 still failed for OfficeQA because it remained:
+  - prompt-sensitive
+  - retrieval-heuristic-heavy
+  - corpus-weak
+  - dependent on generic profiles/templates/capabilities for a benchmark that needs document-native retrieval and deterministic computation
+- That failure led to the OfficeQA-only replatform plan captured in `docs/officeqa_integration_plan.md` and then the canonical implementation plan in `docs/officeqa_execution_plan.md`.
+
+### OfficeQA Replatform Decisions
+
+- Do not start a separate new repo. Keep reusable benchmark-agnostic infrastructure and replace the finance-first core in place.
+- Keep:
+  - A2A request/response shell
+  - Judge MCP session bridge and benchmark tool loading
+  - tracer infrastructure and trace folder conventions
+  - final output adapter pattern
+  - bounded final self-reflection
+  - budget accounting and explicit stop reasons
+- Replace or isolate:
+  - OfficeQA dependence on generic task profiles
+  - template-library routing as a control surface
+  - OfficeQA heuristics in generic capability code
+  - generic document retrieval loop
+  - generic PDF text-window reasoning as the primary extraction method
+  - prompt-compacted document reasoning as the main compute substrate
+
+### Competition Deployment Memory
+
+- There is no documented public guarantee that Judge or A2A will expose the OfficeQA corpus to the purple agent.
+- Competition-safe design therefore assumes:
+  - packaged dataset artifact, image layer, or mounted read-only OfficeQA corpus
+  - local index or manifest built ahead of runtime
+  - Judge document tools, if present, are optional adapters only
+- Local `OFFICEQA_CORPUS_DIR` remains useful for development and regression, but not as the only assumed competition access pattern.
+
+### OfficeQA Execution Milestones Before Recent Chats
+
+- Phase 0:
+  - docs cleanup and OfficeQA-first repo framing completed
+- Phase 1:
+  - benchmark adapter boundary introduced
+  - OfficeQA output-contract resolution moved out of generic profiling
+  - OfficeQA activation no longer depends on XML tags or prompt luck
+  - major OfficeQA-specific capability policy moved toward the adapter surface
+- Key pre-Phase-2 corrections:
+  - keep/remove status clarified
+  - reusable runtime infrastructure explicitly retained
+  - remaining architecture debt concentrated in retrieval, extraction, and structured evidence
+
+### Runtime Hygiene Memory
+
+- Request-scoped tracing was added so benchmark runs do not overwrite each other.
+- Judge bridge evolved toward session-scoped tool discovery and explicit tool invocation.
+- Competition corpus bootstrap now fails fast at startup instead of failing late inside retrieval.
+- Maintenance cleanup completed after Phase 5:
+  - `src/agent/nodes/orchestrator.py` was split so intent heuristics live in `src/agent/nodes/orchestrator_intent.py`
+  - retrieval state-machine helpers live in `src/agent/nodes/orchestrator_retrieval.py`
+  - duplicate in-file retrieval planner code was removed
+  - `orchestrator.py` dropped from roughly 1760 lines to roughly 1340 lines in this pass
+
+### Validation Memory
+
+- Important stable slices before the current phase:
+  - OfficeQA runtime slice: `11 passed, 28 deselected`
+  - OfficeQA index slice: `9 passed`
+  - OfficeQA compute slice: `4 passed`
+  - combined OfficeQA index + compute slice: `13 passed`
 
 ---
 
 ## Recent Chats
 
-### Chat 1: Phase 1 - Profile Decision Hardening
-
-- **Role:** Coder
-- **Actions Taken:** Added `primary_profile + capability_flags + ambiguity_flags` so runtime control no longer depends on a single coarse label.
-- **Blockers:** Terse `finance_quant` prompts were still weak live.
-- **Handoff Notes:** Profile choice is safer now, but template choice is the next real control layer.
-
-### Chat 2: Phase 2 - Template Selector
-
-- **Role:** Coder
-- **Actions Taken:** Added static execution templates that now control stages, tool policy, and review cadence.
-- **Blockers:** None.
-- **Handoff Notes:** Runtime behavior should be reasoned about in terms of templates, not legacy layers.
-
-### Chat 3: Phase 3 - EvidencePack v2
-
-- **Role:** Coder
-- **Actions Taken:** Split evidence into prompt, retrieved, and derived facts; added assumption ledger and provenance map.
-- **Blockers:** None.
-- **Handoff Notes:** Preserve typed evidence and explicit assumptions. Do not drift back to raw message-history control.
-
-### Chat 4: Phase 4 - Document Evidence Service
-
-- **Role:** Coder
-- **Actions Taken:** Replaced raw file blobs with structured document evidence: metadata, chunks, tables, numeric summaries, and citations.
-- **Blockers:** None.
-- **Handoff Notes:** Document tasks should rely on extracted evidence, not raw file dumps or URL discovery alone.
-
-### Chat 5: Phase 5 - Selective Checkpoints
-
-- **Role:** Coder
-- **Actions Taken:** Replaced universal rollback with template-scoped artifact checkpoints for quant/tool-compute, options, and document gather flows.
-- **Blockers:** None.
-- **Handoff Notes:** Backtracking is now local and artifact-based.
-
-### Chat 6: Phase 6 - Offline Curation and Cleanup
-
-- **Role:** Coder
-- **Actions Taken:** Added store-only offline curation, removed stale v2 artifacts, and aligned docs with the active v3 runtime.
-- **Blockers:** None.
-- **Handoff Notes:** Memory remains passive at runtime.
-
-### Chat 7: Finance Hands Phase A
-
-- **Role:** Architect / Coder
-- **Actions Taken:** Added real finance evidence and exact operators through market-data and finance-analytics MCP surfaces, plus structured source and quality metadata.
-- **Blockers:** Live MCP exposure initially lagged the code.
-- **Handoff Notes:** Finance tool wiring matters as much as finance code.
-
-### Chat 8: Finance Live Wiring
-
-- **Role:** Coder
-- **Actions Taken:** Exposed the new finance MCP servers in the live environment and stabilized the retrieval-first `finance_quant` path.
-- **Blockers:** Options became the main unstable finance path.
-- **Handoff Notes:** `finance_evidence` is now stable enough to use as the reference live-data flow.
-
-### Chat 9: Finance Hands Phase B - Risk Controller
-
-- **Role:** Architect / Coder
-- **Actions Taken:** Added `risk_controller`, structured risk tools, repair-time tool normalization, and deterministic compute/final bridges for options.
-- **Critical Bug Solved:** Live `finance_options` was looping because weak `scenario_pnl` payloads and repair-stage routing kept the risk path unstable.
-- **Fix:** Hardened [tool_runner](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\tool_runner.py), [solver](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\solver.py), and [reviewer](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\reviewer.py) so the options path now reaches a deterministic compute milestone and a deterministic final after risk pass.
-- **Handoff Notes:** Standard options flow is now stable on the live graph.
-
-### Chat 10: Finance Hands Phase C - Compliance Guard
-
-- **Role:** Architect / Coder
-- **Actions Taken:** Added `compliance_guard`, extracted finance policy context from prompts, and added deterministic policy-constrained options compute/final paths for defined-risk and no-naked mandates.
-- **Critical Bug Solved:** The retirement-account options prompt kept hitting recursion because the final deterministic policy answer missed the reviewer's recommendation keyword and required risk disclosures, so reviewer and compliance kept cycling on an otherwise compliant branch.
-- **Fix:** Hardened [solver](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\solver.py) to force a defined-risk primary strategy under mandate constraints and to synthesize a policy-compliant deterministic final carrying recommendation class, mandate, risk cap, and risk-controller disclosures.
-- **Current Status:** Live `finance_options_policy` now completes cleanly on the active graph.
-- **Remaining Blockers:** `task_profiler` and `reviewer` still sometimes fall back to deterministic parsing on the current backend.
-
-### Chat 11: Structured Output Stabilization
-
-- **Role:** Coder
-- **Actions Taken:** Fixed strict JSON reliability for `task_profiler` and `reviewer` on the Nebius/Qwen backend by moving both onto `invoke_structured_output()` with backend-aware JSON-object mode and thinking disabled. Then narrowed reviewer LLM usage so gather/compute milestones and deterministic options/document passes do not bounce through the LLM reviewer unnecessarily.
-- **Critical Bug Solved:** Once JSON transport started working consistently, reviewer began overreaching on gather/compute-heavy paths and caused live recursion on `finance_options`, `finance_options_policy`, `document_qa`, and `finance_evidence`.
-- **Fix:** Kept the transport fix, but made reviewer escalation selective: deterministic review first, LLM review only for ambiguous or final judgment cases where it adds value.
-- **Handoff Notes:** Live staged smoke is stable again and no longer emits the old reviewer/task-profiler JSON parse warnings on the current backend.
-
-### Chat 12: Finance Hands Phase D - Template Expansion
-
-- **Role:** Architect / Coder
-- **Actions Taken:** Added `equity_research_report`, `portfolio_risk_review`, and `event_driven_finance` templates; expanded finance analytics and risk operators; extended reviewer completeness checks and live smoke coverage for the new finance templates.
-- **Critical Bugs Solved:** `quant_inline_exact` still recursed on terse live finance prompts, and `get_corporate_actions(as_of_date=...)` failed on tz-aware indexes during event-driven runs.
-- **Fix:** Added a deterministic inline-formula path in [solver](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\solver.py) for exact finance quant tasks, and fixed timezone-safe `as_of_date` filtering in [market_data/server.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\mcp_servers\market_data\server.py).
-- **Handoff Notes:** Live staged smoke now passes for the expanded finance suite, including `finance_quant`, equity research, portfolio risk review, and event-driven finance.
-
-### Chat 13: Options Primary Compute Cleanup
-
-- **Role:** Coder
-- **Actions Taken:** Removed the remaining wasted first-step churn on the standard `finance_options` path by adding a deterministic primary `analyze_strategy` seed for non-policy options prompts.
-- **Critical Bug Solved:** Standard options used to emit an empty compute milestone first, then let `risk_controller` force the real strategy tool call on revise. That path was stable but inefficient and obscured the intended graph behavior.
-- **Fix:** Narrowed the new deterministic options seed to the initial compute turn only, so ordinary options prompts now go straight to `analyze_strategy`, while non-risk revise paths keep their old behavior.
-- **Handoff Notes:** Live `finance_options` now starts `COMPUTE -> analyze_strategy -> scenario_pnl -> deterministic compute -> risk pass -> deterministic final`, which is the intended clean path.
-
-### Chat 14: Finance Template Quality and Checkpoint
-
-- **Role:** Coder
-- **Actions Taken:** Strengthened the deterministic finals for `equity_research_report`, `portfolio_risk_review`, and `event_driven_finance` so those templates now finish with fuller recommendation, action, catalyst, and watchpoint sections without adding more LLM churn. Added the detailed architecture checkpoint in [finance_hands_checkpoint.md](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\docs\finance_hands_checkpoint.md).
-- **Blockers:** None.
-- **Handoff Notes:** The main finance paths are now structurally complete enough to document as the current checkpoint. Further work should target depth of evidence and domain breadth, not another control-flow rewrite.
-
-### Chat 15: Finance Hands Cleanup Before Refactor
-
-- **Role:** Coder
-- **Actions Taken:** Tightened small runtime issues without changing the architecture: broadened `compliance_guard` section parsing beyond bold-only headings, made risk/disclosure matching less brittle to wording changes, and made deterministic options seeding prefer already-available market evidence before falling back to generic defaults.
-- **Blockers:** None.
-- **Handoff Notes:** One review concern was not acted on because it was incorrect: actionable `portfolio_risk_review` flows can already trigger `compliance_guard` through `policy_context.action_orientation` on `finance_quant` paths.
-
-### Chat 16: Structural Refactor - Package Boundaries
-
-- **Role:** Coder
-- **Actions Taken:** Split the oversized runtime helpers into real packages: `agent.context` for profiling/evidence/stage policy, `agent.solver` for deterministic solver helpers, and `agent.tools` for tool normalization. Kept `agent.runtime_support`, `agent.tool_normalization`, and `agent.nodes.solver` as compatibility surfaces so tests, imports, and live runtime behavior stayed stable.
-- **Critical Bug Solved:** The first split would have broken `build_evidence_pack` callers because the new context implementation required an explicit labeled-JSON extractor.
-- **Fix:** Restored old behavior at the compatibility layer in [runtime_support.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\runtime_support.py) so existing callers still work without signature changes.
-- **Handoff Notes:** The active runtime behavior is unchanged, but the main maintenance surface is now the new package layout described in [README.md](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\README.md).
-
-### Chat 17: V3 Recovery Hardening
-
-- **Role:** Coder
-- **Actions Taken:** Hardened the staged runtime against the simple-finance failures seen in the benchmark traces. Added benchmark/stateless mode to the runner/executor path, deduped adjacent persisted messages, preserved partial final state on recursion-limit exits, introduced task-complexity-aware evidence compaction for the solver, added task-focused evidence fields and row selection, strengthened legal reviewer dimensions, and added repeat-review loop diagnostics plus bounded terminal loop breaking.
-- **Critical Bug Solved:** Exact `finance_quant` tasks were computing correctly and then looping through repeated final reviews because the runtime stayed in open-ended synthesis instead of collapsing into a terminal answer path; recursion handling also discarded the best partial answer.
-- **Fix:** The quant path now runs as `simple_exact`, solver-facing evidence is reduced to relevant formula/row/output data, recursion fallback keeps the real partial final answer, and unchanged final-review loops terminate deterministically instead of burning graph steps.
-- **Handoff Notes:** The live staged smoke now shows `finance_quant` finishing cleanly as exact JSON with no LLM/tool churn. The next benchmark-focused work should target deeper legal completeness and broader QA/long-document readiness rather than another control-flow rewrite.
-
-### Chat 18: Budget, Cost, and Benchmark Mode Cleanup
-
-- **Role:** Coder
-- **Actions Taken:** Aligned budget tracking with the staged runtime by making it complexity-tier aware, enforcing tool-call budgets at runtime, and cleaning cost summaries so unpriced models no longer produce misleading USD totals. Renamed model roles to the v3-native `profiler` / `solver` / `reviewer` surface while keeping legacy env compatibility. Added a dedicated benchmark/stateless smoke and updated the public README to document `BENCHMARK_STATELESS` and the canonical model env vars.
-- **Critical Bug Solved:** Trace and run summaries implied dollar precision even when the active backend model had no reliable pricing entry, and tool budgets were counted but not enforced in the actual tool path.
-- **Fix:** Cost summaries now expose `cost_estimate_status` and `unpriced_models`, `total_cost_usd` is withheld unless pricing is known, and tool-budget exhaustion is enforced inside [tool_runner](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\tool_runner.py).
-- **Handoff Notes:** Use `BENCHMARK_STATELESS=1` for benchmark slices so each task runs as a fresh item with no conversation carryover. Prefer `PROFILER_MODEL`, `SOLVER_MODEL`, and `REVIEWER_MODEL` over the older env names in new setups.
-
-### Chat 19: Options Duplicate-Call Cleanup
-
-- **Role:** Coder
-- **Actions Taken:** Removed low-value duplicate behavior in the deterministic options path. The first primary options tool result now becomes a compute milestone immediately, so the graph moves to `risk_controller` instead of calling `analyze_strategy` twice. Also normalized and deduped equivalent option assumption disclosures like `300` vs `300.0`.
-- **Critical Bug Solved:** The deterministic smoke was still issuing `analyze_strategy` twice before risk review and could repeat the same spot-price assumption in the final answer.
-- **Fix:** Added a primary-strategy compute summary in [options.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\solver\options.py), normalized assumption dedupe in both [options.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\solver\options.py) and [evidence.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\context\evidence.py), and added targeted solver regressions.
-- **Handoff Notes:** The intended deterministic path is now `analyze_strategy -> compute milestone -> risk revise -> scenario_pnl -> compute milestone -> synthesize`. This is the right place to evaluate any future final-only self-reflection layer because the core options path is no longer duplicating its own primary analysis.
-
-### Chat 20: Final-Only Self-Reflection Gate
-
-- **Role:** Coder
-- **Actions Taken:** Added a bounded `self_reflection` node for benchmark-style qualitative finance/legal finals. It runs only after reviewer/risk/compliance have already passed, only on selected qualitative templates, and only in benchmark mode or explicit opt-in. It can trigger at most one targeted final revise pass, then stops.
-- **Critical Bug Solved:** None. This is a controlled quality layer, not a bug fix.
-- **Fix:** Added [self_reflection.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\self_reflection.py), routed eligible final passes through it in [graph.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\graph.py) and [reviewer.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\reviewer.py), and added targeted tests in [test_staged_self_reflection.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_staged_self_reflection.py).
-- **Handoff Notes:** The design follows the useful part of self-reflection idea: heuristic-first, single bounded improvement pass, final-only. It is not a new general reflection loop.
-
-### Chat 21: Rerun Bug Fixes - Quant Context and Legal Depth
-
-- **Role:** Coder
-- **Actions Taken:** Fixed duplicate human-message insertion at the source by making [intake](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\intake.py) replace message history instead of appending it. Tightened exact-quant context shaping by improving title-case entity extraction, safer focus-query fallback, row scoring, and formula selection in [extraction.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\context\extraction.py), [evidence.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\context\evidence.py), and [solver/common.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\solver\common.py). Hardened legal final review and final self-reflection for benchmark-style gaps such as tax execution, regulatory execution, and employee-transfer detail in [reviewer.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\reviewer.py) and [self_reflection.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\self_reflection.py). Updated the live smoke legal prompt to the benchmark-shaped wording in [run_live_staged_smoke.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\scripts\run_live_staged_smoke.py).
-- **Critical Bug Solved:** The runtime was still duplicating user messages in final state, overfeeding simple exact quant tasks with low-signal context, and allowing benchmark-weak legal finals to pass without ever triggering bounded final reflection.
-- **Fix:** Added regression coverage for duplicate-message replacement, benchmark-style quant row selection, stricter legal reviewer gaps, and default complex-qualitative self-reflection routing.
-- **Handoff Notes:** Full suite is green again. The remaining benchmark work should focus on rerunning the legal benchmark trace and verifying whether the stricter deterministic legal gate plus bounded self-reflection materially lift task 2 before touching broader architecture again.
-
-### Chat 22: Follow-up Review Cleanup
-
-- **Role:** Coder
-- **Actions Taken:** Addressed the follow-up code review findings by extracting shared legal keyword groups and typo normalization into [legal_dimensions.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\context\legal_dimensions.py), removing the task1-specific formula keyword bonus in [evidence.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\context\evidence.py), adding a safety fallback in [solver/common.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\solver\common.py) so `simple_exact` only hides the full prompt when extracted evidence is actually present, and expanding [run_live_staged_smoke.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\scripts\run_live_staged_smoke.py) to include both the exact benchmark-style legal prompt and a clean equivalent.
-- **Blockers:** None.
-- **Handoff Notes:** The live smoke can now be used to debug the exact legal benchmark task in-loop without replacing the cleaner legal regression. The shared legal heuristic module also removes the reviewer/self-reflection drift risk.
-
-### Chat 23: Legal Finalization Loop Hardening
-
-- **Role:** Coder
-- **Actions Taken:** Tightened the legal finalization path so repeated reviewer failures no longer get rubber-stamped by self-reflection. [reviewer.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\reviewer.py) now exits legal repeat-review loops earlier, [self_reflection.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\self_reflection.py) now converts repeated final-review failures into one targeted final revise instead of auto-passing on a soft score, and [solver.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\solver.py) now injects dimension-specific legal repair guidance. Updated [run_live_staged_smoke.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\scripts\run_live_staged_smoke.py) and [run_live_legal_smoke.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\scripts\run_live_legal_smoke.py) so they save JSON results into `Results&traces` instead of dumping the full payload to stdout.
-- **Critical Bug Solved:** Repeated legal reviewer failures were ending in `self_reflection -> PASS` even though the answer was still incomplete.
-- **Handoff Notes:** Local tests are green and smoke outputs are now saved as files. A provider-backed live legal verification is still blocked in this environment by connection errors, so the next real check should use the saved live smoke artifact from a machine with working model access.
-
-### Chat 24: Legal Loop Semantics and Budget-Exit Fixes
-
-- **Role:** Coder
-- **Actions Taken:** Tightened the reviewer repeat detector in [reviewer.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\reviewer.py) so repeated unresolved legal gaps are detected even when the model rewrites the answer with slightly different wording. Extended [self_reflection.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\self_reflection.py) so both `repeat-review-loop` and `revise cap exhausted` exits convert into one targeted legal final revise instead of a false pass. Strengthened the legal tax-repair prompt in [solver.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\solver.py) to ask for the actual tax benefit, required qualification or election, and failure modes.
-- **Critical Bug Solved:** The legal loop detector was too literal and missed semantically identical failures, while self-reflection could still pass after a reviewer budget exit.
-- **Handoff Notes:** Full suite is green again. The new saved live-legal artifact path works, but provider-backed verification from this environment is still blocked by connection errors, so the next real check should be from your local terminal with working model access.
-
-### Chat 25: Exact Quant Benchmark Regression Fix
-
-- **Role:** Coder
-- **Actions Taken:** Fixed the exact-quant benchmark regression in [evidence.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\context\evidence.py) and [quant.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\solver\quant.py). The parser now anchors `<User Question>` extraction to the real heading instead of matching the instructional preamble, weak one-row table matches are filtered out, LaTeX `\\text{...}` blocks are actually stripped, and full LaTeX formulas are accepted as deterministic arithmetic candidates.
-- **Critical Bug Solved:** Benchmark-style inline quant prompts were missing deterministic collapse, falling back into repeated `calculator` calls until tool budget exhaustion and recursion-limit termination.
-- **Handoff Notes:** Local reproduction against the saved BizFinBench prompt now resolves the correct China Overseas Grand Oceans Group rows and emits `{\"answer\": 0.927359088}` deterministically. If quant regresses again, inspect `evidence_pack.relevant_rows` and `evidence_pack.relevant_formulae` before touching budget caps.
-
-### Chat 26: Custom RunTracer Implementation
-
-- **Role:** Coder
-- **Actions Taken:** Built a lightweight custom tracing system in [tracer.py](file:///c:/Users/vamsi/OneDrive/Desktop/Gtihub_repos/Project-Pulse-Generalist-A2A-Reasoning-Engine/src/agent/tracer.py) to replace LangSmith for project-specific debugging. Unlike LangSmith which dumps the entire state for every node, RunTracer captures only the critical debugging information as the graph flows — each piece recorded once at the right node. Integrated tracer into all 10 graph nodes: `runner.py` (init/finalize), `intake.py` (answer contract), `task_profiler.py` (profile + flags), `template_selector.py` (template details), `context_builder.py` (full evidence pack + assumptions), `solver.py` (exact LLM prompts, model name, raw output, tokens, latency, tool calls, deterministic paths), `reviewer.py` (verdict, reasoning, missing dimensions), `tool_runner.py` (tool name, args, result type, errors), `self_reflection.py` (score, action, missing dims), and `reflect.py` (route path, completion status). Each run saves one JSON file to `traces/` named `date_profile_time.json`. Enable with `ENABLE_RUN_TRACER=1`.
-- **Handoff Notes:** All tests pass. Add `ENABLE_RUN_TRACER=1` to `.env` before running tasks to generate trace files. The traces directory is git-ignored.
-
-### Chat 27: V4 Hybrid Runtime Scaffold
-
-- **Role:** Coder
-- **Actions Taken:** Added a parallel V4 runtime behind `AGENT_RUNTIME_VERSION=v4` instead of mutating V3 in place. Introduced new V4 contracts and state in [src/agent/v4/contracts.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\v4\contracts.py) and [src/agent/v4/state.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\v4\state.py). Added the new graph topology in [src/agent/v4/graph.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\v4\graph.py) and planner / capability / curator / executor / reviewer / self-reflection nodes in [src/agent/v4/nodes.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\v4\nodes.py). Added capability-family binding and bounded ACE scaffolding in [src/agent/v4/capabilities.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\v4\capabilities.py), plus built-in legal checklist / playbook tools in [src/agent/v4/legal_tools.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\v4\legal_tools.py). Replaced duplicated raw solver evidence in the V4 path with `source_bundle + curated_context` via [src/agent/v4/context.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\v4\context.py). Wired runtime selection through [src/agent/runtime_version.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\runtime_version.py), [src/agent/graph.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\graph.py), [src/agent/__init__.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\__init__.py), [src/agent/runner.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\runner.py), and [src/agent/state.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\state.py). Updated smoke scripts to save runtime-version-aware artifacts in [scripts/run_live_staged_smoke.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\scripts\run_live_staged_smoke.py), [scripts/run_live_legal_smoke.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\scripts\run_live_legal_smoke.py), and [scripts/run_benchmark_stateless_smoke.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\scripts\run_benchmark_stateless_smoke.py).
-- **Critical Bug Solved:** V3-style profile/template hard locks were forcing legal/advisory tasks into calculator-only execution. The V4 path now binds legal capability families explicitly and uses a deduped curated context instead of feeding duplicated `EvidencePack` structures into the model.
-- **Fix:** Added V4 unit coverage in [tests/test_v4_runtime.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_v4_runtime.py), extended shared test state in [tests/staged_test_utils.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\staged_test_utils.py), and verified a direct V4 exact-quant run produces `{\"answer\": 0.927359088}` without tool churn.
-- **Handoff Notes:** Full suite is green (`153 passed, 5 skipped`). V3 remains the default runtime. Use `AGENT_RUNTIME_VERSION=v4` to exercise the new graph in parallel while benchmarking V3 vs V4 on the mixed slice before any default flip.
-
-### Chat 28: V4 Prompt/Tracer Hardening
-
-- **Role:** Coder
-- **Actions Taken:** Reduced V4 solver-facing duplication by compacting tool findings once in [src/agent/v4/context.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\v4\context.py) and removing raw-query echo from the executor prompt path. Simplified the V4 executor prompt and replaced internal labels with actionable mode guidance in [src/agent/v4/nodes.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\v4\nodes.py), increased legal/advisory completion budgets, tightened legal review to require multiple structure alternatives, and switched the V4 options path back to a deterministic final after tool completion. Updated [src/agent/tracer.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\tracer.py) so V4 nodes populate header fields, count LLM/tool calls correctly, and save longer previews. Adjusted [src/agent/budget.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\budget.py) so context usage reports peak prompt size plus total prompt volume instead of a misleading cumulative pseudo-cap.
-- **Critical Bug Solved:** V4 legal prompts were still duplicating the user query and tool payloads, V4 traces were missing planner/capability/context decisions, and the options path was regressing by using generic LLM synthesis instead of the existing deterministic tool-backed final.
-- **Fix:** Added V4 regressions in [tests/test_v4_runtime.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_v4_runtime.py) covering prompt dedupe, deterministic options output, legal structure-option review, V4 tracer accounting, and budget context semantics. Verified with `pytest tests -q` (`159 passed, 5 skipped`) and [scripts/run_benchmark_stateless_smoke.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\scripts\run_benchmark_stateless_smoke.py), which now saves a V4 artifact cleanly.
-
-### Chat 29: V4 Prompt Quality Overhaul (Competitor Research)
-
-- **Role:** Coder
-- **Actions Taken:** Researched Purple Agent (246/246 perfect score) and FinRobot source code to identify prompt patterns behind top benchmark scores. Created centralized prompt module [src/agent/v4/v4_prompts.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\v4\v4_prompts.py) with domain-specific templates for planner (finance-type taxonomy), executor ("senior finance analyst, be specific, ground in data"), family-specific guidance (legal: 3+ structures with mechanics; options: explicit Greeks as numbers; quant: show work), LLM self-reflection rubric (3 questions: all parts addressed? required fields present? data evidence?), heuristic pre-check (skip LLM if score >= 0.85), and targeted revision builder. Updated [src/agent/v4/nodes.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\v4\nodes.py) to use centralized prompts. Added `revision_mode` to `solver_context_block` in [src/agent/v4/context.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\v4\context.py) so revision passes skip non-live-data tool findings (~40% smaller prompts).
-- **Critical Bug Solved:** Self-reflection was fully rule-based (char-length check only), executor prompt was 2 generic sentences with no domain grounding, and revision cycles re-sent full tool findings even though they were already reflected in the prior answer.
-- **Fix:** Self-reflection now uses heuristic pre-check + LLM rubric call (profiler model) for complex_qualitative tasks. Updated test in [tests/test_v4_runtime.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_v4_runtime.py) to mock LLM reflection. Full suite: `159 passed, 5 skipped`.
-- **Handoff Notes:** Re-run the 3-task benchmark to measure impact. Key improvements to watch: (1) Task 2 legal completeness from executor+reflection upgrades, (2) Task 3 Greeks formatting from options guidance, (3) overall token usage reduction from revision_mode.
-
-### Chat 30: V4 Legal Front-Loading and Options Output Fixes
-
-- **Role:** Coder
-- **Actions Taken:** Tightened V4 legal prompting for PRBench-style transactional tasks so the first 2000-2500 characters now must contain a compact option snapshot with 3+ structure alternatives, recommendation, tax/liability/regulatory summary, and next-step plan in [src/agent/v4/v4_prompts.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\v4\v4_prompts.py). Added a reviewer front-load check in [src/agent/v4/nodes.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\v4\nodes.py) so legal answers that bury alternatives after a long single-structure deep dive are revised/fail even if the full answer is otherwise detailed. Also fixed reviewer/self-reflection routing so a reviewer `fail` no longer flows into self-reflection as if the answer were complete. Corrected the V4 options final path to use real policy context instead of implicitly forcing defined-risk language on generic options prompts, and updated deterministic options finals in [src/agent/solver/options.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\solver\options.py) to emit parseable Greek lines (`Delta`, `Gamma`, `Theta`, `Vega`) for benchmark extraction.
-- **Critical Bug Solved:** PRBench only judges the first 2500 characters, but V4 legal answers could still front-load one structure and bury alternatives; reviewer `fail` could also still appear to “pass” through self-reflection, and the options final could wrongly claim a defined-risk mandate for prompts that never asked for one.
-- **Fix:** Added regressions in [tests/test_v4_runtime.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_v4_runtime.py) for front-loaded legal snapshots, failed-review routing, legal revision prompt wording, and the corrected options final format. Full suite: `162 passed, 5 skipped`.
-
-### Chat 31: V4 Legal Generalization Cleanup
-
-- **Role:** Coder
-- **Actions Taken:** Removed the most task-2-specific wording from the V4 legal path and replaced it with broader transactional/advisory guidance. Generalized [src/agent/v4/v4_prompts.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\v4\v4_prompts.py) so legal answers now front-load an opening summary for skimmers instead of benchmarking against one exact prompt shape. Broadened V4 legal structure detection and front-load review in [src/agent/v4/nodes.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\v4\nodes.py) to recognize a wider range of structure families and to review the opening section rather than a single task-specific wording pattern. Generalized legal context and checklist helpers in [src/agent/v4/context.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\v4\context.py) and [src/agent/v4/legal_tools.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\v4\legal_tools.py) so they handle equity / cash / hybrid consideration, broader liability goals, and workforce / consent timing constraints. Also widened shared legal repair and reflection wording in [src/agent/nodes/reviewer.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\reviewer.py), [src/agent/nodes/solver.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\solver.py), and [src/agent/nodes/self_reflection.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\self_reflection.py) to use broader workforce-transfer / consultation language instead of one benchmark-specific label.
-- **Critical Bug Solved:** The V4 legal prompt and review logic had become too particular to one sample legal benchmark question, which risked improving that case while reducing generalization across the broader transactional domain.
-- **Handoff Notes:** This pass intentionally did not touch the deterministic exact-quant and options fast paths. The goal was to generalize the legal/advisory logic without weakening the control behavior that V4 already needed for benchmark-style legal tasks.
-
-### Chat 32: Runtime Context Slimming and V4 Cutover
-
-- **Role:** Coder
-- **Actions Taken:** Slimmed the active runtime context so solver-facing payloads no longer carry empty `open_questions` / `assumptions`, and removed duplicated `focus_query` provenance from [src/agent/v4/context.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\v4\context.py). Added modest legal assumptions so the `assumptions` field is now actually populated and used when relevant. Compacted executor trace tool payloads in [src/agent/v4/nodes.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\v4\nodes.py) so trace entries stop replaying raw tool `query` noise. Added one bounded salvage path after a complex-qualitative reviewer `fail`, so a weak legal answer can get one final targeted recovery pass instead of terminating immediately. Cut the public runtime surface over to the active hybrid runtime in [src/agent/graph.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\graph.py) and [src/agent/__init__.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\__init__.py), and removed `v4_` prefixes from active template/tracer identifiers in [src/agent/tracer.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\tracer.py).
-- **Critical Bug Solved:** Complex legal runs could stop after a second-review `fail` even when a final bounded recovery pass was still justified, and trace/state payloads were still noisier than the actual reviewer/self-reflection logic required.
-- **Handoff Notes:** The public runtime no longer depends on `AGENT_RUNTIME_VERSION` or the V3/V4 graph split. The internal `agent/v4/` package name is still present as an implementation namespace; removing that folder-level naming should be handled as a separate mechanical rename if you still want it gone.
-
-### Chat 33: Runtime Namespace Fold
-
-- **Role:** Coder
-- **Actions Taken:** Folded the active runtime out of `src/agent/v4/` into neutral top-level modules: [runtime_graph.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\runtime_graph.py), [runtime_nodes.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\runtime_nodes.py), [runtime_context.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\runtime_context.py), [runtime_contracts.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\runtime_contracts.py), [runtime_state.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\runtime_state.py), [runtime_capabilities.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\runtime_capabilities.py), [runtime_legal_tools.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\runtime_legal_tools.py), and [runtime_prompts.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\runtime_prompts.py). Updated the main graph surface in [graph.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\graph.py), neutralized runtime naming in [runtime_version.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\runtime_version.py) and [tracer.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\tracer.py), updated the focused runtime tests in [test_v4_runtime.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_v4_runtime.py), and deleted the old `src/agent/v4/` package.
-- **Critical Bug Solved:** The runtime had already been functionally cut over, but the codebase still exposed the old `agent.v4` namespace and V3/V4 framing. That split is now removed from the live code path.
-- **Handoff Notes:** Focused validation passed after the namespace fold: `pytest tests/test_v4_runtime.py -q` -> `15 passed`. The legacy runtime-selection helper still exists for script compatibility, but it now resolves to the active runtime only.
-
-### Chat 34: Engine Surface Cleanup
-
-- **Role:** Coder
-- **Actions Taken:** Removed the remaining dead staged-node stack from [src/agent/nodes](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes) after extracting the last active review helpers into [src/agent/engine/review_utils.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\engine\review_utils.py). Deleted the old staged smoke and slice scripts, renamed staged-only test helpers/files to neutral names (`test_utils.py`, `test_output_adapter.py`, `test_reflect.py`), and cleaned active docstrings/labels across the engine, runner, server, memory, and README so the repo now refers to the active engine instead of staged/V4 transitional names.
-- **Critical Bug Solved:** The codebase still carried a second, unused staged implementation surface, stale script entrypoints, and dead imports that made the active architecture harder to understand and easier to break accidentally.
-- **Fix:** Verified the surviving active surface with `pytest tests/test_engine_runtime.py tests/test_output_adapter.py tests/test_reflect.py -q` (`19 passed`).
-
-### Chat 35: Heavy Retrieval Upgrade For OfficeQA-Style Benchmarks
-
-- **Role:** Coder
-- **Actions Taken:** Added local corpus retrieval tools in [src/agent/retrieval_tools.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\retrieval_tools.py) so the engine can search and fetch grounded document windows from a configured corpus directory (`OFFICEQA_CORPUS_DIR`, `REFERENCE_CORPUS_DIR`, or `DOCUMENT_CORPUS_DIR`). Wired those tools into [src/agent/capabilities.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\capabilities.py) and [src/agent/graph.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\graph.py) so document retrieval now means real corpus search plus document fetch, not just URL passthrough. Added a bounded retrieval planner/action contract in [src/agent/contracts.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\contracts.py) and implemented a multi-hop search/read/refine loop in [src/agent/nodes/orchestrator.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\orchestrator.py) so retrieval/document tasks can iteratively search, fetch, and only then synthesize. Expanded grounded-context and citation handling in [src/agent/curated_context.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\curated_context.py), added retrieval-grounding and citation prompts in [src/agent/prompts.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\prompts.py), raised retrieval/document context budgets in [src/agent/budget.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\budget.py), and added task-aware long-context model routing in [src/agent/model_config.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\model_config.py).
-- **Critical Bug Solved:** The engine previously had retrieval families on paper but no real retrieval loop: it could run one tool pass, then synthesize from incomplete evidence. That was not sufficient for OfficeQA-style document extraction/calculation tasks or any long-context grounded retrieval benchmark.
-- **Fix:** Added focused regressions in [tests/test_engine_runtime.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_engine_runtime.py) and [tests/test_model_config.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_model_config.py). Verified compile and targeted retrieval/model tests:
-  - `python -m py_compile ...` on touched files
-  - `pytest tests/test_engine_runtime.py -k "document_query_prefers_document_grounded_retrieval_tools or runs_retrieval_search_then_fetch_before_final_answer or reviewer_flags_missing_grounding_for_document_answers" -q`
-  - `pytest tests/test_model_config.py -k "long_context_override_applies_to_document_solver" -q`
-
-### Chat 36: Retrieval Pagination Hardening
-
-- **Role:** Coder
-- **Actions Taken:** Hardened retrieval paging across both local corpus and URL-backed reference files. In [src/agent/retrieval_tools.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\retrieval_tools.py), blocked corpus path escape, switched corpus scoring from broad substring checks to token overlap, and added explicit chunk-window metadata (`chunk_start`, `chunk_limit`, `returned_chunks`). In [src/agent/tools/normalization.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\tools\normalization.py), parsed reference-file page/row window metadata into `window_kind`, totals, and `has_more_windows`. In [src/agent/nodes/orchestrator.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\orchestrator.py), replaced the old “any fetched chunk means answer” behavior with evidence-sufficiency checks plus bounded next-window actions for both `fetch_corpus_document` and `fetch_reference_file`, while keeping `document_grounded_analysis` inside grounded sources instead of widening to web search too early.
-- **Critical Bug Solved:** Long-document retrieval could still stop after the first weak chunk/page because the state machine treated any fetch as sufficient evidence; URL-backed `fetch_reference_file` also had no usable next-page/next-row control path even though the tool itself supported pagination.
-- **Fix:** Added regressions in [tests/test_engine_runtime.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_engine_runtime.py) for corpus path safety, corpus multi-chunk pagination, reference-file pagination metadata, and multi-page `fetch_reference_file` execution. Verified with:
-  - `python -m py_compile src/agent/retrieval_tools.py src/agent/tools/normalization.py src/agent/nodes/orchestrator.py tests/test_engine_runtime.py`
-  - `pytest tests/test_engine_runtime.py -q`
-
-### Chat 37: Judge MCP Bridge Completion
-
-- **Role:** Coder
-- **Actions Taken:** Completed the missing benchmark Judge MCP bridge so benchmark-exposed tools can actually enter the active engine. In [src/mcp_client.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\mcp_client.py), added automatic Judge MCP discovery with `http://judge:9009/mcp` as the default benchmark endpoint and normalized accidental `/mcp/tools` inputs back to the MCP base URL. In [src/executor.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\executor.py), added request-time MCP refresh so startup timing no longer silently drops Judge tools. In [src/agent/capabilities.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\capabilities.py), added external-tool family/role inference so previously unknown Judge tools can be treated as `document_retrieval`, `external_retrieval`, or bounded compute families instead of falling into dead `general` space. In [src/agent/nodes/orchestrator.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\orchestrator.py), generalized retrieval control and generic tool-arg construction so externally named search/read tools can be selected, called, paginated, and normalized without hardcoding their names. In [src/agent/tools/normalization.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\tools\normalization.py), broadened file-fetch parsing to recognize file-style payloads from external Judge tools, not just the built-in `fetch_reference_file` name.
-- **Critical Bug Solved:** Even when MCP tools could be loaded, the active runtime still could not use benchmark Judge tools safely because unknown tool names were classified as `general`, immediate runtime loading could miss the Judge endpoint, and the retrieval loop only understood a handful of built-in tool names.
-- **Fix:** Added focused regressions in [tests/test_mcp_client.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_mcp_client.py) and [tests/test_engine_runtime.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_engine_runtime.py) covering Judge URL auto-discovery, external tool role inference, and end-to-end use of externally named Treasury search/read tools. Verified with:
-  - `python -m py_compile src/mcp_client.py src/executor.py src/agent/capabilities.py src/agent/nodes/orchestrator.py src/agent/tools/normalization.py tests/test_engine_runtime.py tests/test_mcp_client.py`
-  - `pytest tests/test_engine_runtime.py tests/test_mcp_client.py -q`
-- **Handoff Notes:** This completes Judge-tool ingestion for OfficeQA-style document benchmarks. ACE still only synthesizes safe schema-bridge/transform helpers; it does not yet synthesize new finance compute tools like Black-Scholes or amortization engines on demand. For those, rely on built-in exact/finance tools first, and treat broader finance-compute synthesis as separate future work rather than assuming ACE already covers it.
-
-### Chat 38: OfficeQA Output Contract And Judge Refresh Hardening
-
-- **Role:** Coder
-- **Actions Taken:** Added a benchmark-level OfficeQA answer contract override in [src/agent/context/profiling.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\context\profiling.py) so OfficeQA runs now enforce `<REASONING>` and `<FINAL_ANSWER>` tags even when the task prompt itself never mentions XML. Added contract-aware formatting guidance in [src/agent/prompts.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\prompts.py) and wired it into the executor prompt path in [src/agent/nodes/orchestrator.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\orchestrator.py). Extended [src/agent/nodes/output_adapter.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\output_adapter.py) so OfficeQA answers are runtime-normalized into `<REASONING>` plus `<FINAL_ANSWER>` and the final tag contains only the extracted exact value/string instead of the whole prose answer. Hardened Judge MCP loading in [src/mcp_client.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\mcp_client.py) by loading servers independently and merging successful tools instead of failing all-or-nothing, and updated [src/executor.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\executor.py) so the first live request always performs one MCP refresh when Judge discovery is enabled, even if other MCP tools already loaded at startup.
-- **Critical Bug Solved:** OfficeQA answers could be marked wrong purely because no `<FINAL_ANSWER>` tags were emitted, and Judge MCP tools could still be silently missed when another MCP server loaded successfully first or when one server in a multi-server load failed.
-- **Fix:** Added focused regressions in [tests/test_output_adapter.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_output_adapter.py) and [tests/test_mcp_client.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_mcp_client.py). Verified with:
-  - `python -m py_compile src/agent/context/profiling.py src/agent/prompts.py src/agent/nodes/orchestrator.py src/agent/nodes/output_adapter.py src/mcp_client.py src/executor.py tests/test_output_adapter.py tests/test_mcp_client.py`
-  - `pytest tests/test_output_adapter.py tests/test_mcp_client.py -q`
-
-### Chat 39: Local Corpus Tool Gating For Judge-Only OfficeQA Runs
-
-- **Role:** Coder
-- **Actions Taken:** Added [local_corpus_available()](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\retrieval_tools.py) and updated [graph.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\graph.py) so built-in local corpus tools are only registered when a real local corpus directory is configured. Judge-only OfficeQA runs now prefer benchmark-provided MCP document tools instead of hitting the built-in `search_reference_corpus` / `fetch_corpus_document` tools and failing with “No local corpus directory is configured.”
-- **Critical Bug Solved:** The runtime still exposed local corpus tools even when no local corpus existed, which let the planner choose a guaranteed-to-fail retrieval path instead of the Judge MCP path.
-- **Fix:** Verified with `python -m py_compile src/agent/retrieval_tools.py src/agent/graph.py`.
-
-### Chat 40: OfficeQA Document-First Routing And XML Sanitization
-
-- **Role:** Coder
-- **Actions Taken:** Tightened OfficeQA planning in [src/agent/nodes/orchestrator.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\orchestrator.py) so any task running under the OfficeQA XML contract routes into `document_grounded_analysis` first, with `document_retrieval` ahead of any compute families. Added a derived-calculation detector so OfficeQA math questions can still select `exact_compute` / `analytical_reasoning`, but updated [src/agent/capabilities.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\capabilities.py) so document-grounded plans do not queue market-data or calculator-style tools before document evidence exists. Hardened tool execution in [src/agent/nodes/orchestrator.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\orchestrator.py) so bad tool args now return normalized tool errors instead of crashing the whole task. Tightened [src/agent/nodes/output_adapter.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\output_adapter.py) so overlong or contaminated `<FINAL_ANSWER>` blocks are re-normalized down to the exact scalar/string answer instead of passing through benchmark-breaking prose.
-- **Critical Bug Solved:** OfficeQA document tasks could still fire `calculator {}` or `get_price_history {}` before any document evidence was retrieved, and malformed model-generated `<FINAL_ANSWER>` blocks could survive into the final artifact and fail the judge even when the right scalar answer was present.
-- **Fix:** Added focused regressions in [tests/test_engine_runtime.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_engine_runtime.py) and [tests/test_output_adapter.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_output_adapter.py). Verified with:
-  - `python -m py_compile src/agent/nodes/orchestrator.py src/agent/capabilities.py src/agent/nodes/output_adapter.py tests/test_output_adapter.py tests/test_engine_runtime.py`
-  - `pytest tests/test_output_adapter.py tests/test_engine_runtime.py -k "officeqa or overlong_existing_final_answer_block" -q`
-
-### Chat 41: Dedicated Judge Session Bridge And OfficeQA Model Profile
-
-- **Role:** Coder
-- **Actions Taken:** Added a dedicated request-scoped Judge bridge in [src/judge_mcp_bridge.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\judge_mcp_bridge.py) that mirrors Purple’s successful pattern: session-scoped `GET /mcp/tools?session_id=...`, explicit `POST /mcp` tool calls, and schema-based pre-flight validation of required parameters before each tool call. Updated [src/executor.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\executor.py) so the active graph is rebuilt per request with Judge tools discovered for that exact task session, instead of relying on generic shared MCP discovery for benchmark tools. Updated [src/mcp_client.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\mcp_client.py) so the generic MCP loader can exclude Judge, which prevents duplicate or conflicting Judge discovery paths. Added an `officeqa` model profile plus benchmark-aware fallback in [src/agent/model_config.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\model_config.py): when `BENCHMARK_NAME=officeqa` and no explicit profile is set, the engine now defaults to `deepseek-ai/DeepSeek-V3.2` for the solver and `Qwen/Qwen3-32B-fast` for profiler/reviewer roles.
-- **Critical Bug Solved:** The runtime previously treated Judge MCP as just another generic external MCP source, which meant no request-scoped `session_id` tool discovery, no schema-based pre-validation before tool calls, and a weaker benchmark integration path than Purple’s `mcp_bridge.py`.
-- **Fix:** Added focused regressions in [tests/test_judge_mcp_bridge.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_judge_mcp_bridge.py) covering session-scoped discovery, required-parameter validation, explicit Judge tool POST payloads, and OfficeQA model-profile fallback. Verified with:
-  - `python -m py_compile src/judge_mcp_bridge.py src/mcp_client.py src/executor.py src/agent/model_config.py tests/test_judge_mcp_bridge.py`
-  - `pytest tests/test_judge_mcp_bridge.py tests/test_mcp_client.py tests/test_output_adapter.py tests/test_engine_runtime.py -k "judge or officeqa or overlong_existing_final_answer_block" -q`
-
-### Chat 42: Purple Bridge Parity Check
-
-- **Role:** Coder
-- **Actions Taken:** Cross-checked the new Judge bridge against Purple's published [mcp_bridge.py](https://github.com/abhishec/purple-agent-finance-worker/blob/main/src/mcp_bridge.py) and confirmed the active integration now follows the same benchmark-critical flow: session-scoped `GET /mcp/tools?session_id=...`, explicit `POST /mcp` calls with `tool` / `params` / `session_id`, and pre-flight validation of required parameters before the network call. Kept the OfficeQA benchmark model path benchmark-aware in [src/agent/model_config.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\model_config.py): when `BENCHMARK_NAME=officeqa` and no explicit role override is set, the engine now routes solver work to `deepseek-ai/DeepSeek-V3.2` and profiler/reviewer/adapter/reflection work to `Qwen/Qwen3-32B-fast`.
-- **Critical Bug Solved:** The OfficeQA integration no longer depends on the weaker generic MCP semantics for Judge tools, and the benchmark-specific model selection is no longer left to whichever unrelated default profile happened to be active.
-- **Fix:** Re-ran focused OfficeQA/Judge regressions:
-  - `pytest tests/test_judge_mcp_bridge.py tests/test_mcp_client.py tests/test_output_adapter.py tests/test_engine_runtime.py -k "judge or officeqa or overlong_existing_final_answer_block" -q`
-
-### Chat 43: Judge DNS Failure Hardening
-
-- **Role:** Coder
-- **Actions Taken:** Hardened the Judge MCP failure path in [src/judge_mcp_bridge.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\judge_mcp_bridge.py) so DNS/connect failures now raise an actionable Judge-specific error that explains the real deployment issue: the agent is likely running outside the benchmark Docker network and must either join that network or use a host-reachable `BENCHMARK_JUDGE_MCP_URL`. Added pre-graph failure tracing in [src/agent/tracer.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\tracer.py) and wired it through [src/executor.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\executor.py), so OfficeQA runs that fail before `run_agent_trace()` now still emit a minimal trace instead of disappearing entirely.
-- **Critical Bug Solved:** OfficeQA benchmark runs could fail with a raw `[Errno 11001] getaddrinfo failed` before the graph started, which meant no actionable message and no trace file because the tracer only started inside the graph runner.
-- **Fix:** Added a targeted regression in [tests/test_judge_mcp_bridge.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_judge_mcp_bridge.py) for Judge DNS/connect failure messaging and re-ran focused OfficeQA/Judge tests:
-  - `python -m py_compile src/judge_mcp_bridge.py src/executor.py src/agent/tracer.py tests/test_judge_mcp_bridge.py`
-  - `pytest tests/test_judge_mcp_bridge.py tests/test_mcp_client.py tests/test_output_adapter.py tests/test_engine_runtime.py -k "judge or officeqa or overlong_existing_final_answer_block" -q`
-
-### Chat 44: Local OfficeQA Runner Graceful Judge Fallback
-
-- **Role:** Coder
-- **Actions Taken:** Updated [src/judge_mcp_bridge.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\judge_mcp_bridge.py) so missing Judge MCP on the lightweight local OfficeQA runner is treated as a non-fatal capability absence instead of a task failure. Judge discovery now logs a warning and returns `[]` by default on HTTP 404 or connection errors, which lets the engine fall back to its own retrieval/tooling path. Added `STRICT_JUDGE_MCP_DISCOVERY=1` as an opt-in escape hatch for real-platform debugging when you want the old fail-fast behavior back.
-- **Critical Bug Solved:** The local `officeqa_agentbeats` repo does not expose the production Judge MCP endpoints, so the previous bridge behavior was too strict: a missing `/mcp/tools` endpoint could kill the whole task even though the correct local behavior is to continue without Judge-provided tools.
-- **Fix:** Added focused regressions in [tests/test_judge_mcp_bridge.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_judge_mcp_bridge.py) covering default fallback on connection failure, default fallback on HTTP 404, and strict-mode failure when explicitly enabled. Verified with:
-  - `python -m py_compile src/judge_mcp_bridge.py tests/test_judge_mcp_bridge.py`
-  - `pytest tests/test_judge_mcp_bridge.py -q`
-
-### Chat 45: OfficeQA Retrieval Stabilization And Local Diagnostics Hardening
-
-- **Role:** Coder
-- **Actions Taken:** Implemented the Phase 1 OfficeQA/retrieval stabilization pass without task-specific hardcoding. Added request-scoped tracing in [src/agent/tracer.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\tracer.py), threaded trace identity through [src/agent/state.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\state.py), [src/agent/runner.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\runner.py), and [src/executor.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\executor.py) so concurrent benchmark requests stop overwriting each other's local trace files. Added retrieval reasoning primitives in [src/agent/retrieval_reasoning.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\retrieval_reasoning.py) and wired them into [src/agent/curated_context.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\curated_context.py), [src/agent/contracts.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\contracts.py), and [src/agent/nodes/orchestrator.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\orchestrator.py) so retrieval now runs off a structured `RetrievalIntent` plus `EvidenceSufficiency` check instead of blindly reusing the raw question or answering from weak fetches. Tightened OfficeQA tool-family gating in [src/agent/capabilities.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\capabilities.py) so local OfficeQA runs can use only document retrieval, external retrieval, exact compute, and analytical reasoning, which prevents widening into unrelated finance tools like `du_pont_analysis` or market-data tools. Hardened file retrieval and normalization in [src/mcp_servers/file_handler/server.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\mcp_servers\file_handler\server.py) and [src/agent/tools/normalization.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\tools\normalization.py) with magic-byte PDF sniffing, binary-payload detection, structured `retrieval_status`, and evidence-quality scoring so garbled binary payloads no longer bleed into solver context as fake text. Tightened OfficeQA contract gating in [src/agent/context/profiling.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\context\profiling.py) so `.env` OfficeQA flags only activate on actual OfficeQA/Treasury-style prompts instead of contaminating unrelated tasks. Also normalized cached corporate-action records in [src/mcp_servers/market_data/server.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\mcp_servers\market_data\server.py) so the broader suite stays stable under repeated runs.
-- **Critical Bug Solved:** Local OfficeQA runs had four architecture failures at once: concurrent traces were being merged into one file, binary or mislabeled PDFs could enter the engine as garbage text, OfficeQA fallback planning could widen into unrelated finance tools, and evidence checks were weak enough to accept pagination noise or wrong-source annual tables as sufficient support.
-- **Fix:** Added targeted regressions in [tests/test_engine_runtime.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_engine_runtime.py), [tests/test_tool_normalization.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_tool_normalization.py), [tests/test_file_handler.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_file_handler.py), and [tests/test_tracer.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_tracer.py) covering OfficeQA env gating, retrieval sequencing, request-scoped tracing, dict-based retrieval normalization, binary payload handling, and PDF magic-byte sniffing. Verified with:
-  - `pytest tests/test_engine_runtime.py tests/test_tool_normalization.py tests/test_file_handler.py tests/test_tracer.py -q`
-  - `pytest tests -q`
-
-### Chat 46: Benchmark Override Refactor And Non-Blocking Trace Writes
-
-- **Role:** Coder
-- **Actions Taken:** Removed the remaining deep engine dependence on raw OfficeQA environment checks by introducing explicit intake-derived benchmark overrides. Added [infer_benchmark_overrides()](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\context\profiling.py) and threaded `benchmark_overrides` through [intake.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\intake.py), [state.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\state.py), [runner.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\runner.py), [capabilities.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\capabilities.py), [retrieval_reasoning.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\retrieval_reasoning.py), [curated_context.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\curated_context.py), and [orchestrator.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\orchestrator.py) so benchmark-specific behavior is now determined once at intake and carried explicitly through state instead of being rediscovered via `os.getenv(...)` in inner loops. Kept XML contract activation prompt-aware by letting [extract_answer_contract()](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\context\profiling.py) consume the explicit override object. Also changed [tracer.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\tracer.py) so trace file writes are dispatched off the active event loop when called from async execution, which removes synchronous disk-write blocking from parallel benchmark runs without changing the public runner API.
-- **Critical Bug Solved:** The active engine still had hidden benchmark coupling in inner retrieval/capability logic, and trace file writes still used blocking `open(...)/json.dump(...)` on the async path. That combination made the engine harder to generalize and introduced unnecessary latency risk under concurrency.
-- **Fix:** Verified with:
-  - `pytest tests/test_engine_runtime.py tests/test_output_adapter.py tests/test_tracer.py -q`
-  - `pytest tests -q`
-
-### Chat 47: OfficeQA Competition Retrieval Corrections
-
-- **Role:** Coder
-- **Actions Taken:** Tightened external tool-family inference in [src/agent/capabilities.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\capabilities.py) so generic trading helpers like `get_pnl_report` no longer get misclassified as document retrieval tools just because their descriptions contain the word `report`. Reworked OfficeQA retrieval intent generation in [src/agent/retrieval_reasoning.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\retrieval_reasoning.py) to stop querying the benchmark with abstract derived metrics like `absolute difference` or overfitting every task to `Treasury Bulletin`; derived tasks now search for underlying expenditure series and CPI inputs, qualifier phrases are carried into search intent, annual reports are no longer blanket-excluded, and official government document families are treated as valid grounded sources. Hardened evidence sufficiency in the same file so generic parser metadata like `row_count` / `column_count` / `numeric_cell_count` no longer count as substantive numeric support. Added search-result reranking and safer fetch recovery in [src/agent/nodes/orchestrator.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\orchestrator.py): the retrieval loop now scores search results against entity / metric / period / aggregation intent, penalizes catalog and bulletin noise, refines the search again when the top result is weak, and only paginates fetched documents when the document window is still plausibly on-target. Extended [src/mcp_servers/file_handler/server.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\mcp_servers\file_handler\server.py) with optional `search_hint`-guided PDF window selection so the file handler can jump closer to relevant pages instead of always starting at page 1. Tightened [src/agent/nodes/output_adapter.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\output_adapter.py) so OfficeQA XML formatting no longer collapses insufficiency reasoning into stray years like `1953`, and strengthened the document-grounded reviewer in [src/agent/nodes/orchestrator.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\orchestrator.py) to flag insufficiency placeholders, unsupported inference from indirect evidence, and numeric answers that lack retrieved numeric support.
-- **Critical Bug Solved:** The latest OfficeQA run still failed for logic reasons even after the earlier stabilization pass: irrelevant tools leaked into OfficeQA plans, raw web search results were consumed in rank order instead of semantic relevance order, irrelevant catalogs and Federal Register PDFs were paginated as if they were promising sources, generic parser metadata falsely satisfied numeric evidence checks, and the XML adapter could turn an insufficiency answer into a benchmark-breaking stray year or empty `FINAL_ANSWER`.
-- **Fix:** Added regressions in [tests/test_engine_runtime.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_engine_runtime.py) and [tests/test_output_adapter.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_output_adapter.py) covering `get_pnl_report` leakage, OfficeQA search-result ranking, generic numeric-summary rejection, and insufficiency-safe XML adaptation. Verified with:
-  - `pytest tests/test_output_adapter.py tests/test_engine_runtime.py tests/test_file_handler.py -q`
-  - `pytest tests -q`
-
-### Chat 48: Competition GPT Role Split And Benchmark Tool Pruning
-
-- **Role:** Coder
-- **Actions Taken:** Added a competition-focused OpenAI profile in [src/agent/model_config.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\model_config.py) with a real role split instead of one-model-for-all behavior: `gpt-5.4` for direct/solver work, `gpt-5.4-mini` for profiler/reviewer/adapter/reflection, plus role-specific reasoning-effort defaults so the solver stays on `high` while reviewer runs at `medium` and adapter stays cheap. Expanded competition budgets in [src/agent/budget.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\budget.py) and [src/agent/nodes/orchestrator.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\orchestrator.py) for longer OfficeQA retrieval/document runs by increasing retrieval hops, document/retrieval context caps, and tool-call headroom. Pruned the benchmark tool surface twice: first at graph build time in [src/agent/graph.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\graph.py) / [src/agent/capabilities.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\capabilities.py), and then at MCP load time in [src/mcp_client.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\mcp_client.py), so OfficeQA runs stop even initializing irrelevant options/trading/market MCP servers when document/file tools are the only useful benchmark surface. Broadened the OfficeQA prompt detector in [src/agent/context/profiling.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\context\profiling.py) from a few literal benchmark strings to a score-based historical-document-QA heuristic, which reduces benchmark overfitting while keeping the benchmark-specific overrides intact. Updated `.env` for the active competition defaults: `MODEL_PROFILE=competition_gpt`, larger retrieval/document caps, and Judge MCP discovery re-enabled now that missing Judge endpoints degrade safely instead of crashing the task.
-- **Critical Bug Solved:** The runtime was still tuned like a general dev setup instead of a competition run: older GPT profile choices, too much MCP/server noise for OfficeQA, too little retrieval headroom for long document tasks, and a brittle prompt detector that still looked too benchmark-literal.
-- **Fix:** Added and updated regressions in [tests/test_model_config.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_model_config.py), [tests/test_mcp_client.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_mcp_client.py), and [tests/test_engine_runtime.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_engine_runtime.py) covering GPT role mapping, reviewer reasoning-effort defaults, OfficeQA MCP pruning, and the benchmark document loop under the new competition defaults. Verified with:
-  - `python -m py_compile src/agent/model_config.py src/mcp_client.py src/agent/context/profiling.py src/agent/budget.py src/agent/nodes/orchestrator.py tests/test_model_config.py tests/test_mcp_client.py`
-  - `pytest tests/test_model_config.py tests/test_mcp_client.py tests/test_engine_runtime.py -q -p no:cacheprovider`
-  - `pytest tests -q -p no:cacheprovider`
-
-### Chat 49: OfficeQA Failure Analysis And Re-Architecture Plan
-
-- **Role:** Architect / Reviewer
-- **Actions Taken:** Performed a full postmortem on the active OfficeQA path across the current graph, retrieval stack, benchmark traces, OfficeQA benchmark materials, and the public Purple finance worker references. Wrote the synthesis into [officeqa_integration_plan.md](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\docs\officeqa_integration_plan.md), including: why the OfficeQA transition failed, concrete bottlenecks in routing / retrieval / parsing / computation, how profile and template dependence still affects failure, and a phased implementation plan to move from finance-first heuristics to a benchmark-native corpus retrieval and deterministic compute pipeline.
-- **Critical Finding:** The main failure is not "insufficient prompting" or "wrong model." The system still treats OfficeQA as a special case inside a generic finance runtime. That causes two repeated failure classes: some OfficeQA prompts never activate the document-grounded path, and others do but still rely on weak search, page-window PDF parsing, and lossy evidence compaction instead of table-first extraction and provenance-backed computation.
-- **Handoff Notes:** The recommended next move is not another prompt patch cycle. Build an explicit benchmark adapter plus an OfficeQA corpus index and table-first compute path, then move current OfficeQA-specific hardcoding out of the generic engine.
-
-### Chat 50: OfficeQA Canonical Plan And Docs Cleanup
-
-- **Role:** Architect / Coder
-- **Actions Taken:** Created the execution-grade OfficeQA backlog in [officeqa_execution_plan.md](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\docs\officeqa_execution_plan.md). The new doc is intentionally checklist-driven so other coding agents can pick task ids, mark them complete, and treat it as the canonical delivery plan derived from [officeqa_integration_plan.md](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\docs\officeqa_integration_plan.md). Updated [.gitignore](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\.gitignore) so both OfficeQA docs stay visible even though the broader `docs/` directory is still mostly ignored. Cleaned the docs directory by deleting obsolete finance/V3/V4 checkpoint and review files that would now mislead implementation work.
-- **Strategic Decision Recorded:** Do not start a brand new repository. Replatform in place: keep benchmark-agnostic infrastructure such as the executor shell, Judge bridge, tracer, budget controls, output adapter pattern, and bounded self-reflection, while replacing the finance-first routing / retrieval / parsing / compute core with an OfficeQA-first architecture.
-- **Canonical Doc Set:** Keep `docs/progress.md` for execution logging, `docs/officeqa_integration_plan.md` for failure analysis, and `docs/officeqa_execution_plan.md` for the living implementation plan.
-
-### Chat 51: Phase 0 Complete, Phase 1 Benchmark Adapter Started
-
-- **Role:** Coder
-- **Actions Taken:** Completed the remaining Phase 0 cleanup and started Phase 1. Updated [README.md](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\README.md) so the repo now presents itself as OfficeQA-first rather than finance-first, removed the stale architecture image asset from `docs/`, and marked Phase 0 complete in [officeqa_execution_plan.md](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\docs\officeqa_execution_plan.md). Introduced an explicit benchmark adapter boundary under [src/agent/benchmarks/__init__.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\benchmarks\__init__.py), [src/agent/benchmarks/base.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\benchmarks\base.py), and [src/agent/benchmarks/officeqa.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\benchmarks\officeqa.py). Then rewired [profiling.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\context\profiling.py) so benchmark overrides and OfficeQA answer-contract resolution now flow through the adapter instead of being hardcoded inside generic profiling logic. Added a targeted regression to [test_output_adapter.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_output_adapter.py) proving that an explicit OfficeQA benchmark can now be exposed in runtime state without forcing OfficeQA mode for unrelated prompts.
-- **Phase Tracking:** Marked `P1.1`, `P1.2`, `P1.4`, and `P1.5` complete in [officeqa_execution_plan.md](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\docs\officeqa_execution_plan.md). `P1.3` and `P1.6` remain open because tool-family and validation policy still live outside the new adapter, and OfficeQA execution is still partly prompt-sensitive.
-- **Validation:** Ran `pytest tests/test_output_adapter.py tests/test_engine_runtime.py -k "officeqa or benchmark_overrides or output_adapter" -q` and the targeted OfficeQA suite passed (`13 passed`).
-
-### Chat 52: Phase 1 Runtime Policy Moved Out Of Generic Capability Code
-
-- **Role:** Coder
-- **Actions Taken:** Finished `P1.3` by moving OfficeQA runtime policy out of generic engine modules and into the benchmark adapter. Expanded [src/agent/benchmarks/officeqa.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\benchmarks\officeqa.py) so it now owns OfficeQA registry policy, allowed runtime families, allowed exact-compute tools, allowed external search tools, required source families, validation dimensions, excluded retrieval terms, and output-normalization policy. Added generic adapter accessors in [src/agent/benchmarks/__init__.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\benchmarks\__init__.py). Simplified [capabilities.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\capabilities.py) by removing the old in-file OfficeQA allowlists and descriptor gates, then rewired benchmark filtering and runtime tool selection to use the adapter instead. Simplified [retrieval_reasoning.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\retrieval_reasoning.py) by removing the old hardcoded OfficeQA exclude-term set and source-family requirement from the generic module; both now come from `benchmark_policy`. Extended [test_output_adapter.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_output_adapter.py) to assert the new adapter policy surface exists in runtime overrides.
-- **Hardcoded Logic Removed From Generic Modules:** Removed `_OFFICEQA_ALLOWED_FAMILIES`, `_BENCHMARK_TOOL_NAME_ALLOWLIST`, `_BENCHMARK_ALLOWED_FAMILIES`, `_officeqa_allowed_descriptor()`, and the old OfficeQA retrieval-exclusion constant from the shared engine code. The policy still exists, but it now lives under the OfficeQA benchmark adapter instead of contaminating the generic capability and retrieval layers.
-- **Phase Tracking:** Marked `P1.3` complete in [officeqa_execution_plan.md](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\docs\officeqa_execution_plan.md). `P1.6` remains open because OfficeQA retrieval and planning still depend on some benchmark-shaped prompt heuristics in later stages.
-- **Validation:** Ran `pytest tests/test_output_adapter.py tests/test_engine_runtime.py tests/test_mcp_client.py -k "officeqa or benchmark_overrides or output_adapter" -q` and the OfficeQA-focused adapter/capability suite passed (`14 passed`).
-
-### Chat 53: Phase 1 Prompt-Luck Removal For OfficeQA Activation
+### Chat 1: Phase 1 Prompt-Luck Removal For OfficeQA Activation
 
 - **Role:** Coder
 - **Actions Taken:** Finished `P1.6` by making explicit OfficeQA benchmark activation authoritative instead of treating OfficeQA as an XML-tag or prompt-shape special case. Updated [src/agent/benchmarks/officeqa.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\benchmarks\officeqa.py) so `BENCHMARK_NAME=officeqa` now always enables the OfficeQA runtime contract and answer adapter, and added a benchmark-owned OfficeQA task-intent builder. Added the generic bridge in [src/agent/benchmarks/__init__.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\benchmarks\__init__.py), then rewired [src/agent/nodes/orchestrator.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\orchestrator.py) so planning no longer checks for `FINAL_ANSWER` tags to decide whether a task is OfficeQA. Also cleaned [src/agent/retrieval_reasoning.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\retrieval_reasoning.py) by removing the most brittle legacy query templates and citation shortcuts such as fixed `site:govinfo.gov`, `Federal Reserve Bank of Minneapolis`, and fallback entity injection.
@@ -448,13 +132,13 @@ Rules:
 - **Phase Tracking:** Marked `P1.6` complete in [officeqa_execution_plan.md](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\docs\officeqa_execution_plan.md). Phase 1 is now complete. Remaining retrieval-state-machine cleanup moves to Phases 2 and 3.
 - **Validation:** Added targeted regressions in [tests/test_output_adapter.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_output_adapter.py) and [tests/test_engine_runtime.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_engine_runtime.py) covering explicit benchmark activation on non-keyword prompts and removal of legacy OfficeQA search templates.
 
-### Chat 54: Keep/Replace Status Clarified Before Phase 2
+### Chat 2: Keep/Replace Status Clarified Before Phase 2
 
 - **Role:** Coder
 - **Actions Taken:** Audited the execution plan's reusable-component and replace/isolate tracks against the current codebase before starting Phase 2. Updated [officeqa_execution_plan.md](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\docs\officeqa_execution_plan.md) to mark `R1-R6` complete because the A2A shell, Judge bridge, tracer, output adapter, bounded self-reflection, and budget/stop-reason infrastructure are all still present and intentionally retained. Added explicit status notes that `X1-X3` are only partially reduced after Phase 1, while `X4-X6` remain open and are the main architectural work for Phases 2-4.
 - **Handoff Notes:** Phase 2 can start without additional work on the keep-set. The true blockers are the open replace/isolate items, especially retrieval state, Treasury extraction, and structured evidence flow.
 
-### Chat 55: Phase 2 Corpus Manifest And Index Scaffold
+### Chat 3: Phase 2 Corpus Manifest And Index Scaffold
 
 - **Role:** Coder
 - **Actions Taken:** Started Phase 2 by adding a real local corpus index layer instead of relying only on raw directory scanning. Added [src/agent/benchmarks/officeqa_manifest.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\benchmarks\officeqa_manifest.py) to resolve the OfficeQA corpus root, read parsed/text artifacts, extract metadata fields, and write a persistent manifest under `.officeqa_index/`. Added [src/agent/benchmarks/officeqa_index.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\benchmarks\officeqa_index.py) to build the index, search indexed metadata, and resolve benchmark `source_files` values to indexed artifacts. Added the build entrypoint at [scripts/build_officeqa_index.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\scripts\build_officeqa_index.py). Updated [src/agent/retrieval_tools.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\retrieval_tools.py) so `search_reference_corpus` now prefers the OfficeQA manifest/index when present, while `fetch_corpus_document` can resolve indexed `document_id` values back to the local corpus artifact. Documented the connection flow in [README.md](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\README.md) and ignored generated `.officeqa_index/` artifacts in [.gitignore](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\.gitignore).
@@ -462,7 +146,7 @@ Rules:
 - **Phase Tracking:** Marked `P2.1`, `P2.2`, `P2.3`, and `P2.4` complete in [officeqa_execution_plan.md](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\docs\officeqa_execution_plan.md). `P2.5`, `P2.6`, and `P2.7` remain open.
 - **Validation:** Added [tests/test_officeqa_index.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_officeqa_index.py) and ran `pytest tests/test_officeqa_index.py tests/test_engine_runtime.py tests/test_output_adapter.py tests/test_mcp_client.py -k "officeqa or benchmark_overrides or output_adapter" -q` with `20 passed`.
 
-### Chat 56: Phase 2 Completed With Numeric Normalization, Source-File Linking, And Validation
+### Chat 4: Phase 2 Completed With Numeric Normalization, Source-File Linking, And Validation
 
 - **Role:** Coder
 - **Actions Taken:** Finished the remaining Phase 2 work. Extended [src/agent/benchmarks/officeqa_manifest.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\benchmarks\officeqa_manifest.py) so manifest entries now store normalized numeric values where possible, parse status, and validation flags for malformed or partially parsed artifacts. Extended [src/agent/benchmarks/officeqa_index.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\benchmarks\officeqa_index.py) with index validation plus source-file filtered search and manifest resolution. Fixed the benchmark-metadata path by adding [merge_benchmark_overrides()](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\benchmarks\__init__.py) and wiring it through [src/agent/nodes/intake.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\intake.py), [src/agent/runner.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\runner.py), [src/agent/contracts.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\contracts.py), [src/agent/curated_context.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\curated_context.py), [src/agent/retrieval_reasoning.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\retrieval_reasoning.py), [src/agent/retrieval_tools.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\retrieval_tools.py), and [src/agent/nodes/orchestrator.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\orchestrator.py) so benchmark `source_files` can be resolved to indexed artifacts and used to bias or directly seed retrieval.
@@ -471,7 +155,7 @@ Rules:
 - **Phase Tracking:** Marked `P2.5`, `P2.6`, and `P2.7` complete in [officeqa_execution_plan.md](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\docs\officeqa_execution_plan.md). Phase 2 is now complete.
 - **Validation:** Ran `pytest tests/test_officeqa_index.py tests/test_engine_runtime.py tests/test_output_adapter.py tests/test_mcp_client.py tests/test_runner.py -k "officeqa or benchmark_overrides or output_adapter or source_files" -q` with `23 passed`.
 
-### Chat 57: Competition Deployment Clarification Before Phase 3
+### Chat 5: Competition Deployment Clarification Before Phase 3
 
 - **Role:** Architect / Coder
 - **Decision:** Local-corpus-only access is not enough for competition deployment. The repo now explicitly treats local corpus access as a development mode, not as the only production path.
@@ -480,7 +164,7 @@ Rules:
   - `local dev mode`: retrieve through `OFFICEQA_CORPUS_DIR` and the local OfficeQA index
 - **Handoff Notes:** The next retrieval-state-machine work must not assume a repo-local corpus exists during online benchmark runs. Local index/code remains useful for development, debugging, and offline regression, but competition safety requires benchmark-resource-first retrieval when the benchmark environment exposes the corpus indirectly.
 
-### Chat 58: Competition Data-Access Assumption Corrected
+### Chat 6: Competition Data-Access Assumption Corrected
 
 - **Role:** Architect / Coder
 - **Critical Finding:** The public OfficeQA and AgentBeats materials do not document a guaranteed Judge or A2A corpus-access contract for participant agents. The previous plan line that treated benchmark-provided Judge resources as the primary competition document surface was too strong and should not be treated as a benchmark guarantee.
@@ -488,14 +172,14 @@ Rules:
 - **Actions Taken:** Updated [officeqa_execution_plan.md](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\docs\officeqa_execution_plan.md) to replace the unsupported Judge-first competition assumption with a competition-safe deployment model. Added a new `Phase 2.5: Competition Corpus Packaging` with tasks for dataset delivery, bootstrap verification, competition startup checks, and deployment documentation. Updated Phase 3 so the retrieval backend is explicit: packaged OfficeQA corpus first, Judge adapters optional, open web search excluded from normal OfficeQA execution.
 - **Planning Impact:** The next implementation work should not start with Judge-tool-specific retrieval logic. It should start with competition corpus packaging and runtime bootstrap so the agent can always access the Treasury documents in the benchmark environment even if the judge exposes no document tools at all.
 
-### Chat 59: Phase 2.5 Competition Corpus Bootstrap Completed
+### Chat 7: Phase 2.5 Competition Corpus Bootstrap Completed
 
 - **Role:** Coder
 - **Actions Taken:** Implemented the competition corpus bootstrap path. Added [officeqa_runtime.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\benchmarks\officeqa_runtime.py) with explicit competition-mode detection plus `verify_officeqa_corpus_bundle()` and `verify_officeqa_competition_bootstrap()`. Extended [officeqa_manifest.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\benchmarks\officeqa_manifest.py) so index metadata now includes `index_schema_version` and can be loaded directly for bootstrap validation. Added [verify_officeqa_corpus.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\scripts\verify_officeqa_corpus.py) as the deployment preflight script. Wired [executor.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\executor.py) to fail during startup when `COMPETITION_MODE=1` and `BENCHMARK_NAME=officeqa` but the packaged corpus or built index is missing. Updated [README.md](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\README.md) and [.env.example](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\.env.example) to document the packaged-corpus deployment model and the verification step.
 - **Critical Bug Solved:** Local retrieval failure used to appear late and ambiguously inside tool execution. Competition runs now fail clearly at startup if the OfficeQA dataset bundle is absent or indexed with the wrong schema.
 - **Phase Tracking:** Marked `P2.8`, `P2.9`, `P2.10`, `P2.11`, and `P2.12` complete in [officeqa_execution_plan.md](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\docs\officeqa_execution_plan.md). Phase 2.5 is now complete.
 
-### Chat 60: Phase 3 OfficeQA Retrieval State Machine Completed
+### Chat 8: Phase 3 OfficeQA Retrieval State Machine Completed
 
 - **Role:** Coder
 - **Actions Taken:** Replaced the old generic OfficeQA retrieval path with explicit OfficeQA retrieval tools and stage-driven planning. Added `search_officeqa_documents`, `fetch_officeqa_pages`, `fetch_officeqa_table`, `lookup_officeqa_rows`, and `lookup_officeqa_cells` in [retrieval_tools.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\retrieval_tools.py). Updated [capabilities.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\capabilities.py) so those tools are first-class document-retrieval bindings with higher priority than the old generic corpus tools. Updated [officeqa.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\benchmarks\officeqa.py) so the new OfficeQA tool surface is benchmark-allowed and OfficeQA web fallback is now disabled by default unless explicitly enabled. Extended [contracts.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\contracts.py) so retrieval actions carry an explicit stage. Reworked the retrieval planner in [orchestrator.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\orchestrator.py) to follow OfficeQA-first stages: `identify_source -> locate_table -> extract_rows -> extract_cells -> locate_pages -> answer`, while retaining generic fallback behavior for non-OfficeQA paths. Tightened [retrieval_reasoning.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\retrieval_reasoning.py) so source-family validation no longer accepts arbitrary `treasury_` strings on non-official domains and so OfficeQA evidence sufficiency now surfaces benchmark-relevant failure dimensions: `missing table`, `partial table`, `missing month coverage`, and `unit ambiguity`. Updated [normalization.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\tools\normalization.py) so the new OfficeQA retrieval tools normalize into the existing tool-result contract cleanly.
@@ -504,7 +188,7 @@ Rules:
 - **Validation:** Added OfficeQA-focused retrieval regressions in [tests/test_officeqa_index.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_officeqa_index.py) and [tests/test_engine_runtime.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_engine_runtime.py) covering structured table/cell extraction, table-first executor flow, wrong-source rejection, and missing month coverage. Verified with:
   - `pytest tests/test_officeqa_index.py tests/test_engine_runtime.py tests/test_output_adapter.py tests/test_mcp_client.py tests/test_runner.py -k "officeqa or benchmark_overrides or output_adapter or source_files" -q`
 
-### Chat 61: Phase 4 Structured Evidence And Provenance Completed
+### Chat 9: Phase 4 Structured Evidence And Provenance Completed
 
 - **Role:** Coder
 - **Actions Taken:** Completed the Phase 4 structured-evidence pass so OfficeQA no longer relies only on prompt-compacted retrieval snippets during synthesis. Extended [src/agent/contracts.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\contracts.py) with typed `OfficeQATableEvidence`, `OfficeQAValueEvidence`, and `OfficeQAStructuredEvidence` models, and added structured-evidence fields to `CuratedContext` and `ReviewPacket`. Expanded [src/agent/document_evidence.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\document_evidence.py) so OfficeQA page, table, row, and cell tool results all project into document-evidence records instead of only generic fetch outputs. Added [src/agent/officeqa_structured_evidence.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\officeqa_structured_evidence.py) to build stable OfficeQA table/value/page objects with normalized units and numeric values plus cell-level provenance. Updated [src/agent/curated_context.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\curated_context.py) so OfficeQA curated context, solver payloads, and review packets now carry compact structured evidence. Updated [src/agent/nodes/orchestrator.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\orchestrator.py) so every new retrieval tool result refreshes structured evidence before the next gather or synthesis step.
@@ -514,7 +198,7 @@ Rules:
   - `$env:PYTHONPATH='src'; python -m pytest tests/test_engine_runtime.py -k "officeqa or structured_evidence" -q -p no:cacheprovider` -> `11 passed, 28 deselected`
   - `$env:PYTHONPATH='src'; python -m pytest tests/test_officeqa_index.py -q -p no:cacheprovider` -> `9 passed`
 
-### Chat 62: Phase 5 Deterministic OfficeQA Compute Completed
+### Chat 10: Phase 5 Deterministic OfficeQA Compute Completed
 
 - **Role:** Coder
 - **Actions Taken:** Implemented the deterministic OfficeQA compute layer over structured evidence. Added [officeqa_compute.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\benchmarks\officeqa_compute.py) with explicit operators for monthly sums, calendar-year totals, fiscal-year totals, absolute differences, absolute percent changes, and inflation-adjusted differences, plus an operation ledger and compute validation status. Extended [contracts.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\contracts.py) with typed OfficeQA compute-step and compute-result models, and added compute-result slots to `CuratedContext` and `ReviewPacket`. Updated [curated_context.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\curated_context.py) so compute results are attached to provenance, facts-in-use, review packets, and solver payloads. Updated [orchestrator.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\orchestrator.py) so the OfficeQA executor now prefers deterministic compute before the LLM synthesis path and returns a reviewable deterministic answer when structured evidence is sufficient.
@@ -524,3 +208,33 @@ Rules:
   - `$env:PYTHONPATH='src'; python -m pytest tests/test_officeqa_compute.py -q -p no:cacheprovider` -> `4 passed`
   - `$env:PYTHONPATH='src'; python -m pytest tests/test_engine_runtime.py -k "officeqa or structured_evidence" -q -p no:cacheprovider` -> `11 passed, 28 deselected`
   - `$env:PYTHONPATH='src'; python -m pytest tests/test_officeqa_index.py tests/test_officeqa_compute.py -q -p no:cacheprovider` -> `13 passed`
+
+### Chat 11: Phase 6 Structured Validator And Safe Finalization Completed
+
+- **Role:** Coder
+- **Actions Taken:** Completed the Phase 6 validation/finalization pass by adding [officeqa_validator.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\benchmarks\officeqa_validator.py). The new validator checks OfficeQA structured evidence and deterministic compute state before final formatting, including source-family correctness, entity/category scope, time scope, aggregation correctness, unit consistency, deterministic-compute readiness, and provenance presence. Extended [contracts.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\contracts.py) with `OfficeQAValidationResult` and added validator output to `ReviewPacket`. Updated [curated_context.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\curated_context.py) so review packets now carry compact validator state. Integrated the validator into [orchestrator.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\orchestrator.py), where hard OfficeQA validation failures now stop with explicit `officeqa_*` stop reasons, emit an insufficiency-safe replacement answer when needed, and still flow through the output adapter for XML contract normalization.
+- **Critical Change:** Self-reflection can no longer override OfficeQA structured-compute or provenance failures. [orchestrator.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\orchestrator.py) now routes any `officeqa_*` reviewer stop reason directly to final formatting or reflect, instead of opening another qualitative salvage loop.
+- **Phase Tracking:** Marked `P6.1-P6.6` complete in [officeqa_execution_plan.md](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\docs\officeqa_execution_plan.md). Phase 6 is now complete.
+- **Validation:** Added focused reviewer/finalization regressions in [tests/test_engine_runtime.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_engine_runtime.py) covering OfficeQA hard-stop validation, self-reflection bypass on structured failures, validator-result packet capture, and safe insufficiency output through the XML adapter. Verified with:
+  - `$env:PYTHONPATH='src'; python -m pytest tests/test_engine_runtime.py -k "officeqa or structured_evidence or exact_output or self_reflection" -q -p no:cacheprovider` -> `15 passed, 26 deselected`
+  - `$env:PYTHONPATH='src'; python -m pytest tests/test_officeqa_compute.py tests/test_officeqa_index.py -q -p no:cacheprovider` -> `13 passed`
+
+### Chat 12: Phase 7 Runtime Simplification And Old-Path Retirement Completed
+
+- **Role:** Coder
+- **Actions Taken:** Completed the Phase 7 cleanup pass so OfficeQA is no longer activated through prompt-shape heuristics or legacy compatibility envs. Simplified [officeqa.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\benchmarks\officeqa.py) so the benchmark adapter, XML contract, and runtime policy now activate only when `BENCHMARK_NAME=officeqa`. Added [benchmark_runtime_policy()](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\benchmarks\__init__.py) and rewired [capabilities.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\capabilities.py) plus [orchestrator_retrieval.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\orchestrator_retrieval.py) to read web-fallback and allowed-family policy through the benchmark boundary instead of directly inspecting OfficeQA-specific override fields. Removed the dead static template-routing path by deleting [template_library.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\template_library.py), removing the unused `select_execution_template()` branch from [profiling.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\context\profiling.py), and trimming the corresponding export from [runtime_support.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\runtime_support.py). Updated OfficeQA regressions in [tests/test_output_adapter.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_output_adapter.py), [tests/test_engine_runtime.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_engine_runtime.py), and [tests/test_officeqa_compute.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_officeqa_compute.py) so they assert explicit-benchmark activation instead of the retired prompt-detector path.
+- **Decision For Runtime Shape:** Kept a minimal generic runtime shell for shared executor, tracer, budgeting, and test infrastructure, but OfficeQA is now the only benchmark-native path that should continue evolving in this repo. Generic profile/template routing remains only as background shell behavior for non-benchmark flows, not as part of the OfficeQA execution contract.
+- **Phase Tracking:** Marked `P7.1-P7.6` complete in [officeqa_execution_plan.md](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\docs\officeqa_execution_plan.md). Phase 7 is now complete.
+- **Validation:** Verified with:
+  - `$env:PYTHONPATH='src'; python -m py_compile src/agent/benchmarks/officeqa.py src/agent/benchmarks/__init__.py src/agent/capabilities.py src/agent/context/profiling.py src/agent/runtime_support.py src/agent/nodes/orchestrator_retrieval.py tests/test_output_adapter.py tests/test_engine_runtime.py tests/test_officeqa_compute.py`
+  - `$env:PYTHONPATH='src'; python -m pytest tests/test_output_adapter.py tests/test_engine_runtime.py tests/test_officeqa_compute.py -k "officeqa or benchmark_overrides or exact_output or structured_evidence" -q -p no:cacheprovider` -> `24 passed, 31 deselected`
+
+### Chat 13: Phase 8 OfficeQA Regression Harness And Go/No-Go Reporting Completed
+
+- **Role:** Coder
+- **Actions Taken:** Added the OfficeQA evaluation layer in [officeqa_eval.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\benchmarks\officeqa_eval.py). That module now loads a curated regression slice, classifies each run by subsystem (`routing`, `retrieval`, `extraction`, `compute`, `validation`, `formatting`, or `pass`), captures OfficeQA artifacts, and builds a go/no-go summary. Added the curated slice itself at [officeqa_regression_slice.json](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\eval\officeqa_regression_slice.json) with a small set of routing/retrieval/extraction/compute/validation-focused cases. Added the new runner at [run_officeqa_regression.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\scripts\run_officeqa_regression.py), which executes the smoke or full slice through `run_agent_trace()`, writes a JSON report under `Results&traces/`, and includes captured artifacts for chosen source files, extracted tables, compute ledger, and final answer. Updated [README.md](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\README.md) with the new regression smoke command and report contents.
+- **Go/No-Go Rule Added:** Full benchmark runs are now blocked when there are any routing or formatting failures, or when fewer than 60% of the selected regression cases produce table-backed final answers. This is intentionally operational rather than correctness-perfect; it is meant to catch broken runtime slices before spending benchmark cycles.
+- **Phase Tracking:** Marked `P8.1-P8.5` complete in [officeqa_execution_plan.md](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\docs\officeqa_execution_plan.md). Phase 8 is now complete.
+- **Validation:** Added [tests/test_officeqa_eval.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_officeqa_eval.py) covering subsystem classification, artifact capture, and go/no-go summary logic. Verified with:
+  - `$env:PYTHONPATH='src'; python -m py_compile src/agent/benchmarks/officeqa_eval.py scripts/run_officeqa_regression.py tests/test_officeqa_eval.py`
+  - `$env:PYTHONPATH='src;tests'; python -m pytest tests/test_officeqa_eval.py tests/test_output_adapter.py tests/test_engine_runtime.py tests/test_officeqa_compute.py -k "officeqa or benchmark_overrides or exact_output or structured_evidence" -q -p no:cacheprovider` -> `30 passed, 31 deselected`

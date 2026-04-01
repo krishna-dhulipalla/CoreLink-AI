@@ -1,0 +1,44 @@
+[
+  {
+    "id": "routing_explicit_officeqa_activation",
+    "focus_subsystem": "routing",
+    "smoke": true,
+    "prompt": "Use the provided source files and compute the exact answer.",
+    "source_files": ["treasury_1953.json"]
+  },
+  {
+    "id": "retrieval_public_debt_1945",
+    "focus_subsystem": "retrieval",
+    "smoke": true,
+    "prompt": "According to the Treasury Bulletin, what was total public debt outstanding in 1945?",
+    "source_files": ["treasury_1945.json"]
+  },
+  {
+    "id": "extraction_national_defense_1940",
+    "focus_subsystem": "extraction",
+    "smoke": true,
+    "prompt": "What were the total expenditures for U.S. national defense in the calendar year 1940?",
+    "source_files": ["treasury_1940.json"]
+  },
+  {
+    "id": "compute_monthly_percent_change_1953_1940",
+    "focus_subsystem": "compute",
+    "smoke": false,
+    "prompt": "Using specifically only the reported values for all individual calendar months in 1953 and all individual calendar months in 1940, what was the absolute percent change of these total sum values?",
+    "source_files": ["treasury_1953.json", "treasury_1940.json"]
+  },
+  {
+    "id": "compute_inflation_adjusted_difference_1953_1940",
+    "focus_subsystem": "compute",
+    "smoke": false,
+    "prompt": "Using specifically only the reported values for all individual calendar months in 1953 and all individual calendar months in 1940, what was the absolute difference of these total sum values after adjusting each of them for inflation?",
+    "source_files": ["treasury_1953.json", "treasury_1940.json"]
+  },
+  {
+    "id": "validation_month_coverage_fiscal_1934",
+    "focus_subsystem": "validation",
+    "smoke": false,
+    "prompt": "What were the total expenditures of the Veterans Administration in FY 1934?",
+    "source_files": ["treasury_1934.json"]
+  }
+]

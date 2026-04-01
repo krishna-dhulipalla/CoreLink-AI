@@ -7,7 +7,12 @@ from typing import Any, Callable
 
 from langchain_core.tools import BaseTool, tool
 
-from agent.benchmarks import benchmark_descriptor_allowed, benchmark_registry_policy, benchmark_tool_selection_active
+from agent.benchmarks import (
+    benchmark_descriptor_allowed,
+    benchmark_registry_policy,
+    benchmark_runtime_policy,
+    benchmark_tool_selection_active,
+)
 from agent.legal_tools import (
     legal_playbook_retrieval,
     regulatory_execution_checklist,
@@ -351,14 +356,13 @@ def _widen_families(
     benchmark_overrides: dict[str, Any] | None = None,
 ) -> list[str]:
     widened = list(normalized)
-    overrides = dict(benchmark_overrides or {})
-    if benchmark_tool_selection_active(intent.task_family, overrides):
-        policy = dict(overrides.get("benchmark_policy") or {})
+    if benchmark_tool_selection_active(intent.task_family, benchmark_overrides):
+        policy = benchmark_runtime_policy(benchmark_overrides)
         allowed_families = set(policy.get("allowed_families", []))
         for family in ("document_retrieval", "exact_compute"):
             if family not in widened:
                 widened.append(family)
-        if overrides.get("officeqa_allow_web_fallback", True):
+        if bool(policy.get("allow_web_fallback", True)):
             if "external_retrieval" not in widened:
                 widened.append("external_retrieval")
         return [family for family in widened if not allowed_families or family in allowed_families]

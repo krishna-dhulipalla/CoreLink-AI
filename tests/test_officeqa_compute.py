@@ -225,7 +225,7 @@ def test_executor_prefers_deterministic_officeqa_compute_without_llm(monkeypatch
         tables=[],
         formulas=[],
     )
-    retrieval_intent = build_retrieval_intent(prompt, source_bundle, {"benchmark_adapter": "officeqa", "officeqa_mode": True})
+    retrieval_intent = build_retrieval_intent(prompt, source_bundle, {"benchmark_adapter": "officeqa"})
 
     state = make_state(
         prompt,
@@ -241,7 +241,7 @@ def test_executor_prefers_deterministic_officeqa_compute_without_llm(monkeypatch
             "confidence": 0.99,
             "planner_source": "heuristic",
         },
-        benchmark_overrides={"benchmark_adapter": "officeqa", "officeqa_mode": True},
+        benchmark_overrides={"benchmark_adapter": "officeqa"},
         tool_plan={"selected_tools": [], "pending_tools": [], "tool_families_needed": ["document_retrieval", "exact_compute"]},
         source_bundle=source_bundle.model_dump(),
         curated_context={

@@ -14,7 +14,6 @@ from agent.benchmarks import benchmark_answer_contract, build_benchmark_override
 from agent.context.extraction import extract_urls
 from agent.contracts import AnswerContract, ExecutionTemplate, ProfileDecision, TaskProfile
 from agent.profile_packs import get_profile_pack
-from agent.template_library import get_execution_template
 
 _XML_TAG_RE = re.compile(r"<([A-Za-z][A-Za-z0-9_\-]*)>")
 
@@ -368,77 +367,3 @@ def build_profile_decision(task_text: str, answer_contract: AnswerContract) -> P
         needs_external_data="needs_live_data" in capability_flags,
         needs_output_adapter=answer_contract.requires_adapter,
     )
-
-
-def select_execution_template(
-    task_text: str,
-    profile_decision: ProfileDecision,
-    answer_contract: AnswerContract,
-) -> ExecutionTemplate:
-    flags = set(profile_decision.capability_flags)
-    ambiguity = set(profile_decision.ambiguity_flags)
-    profile = profile_decision.primary_profile
-    has_files = bool(extract_urls(task_text)) or "needs_files" in flags
-    has_live = "needs_live_data" in flags
-    exact_contract = answer_contract.requires_adapter and answer_contract.format in {"json", "xml"}
-    lowered = (task_text or "").lower()
-    has_inline_quant_evidence = any(token in lowered for token in ("=", "|---", "roe", "roa", "ebitda", "yield"))
-    action_orientation = any(
-        token in lowered
-        for token in ("should i", "should we", "recommend", "buy or sell", "allocate", "overweight", "underweight", "action")
-    )
-
-    template_id = "legal_reasoning_only"
-
-    if profile == "finance_options":
-        template_id = "options_tool_backed"
-    elif profile == "legal_transactional":
-        template_id = "legal_with_document_evidence" if has_files else "legal_reasoning_only"
-    elif profile == "document_qa":
-        template_id = "document_qa"
-    elif profile == "external_retrieval":
-        template_id = "live_retrieval"
-    elif profile == "finance_quant":
-        if "needs_portfolio_risk" in flags:
-            template_id = "portfolio_risk_review"
-        elif "needs_event_analysis" in flags:
-            template_id = "event_driven_finance"
-        elif "needs_equity_research" in flags:
-            template_id = "equity_research_report"
-        elif action_orientation and (has_live or "needs_live_data" in flags):
-            template_id = "regulated_actionable_finance"
-        elif has_files or has_live:
-            template_id = "quant_with_tool_compute"
-        elif exact_contract or has_inline_quant_evidence:
-            template_id = "quant_inline_exact"
-        else:
-            template_id = "quant_with_tool_compute"
-    else:
-        if has_live:
-            template_id = "live_retrieval"
-        elif has_files and "needs_legal_reasoning" in flags:
-            template_id = "legal_with_document_evidence"
-        elif has_files:
-            template_id = "document_qa"
-        elif "needs_portfolio_risk" in flags:
-            template_id = "portfolio_risk_review"
-        elif "needs_event_analysis" in flags:
-            template_id = "event_driven_finance"
-        elif "needs_equity_research" in flags:
-            template_id = "equity_research_report"
-        elif "needs_options_engine" in flags and "legal_options_overlap" not in ambiguity:
-            template_id = "options_tool_backed"
-        elif action_orientation and ("needs_live_data" in flags or "needs_math" in flags):
-            template_id = "regulated_actionable_finance"
-        elif "needs_legal_reasoning" in flags:
-            template_id = "legal_reasoning_only"
-        elif "needs_math" in flags:
-            template_id = "quant_inline_exact" if (exact_contract or has_inline_quant_evidence) else "quant_with_tool_compute"
-
-    if ambiguity and template_id == "options_tool_backed" and "needs_legal_reasoning" in flags:
-        template_id = "legal_reasoning_only"
-
-    if ambiguity and template_id == "quant_with_tool_compute" and "needs_legal_reasoning" in flags and not has_files:
-        template_id = "legal_reasoning_only"
-
-    return get_execution_template(template_id)

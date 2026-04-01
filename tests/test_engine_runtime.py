@@ -142,7 +142,7 @@ def test_engine_legal_planner_binds_legal_capability_tools_not_calculator_only()
 
 
 def test_officeqa_document_tasks_route_document_first_without_pending_calculator(monkeypatch):
-    monkeypatch.setenv("OFFICEQA_FINAL_ANSWER_TAGS", "1")
+    monkeypatch.setenv("BENCHMARK_NAME", "officeqa")
 
     @tool
     def search_treasury_bulletins(query: str, top_k: int = 5) -> dict:
@@ -175,7 +175,7 @@ def test_officeqa_document_tasks_route_document_first_without_pending_calculator
 
 
 def test_officeqa_document_tasks_do_not_infer_pnl_report_as_document_tool(monkeypatch):
-    monkeypatch.setenv("OFFICEQA_FINAL_ANSWER_TAGS", "1")
+    monkeypatch.setenv("BENCHMARK_NAME", "officeqa")
 
     @tool
     def search_treasury_bulletins(query: str, top_k: int = 5) -> dict:
@@ -241,7 +241,7 @@ def test_officeqa_search_ranking_prefers_semantically_relevant_sources():
     retrieval_intent = build_retrieval_intent(
         source_bundle.task_text,
         source_bundle,
-        {"officeqa_mode": True, "officeqa_like_prompt": True},
+        {"benchmark_adapter": "officeqa"},
     )
 
     ranked = _rank_search_candidates(
@@ -265,7 +265,7 @@ def test_officeqa_search_ranking_prefers_semantically_relevant_sources():
         ],
         retrieval_intent,
         source_bundle,
-        {"officeqa_mode": True},
+        {"benchmark_adapter": "officeqa"},
     )
 
     assert "veterans" in ranked[0]["title"].lower()
@@ -457,7 +457,7 @@ def test_evidence_sufficiency_ignores_generic_numeric_summary_metadata():
                 },
             }
         ],
-        {"officeqa_mode": True, "officeqa_like_prompt": True},
+        {"benchmark_adapter": "officeqa"},
     )
 
     assert sufficiency.is_sufficient is False
@@ -1440,6 +1440,216 @@ def test_engine_reviewer_flags_missing_grounding_for_document_answers():
 
     assert result["solver_stage"] == "REVISE"
     assert "source attribution" in " ".join(result["review_feedback"]["missing_dimensions"]).lower()
+
+
+def test_officeqa_reviewer_blocks_structured_failure_before_reflection_and_records_validator_result():
+    prompt = (
+        "Using specifically only the reported values for all individual calendar months in 1953 and all "
+        "individual calendar months in 1940, what was the absolute percent change of these total sum values?"
+    )
+    state = make_state(
+        prompt,
+        task_profile="document_qa",
+        task_intent={
+            "task_family": "document_qa",
+            "execution_mode": "document_grounded_analysis",
+            "complexity_tier": "complex_qualitative",
+            "review_mode": "document_grounded",
+            "planner_source": "heuristic",
+        },
+        benchmark_overrides={"benchmark_adapter": "officeqa", "officeqa_xml_contract": True},
+        answer_contract={"format": "xml", "requires_adapter": True, "xml_root_tag": "FINAL_ANSWER", "value_rules": {"reasoning_tag": "REASONING", "final_answer_tag": "FINAL_ANSWER"}},
+        source_bundle={
+            "task_text": prompt,
+            "focus_query": "Treasury Bulletin expenditures 1953 1940",
+            "target_period": "1953 1940",
+            "entities": ["National Defense"],
+            "urls": ["https://govinfo.gov/treasury_1953.pdf"],
+            "inline_facts": {},
+            "tables": [],
+            "formulas": [],
+        },
+        tool_plan={"tool_families_needed": [], "widened_families": [], "selected_tools": [], "pending_tools": [], "blocked_families": [], "ace_events": [], "notes": [], "stop_reason": ""},
+        execution_journal={
+            "events": [],
+            "tool_results": [
+                {
+                    "type": "fetch_officeqa_table",
+                    "facts": {
+                        "document_id": "treasury_1953_json",
+                        "citation": "https://govinfo.gov/treasury_1953.pdf",
+                        "tables": [
+                            {
+                                "citation": "https://govinfo.gov/treasury_1953.pdf",
+                                "locator": "table 1",
+                                "headers": ["Month", "Expenditures (million dollars)"],
+                                "rows": [["January", "10.0"], ["February", "12.0"]],
+                                "unit_hint": "million dollars",
+                            }
+                        ],
+                        "metadata": {"officeqa_status": "ok", "file_name": "treasury_1953.pdf"},
+                    },
+                    "assumptions": {"document_id": "treasury_1953_json", "path": "treasury_1953.json"},
+                    "source": {},
+                    "quality": {},
+                    "retrieval_status": "ok",
+                    "evidence_quality_score": 0.9,
+                    "errors": [],
+                }
+            ],
+            "routed_tool_families": [],
+            "revision_count": 0,
+            "self_reflection_count": 0,
+            "retrieval_iterations": 1,
+            "retrieval_queries": ["national defense expenditures 1953 1940"],
+            "retrieved_citations": ["https://govinfo.gov/treasury_1953.pdf"],
+            "final_artifact_signature": "abc",
+            "progress_signatures": [],
+            "stop_reason": "",
+            "contract_collapse_attempts": 0,
+        },
+        curated_context={
+            "objective": prompt,
+            "facts_in_use": [],
+            "open_questions": [],
+            "assumptions": [],
+            "requested_output": {"format": "xml"},
+            "provenance_summary": {
+                "source_bundle": {"urls": ["https://govinfo.gov/treasury_1953.pdf"]},
+                "structured_evidence": {"table_count": 1, "value_count": 2, "units_seen": ["million"], "provenance_complete": True},
+                "compute_result": {"status": "insufficient", "operation": "monthly_sum_percent_change", "validation_errors": ["Missing comparable period totals for 1940 and 1953."], "provenance_complete": False},
+            },
+            "structured_evidence": {
+                "document_evidence": [],
+                "tables": [
+                    {
+                        "document_id": "treasury_1953_json",
+                        "citation": "https://govinfo.gov/treasury_1953.pdf",
+                        "page_locator": "page 1",
+                        "table_locator": "table 1",
+                        "headers": ["Month", "Expenditures (million dollars)"],
+                        "unit": "million",
+                        "unit_multiplier": 1000000.0,
+                        "unit_kind": "currency",
+                        "row_count": 2,
+                        "column_count": 2,
+                    }
+                ],
+                "values": [
+                    {
+                        "document_id": "treasury_1953_json",
+                        "citation": "https://govinfo.gov/treasury_1953.pdf",
+                        "page_locator": "page 1",
+                        "table_locator": "table 1",
+                        "row_index": 0,
+                        "row_label": "January",
+                        "column_index": 1,
+                        "column_label": "Expenditures (million dollars)",
+                        "raw_value": "10.0",
+                        "numeric_value": 10.0,
+                        "normalized_value": 10000000.0,
+                        "unit": "million",
+                        "unit_multiplier": 1000000.0,
+                        "unit_kind": "currency",
+                    }
+                ],
+                "page_chunks": [],
+                "units_seen": ["million"],
+                "value_count": 1,
+                "provenance_complete": True,
+            },
+            "compute_result": {
+                "status": "insufficient",
+                "operation": "monthly_sum_percent_change",
+                "validation_errors": ["Missing comparable period totals for 1940 and 1953."],
+                "citations": [],
+                "ledger": [],
+                "provenance_complete": False,
+            },
+        },
+        workpad={"events": [], "stage_outputs": {}, "tool_results": [], "review_ready": True},
+    )
+    state["retrieval_intent"] = {
+        "entity": "National Defense",
+        "metric": "absolute percent change",
+        "period": "1953 1940",
+        "document_family": "official_government_finance",
+        "aggregation_shape": "monthly_sum_percent_change",
+        "must_include_terms": [],
+        "must_exclude_terms": [],
+        "query_candidates": [],
+    }
+    state["messages"].append(AIMessage(content="The absolute percent change was 18.2."))
+
+    result = reviewer(state)
+    state.update(result)
+
+    assert result["solver_stage"] == "COMPLETE"
+    assert result["quality_report"]["verdict"] == "fail"
+    assert result["quality_report"]["stop_reason"] == "officeqa_structured_validation_failed"
+    assert "deterministic compute support" in result["review_packet"]["validator_result"]["hard_failures"]
+    assert route_from_reviewer(state) == "output_adapter"
+
+
+def test_officeqa_reviewer_emits_safe_insufficiency_answer_for_adapter():
+    prompt = "What was the calendar year total for U.S. national defense expenditures in 1940?"
+    state = make_state(
+        prompt,
+        task_profile="document_qa",
+        task_intent={
+            "task_family": "document_qa",
+            "execution_mode": "document_grounded_analysis",
+            "complexity_tier": "structured_analysis",
+            "review_mode": "document_grounded",
+            "planner_source": "heuristic",
+        },
+        benchmark_overrides={"benchmark_adapter": "officeqa", "officeqa_xml_contract": True},
+        answer_contract={"format": "xml", "requires_adapter": True, "xml_root_tag": "FINAL_ANSWER", "value_rules": {"reasoning_tag": "REASONING", "final_answer_tag": "FINAL_ANSWER"}},
+        source_bundle={
+            "task_text": prompt,
+            "focus_query": "national defense expenditures 1940",
+            "target_period": "1940",
+            "entities": ["National Defense"],
+            "urls": [],
+            "inline_facts": {},
+            "tables": [],
+            "formulas": [],
+        },
+        tool_plan={"tool_families_needed": [], "widened_families": [], "selected_tools": [], "pending_tools": [], "blocked_families": [], "ace_events": [], "notes": [], "stop_reason": ""},
+        execution_journal={"events": [], "tool_results": [], "routed_tool_families": [], "revision_count": 0, "self_reflection_count": 0, "final_artifact_signature": "abc", "progress_signatures": [], "stop_reason": "", "contract_collapse_attempts": 0},
+        curated_context={
+            "objective": prompt,
+            "facts_in_use": [],
+            "open_questions": [],
+            "assumptions": [],
+            "requested_output": {"format": "xml"},
+            "provenance_summary": {},
+            "structured_evidence": {},
+            "compute_result": {},
+        },
+        workpad={"events": [], "stage_outputs": {}, "tool_results": [], "review_ready": True},
+    )
+    state["retrieval_intent"] = {
+        "entity": "National Defense",
+        "metric": "total expenditures",
+        "period": "1940",
+        "document_family": "official_government_finance",
+        "aggregation_shape": "calendar_year_total",
+        "must_include_terms": [],
+        "must_exclude_terms": [],
+        "query_candidates": [],
+    }
+    state["messages"].append(AIMessage(content="The answer was 123.4 million dollars."))
+
+    reviewed = reviewer(state)
+    state.update(reviewed)
+    adapted = output_adapter({**state, "messages": state["messages"]})
+    rendered = str(adapted["messages"][0].content)
+
+    assert reviewed["quality_report"]["stop_reason"] == "officeqa_structured_validation_failed"
+    assert "provided Treasury Bulletin evidence" in rendered
+    assert ("Cannot calculate" in rendered) or ("Cannot determine" in rendered)
+    assert "<FINAL_ANSWER>" in rendered
 
 
 def test_engine_reviewer_revises_legal_once_then_stops_cleanly():

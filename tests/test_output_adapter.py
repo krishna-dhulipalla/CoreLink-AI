@@ -42,7 +42,7 @@ def test_output_adapter_wraps_xml_answer():
 
 
 def test_extract_answer_contract_enables_officeqa_xml(monkeypatch):
-    monkeypatch.setenv("OFFICEQA_FINAL_ANSWER_TAGS", "1")
+    monkeypatch.setenv("BENCHMARK_NAME", "officeqa")
 
     contract = extract_answer_contract("What were the total expenditures for U.S. national defense in 1940?")
 
@@ -64,6 +64,23 @@ def test_infer_benchmark_overrides_explicit_benchmark_activates_officeqa_runtime
     assert "document_retrieval" in overrides["benchmark_policy"]["allowed_families"]
     assert "source family grounding" in overrides["benchmark_policy"]["validation_dimensions"]
     assert overrides["benchmark_policy"]["output_normalization"]["final_answer_tag"] == "FINAL_ANSWER"
+
+
+def test_officeqa_like_prompt_does_not_activate_without_explicit_benchmark(monkeypatch):
+    monkeypatch.delenv("BENCHMARK_NAME", raising=False)
+
+    overrides = infer_benchmark_overrides(
+        "Using specifically only the reported values for all individual calendar months in 1953, what was the absolute percent change?"
+    )
+    contract = extract_answer_contract(
+        "Using specifically only the reported values for all individual calendar months in 1953, what was the absolute percent change?"
+    )
+
+    assert overrides["benchmark_name"] == ""
+    assert overrides["benchmark_adapter"] == ""
+    assert overrides["officeqa_xml_contract"] is False
+    assert contract.format == "text"
+    assert contract.requires_adapter is False
 
 
 def test_extract_answer_contract_uses_explicit_officeqa_benchmark(monkeypatch):

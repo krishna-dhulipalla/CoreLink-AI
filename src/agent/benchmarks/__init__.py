@@ -19,6 +19,7 @@ from .officeqa import (
     officeqa_answer_contract,
     officeqa_descriptor_allowed,
     officeqa_registry_policy,
+    officeqa_runtime_policy,
     officeqa_task_intent,
     officeqa_tool_selection_active,
 )
@@ -98,6 +99,16 @@ def benchmark_registry_policy(benchmark_name: str) -> dict[str, Any]:
     return {}
 
 
+def benchmark_runtime_policy(benchmark_overrides: dict[str, Any] | None = None) -> dict[str, Any]:
+    overrides = dict(benchmark_overrides or {})
+    policy = dict(overrides.get("benchmark_policy") or {})
+    if policy:
+        return policy
+    if overrides.get("benchmark_adapter") == "officeqa":
+        return officeqa_runtime_policy()
+    return {}
+
+
 def benchmark_tool_selection_active(task_family: str, benchmark_overrides: dict[str, Any] | None = None) -> bool:
     overrides = dict(benchmark_overrides or {})
     if overrides.get("benchmark_adapter") == "officeqa":
@@ -127,6 +138,7 @@ __all__ = [
     "benchmark_answer_contract",
     "benchmark_descriptor_allowed",
     "benchmark_registry_policy",
+    "benchmark_runtime_policy",
     "benchmark_task_intent",
     "benchmark_tool_selection_active",
     "build_benchmark_overrides",

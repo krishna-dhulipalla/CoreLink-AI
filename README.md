@@ -123,6 +123,13 @@ uv run pytest tests/
 - **Deterministic Logic**: `uv run pytest tests/test_engine_runtime.py -q`
 - **Live LLM Reasoning**: `uv run python scripts/run_live_engine_smoke.py`
 - **Stateless Benchmark Mode**: `BENCHMARK_STATELESS=1 uv run python scripts/run_benchmark_stateless_smoke.py`
+- **OfficeQA Regression Smoke**: `BENCHMARK_NAME=officeqa BENCHMARK_STATELESS=1 uv run python scripts/run_officeqa_regression.py --smoke`
+
+The OfficeQA regression runner writes a JSON report under `Results&traces/` with:
+
+- subsystem classification per case: `routing`, `retrieval`, `extraction`, `compute`, `validation`, `formatting`, or `pass`
+- captured artifacts: expected/found source files, chosen sources, extracted tables, compute ledger, and final answer
+- a go/no-go summary for broader benchmark runs
 
 ## 🛠️ Project Structure
 

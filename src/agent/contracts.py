@@ -228,6 +228,16 @@ class OfficeQAComputeResult(BaseModel):
     provenance_complete: bool = False
 
 
+class OfficeQAValidationResult(BaseModel):
+    verdict: Literal["pass", "revise", "fail"] = "pass"
+    reasoning: str = ""
+    missing_dimensions: list[str] = Field(default_factory=list)
+    hard_failures: list[str] = Field(default_factory=list)
+    stop_reason: str = ""
+    insufficiency_answer: str = ""
+    replace_answer: bool = False
+
+
 class EvidencePack(BaseModel):
     task_constraints: list[str] = Field(default_factory=list)
     target_entities: list[str] = Field(default_factory=list)
@@ -428,6 +438,7 @@ class ReviewPacket(BaseModel):
     evidence_sufficiency: dict[str, Any] = Field(default_factory=dict)
     structured_evidence: dict[str, Any] = Field(default_factory=dict)
     compute_result: dict[str, Any] = Field(default_factory=dict)
+    validator_result: dict[str, Any] = Field(default_factory=dict)
 
 
 class RetrievalAction(BaseModel):

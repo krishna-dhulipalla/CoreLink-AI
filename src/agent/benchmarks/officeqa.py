@@ -3,12 +3,9 @@
 from __future__ import annotations
 
 import os
-import re
 from typing import Any
 
 from agent.contracts import AnswerContract, TaskIntent
-
-from .base import truthy_env
 
 OFFICEQA_REGISTRY_TOOL_NAME_ALLOWLIST = {
     "calculator",
@@ -69,77 +66,7 @@ OFFICEQA_EXCLUDED_RETRIEVAL_TERMS = {
 }
 
 
-def looks_like_officeqa_prompt(text: str) -> bool:
-    lowered = re.sub(r"[^a-z0-9%]+", " ", (text or "").lower())
-    if not lowered:
-        return False
-
-    score = 0
-    if re.search(r"\b(19[3-9]\d|20[0-2]\d)\b", lowered):
-        score += 1
-    if any(
-        token in lowered
-        for token in (
-            "calendar year",
-            "fiscal year",
-            "individual calendar months",
-            "annual average",
-            "reported values",
-        )
-    ):
-        score += 1
-    if any(
-        token in lowered
-        for token in (
-            "expenditures",
-            "outlays",
-            "receipts",
-            "public debt",
-            "nominal dollars",
-            "cpi u",
-            "cpi-u",
-            "percent change",
-        )
-    ):
-        score += 1
-    if any(
-        token in lowered
-        for token in (
-            "using specifically only",
-            "according to",
-            "rounded to the nearest hundredths",
-            "reported as a percent value",
-            "million",
-        )
-    ):
-        score += 1
-    if any(
-        token in lowered
-        for token in (
-            "treasury bulletin",
-            "monthly treasury statement",
-            "federal reserve bank of minneapolis",
-            "veterans administration",
-            "national defense",
-        )
-    ):
-        score += 1
-    return score >= 3
-
-
-def _xml_contract_requested(task_text: str, benchmark_name: str) -> bool:
-    if benchmark_name == "officeqa":
-        return True
-    if truthy_env("OFFICEQA_FINAL_ANSWER_TAGS") or truthy_env("OFFICEQA_XML_OUTPUT"):
-        return looks_like_officeqa_prompt(task_text)
-    if truthy_env("BENCHMARK_STATELESS") and os.getenv("OFFICEQA_CORPUS_DIR", "").strip():
-        return looks_like_officeqa_prompt(task_text)
-    return False
-
-
 def build_officeqa_overrides(task_text: str, benchmark_name: str) -> dict[str, Any]:
-    officeqa_like = looks_like_officeqa_prompt(task_text)
-    xml_contract = _xml_contract_requested(task_text, benchmark_name)
     explicit_benchmark = benchmark_name == "officeqa"
     allow_web_fallback = os.getenv("OFFICEQA_ALLOW_WEB_FALLBACK", "0").strip().lower() not in {
         "",
@@ -149,14 +76,11 @@ def build_officeqa_overrides(task_text: str, benchmark_name: str) -> dict[str, A
         "off",
         "never",
     }
-    adapter_active = explicit_benchmark or xml_contract or officeqa_like
     return {
-        "benchmark_adapter": "officeqa" if adapter_active else "",
-        "officeqa_mode": explicit_benchmark or officeqa_like,
-        "officeqa_like_prompt": officeqa_like,
-        "officeqa_xml_contract": xml_contract,
-        "officeqa_allow_web_fallback": allow_web_fallback,
-        "benchmark_policy": officeqa_runtime_policy(allow_web_fallback) if adapter_active else {},
+        "benchmark_adapter": "officeqa" if explicit_benchmark else "",
+        "officeqa_mode": explicit_benchmark,
+        "officeqa_xml_contract": explicit_benchmark,
+        "benchmark_policy": officeqa_runtime_policy(allow_web_fallback) if explicit_benchmark else {},
     }
 
 
@@ -218,12 +142,9 @@ def officeqa_runtime_policy(allow_web_fallback: bool = True) -> dict[str, Any]:
 
 
 def officeqa_tool_selection_active(task_family: str, benchmark_overrides: dict[str, Any] | None = None) -> bool:
+    _ = task_family
     overrides = dict(benchmark_overrides or {})
-    if overrides.get("benchmark_adapter") != "officeqa":
-        return False
-    if overrides.get("officeqa_mode") is True:
-        return True
-    return bool(overrides.get("officeqa_like_prompt")) and task_family == "document_qa"
+    return overrides.get("benchmark_adapter") == "officeqa"
 
 
 def officeqa_descriptor_allowed(descriptor: dict[str, Any], benchmark_overrides: dict[str, Any] | None = None) -> bool:

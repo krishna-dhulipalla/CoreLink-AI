@@ -480,6 +480,7 @@ def build_review_packet(
     curated_context: dict[str, Any],
     tool_results: list[dict[str, Any]] | None = None,
     evidence_sufficiency: dict[str, Any] | None = None,
+    validator_result: dict[str, Any] | None = None,
 ) -> ReviewPacket:
     provenance = dict(curated_context.get("provenance_summary") or {})
     source_summary = dict(provenance.get("source_bundle") or {})
@@ -496,6 +497,7 @@ def build_review_packet(
         evidence_sufficiency=dict(evidence_sufficiency or {}),
         structured_evidence=compact_officeqa_structured_evidence(curated_context.get("structured_evidence", {})),
         compute_result=compact_officeqa_compute_result(curated_context.get("compute_result", {})),
+        validator_result=dict(validator_result or {}),
     )
 
 

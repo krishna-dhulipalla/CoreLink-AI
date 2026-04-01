@@ -19,7 +19,6 @@ from agent.context.profiling import (
     infer_task_profile,
     latest_human_text,
     normalize_whitespace,
-    select_execution_template,
 )
 from agent.context.stages import (
     infer_task_complexity_tier,
@@ -91,7 +90,6 @@ __all__ = [
     "next_stage_after_review",
     "normalize_whitespace",
     "parse_markdown_tables",
-    "select_execution_template",
     "selective_backtracking_allowed",
     "selective_checkpoint_policy",
     "should_checkpoint_stage",

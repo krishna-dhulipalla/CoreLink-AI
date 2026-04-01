@@ -1,7 +1,7 @@
 # OfficeQA Execution Plan
 
 Date: 2026-03-31
-Status: Active
+Status: Completed
 Source analysis: `docs/officeqa_integration_plan.md`
 
 ## Purpose
@@ -94,18 +94,17 @@ Status after Phase 1:
 
 ## Components To Replace Or Isolate
 
-- [ ] `X1` Remove OfficeQA dependence on generic task profiles
-- [ ] `X2` Remove OfficeQA dependence on template library routing
-- [ ] `X3` Remove OfficeQA-specific heuristics from generic capability resolver
+- [x] `X1` Remove OfficeQA dependence on generic task profiles
+- [x] `X2` Remove OfficeQA dependence on template library routing
+- [x] `X3` Remove OfficeQA-specific heuristics from generic capability resolver
 - [x] `X4` Replace generic document retrieval loop with OfficeQA retrieval state machine
 - [x] `X5` Replace generic PDF text-window parsing with Treasury table extraction
 - [x] `X6` Replace prompt-compacted document reasoning with structured evidence objects
 
-Status after Phase 4:
+Final status:
 
-- `X1-X3` are reduced, but not complete.
-- `X4-X6` are complete.
-- The remaining core architecture work is now concentrated in Phase 5 deterministic compute and Phase 6 validation/finalization.
+- `X1-X6` are complete.
+- OfficeQA is now the primary benchmark-native runtime path in this repository.
 
 ## Phase 0: Repo Direction And Docs Cleanup
 
@@ -211,7 +210,6 @@ Objective:
 
 Tasks:
 
-- [ ] `P2.8` Define the competition dataset delivery model:
 - [x] `P2.8` Define the competition dataset delivery model:
   - baked into the runtime image
   - attached as a read-only mounted volume
@@ -374,22 +372,29 @@ Objective:
 
 Tasks:
 
-- [ ] `P6.1` Add an OfficeQA validator before final answer formatting
-- [ ] `P6.2` Make validator enforce:
-  - source family correctness
-  - entity/category correctness
-  - time scope correctness
-  - aggregation correctness
-  - unit consistency
-  - provenance presence
-- [ ] `P6.3` Keep final output adapter for exact answer contract formatting
-- [ ] `P6.4` Keep bounded self-reflection only as a final completeness guard
-- [ ] `P6.5` Ensure reflection cannot override structured compute or provenance failures
-- [ ] `P6.6` Add insufficiency-safe output behavior
+- [x] `P6.1` Add an OfficeQA validator before final answer formatting
+- [x] `P6.2` Make validator enforce:
+    - source family correctness
+    - entity/category correctness
+    - time scope correctness
+    - aggregation correctness
+    - unit consistency
+    - provenance presence
+- [x] `P6.3` Keep final output adapter for exact answer contract formatting
+- [x] `P6.4` Keep bounded self-reflection only as a final completeness guard
+- [x] `P6.5` Ensure reflection cannot override structured compute or provenance failures
+- [x] `P6.6` Add insufficiency-safe output behavior
 
 Exit criteria:
 
 - validator catches unsupported calculations before final formatting
+
+Status:
+
+- `src/agent/benchmarks/officeqa_validator.py` now validates structured evidence, scope alignment, unit consistency, provenance presence, and deterministic-compute readiness before final formatting
+- reviewer integration now records compact validator output in the review packet and converts hard OfficeQA validation failures into bounded stop reasons instead of another free-form revise loop
+- route logic now prevents self-reflection from overriding OfficeQA structured compute or provenance failures
+- insufficiency-safe final behavior is now emitted for unsupported or under-grounded OfficeQA answers and still flows through the output adapter for benchmark contract formatting
 
 ## Phase 7: Runtime Simplification And Old-Path Retirement
 
@@ -399,16 +404,23 @@ Objective:
 
 Tasks:
 
-- [ ] `P7.1` Remove OfficeQA special cases from generic profiles
-- [ ] `P7.2` Remove OfficeQA special cases from generic templates
-- [ ] `P7.3` Remove OfficeQA special cases from generic capability widening
-- [ ] `P7.4` Remove obsolete OfficeQA prompt detectors once adapter path is stable
-- [ ] `P7.5` Decide whether to keep a minimal generic runtime shell or collapse directly to OfficeQA-only routing
-- [ ] `P7.6` Delete dead code and tests related only to retired finance-first paths
+- [x] `P7.1` Remove OfficeQA special cases from generic profiles
+- [x] `P7.2` Remove OfficeQA special cases from generic templates
+- [x] `P7.3` Remove OfficeQA special cases from generic capability widening
+- [x] `P7.4` Remove obsolete OfficeQA prompt detectors once adapter path is stable
+- [x] `P7.5` Decide whether to keep a minimal generic runtime shell or collapse directly to OfficeQA-only routing
+- [x] `P7.6` Delete dead code and tests related only to retired finance-first paths
 
 Exit criteria:
 
 - OfficeQA path is the primary runtime, not a compatibility layer inside old finance logic
+
+Phase 7 completion notes:
+
+- OfficeQA activation is now explicit-benchmark-only. Prompt-shape heuristics and compatibility env toggles no longer enable the benchmark adapter or XML contract.
+- Generic capability widening now reads benchmark runtime policy through the benchmark adapter boundary instead of carrying OfficeQA-only flags in generic resolver code.
+- The old static template-library routing path was removed. The runtime keeps a minimal generic shell, but OfficeQA now runs through benchmark intent plus execution-mode stubs rather than legacy template ids.
+- Decision for `P7.5`: keep the minimal generic runtime shell for shared infrastructure and tests, but treat OfficeQA as the only benchmark-native path that should continue evolving in this repo.
 
 ## Phase 8: Evaluation Harness And Delivery Discipline
 
@@ -418,25 +430,32 @@ Objective:
 
 Tasks:
 
-- [ ] `P8.1` Create a small curated OfficeQA regression slice grouped by failure mode
-- [ ] `P8.2` Create run reports that classify failures as:
+- [x] `P8.1` Create a small curated OfficeQA regression slice grouped by failure mode
+- [x] `P8.2` Create run reports that classify failures as:
   - routing
   - retrieval
   - extraction
   - compute
   - validation
   - formatting
-- [ ] `P8.3` Add a benchmark smoke path for rapid iteration
-- [ ] `P8.4` Add artifact capture for:
+- [x] `P8.3` Add a benchmark smoke path for rapid iteration
+- [x] `P8.4` Add artifact capture for:
   - chosen source files
   - extracted tables
   - compute ledger
   - final answer
-- [ ] `P8.5` Define go/no-go criteria before full benchmark runs
+- [x] `P8.5` Define go/no-go criteria before full benchmark runs
 
 Exit criteria:
 
 - every failed task can be mapped to a concrete subsystem
+
+Phase 8 completion notes:
+
+- Added the curated slice at `eval/officeqa_regression_slice.json`, grouped by the subsystem each case is meant to stress.
+- Added `src/agent/benchmarks/officeqa_eval.py` to classify runs, capture OfficeQA artifacts, and summarize go/no-go readiness.
+- Added `scripts/run_officeqa_regression.py` as the new smoke/full regression entrypoint for OfficeQA iteration.
+- Go/no-go rule: block full benchmark runs if there are any routing or formatting failures, or if fewer than 60% of the selected cases produce table-backed final answers.
 
 ## Optional Backlog: Shared Global Workpad
 
@@ -460,9 +479,12 @@ Possible shape:
 
 Tasks:
 
-- [ ] `B1` Decide whether a run-scoped `global_workpad` adds clarity after Phases 2-4 exist
-- [ ] `B2` If yes, implement it as a typed checklist attached to runtime state
-- [ ] `B3` Ensure it never replaces provenance objects or benchmark artifacts
+- [x] ~~`B1` Decide whether a run-scoped `global_workpad` adds clarity after Phases 2-4 exist~~
+  Skipped. The structured evidence, compute result, validator packet, and regression artifacts now cover the clarity this workpad was meant to provide.
+- [x] ~~`B2` If yes, implement it as a typed checklist attached to runtime state~~
+  Skipped. Adding another checklist layer would duplicate state already carried in OfficeQA provenance and report artifacts.
+- [x] ~~`B3` Ensure it never replaces provenance objects or benchmark artifacts~~
+  Resolved by not implementing the optional global workpad.
 
 ## Working Agreement For Coding Agents
 
@@ -490,6 +512,6 @@ If starting immediately, the first sprint should target:
 
 - [x] `P0.1` through `P0.7`
 - [x] `P1.1` through `P1.6`
-- [ ] `P2.1` through `P2.4`
+- [x] `P2.1` through `P2.4`
 
 Do not start Phase 5 compute work before Phases 2-4 produce stable structured evidence.
