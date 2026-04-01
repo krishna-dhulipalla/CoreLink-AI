@@ -10,15 +10,18 @@ from langchain_core.messages import AIMessage
 from langchain_core.tools import tool
 
 from agent.budget import BudgetTracker
+from agent.benchmarks.officeqa_index import build_officeqa_index
 from agent.contracts import SourceBundle
+from agent.officeqa_structured_evidence import build_officeqa_structured_evidence
 from agent.retrieval_tools import fetch_corpus_document as fetch_corpus_document_tool
+from agent.retrieval_tools import fetch_officeqa_table, lookup_officeqa_cells
 from agent.retrieval_reasoning import assess_evidence_sufficiency, build_retrieval_intent
 from agent.tools.normalization import normalize_tool_output
 from agent.nodes.intake import intake
 from agent.nodes.output_adapter import output_adapter
 from agent.tracer import RunTracer
 from agent.capabilities import BUILTIN_LEGAL_TOOLS, BUILTIN_RETRIEVAL_TOOLS, build_capability_registry, filter_registry_for_benchmark
-from agent.curated_context import solver_context_block
+from agent.curated_context import attach_structured_evidence, solver_context_block
 from agent.nodes.orchestrator import (
     context_curator,
     fast_path_gate,
@@ -267,6 +270,95 @@ def test_officeqa_search_ranking_prefers_semantically_relevant_sources():
 
     assert "veterans" in ranked[0]["title"].lower()
     assert "depository invoice" in ranked[-1]["title"].lower()
+
+
+def test_officeqa_structured_evidence_projects_normalized_table_values(monkeypatch, tmp_path):
+    corpus_root = tmp_path / "treasury_bulletins_parsed"
+    corpus_root.mkdir(parents=True)
+    (corpus_root / "treasury_1940.json").write_text(
+        json.dumps(
+            {
+                "title": "Treasury Bulletin 1940",
+                "page": 17,
+                "section_title": "National Defense",
+                "headers": ["Month", "Expenditures (million dollars)"],
+                "rows": [["January", "100.0"], ["February", "101.5"]],
+                "unit": "million dollars",
+            }
+        ),
+        encoding="utf-8",
+    )
+    build_officeqa_index(corpus_root=corpus_root)
+    monkeypatch.setenv("OFFICEQA_CORPUS_DIR", str(corpus_root))
+
+    table_args = {"document_id": "treasury_1940_json", "table_query": "national defense expenditures"}
+    cell_args = {
+        "document_id": "treasury_1940_json",
+        "table_query": "national defense expenditures",
+        "row_query": "February",
+        "column_query": "Expenditures",
+    }
+    table_result = normalize_tool_output("fetch_officeqa_table", fetch_officeqa_table.invoke(table_args), table_args)
+    cell_result = normalize_tool_output("lookup_officeqa_cells", lookup_officeqa_cells.invoke(cell_args), cell_args)
+
+    structured = build_officeqa_structured_evidence([table_result.model_dump(), cell_result.model_dump()])
+
+    assert structured["provenance_complete"] is True
+    assert structured["value_count"] >= 2
+    assert structured["units_seen"] == ["million"]
+    february_value = next(
+        item
+        for item in structured["values"]
+        if item["row_label"] == "February" and item["column_label"] == "Expenditures (million dollars)"
+    )
+    assert february_value["numeric_value"] == 101.5
+    assert february_value["normalized_value"] == 101_500_000.0
+    assert february_value["table_locator"]
+    assert february_value["page_locator"]
+
+
+def test_solver_context_block_includes_compact_structured_evidence_for_officeqa(monkeypatch, tmp_path):
+    corpus_root = tmp_path / "treasury_bulletins_parsed"
+    corpus_root.mkdir(parents=True)
+    (corpus_root / "treasury_1953.json").write_text(
+        json.dumps(
+            {
+                "title": "Treasury Bulletin 1953",
+                "page": 4,
+                "section_title": "Agriculture",
+                "headers": ["Month", "Receipts (million dollars)"],
+                "rows": [["January", "50.0"], ["February", "55.25"]],
+                "unit": "million dollars",
+            }
+        ),
+        encoding="utf-8",
+    )
+    build_officeqa_index(corpus_root=corpus_root)
+    monkeypatch.setenv("OFFICEQA_CORPUS_DIR", str(corpus_root))
+
+    table_args = {"document_id": "treasury_1953_json", "table_query": "agriculture receipts"}
+    tool_result = normalize_tool_output("fetch_officeqa_table", fetch_officeqa_table.invoke(table_args), table_args)
+    curated = attach_structured_evidence(
+        {
+            "objective": "Compute change across Treasury Bulletin monthly receipts.",
+            "facts_in_use": [],
+            "open_questions": [],
+            "assumptions": [],
+            "requested_output": {"format": "json"},
+            "provenance_summary": {},
+        },
+        [tool_result.model_dump()],
+        {"benchmark_adapter": "officeqa"},
+    )
+
+    payload = json.loads(solver_context_block(curated.model_dump(), [tool_result.model_dump()], include_objective=False))
+
+    assert "structured_evidence" in payload
+    assert payload["structured_evidence"]["table_count"] == 1
+    assert payload["structured_evidence"]["value_count"] >= 2
+    assert payload["structured_evidence"]["provenance_complete"] is True
+    assert any(item["type"] == "structured_sample_values" for item in curated.facts_in_use)
+    assert "tool_findings" in payload
 
 
 def test_officeqa_benchmark_env_forces_document_grounded_runtime_without_prompt_keywords(monkeypatch):

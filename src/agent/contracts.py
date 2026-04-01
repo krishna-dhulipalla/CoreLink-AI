@@ -167,6 +167,46 @@ class DocumentEvidenceRecord(BaseModel):
     numeric_summaries: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class OfficeQATableEvidence(BaseModel):
+    document_id: str
+    citation: str = ""
+    page_locator: str = ""
+    table_locator: str = ""
+    headers: list[str] = Field(default_factory=list)
+    unit: str = ""
+    unit_multiplier: float = 1.0
+    unit_kind: str = ""
+    row_count: int = 0
+    column_count: int = 0
+
+
+class OfficeQAValueEvidence(BaseModel):
+    document_id: str
+    citation: str = ""
+    page_locator: str = ""
+    table_locator: str = ""
+    row_index: int = -1
+    row_label: str = ""
+    column_index: int = -1
+    column_label: str = ""
+    raw_value: str = ""
+    numeric_value: float | None = None
+    normalized_value: float | None = None
+    unit: str = ""
+    unit_multiplier: float = 1.0
+    unit_kind: str = ""
+
+
+class OfficeQAStructuredEvidence(BaseModel):
+    document_evidence: list[dict[str, Any]] = Field(default_factory=list)
+    tables: list[dict[str, Any]] = Field(default_factory=list)
+    values: list[dict[str, Any]] = Field(default_factory=list)
+    page_chunks: list[dict[str, Any]] = Field(default_factory=list)
+    units_seen: list[str] = Field(default_factory=list)
+    value_count: int = 0
+    provenance_complete: bool = False
+
+
 class EvidencePack(BaseModel):
     task_constraints: list[str] = Field(default_factory=list)
     target_entities: list[str] = Field(default_factory=list)
@@ -342,6 +382,7 @@ class CuratedContext(BaseModel):
     assumptions: list[str] = Field(default_factory=list)
     requested_output: dict[str, Any] = Field(default_factory=dict)
     provenance_summary: dict[str, Any] = Field(default_factory=dict)
+    structured_evidence: dict[str, Any] = Field(default_factory=dict)
 
 
 class EvidenceSufficiency(BaseModel):
@@ -363,6 +404,7 @@ class ReviewPacket(BaseModel):
     assumptions: list[str] = Field(default_factory=list)
     open_questions: list[str] = Field(default_factory=list)
     evidence_sufficiency: dict[str, Any] = Field(default_factory=dict)
+    structured_evidence: dict[str, Any] = Field(default_factory=dict)
 
 
 class RetrievalAction(BaseModel):

@@ -106,7 +106,14 @@ def document_records_from_tool_result(
             )
         return records
 
-    if result.type != "fetch_reference_file":
+    if result.type not in {
+        "fetch_reference_file",
+        "fetch_corpus_document",
+        "fetch_officeqa_pages",
+        "fetch_officeqa_table",
+        "lookup_officeqa_rows",
+        "lookup_officeqa_cells",
+    }:
         return []
 
     document_id = str(result.facts.get("document_id") or _document_id_from_citation(citation))

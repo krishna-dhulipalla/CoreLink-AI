@@ -44,7 +44,15 @@ from agent.tools.normalization import normalize_tool_output
 from agent.tracer import format_messages_for_trace, get_tracer
 from agent.capabilities import resolve_tool_plan
 from agent.benchmarks import benchmark_task_intent
-from agent.curated_context import _compact_tool_findings, build_curated_context, build_review_packet, build_source_bundle, build_retrieval_bundle, solver_context_block
+from agent.curated_context import (
+    _compact_tool_findings,
+    attach_structured_evidence,
+    build_curated_context,
+    build_review_packet,
+    build_retrieval_bundle,
+    build_source_bundle,
+    solver_context_block,
+)
 from agent.prompts import (
     PLANNER_SYSTEM,
     EXECUTOR_SYSTEM,
@@ -1977,6 +1985,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
         tracer = get_tracer()
         tools_ran_this_call: list[str] = []
         task_text = latest_human_text(state["messages"])
+        curated = attach_structured_evidence(curated, journal.tool_results, benchmark_overrides)
 
         if intent.task_family == "finance_options" and not _supports_options_fast_path(task_text):
             heuristic_intent, _, _ = _heuristic_intent(task_text, state.get("answer_contract", {}) or {}, benchmark_overrides)
@@ -2091,6 +2100,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                     budget.record_tool_call()
                 tools_ran_this_call.append(next_tool)
                 journal.tool_results.append(tool_result.model_dump())
+                curated = attach_structured_evidence(curated, journal.tool_results, benchmark_overrides)
                 if intent.execution_mode in _RETRIEVAL_EXECUTION_MODES:
                     journal.retrieval_iterations += 1
                     if next_tool in {"internet_search", "search_reference_corpus"}:
@@ -2151,6 +2161,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                         budget.record_tool_call()
                     tools_ran_this_call.append(retrieval_action.tool_name)
                     journal.tool_results.append(tool_result.model_dump())
+                    curated = attach_structured_evidence(curated, journal.tool_results, benchmark_overrides)
                     journal.retrieval_iterations += 1
                     if retrieval_action.tool_name in {"internet_search", "search_reference_corpus"} and tool_args.get("query"):
                         journal.retrieval_queries.append(str(tool_args["query"]))
