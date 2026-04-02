@@ -1,5 +1,7 @@
 import asyncio
+import os
 
+import agent.tracer as tracer_module
 from agent.tracer import finalize_tracer, get_tracer, start_tracer
 
 
@@ -50,3 +52,25 @@ def test_tracer_is_request_scoped_under_concurrent_tasks(monkeypatch):
     assert payloads["req-b"]["request_id"] == "req-b"
     assert payloads["req-a"]["task_preview"] == "Question A"
     assert payloads["req-b"]["task_preview"] == "Question B"
+
+
+def test_tracer_evicts_old_trace_artifacts(monkeypatch, tmp_path):
+    monkeypatch.setenv("TRACE_MAX_RECENT", "2")
+    monkeypatch.setattr(tracer_module, "_TRACES_DIR", tmp_path)
+
+    stale_a = tmp_path / "2026-03-01_00-00-00"
+    stale_b = tmp_path / "2026-03-02_00-00-00"
+    fresh = tmp_path / "2026-03-03_00-00-00"
+    newest = tmp_path / "2026-03-04_00-00-00"
+    for index, path in enumerate((stale_a, stale_b, fresh, newest), start=1):
+        path.mkdir(parents=True, exist_ok=True)
+        marker = path / "task_001.json"
+        marker.write_text("{}", encoding="utf-8")
+        ts = 1000 + index
+        os.utime(marker, (ts, ts))
+        os.utime(path, (ts, ts))
+
+    tracer_module._cleanup_old_traces()
+
+    remaining = sorted(item.name for item in tmp_path.iterdir())
+    assert remaining == ["2026-03-03_00-00-00", "2026-03-04_00-00-00"]

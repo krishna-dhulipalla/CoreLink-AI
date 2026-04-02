@@ -100,3 +100,26 @@ def test_reflect_persists_run_tool_and_review_memory():
     assert stats["curation_memory"] == 1
     signal = store.fetch_curation_signals(limit=10)[0]
     assert signal["signal_type"] == "assumption_issue"
+
+
+def test_reflect_skips_persistence_when_memory_is_disabled(monkeypatch):
+    monkeypatch.delenv("ENABLE_AGENT_MEMORY", raising=False)
+
+    state = {
+        "messages": [HumanMessage(content="OfficeQA benchmark task.")],
+        "task_profile": "document_qa",
+        "capability_flags": [],
+        "ambiguity_flags": [],
+        "execution_template": {"template_id": "document_grounded_analysis"},
+        "answer_contract": {"format": "xml", "requires_adapter": True},
+        "assumption_ledger": [],
+        "provenance_map": {},
+        "solver_stage": "COMPLETE",
+        "workpad": {"events": [], "stage_history": [], "tool_results": [], "review_results": []},
+        "cost_tracker": CostTracker(),
+        "memory_store": None,
+    }
+
+    update = reflect(state)
+
+    assert update["workpad"]["events"][-1]["node"] == "reflect"

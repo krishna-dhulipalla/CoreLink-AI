@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import threading
 import time
 from contextvars import ContextVar
@@ -45,6 +46,15 @@ _session_lock = threading.Lock()
 
 def _tracer_enabled() -> bool:
     return os.getenv("ENABLE_RUN_TRACER", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _trace_retention_limit() -> int:
+    raw = os.getenv("TRACE_MAX_RECENT", "5").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 5
+    return max(1, value)
 
 
 def _safe_slug(value: str) -> str:
@@ -229,11 +239,46 @@ def _write_trace_file_sync(payload: dict[str, Any], profile: str, trace_identity
         filepath = target_dir / filename
         with open(filepath, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, indent=2, ensure_ascii=False, default=str)
+        _cleanup_old_traces()
         logger.info("[RunTracer] Saved trace to %s", filepath)
         return str(filepath)
     except Exception as exc:
         logger.warning("[RunTracer] Failed to save trace: %s", exc)
         return None
+
+
+def _cleanup_old_traces() -> None:
+    if not _TRACES_DIR.exists():
+        return
+    limit = _trace_retention_limit()
+    entries = [entry for entry in _TRACES_DIR.iterdir() if entry.exists()]
+    if len(entries) <= limit:
+        return
+    entries.sort(key=lambda item: item.stat().st_mtime, reverse=True)
+    active_session_path = _active_session.folder_path.resolve() if _active_session is not None else None
+    retained: list[Path] = []
+    stale_entries: list[Path] = []
+    for entry in entries:
+        resolved = entry.resolve()
+        if active_session_path is not None and resolved == active_session_path:
+            retained.append(entry)
+            continue
+        if len(retained) < limit:
+            retained.append(entry)
+            continue
+        stale_entries.append(entry)
+    for stale in stale_entries:
+        try:
+            if not stale.exists():
+                continue
+            if stale.is_dir():
+                shutil.rmtree(stale)
+            else:
+                stale.unlink()
+        except FileNotFoundError:
+            continue
+        except Exception as exc:
+            logger.warning("[RunTracer] Failed to evict stale trace artifact %s: %s", stale, exc)
 
 
 def _write_trace_file(payload: dict[str, Any], profile: str, trace_identity: dict[str, Any]) -> str | None:

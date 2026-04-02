@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 
 from agent.memory.curation import build_curation_signals
 from agent.memory.schema import ReviewMemory, RunMemory, ToolMemory, infer_memory_family, normalize_memory_text, task_signature
@@ -16,7 +17,13 @@ logger = logging.getLogger(__name__)
 _memory_store: MemoryStore | None = None
 
 
-def _get_memory_store() -> MemoryStore:
+def _memory_enabled() -> bool:
+    return os.getenv("ENABLE_AGENT_MEMORY", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _get_memory_store() -> MemoryStore | None:
+    if not _memory_enabled():
+        return None
     global _memory_store
     if _memory_store is None:
         _memory_store = MemoryStore()
@@ -80,6 +87,8 @@ def _persist_run(state: AgentState, task_text: str, workpad: dict) -> None:
 
 def _persist_tools(state: AgentState, task_text: str, workpad: dict) -> None:
     store = state.get("memory_store") or _get_memory_store()
+    if store is None:
+        return
 
     task_profile = state.get("task_profile", "general")
     task_family = infer_memory_family(task_profile, task_text)
@@ -117,6 +126,8 @@ def _persist_tools(state: AgentState, task_text: str, workpad: dict) -> None:
 
 def _persist_reviews(state: AgentState, task_text: str, workpad: dict) -> None:
     store = state.get("memory_store") or _get_memory_store()
+    if store is None:
+        return
 
     task_profile = state.get("task_profile", "general")
     task_family = infer_memory_family(task_profile, task_text)
@@ -142,6 +153,8 @@ def _persist_reviews(state: AgentState, task_text: str, workpad: dict) -> None:
 
 def _persist_curation(state: AgentState, task_text: str, workpad: dict) -> None:
     store = state.get("memory_store") or _get_memory_store()
+    if store is None:
+        return
 
     for signal in build_curation_signals(state, task_text, workpad):
         store.store_curation(signal)

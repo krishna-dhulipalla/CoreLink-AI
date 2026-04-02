@@ -131,6 +131,20 @@ The OfficeQA regression runner writes a JSON report under `Results&traces/` with
 - captured artifacts: expected/found source files, chosen sources, extracted tables, compute ledger, and final answer
 - a go/no-go summary for broader benchmark runs
 
+Recommended local benchmark-testing defaults:
+
+- `BENCHMARK_NAME=officeqa`
+- `BENCHMARK_STATELESS=1`
+- `ENABLE_RUN_TRACER=1`
+- `TRACE_MAX_RECENT=5`
+- `ENABLE_AGENT_MEMORY=0`
+
+Notes:
+
+- run tracing is V5-compatible and will capture the active node path, stop reasons, and final answer preview
+- the trace folder now auto-evicts older entries and keeps only the most recent `TRACE_MAX_RECENT` runs
+- persistent memory is now opt-in; for OfficeQA benchmark testing it should stay off unless you are explicitly doing offline memory analysis
+
 ## 🛠️ Project Structure
 
 - `src/server.py`: A2A Starlette server entrypoint.

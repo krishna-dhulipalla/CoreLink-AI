@@ -11,7 +11,6 @@ from langgraph.errors import GraphRecursionError
 
 from agent.budget import BudgetTracker
 from agent.cost import CostTracker
-from agent.memory.store import MemoryStore
 from agent.runtime_clock import reset_runtime_steps
 from agent.state import AgentState
 from agent.tracer import finalize_tracer, start_tracer
@@ -20,9 +19,6 @@ from context_manager import summarize_and_window
 logger = logging.getLogger(__name__)
 
 _THINK_BLOCK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
-
-_memory_store: MemoryStore | None = None
-
 
 def _same_message(a: BaseMessage, b: BaseMessage) -> bool:
     if type(a) is not type(b):
@@ -53,13 +49,6 @@ def _dedupe_adjacent_messages(messages: list[BaseMessage]) -> list[BaseMessage]:
 
 def _benchmark_stateless_mode() -> bool:
     return os.getenv("BENCHMARK_STATELESS", "").strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _get_memory_store() -> MemoryStore:
-    global _memory_store
-    if _memory_store is None:
-        _memory_store = MemoryStore()
-    return _memory_store
 
 
 def _strip_think_markup(text: str) -> str:

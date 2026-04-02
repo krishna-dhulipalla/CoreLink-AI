@@ -33,7 +33,6 @@ class _RecursingGraph:
 
 def test_run_agent_trace_stateless_mode_ignores_history_and_dedupes(monkeypatch):
     monkeypatch.setenv("BENCHMARK_STATELESS", "1")
-    monkeypatch.setattr(runner_module, "_get_memory_store", lambda: None)
     monkeypatch.setattr(runner_module, "summarize_and_window", lambda messages: messages)
 
     graph = _StaticGraph([HumanMessage(content="What is ROE?"), AIMessage(content="0.12")])
@@ -55,7 +54,6 @@ def test_run_agent_trace_stateless_mode_ignores_history_and_dedupes(monkeypatch)
 
 def test_run_agent_trace_recursion_preserves_partial_answer_and_history(monkeypatch):
     monkeypatch.delenv("BENCHMARK_STATELESS", raising=False)
-    monkeypatch.setattr(runner_module, "_get_memory_store", lambda: None)
     monkeypatch.setattr(runner_module, "summarize_and_window", lambda messages: messages)
 
     graph = _RecursingGraph()
