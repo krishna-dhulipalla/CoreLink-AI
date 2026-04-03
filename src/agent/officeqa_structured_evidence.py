@@ -6,6 +6,7 @@ import re
 from typing import Any
 
 from agent.contracts import (
+    DocumentMergedSeriesEvidence,
     DocumentEvidenceRecord,
     OfficeQAStructuredEvidence,
     OfficeQATableEvidence,
@@ -15,6 +16,21 @@ from agent.contracts import (
 from agent.document_evidence import document_records_from_tool_result, merge_document_evidence_records
 
 _PAGE_LOCATOR_RE = re.compile(r"page\s+(\d+)", re.IGNORECASE)
+_YEAR_RE = re.compile(r"(?<!\d)((?:19|20)\d{2})(?!\d)")
+_MONTH_INDEX = {
+    "january": 1,
+    "february": 2,
+    "march": 3,
+    "april": 4,
+    "may": 5,
+    "june": 6,
+    "july": 7,
+    "august": 8,
+    "september": 9,
+    "october": 10,
+    "november": 11,
+    "december": 12,
+}
 
 
 def _unit_profile(unit_hint: str, column_label: str = "") -> tuple[str, float, str]:
@@ -56,6 +72,138 @@ def _numeric_value(raw: Any) -> float | None:
         return float(compact)
     except ValueError:
         return None
+
+
+def _normalize_label(value: str) -> str:
+    return re.sub(r"\s+", " ", (value or "").strip().lower())
+
+
+def _extract_years(*parts: str) -> list[str]:
+    text = " ".join(str(part or "") for part in parts)
+    return list(dict.fromkeys(_YEAR_RE.findall(text)))
+
+
+def _extract_month_index(*parts: str) -> int | None:
+    text = " ".join(str(part or "") for part in parts).lower()
+    for month, index in _MONTH_INDEX.items():
+        if month in text:
+            return index
+    return None
+
+
+def _series_key(value: dict[str, Any]) -> str:
+    return "|".join(
+        [
+            _normalize_label(str(value.get("row_label", ""))),
+            _normalize_label(str(value.get("column_label", ""))),
+            _normalize_label(str(value.get("unit", ""))),
+            _normalize_label(str(value.get("unit_kind", ""))),
+        ]
+    )
+
+
+def _merged_series(values: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    grouped: dict[str, dict[str, Any]] = {}
+    all_document_ids: set[str] = set()
+    all_years: set[str] = set()
+    unit_consistent = True
+
+    for value in values:
+        if value.get("numeric_value") is None and value.get("normalized_value") is None:
+            continue
+        series_key = _series_key(value)
+        if not series_key.strip("|"):
+            continue
+        document_id = str(value.get("document_id", "")).strip()
+        years = _extract_years(
+            str(value.get("row_label", "")),
+            str(value.get("column_label", "")),
+            str(value.get("table_locator", "")),
+            str(value.get("page_locator", "")),
+            str(value.get("citation", "")),
+            document_id,
+        )
+        month_index = _extract_month_index(
+            str(value.get("row_label", "")),
+            str(value.get("column_label", "")),
+            str(value.get("table_locator", "")),
+        )
+        series = grouped.setdefault(
+            series_key,
+            {
+                "series_key": series_key,
+                "row_label": str(value.get("row_label", "")),
+                "column_label": str(value.get("column_label", "")),
+                "unit": str(value.get("unit", "")),
+                "unit_kind": str(value.get("unit_kind", "")),
+                "document_ids": set(),
+                "years": set(),
+                "month_count_by_year": {},
+                "value_count": 0,
+                "provenance_refs": [],
+                "_month_sets": {},
+            },
+        )
+        series["value_count"] += 1
+        if document_id:
+            series["document_ids"].add(document_id)
+            all_document_ids.add(document_id)
+        for year in years:
+            series["years"].add(year)
+            all_years.add(year)
+            if month_index is not None:
+                series["_month_sets"].setdefault(year, set()).add(month_index)
+        unit_text = str(value.get("unit", "")).strip().lower()
+        if series["unit"] and unit_text and unit_text != str(series["unit"]).strip().lower():
+            unit_consistent = False
+        series["provenance_refs"].append(
+            {
+                "document_id": document_id,
+                "citation": str(value.get("citation", "")),
+                "page_locator": str(value.get("page_locator", "")),
+                "table_locator": str(value.get("table_locator", "")),
+                "row_label": str(value.get("row_label", "")),
+                "column_label": str(value.get("column_label", "")),
+                "raw_value": str(value.get("raw_value", "")),
+            }
+        )
+
+    merged_series: list[dict[str, Any]] = []
+    cross_document_series_count = 0
+    aligned_document_count = 0
+    for raw in grouped.values():
+        document_ids = sorted(raw["document_ids"])
+        years = sorted(raw["years"])
+        month_count_by_year = {
+            str(year): len(months)
+            for year, months in sorted(raw["_month_sets"].items())
+        }
+        merged = DocumentMergedSeriesEvidence(
+            series_key=str(raw["series_key"]),
+            row_label=str(raw["row_label"]),
+            column_label=str(raw["column_label"]),
+            unit=str(raw["unit"]),
+            unit_kind=str(raw["unit_kind"]),
+            document_ids=document_ids,
+            years=years,
+            month_count_by_year=month_count_by_year,
+            value_count=int(raw["value_count"]),
+            provenance_refs=list(raw["provenance_refs"])[:24],
+        )
+        if len(document_ids) >= 2:
+            cross_document_series_count += 1
+            aligned_document_count = max(aligned_document_count, len(document_ids))
+        merged_series.append(merged.model_dump())
+
+    alignment_summary = {
+        "document_count": len(all_document_ids),
+        "aligned_document_count": aligned_document_count,
+        "cross_document_series_count": cross_document_series_count,
+        "aligned_years": sorted(all_years),
+        "unit_consistent": unit_consistent,
+        "series_count": len(merged_series),
+    }
+    return merged_series, alignment_summary
 
 
 def _page_locator(chunk: dict[str, Any], metadata: dict[str, Any]) -> str:
@@ -156,11 +304,15 @@ def build_officeqa_structured_evidence(tool_results: list[dict[str, Any]] | None
                         provenance_complete = False
                     values.append(value_record.model_dump())
 
+    merged_series, alignment_summary = _merged_series(values)
+
     payload = OfficeQAStructuredEvidence(
         document_evidence=[record.model_dump() for record in document_records],
         tables=tables,
         values=values,
         page_chunks=page_chunks,
+        merged_series=merged_series,
+        alignment_summary=alignment_summary,
         units_seen=sorted(units_seen),
         value_count=len(values),
         provenance_complete=provenance_complete and bool(values or tables),
@@ -177,6 +329,13 @@ def compact_officeqa_structured_evidence(payload: dict[str, Any] | None) -> dict
         "value_count": int(data.get("value_count", 0) or 0),
         "units_seen": list(data.get("units_seen", []))[:8],
         "provenance_complete": bool(data.get("provenance_complete")),
+        "alignment_summary": {
+            "document_count": int(dict(data.get("alignment_summary", {})).get("document_count", 0) or 0),
+            "aligned_document_count": int(dict(data.get("alignment_summary", {})).get("aligned_document_count", 0) or 0),
+            "cross_document_series_count": int(dict(data.get("alignment_summary", {})).get("cross_document_series_count", 0) or 0),
+            "aligned_years": list(dict(data.get("alignment_summary", {})).get("aligned_years", []))[:8],
+            "unit_consistent": bool(dict(data.get("alignment_summary", {})).get("unit_consistent", True)),
+        },
         "tables": [
             {
                 "document_id": item.get("document_id", ""),
@@ -202,6 +361,17 @@ def compact_officeqa_structured_evidence(payload: dict[str, Any] | None) -> dict
                 "unit": item.get("unit", ""),
             }
             for item in list(data.get("values", []))[:12]
+            if isinstance(item, dict)
+        ],
+        "merged_series": [
+            {
+                "series_key": item.get("series_key", ""),
+                "document_ids": list(item.get("document_ids", []))[:6],
+                "years": list(item.get("years", []))[:6],
+                "value_count": item.get("value_count", 0),
+                "month_count_by_year": dict(item.get("month_count_by_year", {})),
+            }
+            for item in list(data.get("merged_series", []))[:6]
             if isinstance(item, dict)
         ],
     }

@@ -16,9 +16,12 @@ from agent.context.evidence import (
 from agent.context.extraction import extract_entities, extract_formulas, extract_inline_facts, extract_urls, parse_markdown_tables
 from agent.context.profiling import _extract_labeled_json_block
 from agent.benchmarks.officeqa import officeqa_analysis_modes
-from agent.benchmarks.officeqa_compute import compact_officeqa_compute_result
+from agent.benchmarks import (
+    benchmark_build_structured_evidence,
+    benchmark_compact_compute_result,
+    benchmark_compact_structured_evidence,
+)
 from agent.contracts import CuratedContext, EvidenceSufficiency, RetrievalIntent, ReviewPacket, SourceBundle, TaskIntent
-from agent.officeqa_structured_evidence import build_officeqa_structured_evidence, compact_officeqa_structured_evidence
 from agent.retrieval_reasoning import assess_evidence_sufficiency, build_retrieval_intent
 
 _DEAL_SIZE_RE = re.compile(r"\$?\s*(\d+(?:\.\d+)?)\s*(M|MM|B|BN|million|billion)\b", re.IGNORECASE)
@@ -343,6 +346,7 @@ def build_curated_context(
             "section_requirements": list(answer_contract.get("section_requirements", [])),
         },
         provenance_summary={
+            "benchmark_adapter": str(overrides.get("benchmark_adapter", "") or ""),
             "source_bundle": {
                 "entities": source_bundle.entities[:6],
                 "urls": source_bundle.urls[:4],
@@ -486,9 +490,7 @@ def attach_structured_evidence(
 ) -> CuratedContext:
     curated = curated_context if isinstance(curated_context, CuratedContext) else CuratedContext.model_validate(curated_context)
     overrides = dict(benchmark_overrides or {})
-    if str(overrides.get("benchmark_adapter", "") or "") != "officeqa":
-        return curated
-    structured = build_officeqa_structured_evidence(tool_results)
+    structured = benchmark_build_structured_evidence(tool_results, benchmark_overrides)
     if not structured.get("tables") and not structured.get("values"):
         return curated
 
@@ -497,19 +499,23 @@ def attach_structured_evidence(
     if structured.get("units_seen"):
         facts.append({"type": "structured_units", "value": list(structured.get("units_seen", []))[:8]})
     if structured.get("values"):
+        compact_structured = benchmark_compact_structured_evidence(structured, benchmark_overrides)
         facts.append(
             {
                 "type": "structured_sample_values",
-                "value": compact_officeqa_structured_evidence(structured).get("values", [])[:6],
+                "value": compact_structured.get("values", [])[:6],
             }
         )
 
     provenance_summary = dict(curated.provenance_summary or {})
+    if overrides.get("benchmark_adapter"):
+        provenance_summary["benchmark_adapter"] = str(overrides.get("benchmark_adapter", "") or "")
     provenance_summary["structured_evidence"] = {
         "table_count": len(list(structured.get("tables", []))),
         "value_count": int(structured.get("value_count", 0) or 0),
         "units_seen": list(structured.get("units_seen", []))[:8],
         "provenance_complete": bool(structured.get("provenance_complete")),
+        "alignment_summary": dict(structured.get("alignment_summary", {})),
     }
 
     curated.facts_in_use = _dedupe_facts(facts)
@@ -521,9 +527,10 @@ def attach_structured_evidence(
 def attach_compute_result(
     curated_context: dict[str, Any] | CuratedContext,
     compute_result: dict[str, Any] | None = None,
+    benchmark_overrides: dict[str, Any] | None = None,
 ) -> CuratedContext:
     curated = curated_context if isinstance(curated_context, CuratedContext) else CuratedContext.model_validate(curated_context)
-    compact = compact_officeqa_compute_result(compute_result)
+    compact = benchmark_compact_compute_result(compute_result, benchmark_overrides)
     if not compact:
         return curated
 
@@ -558,6 +565,7 @@ def build_review_packet(
     validator_result: dict[str, Any] | None = None,
 ) -> ReviewPacket:
     provenance = dict(curated_context.get("provenance_summary") or {})
+    benchmark_overrides = {"benchmark_adapter": str(provenance.get("benchmark_adapter", "") or "")}
     source_summary = dict(provenance.get("source_bundle") or {})
     citations = [str(item) for item in source_summary.get("urls", []) if str(item).strip()]
     citations.extend([item for item in _extract_tool_citations(tool_results) if item not in citations])
@@ -586,8 +594,8 @@ def build_review_packet(
         assumptions=[str(item) for item in curated_context.get("assumptions", []) if str(item).strip()],
         open_questions=[str(item) for item in curated_context.get("open_questions", []) if str(item).strip()],
         evidence_sufficiency=dict(evidence_sufficiency or {}),
-        structured_evidence=compact_officeqa_structured_evidence(curated_context.get("structured_evidence", {})),
-        compute_result=compact_officeqa_compute_result(curated_context.get("compute_result", {})),
+        structured_evidence=benchmark_compact_structured_evidence(curated_context.get("structured_evidence", {}), benchmark_overrides),
+        compute_result=benchmark_compact_compute_result(curated_context.get("compute_result", {}), benchmark_overrides),
         validator_result=dict(validator_result or {}),
         diagnostic_artifacts={key: value for key, value in diagnostic_artifacts.items() if value not in ("", [], {}, None)},
     )
@@ -600,6 +608,8 @@ def solver_context_block(
     include_objective: bool = False,
     revision_mode: bool = False,
 ) -> str:
+    provenance = dict(curated_context.get("provenance_summary") or {})
+    benchmark_overrides = {"benchmark_adapter": str(provenance.get("benchmark_adapter", "") or "")}
     payload = {
         "facts_in_use": _compact_prompt_value(curated_context.get("facts_in_use", [])),
         "requested_output": _compact_prompt_value(curated_context.get("requested_output", {})),
@@ -612,10 +622,10 @@ def solver_context_block(
         payload["assumptions"] = assumptions
     if include_objective and curated_context.get("objective"):
         payload["objective"] = _compact_prompt_value(curated_context.get("objective", ""))
-    structured_evidence = compact_officeqa_structured_evidence(curated_context.get("structured_evidence", {}))
+    structured_evidence = benchmark_compact_structured_evidence(curated_context.get("structured_evidence", {}), benchmark_overrides)
     if structured_evidence:
         payload["structured_evidence"] = structured_evidence
-    compute_result = compact_officeqa_compute_result(curated_context.get("compute_result", {}))
+    compute_result = benchmark_compact_compute_result(curated_context.get("compute_result", {}), benchmark_overrides)
     if compute_result:
         payload["compute_result"] = compute_result
     # On revision, skip tool findings — they are already reflected in the prior answer

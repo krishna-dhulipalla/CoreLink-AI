@@ -37,9 +37,8 @@ from agent.solver.options import (
 from agent.solver.quant import deterministic_quant_final_answer
 from agent.tracer import format_messages_for_trace, get_tracer
 from agent.capabilities import resolve_tool_plan
-from agent.benchmarks.officeqa_compute import compute_officeqa_result
-from agent.benchmarks.officeqa_validator import officeqa_orchestration_strategy, validate_officeqa_final
-from agent.benchmarks import benchmark_task_intent
+from agent.benchmarks.officeqa_validator import officeqa_orchestration_strategy
+from agent.benchmarks import benchmark_compute_result, benchmark_task_intent, benchmark_validate_final
 from agent.curated_context import (
     _compact_tool_findings,
     attach_compute_result,
@@ -949,8 +948,15 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                         "workpad": workpad,
                     }
             else:
-                compute_result = compute_officeqa_result(task_text, retrieval_intent, curated.structured_evidence)
-                curated = attach_compute_result(curated, compute_result.model_dump())
+                compute_result = benchmark_compute_result(
+                    task_text,
+                    retrieval_intent,
+                    curated.structured_evidence,
+                    benchmark_overrides,
+                )
+                if compute_result is None:
+                    raise RuntimeError("Benchmark compute hook is unavailable for the active benchmark adapter.")
+                curated = attach_compute_result(curated, compute_result.model_dump(), benchmark_overrides)
                 workpad["officeqa_compute"] = compute_result.model_dump()
                 provenance_summary = dict(curated.provenance_summary or {})
                 provenance_summary["answer_strategy"] = {
@@ -1289,7 +1295,7 @@ def reviewer(state: RuntimeState) -> dict[str, Any]:
     validator_result: dict[str, Any] = {}
     officeqa_validation = None
     if benchmark_overrides.get("benchmark_adapter") == "officeqa" and intent.review_mode == "document_grounded":
-        officeqa_validation = validate_officeqa_final(
+        officeqa_validation = benchmark_validate_final(
             task_text=latest_human_text(state["messages"]),
             retrieval_intent=retrieval_intent,
             curated_context=curated,
@@ -1302,6 +1308,7 @@ def reviewer(state: RuntimeState) -> dict[str, Any]:
                 )
                 if str(item).strip()
             ],
+            benchmark_overrides=benchmark_overrides,
         )
         if officeqa_validation.verdict == "revise":
             retry_allowed, retry_stop_reason = _officeqa_retry_policy(

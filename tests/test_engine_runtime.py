@@ -6,10 +6,17 @@ import uuid
 from pathlib import Path
 
 import agent.graph as graph_module
+import agent.benchmarks as benchmark_module
 from langchain_core.messages import AIMessage
 from langchain_core.tools import tool
 
 from agent.budget import BudgetTracker
+from agent.benchmarks import (
+    benchmark_build_structured_evidence,
+    benchmark_compute_result,
+    benchmark_validate_final,
+    register_benchmark_document_adapter,
+)
 from agent.benchmarks.officeqa_index import build_officeqa_index
 from agent.contracts import EvidenceSufficiency, ExecutionJournal, SourceBundle, ToolPlan
 from agent.officeqa_structured_evidence import build_officeqa_structured_evidence
@@ -364,6 +371,52 @@ def test_officeqa_structured_evidence_projects_normalized_table_values(monkeypat
     assert february_value["page_locator"]
 
 
+def test_officeqa_structured_evidence_builds_cross_document_alignment_summary():
+    structured = build_officeqa_structured_evidence(
+        [
+            {
+                "type": "fetch_officeqa_table",
+                "facts": {
+                    "document_id": "treasury_1940_json",
+                    "citation": "https://govinfo.gov/treasury_1940.pdf",
+                    "metadata": {"page_start": 4, "file_name": "treasury_1940.pdf"},
+                    "tables": [
+                        {
+                            "locator": "table 1",
+                            "citation": "https://govinfo.gov/treasury_1940.pdf",
+                            "headers": ["Month", "Receipts (million dollars)"],
+                            "rows": [["January", "10.0"], ["February", "12.0"]],
+                            "unit_hint": "million dollars",
+                        }
+                    ],
+                },
+            },
+            {
+                "type": "fetch_officeqa_table",
+                "facts": {
+                    "document_id": "treasury_1953_json",
+                    "citation": "https://govinfo.gov/treasury_1953.pdf",
+                    "metadata": {"page_start": 6, "file_name": "treasury_1953.pdf"},
+                    "tables": [
+                        {
+                            "locator": "table 1",
+                            "citation": "https://govinfo.gov/treasury_1953.pdf",
+                            "headers": ["Month", "Receipts (million dollars)"],
+                            "rows": [["January", "15.0"], ["February", "18.0"]],
+                            "unit_hint": "million dollars",
+                        }
+                    ],
+                },
+            },
+        ]
+    )
+
+    assert structured["alignment_summary"]["aligned_document_count"] == 2
+    assert structured["alignment_summary"]["cross_document_series_count"] >= 1
+    assert set(structured["alignment_summary"]["aligned_years"]) == {"1940", "1953"}
+    assert any(len(item["document_ids"]) == 2 for item in structured["merged_series"])
+
+
 def test_solver_context_block_includes_compact_structured_evidence_for_officeqa(monkeypatch, tmp_path):
     corpus_root = tmp_path / "treasury_bulletins_parsed"
     corpus_root.mkdir(parents=True)
@@ -406,6 +459,56 @@ def test_solver_context_block_includes_compact_structured_evidence_for_officeqa(
     assert payload["structured_evidence"]["provenance_complete"] is True
     assert any(item["type"] == "structured_sample_values" for item in curated.facts_in_use)
     assert "tool_findings" in payload
+
+
+def test_benchmark_document_adapter_hooks_allow_second_document_runtime_without_prompt_hacks(monkeypatch):
+    adapter_name = "dummy_docs"
+    previous = benchmark_module._DOCUMENT_ADAPTERS.get(adapter_name)
+    register_benchmark_document_adapter(
+        adapter_name,
+        {
+            "build_structured_evidence": lambda tool_results: {"kind": "dummy_structured", "count": len(tool_results or [])},
+            "compute_result": lambda task_text, retrieval_intent, structured_evidence: {
+                "status": "ok",
+                "operation": "dummy_compute",
+                "display_value": "42",
+                "answer_text": "dummy",
+                "structured_kind": structured_evidence.get("kind", ""),
+            },
+            "validate_final": lambda **kwargs: {
+                "verdict": "pass",
+                "reasoning": "dummy validator",
+                "orchestration_strategy": "table_compute",
+            },
+        },
+    )
+
+    try:
+        overrides = {"benchmark_adapter": adapter_name}
+        structured = benchmark_build_structured_evidence([{"type": "dummy_tool"}], overrides)
+        compute_result = benchmark_compute_result(
+            "dummy task",
+            build_retrieval_intent("dummy task", SourceBundle(task_text="dummy task"), None),
+            structured,
+            overrides,
+        )
+        validation = benchmark_validate_final(
+            task_text="dummy task",
+            retrieval_intent=build_retrieval_intent("dummy task", SourceBundle(task_text="dummy task"), None),
+            curated_context={"structured_evidence": structured, "compute_result": compute_result},
+            evidence_sufficiency={"is_sufficient": True},
+            citations=[],
+            benchmark_overrides=overrides,
+        )
+
+        assert structured["kind"] == "dummy_structured"
+        assert compute_result["operation"] == "dummy_compute"
+        assert validation["verdict"] == "pass"
+    finally:
+        if previous is None:
+            benchmark_module._DOCUMENT_ADAPTERS.pop(adapter_name, None)
+        else:
+            benchmark_module._DOCUMENT_ADAPTERS[adapter_name] = previous
 
 
 def test_officeqa_benchmark_env_forces_document_grounded_runtime_without_prompt_keywords(monkeypatch):

@@ -647,6 +647,7 @@ def predictive_evidence_gaps(
     values = [item for item in list(payload.get("values", [])) if isinstance(item, dict)]
     tables = [item for item in list(payload.get("tables", [])) if isinstance(item, dict)]
     page_chunks = [item for item in list(payload.get("page_chunks", [])) if isinstance(item, dict)]
+    alignment_summary = dict(payload.get("alignment_summary", {}) or {})
     gaps: list[str] = []
 
     if plan.requires_table_support and not (tables or values):
@@ -684,8 +685,14 @@ def predictive_evidence_gaps(
             for item in [*values, *tables]
             if str(item.get("document_id", "")).strip()
         }
-        if len(document_ids) < 2:
+        aligned_document_count = int(alignment_summary.get("aligned_document_count", 0) or 0)
+        if aligned_document_count < 2 and len(document_ids) < 2:
             gaps.append("cross-document alignment")
+        if alignment_summary and not bool(alignment_summary.get("unit_consistent", True)):
+            gaps.append("cross-document unit alignment")
+        aligned_years = {str(year) for year in list(alignment_summary.get("aligned_years", []))}
+        if plan.required_years and set(plan.required_years) - aligned_years:
+            gaps.append("cross-document time alignment")
     return list(dict.fromkeys(gaps))
 
 

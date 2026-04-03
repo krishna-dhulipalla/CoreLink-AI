@@ -652,15 +652,22 @@ Objective:
 
 Tasks:
 
-- [ ] `P14.1` Add cross-document table merge support with explicit provenance retention
-- [ ] `P14.2` Add unit and time alignment across multiple documents
-- [ ] `P14.3` Separate retrieval, compute, and validator interfaces into document-benchmark adapter seams
-- [ ] `P14.4` Prove OfficeQA remains first-class while a second document benchmark can plug in without prompt-hack routing
-- [ ] `P14.5` Document what stays OfficeQA-specific versus what becomes generic document-runtime infrastructure
+- [x] `P14.1` Add cross-document table merge support with explicit provenance retention
+- [x] `P14.2` Add unit and time alignment across multiple documents
+- [x] `P14.3` Separate retrieval, compute, and validator interfaces into document-benchmark adapter seams
+- [x] `P14.4` Prove OfficeQA remains first-class while a second document benchmark can plug in without prompt-hack routing
+- [x] `P14.5` Document what stays OfficeQA-specific versus what becomes generic document-runtime infrastructure
 
 Exit criteria:
 
 - similar document-grounded tasks can reuse the architecture without reintroducing finance-specific profiles or template routing
+
+Phase 14 completion notes:
+
+- `src/agent/officeqa_structured_evidence.py` now emits explicit cross-document merged series and alignment summaries with provenance retention, so multi-document support is no longer just a retrieval strategy flag.
+- `src/agent/retrieval_reasoning.py` and `src/agent/benchmarks/officeqa_validator.py` now check cross-document unit and time alignment explicitly when the evidence plan requires cross-source comparison.
+- `src/agent/benchmarks/__init__.py`, `src/agent/curated_context.py`, and `src/agent/nodes/orchestrator.py` now route structured-evidence build, compute, and final validation through benchmark document-adapter hooks rather than hardwiring those interfaces directly into the runtime.
+- OfficeQA remains the default first-class adapter, but tests now prove that a second document benchmark can register retrieval/compute/validate hooks without changing prompt routing or reviving template-based dispatch.
 
 ## Optional Backlog: Shared Global Workpad
 

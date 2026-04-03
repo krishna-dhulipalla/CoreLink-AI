@@ -197,11 +197,26 @@ class OfficeQAValueEvidence(BaseModel):
     unit_kind: str = ""
 
 
+class DocumentMergedSeriesEvidence(BaseModel):
+    series_key: str = ""
+    row_label: str = ""
+    column_label: str = ""
+    unit: str = ""
+    unit_kind: str = ""
+    document_ids: list[str] = Field(default_factory=list)
+    years: list[str] = Field(default_factory=list)
+    month_count_by_year: dict[str, int] = Field(default_factory=dict)
+    value_count: int = 0
+    provenance_refs: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class OfficeQAStructuredEvidence(BaseModel):
     document_evidence: list[dict[str, Any]] = Field(default_factory=list)
     tables: list[dict[str, Any]] = Field(default_factory=list)
     values: list[dict[str, Any]] = Field(default_factory=list)
     page_chunks: list[dict[str, Any]] = Field(default_factory=list)
+    merged_series: list[dict[str, Any]] = Field(default_factory=list)
+    alignment_summary: dict[str, Any] = Field(default_factory=dict)
     units_seen: list[str] = Field(default_factory=list)
     value_count: int = 0
     provenance_complete: bool = False

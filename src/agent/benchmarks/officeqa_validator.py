@@ -153,6 +153,7 @@ def validate_officeqa_final(
     compute = OfficeQAComputeResult.model_validate(curated.compute_result or {})
     citation_list = [str(item).strip() for item in citations or [] if str(item).strip()]
     orchestration_strategy = officeqa_orchestration_strategy(retrieval_intent)
+    alignment_summary = dict(structured.alignment_summary or {})
 
     hard_failures: list[str] = []
     missing_dimensions: list[str] = []
@@ -196,6 +197,11 @@ def validate_officeqa_final(
     units_seen = {str(item).strip().lower() for item in structured.units_seen if str(item).strip()}
     if len(units_seen) > 1:
         _append_unique(hard_failures, "unit consistency")
+    if retrieval_intent.evidence_plan.requires_cross_source_alignment:
+        if int(alignment_summary.get("aligned_document_count", 0) or 0) < 2:
+            _append_unique(hard_failures, "time scope correctness")
+        if not bool(alignment_summary.get("unit_consistent", True)):
+            _append_unique(hard_failures, "unit consistency")
 
     if _requires_deterministic_compute(retrieval_intent):
         if compute.status != "ok":
