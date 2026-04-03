@@ -19,6 +19,8 @@ results/
 traces/
 results&traces/
 .officeqa_index/
+data/officeqa/*
+!data/officeqa/README.md
 !docs/
 docs/*
 !docs/progress.md

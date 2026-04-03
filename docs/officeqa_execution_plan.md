@@ -1,14 +1,22 @@
 # OfficeQA Execution Plan
 
 Date: 2026-03-31
-Status: Completed
-Source analysis: `docs/officeqa_integration_plan.md`
+Status: Active
+Source analysis:
+- `docs/officeqa_integration_plan.md`
+- `docs/v5_runtime_walkthrough.md`
+- 2026-04-02 architecture review follow-up
 
 ## Purpose
 
-This is the canonical execution plan for turning the repository into an OfficeQA-only system.
+This is the canonical execution plan for the OfficeQA runtime.
 
 Use this document as the operational source of truth for coding agents. The analysis document explains why the old architecture failed. This plan tells agents what to build, in what order, how to mark progress, and what "done" means for each phase.
+
+Current state:
+
+- V5 baseline is complete.
+- A new hardening backlog is now open because the V5 walkthrough review exposed remaining OfficeQA-only cleanup, retrieval flexibility gaps, hidden execution decisions, and future multi-document needs.
 
 ## Planning Rules
 
@@ -77,6 +85,19 @@ Non-goals:
 - benchmark-string routing hacks
 - web-search-first OfficeQA solving
 - another prompt-only retrofit of the current runtime
+
+## Post-V5 Review Decisions
+
+- The runtime is OfficeQA-first, but it still carries generic `TaskProfile`, prompt-guidance, and reviewer branches that are not useful for the active benchmark path.
+- The remaining generic profile/task-family shell should be removed deliberately, not by scattered opportunistic edits.
+- The active model stack must be explicit in docs and startup logs. Solver and reviewer strength matter for hard OfficeQA cases.
+- The canonical local corpus layout should be stable and documented so teammates do not improvise paths.
+- `RetrievalIntent` should become the main control plane for retrieval strategy, evidence planning, compute routing, and fallback behavior.
+- Retrieval needs multiple structured strategies, not only `metadata search -> table -> row -> cell`.
+- Hidden execution stages must emit explicit trace artifacts so teammates can debug table choice, aggregation choice, and evidence gaps directly.
+- Deterministic compute remains the primary numeric path, but mixed evidence tasks need grounded synthesis rather than immediate insufficiency.
+- Validator output should become actionable enough to drive retries automatically.
+- The architecture should stay OfficeQA-native now while leaving a clean adapter seam for similar document-grounded benchmarks later.
 
 ## Reusable Components To Keep
 
@@ -456,6 +477,164 @@ Phase 8 completion notes:
 - Added `src/agent/benchmarks/officeqa_eval.py` to classify runs, capture OfficeQA artifacts, and summarize go/no-go readiness.
 - Added `scripts/run_officeqa_regression.py` as the new smoke/full regression entrypoint for OfficeQA iteration.
 - Go/no-go rule: block full benchmark runs if there are any routing or formatting failures, or if fewer than 60% of the selected cases produce table-backed final answers.
+
+## Phase 9: OfficeQA-Only Cleanup And Operational Clarity
+
+Objective:
+
+- finish removing non-OfficeQA runtime debt and make models plus corpus setup explicit for local and benchmark execution.
+
+Tasks:
+
+- [ ] `P9.1` Audit remaining non-OfficeQA `TaskProfile`, `ExecutionMode`, and `ProfileContextPack` branches that still participate in the active runtime
+- [ ] `P9.2` Remove or isolate finance/options/legal prompt guidance from the active OfficeQA path:
+  - `src/agent/profile_packs.py`
+  - `src/agent/prompts.py`
+  - `src/agent/review_utils.py`
+  - `src/agent/context/evidence.py`
+  - `src/agent/nodes/orchestrator_intent.py`
+- [ ] `P9.3` Reduce the active runtime taxonomy to an OfficeQA-minimal set, or move legacy task families behind an explicit archive-compatibility boundary
+- [ ] `P9.4` Make the active role-model mapping visible at startup and in teammate docs
+- [ ] `P9.5` Choose and document the strong default OfficeQA role stack:
+  - strong document-grounded solver
+  - strong reviewer for ambiguity and scope checks
+  - lightweight adapter and reflection models
+- [ ] `P9.6` Define the canonical local corpus layout under `data/officeqa/` and keep it reproducible across teammates
+- [ ] `P9.7` Add regression coverage proving OfficeQA execution no longer depends on retired finance/legal prompt branches
+
+Exit criteria:
+
+- teammates can see the active models and corpus path without reading source
+- OfficeQA runtime no longer depends on finance/legal profile guidance in normal execution
+
+## Phase 10: Adaptive Retrieval Control Plane
+
+Objective:
+
+- turn `RetrievalIntent` from a query container into the main control plane for retrieval strategy and evidence acquisition.
+
+Tasks:
+
+- [ ] `P10.1` Extend `RetrievalIntent` with:
+  - retrieval strategy
+  - strategy confidence
+  - evidence requirements
+  - fallback chain
+  - join requirements
+- [ ] `P10.2` Add explicit retrieval strategies:
+  - `table_first`
+  - `text_first`
+  - `hybrid`
+  - `multi_table`
+  - `multi_document`
+- [ ] `P10.3` Add a typed `EvidencePlan` object before retrieval that states:
+  - required values
+  - metric identity
+  - expected units
+  - time scope
+  - minimum source requirements
+- [ ] `P10.4` Use early retrieval signals to switch strategies instead of looping inside one fixed table flow
+- [ ] `P10.5` Add a text-first extraction path for text-only and implicit-metric questions
+- [ ] `P10.6` Add a hybrid table-plus-text retrieval path for implicit metrics and narrative support
+- [ ] `P10.7` Add multi-table joins within a single source document
+- [ ] `P10.8` Add predictive evidence sufficiency checks against the evidence plan before compute
+- [ ] `P10.9` Extend regression slices so failures are grouped by retrieval strategy, not only by subsystem
+
+Exit criteria:
+
+- retrieval is flexible but still structured
+- OfficeQA no longer depends on one brittle `table -> row -> cell` pipeline
+
+## Phase 11: Traceability And Diagnostic Artifacts
+
+Objective:
+
+- make hidden retrieval, extraction, compute, and validation decisions visible in traces and reports.
+
+Tasks:
+
+- [ ] `P11.1` Add explicit trace artifacts for:
+  - `retrieval_decision`
+  - `strategy_reason`
+  - `candidate_sources`
+  - `table_selection_reason`
+  - `text_selection_reason`
+  - `aggregation_reason`
+  - `evidence_gaps`
+- [ ] `P11.2` Capture rejected retrieval candidates and why they were rejected
+- [ ] `P11.3` Persist compute-path selection reasoning and rejected aggregation alternatives
+- [ ] `P11.4` Persist validator remediation guidance in both run traces and regression reports
+- [ ] `P11.5` Update teammate docs and flow diagrams so embedded stages are visible without source diving
+
+Exit criteria:
+
+- a teammate can answer "why did it pick this table?" and "why did it choose this aggregation?" from artifacts alone
+
+## Phase 12: Hybrid Compute And Grounded Synthesis
+
+Objective:
+
+- keep deterministic compute for strict numeric tasks while allowing grounded synthesis for mixed or ambiguous OfficeQA questions.
+
+Tasks:
+
+- [ ] `P12.1` Split questions into:
+  - deterministic-compute eligible
+  - grounded-synthesis required
+  - hybrid numeric-plus-narrative
+- [ ] `P12.2` Add hybrid answer mode:
+  - deterministic numeric core
+  - grounded narrative wrapper
+- [ ] `P12.3` Add grounded synthesis fallback when compute is impossible but evidence is still sufficient for a partial or qualitative answer
+- [ ] `P12.4` Ensure reviewer can approve bounded partial answers when fully deterministic output is impossible
+- [ ] `P12.5` Add stronger model routing for synthesis-heavy, ambiguity-heavy, and long-context OfficeQA tasks
+- [ ] `P12.6` Add regression cases for mixed tasks, partial answers, and synthesis-with-provenance paths
+
+Exit criteria:
+
+- hard numeric tasks stay deterministic
+- mixed tasks do not collapse into unnecessary insufficiency
+
+## Phase 13: Actionable Validator And Adaptive Orchestration
+
+Objective:
+
+- turn validation from a strict gate into a diagnostic control surface that can steer retries and orchestration choices.
+
+Tasks:
+
+- [ ] `P13.1` Make validator return machine-actionable remediation codes plus human-readable repair guidance
+- [ ] `P13.2` Add orchestration strategies for:
+  - table compute
+  - text reasoning
+  - hybrid join
+  - cross-document comparison
+- [ ] `P13.3` Bind orchestration strategy selection to `TaskIntent`, `RetrievalIntent`, and `EvidencePlan`
+- [ ] `P13.4` Add retry policies keyed to validator remediation instead of generic revise loops
+- [ ] `P13.5` Add stop rules that prevent useless retries when evidence requirements cannot be met
+- [ ] `P13.6` Capture orchestration choice and retry path in the trace and regression report
+
+Exit criteria:
+
+- the runtime can adapt its flow instead of repeating one best-effort pipeline
+
+## Phase 14: Multi-Document Support And Future Document Adapters
+
+Objective:
+
+- future-proof the runtime for similar document-grounded benchmarks without restoring the old finance-first architecture.
+
+Tasks:
+
+- [ ] `P14.1` Add cross-document table merge support with explicit provenance retention
+- [ ] `P14.2` Add unit and time alignment across multiple documents
+- [ ] `P14.3` Separate retrieval, compute, and validator interfaces into document-benchmark adapter seams
+- [ ] `P14.4` Prove OfficeQA remains first-class while a second document benchmark can plug in without prompt-hack routing
+- [ ] `P14.5` Document what stays OfficeQA-specific versus what becomes generic document-runtime infrastructure
+
+Exit criteria:
+
+- similar document-grounded tasks can reuse the architecture without reintroducing finance-specific profiles or template routing
 
 ## Optional Backlog: Shared Global Workpad
 

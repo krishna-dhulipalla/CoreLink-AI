@@ -534,6 +534,33 @@ def startup_compatibility_warnings() -> list[str]:
     return warnings
 
 
+def startup_model_summary() -> dict[str, str]:
+    """Return the active startup model map for logging and diagnostics."""
+    benchmark = _benchmark_name() or "default"
+    profile = _effective_model_profile()
+    summary = {
+        "benchmark": benchmark,
+        "profile": profile,
+        "profiler": get_model_name("profiler"),
+        "direct": get_model_name("direct"),
+        "solver": get_model_name("solver"),
+        "document_solver": get_model_name_for_task(
+            "solver",
+            execution_mode="document_grounded_analysis",
+            task_family="document_qa",
+        ),
+        "reviewer": get_model_name("reviewer"),
+        "document_reviewer": get_model_name_for_task(
+            "reviewer",
+            execution_mode="document_grounded_analysis",
+            task_family="document_qa",
+        ),
+        "adapter": get_model_name("adapter"),
+        "reflection": get_model_name("reflection"),
+    }
+    return summary
+
+
 def invoke_structured_output(
     role: str,
     schema: type,
