@@ -250,13 +250,14 @@ def _select_retrieval_strategy(
     task_text: str,
     source_bundle: SourceBundle,
     metric: str,
+    years: list[str],
     aggregation_shape: str,
     analysis_modes: list[str],
 ) -> tuple[str, float, list[str], list[str]]:
     lowered = (task_text or "").lower()
     implicit_metric = _metric_is_implicit(metric, aggregation_shape)
     narrative_support = _needs_narrative_support(task_text, analysis_modes)
-    multi_document = len(source_bundle.source_files_expected) > 1 or any(
+    multi_document = len(years) >= 2 or any(
         token in lowered
         for token in (
             "across documents",
@@ -481,6 +482,7 @@ def build_retrieval_intent(
         task_text,
         source_bundle,
         metric,
+        years,
         aggregation_shape,
         analysis_modes,
     )

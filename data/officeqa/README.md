@@ -10,14 +10,20 @@ For local testing, clone the official OfficeQA dataset repo into this folder:
 git clone https://github.com/databricks/officeqa.git data/officeqa/source
 ```
 
+If you want the faster parsed-corpus path, unzip the bundled parsed archives after cloning:
+
+```powershell
+python data/officeqa/source/treasury_bulletins_parsed/unzip.py
+```
+
 After cloning, you have two supported local corpus choices:
 
-1. Recommended if you already have parsed artifacts:
-   - use `data/officeqa/treasury_bulletins_parsed/`
+1. Recommended for local iteration after unzipping parsed artifacts:
+   - use `data/officeqa/source/treasury_bulletins_parsed/jsons/`
 2. Works with the official repo directly:
    - use `data/officeqa/source/treasury_bulletin_pdfs/`
 
-If you only want the official corpus quickly, use the PDF path. The runtime can index raw PDFs, JSON, CSV, TSV, and text files.
+If you only want the official corpus quickly, use the PDF path. The runtime can index raw PDFs, JSON, CSV, TSV, and text files, but parsed JSON is much faster than PDF extraction.
 
 Recommended layout:
 
@@ -26,6 +32,8 @@ data/
   officeqa/
     README.md
     source/
+      treasury_bulletins_parsed/
+        jsons/
       treasury_bulletin_pdfs/
       officeqa.csv
     treasury_bulletins_parsed/
@@ -35,16 +43,16 @@ data/
 
 ## Local Testing Path
 
-If you cloned the official repo exactly as above, set:
+If you cloned the official repo and want to use the raw PDFs, set:
 
 ```powershell
 $env:OFFICEQA_CORPUS_DIR="data/officeqa/source/treasury_bulletin_pdfs"
 ```
 
-If you already have parsed files locally, set:
+If you unzipped the parsed corpus, set:
 
 ```powershell
-$env:OFFICEQA_CORPUS_DIR="data/officeqa/treasury_bulletins_parsed"
+$env:OFFICEQA_CORPUS_DIR="data/officeqa/source/treasury_bulletins_parsed/jsons"
 ```
 
 ## Build And Verify

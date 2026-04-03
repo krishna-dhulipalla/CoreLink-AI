@@ -1,19 +1,31 @@
 [
   {
-    "id": "routing_explicit_officeqa_activation",
-    "focus_subsystem": "routing",
-    "retrieval_strategy": "table_first",
-    "smoke": true,
-    "prompt": "Use the provided source files and compute the exact answer.",
-    "source_files": ["treasury_1953.json"]
-  },
-  {
     "id": "retrieval_public_debt_1945",
     "focus_subsystem": "retrieval",
     "retrieval_strategy": "table_first",
     "smoke": true,
     "prompt": "According to the Treasury Bulletin, what was total public debt outstanding in 1945?",
-    "source_files": ["treasury_1945.json"]
+    "source_files": [
+      "treasury_bulletin_1945_01.json",
+      "treasury_bulletin_1945_02.json",
+      "treasury_bulletin_1945_03.json",
+      "treasury_bulletin_1945_04.json",
+      "treasury_bulletin_1945_05.json",
+      "treasury_bulletin_1945_06.json",
+      "treasury_bulletin_1945_07.json",
+      "treasury_bulletin_1945_08.json",
+      "treasury_bulletin_1945_09.json",
+      "treasury_bulletin_1945_10.json",
+      "treasury_bulletin_1945_11.json",
+      "treasury_bulletin_1945_12.json"
+    ]
+  },
+  {
+    "id": "routing_explicit_officeqa_activation",
+    "focus_subsystem": "routing",
+    "retrieval_strategy": "table_first",
+    "smoke": false,
+    "prompt": "Use the provided source files and compute the exact answer."
   },
   {
     "id": "extraction_national_defense_1940",
@@ -21,7 +33,20 @@
     "retrieval_strategy": "table_first",
     "smoke": true,
     "prompt": "What were the total expenditures for U.S. national defense in the calendar year 1940?",
-    "source_files": ["treasury_1940.json"]
+    "source_files": [
+      "treasury_bulletin_1940_01.json",
+      "treasury_bulletin_1940_02.json",
+      "treasury_bulletin_1940_03.json",
+      "treasury_bulletin_1940_04.json",
+      "treasury_bulletin_1940_05.json",
+      "treasury_bulletin_1940_06.json",
+      "treasury_bulletin_1940_07.json",
+      "treasury_bulletin_1940_08.json",
+      "treasury_bulletin_1940_09.json",
+      "treasury_bulletin_1940_10.json",
+      "treasury_bulletin_1940_11.json",
+      "treasury_bulletin_1940_12.json"
+    ]
   },
   {
     "id": "text_first_narrative_1945",
@@ -29,7 +54,20 @@
     "retrieval_strategy": "text_first",
     "smoke": false,
     "prompt": "According to the Treasury Bulletin narrative discussion, what reason was given for the 1945 debt outlook?",
-    "source_files": ["treasury_1945.json"]
+    "source_files": [
+      "treasury_bulletin_1945_01.json",
+      "treasury_bulletin_1945_02.json",
+      "treasury_bulletin_1945_03.json",
+      "treasury_bulletin_1945_04.json",
+      "treasury_bulletin_1945_05.json",
+      "treasury_bulletin_1945_06.json",
+      "treasury_bulletin_1945_07.json",
+      "treasury_bulletin_1945_08.json",
+      "treasury_bulletin_1945_09.json",
+      "treasury_bulletin_1945_10.json",
+      "treasury_bulletin_1945_11.json",
+      "treasury_bulletin_1945_12.json"
+    ]
   },
   {
     "id": "hybrid_forecast_monthly_1953",
@@ -38,7 +76,20 @@
     "answer_mode": "hybrid_grounded",
     "smoke": false,
     "prompt": "Using Treasury Bulletin data, calculate the regression trend and forecast the monthly expenditures series for 1953.",
-    "source_files": ["treasury_1953.json"]
+    "source_files": [
+      "treasury_bulletin_1953_01.json",
+      "treasury_bulletin_1953_02.json",
+      "treasury_bulletin_1953_03.json",
+      "treasury_bulletin_1953_04.json",
+      "treasury_bulletin_1953_05.json",
+      "treasury_bulletin_1953_06.json",
+      "treasury_bulletin_1953_07.json",
+      "treasury_bulletin_1953_08.json",
+      "treasury_bulletin_1953_09.json",
+      "treasury_bulletin_1953_10.json",
+      "treasury_bulletin_1953_11.json",
+      "treasury_bulletin_1953_12.json"
+    ]
   },
   {
     "id": "hybrid_numeric_trend_1953",
@@ -47,7 +98,20 @@
     "answer_mode": "hybrid_grounded",
     "smoke": false,
     "prompt": "Using Treasury Bulletin data, calculate the calendar-year total expenditures for 1953 and explain the supported trend in the monthly series.",
-    "source_files": ["treasury_1953.json"]
+    "source_files": [
+      "treasury_bulletin_1953_01.json",
+      "treasury_bulletin_1953_02.json",
+      "treasury_bulletin_1953_03.json",
+      "treasury_bulletin_1953_04.json",
+      "treasury_bulletin_1953_05.json",
+      "treasury_bulletin_1953_06.json",
+      "treasury_bulletin_1953_07.json",
+      "treasury_bulletin_1953_08.json",
+      "treasury_bulletin_1953_09.json",
+      "treasury_bulletin_1953_10.json",
+      "treasury_bulletin_1953_11.json",
+      "treasury_bulletin_1953_12.json"
+    ]
   },
   {
     "id": "compute_monthly_percent_change_1953_1940",
@@ -56,7 +120,32 @@
     "answer_mode": "deterministic_compute",
     "smoke": false,
     "prompt": "Using specifically only the reported values for all individual calendar months in 1953 and all individual calendar months in 1940, what was the absolute percent change of these total sum values?",
-    "source_files": ["treasury_1953.json", "treasury_1940.json"]
+    "source_files": [
+      "treasury_bulletin_1953_01.json",
+      "treasury_bulletin_1953_02.json",
+      "treasury_bulletin_1953_03.json",
+      "treasury_bulletin_1953_04.json",
+      "treasury_bulletin_1953_05.json",
+      "treasury_bulletin_1953_06.json",
+      "treasury_bulletin_1953_07.json",
+      "treasury_bulletin_1953_08.json",
+      "treasury_bulletin_1953_09.json",
+      "treasury_bulletin_1953_10.json",
+      "treasury_bulletin_1953_11.json",
+      "treasury_bulletin_1953_12.json",
+      "treasury_bulletin_1940_01.json",
+      "treasury_bulletin_1940_02.json",
+      "treasury_bulletin_1940_03.json",
+      "treasury_bulletin_1940_04.json",
+      "treasury_bulletin_1940_05.json",
+      "treasury_bulletin_1940_06.json",
+      "treasury_bulletin_1940_07.json",
+      "treasury_bulletin_1940_08.json",
+      "treasury_bulletin_1940_09.json",
+      "treasury_bulletin_1940_10.json",
+      "treasury_bulletin_1940_11.json",
+      "treasury_bulletin_1940_12.json"
+    ]
   },
   {
     "id": "compute_inflation_adjusted_difference_1953_1940",
@@ -65,7 +154,32 @@
     "answer_mode": "deterministic_compute",
     "smoke": false,
     "prompt": "Using specifically only the reported values for all individual calendar months in 1953 and all individual calendar months in 1940, what was the absolute difference of these total sum values after adjusting each of them for inflation?",
-    "source_files": ["treasury_1953.json", "treasury_1940.json"]
+    "source_files": [
+      "treasury_bulletin_1953_01.json",
+      "treasury_bulletin_1953_02.json",
+      "treasury_bulletin_1953_03.json",
+      "treasury_bulletin_1953_04.json",
+      "treasury_bulletin_1953_05.json",
+      "treasury_bulletin_1953_06.json",
+      "treasury_bulletin_1953_07.json",
+      "treasury_bulletin_1953_08.json",
+      "treasury_bulletin_1953_09.json",
+      "treasury_bulletin_1953_10.json",
+      "treasury_bulletin_1953_11.json",
+      "treasury_bulletin_1953_12.json",
+      "treasury_bulletin_1940_01.json",
+      "treasury_bulletin_1940_02.json",
+      "treasury_bulletin_1940_03.json",
+      "treasury_bulletin_1940_04.json",
+      "treasury_bulletin_1940_05.json",
+      "treasury_bulletin_1940_06.json",
+      "treasury_bulletin_1940_07.json",
+      "treasury_bulletin_1940_08.json",
+      "treasury_bulletin_1940_09.json",
+      "treasury_bulletin_1940_10.json",
+      "treasury_bulletin_1940_11.json",
+      "treasury_bulletin_1940_12.json"
+    ]
   },
   {
     "id": "grounded_partial_weighted_average_1953",
@@ -74,7 +188,20 @@
     "answer_mode": "grounded_synthesis",
     "smoke": false,
     "prompt": "Using Treasury Bulletin data, compute the weighted average expenditures for 1953 and explain what the retrieved evidence supports even if the exact weighted average cannot be completed.",
-    "source_files": ["treasury_1953.json"]
+    "source_files": [
+      "treasury_bulletin_1953_01.json",
+      "treasury_bulletin_1953_02.json",
+      "treasury_bulletin_1953_03.json",
+      "treasury_bulletin_1953_04.json",
+      "treasury_bulletin_1953_05.json",
+      "treasury_bulletin_1953_06.json",
+      "treasury_bulletin_1953_07.json",
+      "treasury_bulletin_1953_08.json",
+      "treasury_bulletin_1953_09.json",
+      "treasury_bulletin_1953_10.json",
+      "treasury_bulletin_1953_11.json",
+      "treasury_bulletin_1953_12.json"
+    ]
   },
   {
     "id": "validation_month_coverage_fiscal_1934",
@@ -82,7 +209,6 @@
     "retrieval_strategy": "table_first",
     "answer_mode": "deterministic_compute",
     "smoke": false,
-    "prompt": "What were the total expenditures of the Veterans Administration in FY 1934?",
-    "source_files": ["treasury_1934.json"]
+    "prompt": "What were the total expenditures of the Veterans Administration in FY 1934?"
   }
 ]

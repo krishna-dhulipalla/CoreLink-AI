@@ -1461,6 +1461,8 @@ def reviewer(state: RuntimeState) -> dict[str, Any]:
         reasoning = "Progress stalled: the answer repeated the same unresolved gap without a materially different artifact."
         stop_reason = "progress_stalled"
         score = min(score, 0.45)
+    if verdict == "fail" and officeqa_validation and officeqa_validation.insufficiency_answer:
+        answer = officeqa_validation.insufficiency_answer
     journal.progress_signatures.append(progress.model_dump())
 
     report = QualityReport(
@@ -1571,7 +1573,11 @@ def reviewer(state: RuntimeState) -> dict[str, Any]:
         "solver_stage": "COMPLETE",
         "workpad": workpad,
     }
-    if officeqa_validation and (officeqa_validation.replace_answer or (officeqa_validation.verdict == "revise" and not officeqa_validation.retry_allowed)):
+    if officeqa_validation and (
+        officeqa_validation.replace_answer
+        or (officeqa_validation.verdict == "revise" and not officeqa_validation.retry_allowed)
+        or (verdict == "fail" and officeqa_validation.insufficiency_answer)
+    ):
         result["messages"] = [AIMessage(content=answer)]
     return result
 

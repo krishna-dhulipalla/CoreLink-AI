@@ -101,6 +101,17 @@ def test_tracer_preserves_structured_diagnostic_artifacts(monkeypatch):
             "rejected_candidates": [{"document_id": "treasury_1939_json", "reason": "lower-ranked than the selected candidates"}],
             "aggregation_reason": "Selected monthly-sum compute because the task asks for a within-year monthly aggregation.",
             "evidence_gaps": ["missing month coverage"],
+            "tool_results": [
+                {
+                    "tool": "fetch_officeqa_table",
+                    "facts": {
+                        "document_id": "treasury_1940_json",
+                        "citation": "treasury_1940.json#page=17",
+                        "metadata": {"officeqa_status": "ok"},
+                        "tables": [{"locator": "table 1"}],
+                    },
+                }
+            ],
             "output_preview": "",
         },
     )
@@ -114,3 +125,8 @@ def test_tracer_preserves_structured_diagnostic_artifacts(monkeypatch):
     assert node["rejected_candidates"]
     assert node["aggregation_reason"]
     assert node["evidence_gaps"] == ["missing month coverage"]
+    execution_summary = captured[0]["execution_summary"]
+    assert execution_summary
+    assert execution_summary[0]["retrieval"]["tool_name"] == "fetch_officeqa_table"
+    assert execution_summary[0]["evidence_gaps"] == ["missing month coverage"]
+    assert execution_summary[0]["tool_results"][0]["tool"] == "fetch_officeqa_table"

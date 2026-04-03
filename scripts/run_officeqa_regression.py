@@ -73,8 +73,38 @@ async def _main() -> int:
 
     graph = build_agent_graph()
     case_reports = []
-    for case in cases:
-        case_reports.append(await _run_case(graph, case))
+    total = len(cases)
+    print(json.dumps({"event": "officeqa_regression_start", "mode": "smoke" if args.smoke else "full", "case_count": total}, ensure_ascii=True), flush=True)
+    for index, case in enumerate(cases, start=1):
+        print(
+            json.dumps(
+                {
+                    "event": "officeqa_case_start",
+                    "index": index,
+                    "total": total,
+                    "id": str(case.get("id", "") or ""),
+                    "focus_subsystem": str(case.get("focus_subsystem", "") or ""),
+                },
+                ensure_ascii=True,
+            ),
+            flush=True,
+        )
+        report = await _run_case(graph, case)
+        case_reports.append(report)
+        print(
+            json.dumps(
+                {
+                    "event": "officeqa_case_done",
+                    "index": index,
+                    "total": total,
+                    "id": str(case.get("id", "") or ""),
+                    "classification": str(dict(report.get("classification") or {}).get("subsystem", "") or ""),
+                    "stop_reason": str(dict(report.get("quality_report") or {}).get("stop_reason", "") or ""),
+                },
+                ensure_ascii=True,
+            ),
+            flush=True,
+        )
 
     summary = summarize_regression_report(case_reports)
     output_dir = Path(args.output_dir)

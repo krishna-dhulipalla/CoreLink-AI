@@ -135,6 +135,9 @@ def document_records_from_tool_result(
                 "headers": list(table.get("headers", [])),
                 "rows": _dedupe_table_rows([list(row) for row in table.get("rows", []) if isinstance(row, list)]),
                 "citation": table.get("citation", citation),
+                "page_locator": table.get("page_locator", ""),
+                "unit_hint": table.get("unit_hint", ""),
+                "context_text": table.get("context_text", ""),
             }
         )
     numeric_summaries = _dedupe_dict_rows(

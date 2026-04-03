@@ -209,7 +209,23 @@ def test_summarize_regression_report_sets_go_no_go_threshold():
     assert summary["counts_by_answer_mode"]["deterministic_compute"] == 2
     assert summary["counts_by_answer_mode"]["grounded_synthesis"] == 1
     assert summary["go_for_full_benchmark"] is False
+    assert summary["evidence_ready_cases"] == 2
     assert summary["required_evidence_ready_cases"] == 2
+
+
+def test_summarize_regression_report_blocks_on_validation_failures():
+    validation_fail = {
+        "classification": {"subsystem": "validation"},
+        "retrieval_strategy": "table_first",
+        "answer_mode": "hybrid_grounded",
+        "artifacts": {"extracted_tables": [{"document_id": "x"}], "final_answer": "<FINAL_ANSWER>42</FINAL_ANSWER>"},
+    }
+
+    summary = summarize_regression_report([validation_fail, validation_fail])
+
+    assert summary["counts_by_subsystem"]["validation"] == 2
+    assert summary["evidence_ready_cases"] == 0
+    assert summary["go_for_full_benchmark"] is False
 
 
 def test_build_case_report_includes_classification_and_artifacts():

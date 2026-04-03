@@ -168,6 +168,7 @@ class RunTracer:
             "final_answer_preview": (final_answer or "")[:4000],
             "cost_summary": cost_summary or {},
             "budget_summary": budget_summary or {},
+            "execution_summary": _make_readable(_execution_summary(self._nodes)),
             "nodes": _make_readable(self._nodes),
         }
         return _write_trace_file(payload, self._profile, self._trace_identity)
@@ -181,6 +182,126 @@ def _make_readable(value: Any) -> Any:
     if isinstance(value, list):
         return [_make_readable(item) for item in value]
     return value
+
+
+def _short_text(value: Any, limit: int = 180) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3] + "..."
+
+
+def _tool_results_summary(tool_results: Any) -> list[dict[str, Any]]:
+    summary: list[dict[str, Any]] = []
+    for item in list(tool_results or [])[:6]:
+        if not isinstance(item, dict):
+            continue
+        facts = dict(item.get("facts") or {})
+        metadata = dict(facts.get("metadata") or {})
+        entry: dict[str, Any] = {
+            "tool": str(item.get("type", "") or item.get("tool_name", "") or item.get("tool", "") or ""),
+        }
+        retrieval_status = str(item.get("retrieval_status", "") or "")
+        if retrieval_status:
+            entry["retrieval_status"] = retrieval_status
+        officeqa_status = str(metadata.get("officeqa_status", "") or "")
+        if officeqa_status:
+            entry["officeqa_status"] = officeqa_status
+        if facts.get("document_id"):
+            entry["document_id"] = str(facts.get("document_id", ""))
+        if facts.get("citation"):
+            entry["citation"] = str(facts.get("citation", ""))
+        if isinstance(facts.get("tables"), list):
+            entry["table_count"] = len(facts.get("tables", []))
+        if isinstance(facts.get("chunks"), list):
+            entry["chunk_count"] = len(facts.get("chunks", []))
+        if isinstance(facts.get("cells"), list):
+            entry["cell_count"] = len(facts.get("cells", []))
+        summary.append(entry)
+    return summary
+
+
+def _execution_summary(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    summary: list[dict[str, Any]] = []
+    for entry in nodes:
+        if not isinstance(entry, dict):
+            continue
+        node = str(entry.get("node", "") or "")
+        item: dict[str, Any] = {"node": node, "ts": entry.get("ts", "")}
+        if entry.get("stop_reason"):
+            item["stop_reason"] = str(entry.get("stop_reason", ""))
+        if node == "executor":
+            tools_ran = [str(tool) for tool in list(entry.get("tools_ran") or [])[:8] if str(tool).strip()]
+            if tools_ran:
+                item["tools_ran"] = tools_ran
+            retrieval = dict(entry.get("retrieval_decision") or entry.get("retrieval_action") or {})
+            if retrieval:
+                item["retrieval"] = {
+                    key: value
+                    for key, value in {
+                        "tool_name": retrieval.get("tool_name", ""),
+                        "stage": retrieval.get("stage", ""),
+                        "strategy": retrieval.get("strategy", ""),
+                        "document_id": retrieval.get("document_id", ""),
+                        "path": retrieval.get("path", ""),
+                        "query": _short_text(retrieval.get("query", ""), 140),
+                    }.items()
+                    if value not in ("", [], {}, None)
+                }
+            if entry.get("strategy_reason"):
+                item["strategy_reason"] = _short_text(entry.get("strategy_reason", ""))
+            candidate_sources = []
+            for source in list(entry.get("candidate_sources") or [])[:4]:
+                if not isinstance(source, dict):
+                    continue
+                candidate_sources.append(
+                    {
+                        key: value
+                        for key, value in {
+                            "title": source.get("title", ""),
+                            "document_id": source.get("document_id", ""),
+                            "score": source.get("score"),
+                        }.items()
+                        if value not in ("", [], {}, None)
+                    }
+                )
+            if candidate_sources:
+                item["candidate_sources"] = candidate_sources
+            if entry.get("aggregation_reason"):
+                item["aggregation_reason"] = _short_text(entry.get("aggregation_reason", ""))
+            if entry.get("evidence_gaps"):
+                item["evidence_gaps"] = list(entry.get("evidence_gaps", []))[:6]
+            tool_summary = _tool_results_summary(entry.get("tool_results"))
+            if tool_summary:
+                item["tool_results"] = tool_summary
+        elif node == "reviewer":
+            validator = dict(entry.get("validator_result") or {})
+            if validator:
+                item["validator"] = {
+                    key: value
+                    for key, value in {
+                        "status": validator.get("status", ""),
+                        "remediation_codes": list(validator.get("remediation_codes", []))[:6],
+                        "orchestration_strategy": validator.get("orchestration_strategy", ""),
+                        "stop_reason": validator.get("stop_reason", ""),
+                    }.items()
+                    if value not in ("", [], {}, None)
+                }
+        elif node == "solver":
+            if entry.get("llm_call") is not None:
+                item["llm_call"] = bool(entry.get("llm_call"))
+            if entry.get("output_preview"):
+                item["output_preview"] = _short_text(entry.get("output_preview", ""), 220)
+        elif node == "output_adapter":
+            if entry.get("output_preview"):
+                item["output_preview"] = _short_text(entry.get("output_preview", ""), 220)
+        elif node == "self_reflection":
+            if entry.get("used_llm") is not None:
+                item["used_llm"] = bool(entry.get("used_llm"))
+            if entry.get("decision"):
+                item["decision"] = _short_text(entry.get("decision", ""))
+        summary.append(item)
+    return summary
 
 
 def format_messages_for_trace(messages: list) -> list[dict[str, Any]]:

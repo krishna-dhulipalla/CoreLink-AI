@@ -18,7 +18,7 @@ from agent.benchmarks import (
     register_benchmark_document_adapter,
 )
 from agent.benchmarks.officeqa_index import build_officeqa_index
-from agent.contracts import EvidenceSufficiency, ExecutionJournal, SourceBundle, ToolPlan
+from agent.contracts import EvidenceSufficiency, ExecutionJournal, OfficeQAValidationResult, ProgressSignature, SourceBundle, ToolPlan
 from agent.officeqa_structured_evidence import build_officeqa_structured_evidence
 from agent.retrieval_tools import fetch_corpus_document as fetch_corpus_document_tool
 from agent.retrieval_tools import fetch_officeqa_table, lookup_officeqa_cells
@@ -774,6 +774,35 @@ def test_officeqa_planner_prefers_text_first_pages_for_narrative_document_questi
     assert action.strategy in {"text_first", "hybrid"}
     assert action.strategy_reason
     assert action.candidate_sources
+
+
+def test_officeqa_single_year_questions_do_not_force_multi_document_alignment():
+    prompt = "According to the Treasury Bulletin, what was total public debt outstanding in 1945?"
+    source_bundle = SourceBundle(
+        task_text=prompt,
+        focus_query="total public debt outstanding 1945",
+        target_period="1945",
+        entities=["Treasury Bulletin"],
+        urls=[],
+        source_files_expected=[
+            "treasury_bulletin_1945_01.json",
+            "treasury_bulletin_1945_02.json",
+            "treasury_bulletin_1945_03.json",
+        ],
+        source_files_found=[
+            {"document_id": "treasury_bulletin_1945_01_json", "relative_path": "treasury_bulletin_1945_01.json"},
+            {"document_id": "treasury_bulletin_1945_02_json", "relative_path": "treasury_bulletin_1945_02.json"},
+            {"document_id": "treasury_bulletin_1945_03_json", "relative_path": "treasury_bulletin_1945_03.json"},
+        ],
+        inline_facts={},
+        tables=[],
+        formulas=[],
+    )
+
+    retrieval_intent = build_retrieval_intent(prompt, source_bundle, {"benchmark_adapter": "officeqa"})
+
+    assert retrieval_intent.strategy != "multi_document"
+    assert retrieval_intent.evidence_plan.requires_cross_source_alignment is False
 
 
 def test_officeqa_planner_tries_alternate_table_query_for_multi_table_questions():
@@ -2449,6 +2478,150 @@ def test_officeqa_reviewer_emits_safe_insufficiency_answer_for_adapter():
     assert "provided Treasury Bulletin evidence" in rendered
     assert ("Cannot calculate" in rendered) or ("Cannot determine" in rendered)
     assert "<FINAL_ANSWER>" in rendered
+
+
+def test_officeqa_reviewer_replaces_progress_stalled_answer_with_safe_insufficiency(monkeypatch):
+    prompt = "What was total public debt outstanding in 1945?"
+    monkeypatch.setattr(
+        "agent.nodes.orchestrator.assess_evidence_sufficiency",
+        lambda *args, **kwargs: EvidenceSufficiency(
+            source_family="official_government_document",
+            period_scope="match",
+            aggregation_type="match",
+            entity_scope="match",
+            is_sufficient=True,
+            missing_dimensions=[],
+            rationale="Grounded evidence is otherwise aligned.",
+        ),
+    )
+    monkeypatch.setattr(
+        "agent.nodes.orchestrator.benchmark_validate_final",
+        lambda *args, **kwargs: OfficeQAValidationResult(
+            verdict="revise",
+            reasoning="Structured validation still needs exact period repair.",
+            missing_dimensions=["time scope correctness"],
+            hard_failures=["time scope correctness"],
+            remediation_codes=["RETRIEVE_EXACT_PERIOD"],
+            remediation_guidance=["Re-extract the exact requested year before finalization."],
+            recommended_repair_target="gather",
+            orchestration_strategy="table_compute",
+            retry_allowed=True,
+            stop_reason="officeqa_structured_revision_required",
+            insufficiency_answer=(
+                "Structured OfficeQA validation failed because time scope correctness.\n"
+                "Final answer: Cannot determine from the provided Treasury Bulletin evidence."
+            ),
+            replace_answer=False,
+        ),
+    )
+    monkeypatch.setattr(
+        "agent.nodes.orchestrator._build_progress_signature",
+        lambda **kwargs: ProgressSignature(
+            signature="same-signature",
+            execution_mode=str(kwargs.get("execution_mode", "")),
+            selected_tools=list(kwargs.get("selected_tools", [])),
+            missing_dimensions=list(kwargs.get("missing_dimensions", [])),
+            artifact_signature=str(kwargs.get("artifact_signature", "")),
+            contract_status=str(kwargs.get("contract_status", "")),
+        ),
+    )
+
+    state = make_state(
+        prompt,
+        task_profile="document_qa",
+        task_intent={
+            "task_family": "document_qa",
+            "execution_mode": "document_grounded_analysis",
+            "complexity_tier": "structured_analysis",
+            "review_mode": "document_grounded",
+            "planner_source": "heuristic",
+        },
+        benchmark_overrides={"benchmark_adapter": "officeqa"},
+        source_bundle={
+            "task_text": prompt,
+            "focus_query": "total public debt outstanding 1945",
+            "target_period": "1945",
+            "entities": ["Treasury Bulletin"],
+            "urls": [],
+            "inline_facts": {},
+            "tables": [],
+            "formulas": [],
+        },
+        tool_plan={
+            "tool_families_needed": ["document_retrieval"],
+            "widened_families": [],
+            "selected_tools": ["fetch_officeqa_table"],
+            "pending_tools": [],
+            "blocked_families": [],
+            "ace_events": [],
+            "notes": [],
+            "stop_reason": "",
+        },
+        execution_journal={
+            "events": [],
+            "tool_results": [
+                {
+                    "type": "fetch_officeqa_table",
+                    "facts": {
+                        "document_id": "treasury_bulletin_1945_01_json",
+                        "citation": "treasury_bulletin_1945_01.json#page=29",
+                        "metadata": {"officeqa_status": "ok"},
+                    },
+                }
+            ],
+            "routed_tool_families": [],
+            "revision_count": 0,
+            "self_reflection_count": 0,
+            "retrieval_iterations": 1,
+            "retrieval_queries": [],
+            "retrieved_citations": ["treasury_bulletin_1945_01.json#page=29"],
+            "final_artifact_signature": "same-artifact",
+            "progress_signatures": [{"signature": "same-signature"}],
+            "stop_reason": "",
+            "contract_collapse_attempts": 0,
+        },
+        curated_context={
+            "objective": prompt,
+            "facts_in_use": [],
+            "open_questions": [],
+            "assumptions": [],
+            "requested_output": {"format": "text"},
+            "provenance_summary": {},
+            "structured_evidence": {"tables": [{"document_id": "treasury_bulletin_1945_01_json"}], "values": []},
+            "compute_result": {},
+        },
+        workpad={"events": [], "stage_outputs": {}, "tool_results": [], "review_ready": True},
+    )
+    state["retrieval_intent"] = {
+        "entity": "Public debt",
+        "metric": "total public debt outstanding",
+        "period": "1945",
+        "document_family": "official_government_finance",
+        "aggregation_shape": "point_lookup",
+        "answer_mode": "deterministic_compute",
+        "compute_policy": "required",
+        "partial_answer_allowed": False,
+        "strategy": "table_first",
+        "analysis_modes": [],
+        "evidence_plan": {
+            "requires_table_support": True,
+            "requires_text_support": False,
+            "requires_cross_source_alignment": False,
+            "join_keys": [],
+        },
+        "must_include_terms": [],
+        "must_exclude_terms": [],
+        "query_candidates": [],
+    }
+    state["messages"].append(AIMessage(content="The answer is 258682."))
+
+    result = reviewer(state)
+
+    assert result["solver_stage"] == "COMPLETE"
+    assert result["quality_report"]["verdict"] == "fail"
+    assert result["quality_report"]["stop_reason"] == "progress_stalled"
+    assert "Cannot determine from the provided Treasury Bulletin evidence." in str(result["messages"][0].content)
+    assert "258682" not in str(result["messages"][0].content)
 
 
 def test_officeqa_reviewer_accepts_bounded_partial_answer_when_compute_is_only_preferred(monkeypatch):

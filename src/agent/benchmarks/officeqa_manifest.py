@@ -52,7 +52,7 @@ def normalize_source_name(value: str) -> str:
 
 def resolve_officeqa_corpus_root(raw: str | None = None) -> Path | None:
     if raw:
-        candidate = Path(raw).expanduser()
+        candidate = Path(raw).expanduser().resolve()
         if candidate.exists() and candidate.is_dir():
             return candidate
 
@@ -60,13 +60,13 @@ def resolve_officeqa_corpus_root(raw: str | None = None) -> Path | None:
         env_value = os.getenv(env_name, "").strip()
         if not env_value:
             continue
-        candidate = Path(env_value).expanduser()
+        candidate = Path(env_value).expanduser().resolve()
         if candidate.exists() and candidate.is_dir():
             return candidate
 
     cwd = Path.cwd()
     for candidate in _CORPUS_CANDIDATES:
-        path = cwd / candidate
+        path = (cwd / candidate).resolve()
         if path.exists() and path.is_dir():
             return path
     return None
@@ -74,7 +74,7 @@ def resolve_officeqa_corpus_root(raw: str | None = None) -> Path | None:
 
 def resolve_officeqa_index_dir(corpus_root: Path, raw: str | None = None, create: bool = False) -> Path:
     target = raw or os.getenv("OFFICEQA_INDEX_DIR", "").strip()
-    index_dir = Path(target).expanduser() if target else corpus_root / _INDEX_DIR_NAME
+    index_dir = Path(target).expanduser().resolve() if target else corpus_root.resolve() / _INDEX_DIR_NAME
     if create:
         index_dir.mkdir(parents=True, exist_ok=True)
     return index_dir

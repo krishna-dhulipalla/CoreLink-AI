@@ -225,3 +225,66 @@ def test_officeqa_table_and_cell_lookup_tools_extract_structured_values(monkeypa
     assert table_result["tables"][0]["headers"][0] == "Month"
     assert cell_result["metadata"]["officeqa_status"] == "ok"
     assert cell_result["cells"][0]["value"] == "101.5"
+
+
+def test_officeqa_table_lookup_extracts_html_tables_from_parsed_json(monkeypatch, tmp_path):
+    corpus_root = tmp_path / "treasury_bulletins_parsed"
+    corpus_root.mkdir(parents=True)
+    (corpus_root / "treasury_1945.json").write_text(
+        json.dumps(
+            {
+                "document": {
+                    "elements": [
+                        {
+                            "type": "table",
+                            "description": "Public debt table",
+                            "bbox": [{"page_id": 23}],
+                            "content": (
+                                "<table>"
+                                "<tr><th>Year</th><th>Total public debt outstanding</th></tr>"
+                                "<tr><td>1944</td><td>232,000</td></tr>"
+                                "<tr><td>1945</td><td>278,000</td></tr>"
+                                "</table>"
+                            ),
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    build_officeqa_index(corpus_root=corpus_root)
+    monkeypatch.setenv("OFFICEQA_CORPUS_DIR", str(corpus_root))
+
+    table_result = fetch_officeqa_table.invoke(
+        {"document_id": "treasury_1945_json", "table_query": "total public debt outstanding 1945"}
+    )
+
+    assert table_result["metadata"]["officeqa_status"] == "ok"
+    assert table_result["tables"]
+    assert table_result["tables"][0]["headers"] == ["Year", "Total public debt outstanding"]
+    assert table_result["tables"][0]["rows"][1] == ["1945", "278,000"]
+    assert table_result["tables"][0]["page_locator"] == "page 23"
+
+
+def test_officeqa_tools_accept_relative_corpus_env_paths(monkeypatch, tmp_path):
+    corpus_root = tmp_path / "data" / "officeqa" / "jsons"
+    corpus_root.mkdir(parents=True)
+    (corpus_root / "treasury_1940.json").write_text(
+        json.dumps(
+            {
+                "title": "Treasury Bulletin 1940",
+                "headers": ["Year", "Total expenditures"],
+                "rows": [["1939", "450"], ["1940", "475"]],
+            }
+        ),
+        encoding="utf-8",
+    )
+    build_officeqa_index(corpus_root=corpus_root)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OFFICEQA_CORPUS_DIR", "data/officeqa/jsons")
+
+    table_result = fetch_officeqa_table.invoke({"document_id": "treasury_1940_json", "table_query": "total expenditures 1940"})
+
+    assert table_result["metadata"]["officeqa_status"] == "ok"
+    assert table_result["citation"] == "treasury_1940.json"

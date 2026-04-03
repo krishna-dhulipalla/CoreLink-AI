@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import html
 import json
 import os
 import re
@@ -42,6 +43,10 @@ _STOP_WORDS = frozenset({
     "all", "each", "every", "both", "few", "more", "most", "other",
     "some", "such", "no", "only", "own", "same", "also", "just",
 })
+_HTML_TABLE_RE = re.compile(r"<table\b[^>]*>(.*?)</table>", re.IGNORECASE | re.DOTALL)
+_HTML_ROW_RE = re.compile(r"<tr\b[^>]*>(.*?)</tr>", re.IGNORECASE | re.DOTALL)
+_HTML_CELL_RE = re.compile(r"<(th|td)\b([^>]*)>(.*?)</t[hd]>", re.IGNORECASE | re.DOTALL)
+_HTML_COLSPAN_RE = re.compile(r'colspan\s*=\s*["\']?(\d+)', re.IGNORECASE)
 
 
 def local_corpus_available() -> bool:
@@ -229,22 +234,134 @@ def _row_numeric_summaries(headers: list[str], rows: list[list[str]]) -> list[di
     return summaries
 
 
-def _coerce_table(headers: list[str], rows: list[list[str]], citation: str, locator: str, unit_hint: str = "") -> dict[str, Any]:
+def _coerce_table(
+    headers: list[str],
+    rows: list[list[str]],
+    citation: str,
+    locator: str,
+    unit_hint: str = "",
+    *,
+    page_locator: str = "",
+    context_text: str = "",
+) -> dict[str, Any]:
     normalized_headers = [str(header).strip() for header in headers if str(header).strip()]
     normalized_rows = [[str(cell).strip() for cell in row] for row in rows if any(str(cell).strip() for cell in row)]
-    return {
+    payload = {
         "locator": locator,
         "headers": normalized_headers,
         "rows": normalized_rows,
         "citation": citation,
         "unit_hint": unit_hint,
     }
+    if page_locator:
+        payload["page_locator"] = page_locator
+    if context_text:
+        payload["context_text"] = context_text
+    return payload
+
+
+def _html_cell_text(fragment: str) -> str:
+    cleaned = re.sub(r"<br\s*/?>", "\n", fragment or "", flags=re.IGNORECASE)
+    cleaned = re.sub(r"</p\s*>", "\n", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"<[^>]+>", " ", cleaned)
+    cleaned = html.unescape(cleaned)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _page_locator_from_payload(payload: dict[str, Any]) -> str:
+    for entry in list(payload.get("bbox") or [])[:4]:
+        if not isinstance(entry, dict):
+            continue
+        page_id = entry.get("page_id")
+        if isinstance(page_id, int) and page_id > 0:
+            return f"page {page_id}"
+    page = payload.get("page")
+    if isinstance(page, int) and page > 0:
+        return f"page {page}"
+    return ""
+
+
+def _extract_tables_from_html_string(
+    html_content: str,
+    citation: str,
+    *,
+    locator: str,
+    page_locator: str = "",
+    unit_hint: str = "",
+    context_text: str = "",
+) -> list[dict[str, Any]]:
+    extracted: list[dict[str, Any]] = []
+    for table_index, match in enumerate(_HTML_TABLE_RE.finditer(html_content or ""), start=1):
+        row_blocks = _HTML_ROW_RE.findall(match.group(1))
+        if len(row_blocks) < 2:
+            continue
+        headers: list[str] = []
+        rows: list[list[str]] = []
+        for row_html in row_blocks:
+            cells: list[str] = []
+            is_header_row = False
+            for tag_name, attrs, cell_html in _HTML_CELL_RE.findall(row_html):
+                cell_text = _html_cell_text(cell_html)
+                span_match = _HTML_COLSPAN_RE.search(attrs or "")
+                span = max(1, int(span_match.group(1))) if span_match else 1
+                cells.extend([cell_text] * span)
+                if str(tag_name).lower() == "th":
+                    is_header_row = True
+            if not any(cell.strip() for cell in cells):
+                continue
+            if is_header_row and not headers:
+                headers = cells
+                continue
+            if not headers:
+                headers = cells
+                continue
+            rows.append(cells)
+        if headers and rows:
+            table_locator = locator if table_index == 1 else f"{locator}#{table_index}"
+            extracted.append(
+                _coerce_table(
+                    headers,
+                    rows,
+                    citation,
+                    locator=table_locator,
+                    unit_hint=unit_hint,
+                    page_locator=page_locator,
+                    context_text=context_text,
+                )
+            )
+    return extracted
 
 
 def _extract_tables_from_json_payload(payload: Any, citation: str, tables: list[dict[str, Any]], limit: int = 8) -> None:
     if len(tables) >= limit:
         return
     if isinstance(payload, dict):
+        page_locator = _page_locator_from_payload(payload)
+        context_text = " ".join(
+            str(part).strip()
+            for part in (
+                payload.get("section_title"),
+                payload.get("title"),
+                payload.get("description"),
+                payload.get("type"),
+            )
+            if str(part).strip()
+        )
+        locator = str(payload.get("section_title") or payload.get("title") or payload.get("description") or f"table {len(tables) + 1}")
+        content = payload.get("content")
+        if isinstance(content, str) and "<table" in content.lower():
+            html_tables = _extract_tables_from_html_string(
+                content,
+                citation,
+                locator=locator,
+                page_locator=page_locator,
+                unit_hint=str(payload.get("unit") or payload.get("units") or ""),
+                context_text=context_text,
+            )
+            for item in html_tables:
+                tables.append(item)
+                if len(tables) >= limit:
+                    return
         headers = payload.get("headers") or payload.get("header") or payload.get("columns") or payload.get("column_headers")
         rows = payload.get("rows")
         if isinstance(headers, list) and isinstance(rows, list):
@@ -260,14 +377,20 @@ def _extract_tables_from_json_payload(payload: Any, citation: str, tables: list[
                         [str(header) for header in headers],
                         normalized_rows,
                         citation,
-                        locator=str(payload.get("section_title") or payload.get("title") or f"table {len(tables) + 1}"),
+                        locator=locator,
                         unit_hint=str(payload.get("unit") or payload.get("units") or ""),
+                        page_locator=page_locator,
+                        context_text=context_text,
                     )
                 )
         for value in payload.values():
+            if len(tables) >= limit:
+                return
             _extract_tables_from_json_payload(value, citation, tables, limit=limit)
     elif isinstance(payload, list):
-        for item in payload[:200]:
+        for item in payload:
+            if len(tables) >= limit:
+                return
             _extract_tables_from_json_payload(item, citation, tables, limit=limit)
 
 
@@ -317,14 +440,14 @@ def _extract_document_tables(target: Path, text: str, citation: str) -> list[dic
         except Exception:
             payload = None
         if payload is not None:
-            _extract_tables_from_json_payload(payload, citation, tables)
+            _extract_tables_from_json_payload(payload, citation, tables, limit=64)
     if not tables and suffix in {".csv", ".tsv"}:
         tables.extend(_extract_tables_from_delimited_text(text, citation))
     if not tables:
         tables.extend(_extract_tables_from_delimited_text(text, citation))
     if not tables:
         tables.extend(_extract_tables_from_text_layout(text, citation))
-    return tables[:8]
+    return tables[:64]
 
 
 def _match_score(text: str, query: str) -> float:
@@ -339,19 +462,34 @@ def _match_score(text: str, query: str) -> float:
 def _rank_tables(tables: list[dict[str, Any]], table_query: str) -> list[dict[str, Any]]:
     if not table_query.strip():
         return tables
+
+    def _score(table: dict[str, Any]) -> float:
+        text = " ".join(
+            [
+                str(table.get("locator", "")),
+                str(table.get("context_text", "")),
+                " ".join(str(item) for item in table.get("headers", [])),
+                " ".join(" ".join(str(cell) for cell in row) for row in table.get("rows", [])[:12]),
+                str(table.get("unit_hint", "")),
+            ]
+        )
+        score = _match_score(text, table_query)
+        lowered = text.lower()
+        if "table of contents" in lowered or "cumulative table of contents" in lowered:
+            score -= 0.25
+        numeric_cells = sum(
+            1
+            for row in list(table.get("rows", []))[:24]
+            for cell in row[:8]
+            if re.search(r"\d", str(cell))
+        )
+        if numeric_cells >= 8:
+            score += 0.05
+        return score
+
     return sorted(
         tables,
-        key=lambda table: _match_score(
-            " ".join(
-                [
-                    str(table.get("locator", "")),
-                    " ".join(str(item) for item in table.get("headers", [])),
-                    " ".join(" ".join(str(cell) for cell in row) for row in table.get("rows", [])[:12]),
-                    str(table.get("unit_hint", "")),
-                ]
-            ),
-            table_query,
-        ),
+        key=_score,
         reverse=True,
     )
 

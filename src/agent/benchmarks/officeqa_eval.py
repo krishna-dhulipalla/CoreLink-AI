@@ -301,11 +301,11 @@ def summarize_regression_report(case_reports: list[dict[str, Any]]) -> dict[str,
         if answer_mode:
             counts_by_answer_mode[answer_mode] = counts_by_answer_mode.get(answer_mode, 0) + 1
         artifacts = dict(item.get("artifacts") or {})
-        if list(artifacts.get("extracted_tables", [])) and str(artifacts.get("final_answer", "")).strip():
+        if subsystem == "pass" and list(artifacts.get("extracted_tables", [])) and str(artifacts.get("final_answer", "")).strip():
             evidence_ready += 1
 
     total = len(case_reports)
-    critical_failures = counts.get("routing", 0) + counts.get("formatting", 0)
+    critical_failures = counts.get("routing", 0) + counts.get("formatting", 0) + counts.get("validation", 0)
     required_evidence_ready = math.ceil(total * 0.6) if total else 0
     go_for_full_benchmark = total > 0 and critical_failures == 0 and evidence_ready >= required_evidence_ready
 
@@ -318,8 +318,8 @@ def summarize_regression_report(case_reports: list[dict[str, Any]]) -> dict[str,
         "required_evidence_ready_cases": required_evidence_ready,
         "go_for_full_benchmark": go_for_full_benchmark,
         "go_no_go_reason": (
-            "No critical routing/formatting failures and at least 60% of cases produced table-backed final answers."
+            "No routing, formatting, or validation failures and at least 60% of cases produced table-backed passing final answers."
             if go_for_full_benchmark
-            else "Hold full benchmark runs until routing/formatting failures are zero and at least 60% of cases produce table-backed final answers."
+            else "Hold full benchmark runs until routing, formatting, and validation failures are zero and at least 60% of cases produce table-backed passing final answers."
         ),
     }
