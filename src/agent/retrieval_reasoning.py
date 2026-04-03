@@ -162,6 +162,90 @@ def _needs_narrative_support(task_text: str, analysis_modes: list[str]) -> bool:
     return any(mode in analysis_modes for mode in ("statistical_analysis", "time_series_forecasting", "risk_metric"))
 
 
+def _supports_deterministic_compute(aggregation_shape: str, analysis_modes: list[str]) -> bool:
+    unsupported_modes = {"statistical_analysis", "time_series_forecasting", "risk_metric", "weighted_average"}
+    if unsupported_modes.intersection(set(analysis_modes)):
+        return False
+    return aggregation_shape in {
+        "monthly_sum",
+        "calendar_year_total",
+        "fiscal_year_total",
+        "monthly_sum_percent_change",
+        "inflation_adjusted_monthly_difference",
+        "point_lookup",
+    }
+
+
+def _needs_numeric_core(task_text: str, aggregation_shape: str, analysis_modes: list[str]) -> bool:
+    lowered = (task_text or "").lower()
+    if aggregation_shape != "point_lookup":
+        return True
+    if any(
+        token in lowered
+        for token in (
+            "amount",
+            "average",
+            "calculate",
+            "calculation",
+            "compute",
+            "correlation",
+            "difference",
+            "forecast",
+            "percent change",
+            "regression",
+            "standard deviation",
+            "sum",
+            "total",
+            "value at risk",
+            "var ",
+            "variance",
+            "weighted average",
+        )
+    ):
+        return True
+    return any(
+        mode in analysis_modes
+        for mode in (
+            "inflation_adjustment",
+            "statistical_analysis",
+            "time_series_forecasting",
+            "weighted_average",
+            "risk_metric",
+            "numeric_compute",
+        )
+    )
+
+
+def _classify_answer_mode(
+    task_text: str,
+    aggregation_shape: str,
+    analysis_modes: list[str],
+) -> tuple[str, str, bool]:
+    narrative_support = _needs_narrative_support(task_text, analysis_modes)
+    numeric_core = _needs_numeric_core(task_text, aggregation_shape, analysis_modes)
+    deterministic_supported = _supports_deterministic_compute(aggregation_shape, analysis_modes)
+
+    if aggregation_shape == "point_lookup":
+        if narrative_support and numeric_core:
+            return "hybrid_grounded", "preferred", True
+        if numeric_core:
+            synthesis_heavy = bool(
+                {"weighted_average", "statistical_analysis", "time_series_forecasting", "risk_metric"}.intersection(set(analysis_modes))
+            )
+            return "grounded_synthesis", "preferred", synthesis_heavy
+        return "grounded_synthesis", "not_applicable", False
+
+    if deterministic_supported and numeric_core and narrative_support:
+        return "hybrid_grounded", "required", False
+    if deterministic_supported and numeric_core:
+        return "deterministic_compute", "required", False
+    if numeric_core and narrative_support:
+        return "hybrid_grounded", "preferred", True
+    if numeric_core:
+        return "grounded_synthesis", "preferred", True
+    return "grounded_synthesis", "not_applicable", False
+
+
 def _select_retrieval_strategy(
     task_text: str,
     source_bundle: SourceBundle,
@@ -388,6 +472,11 @@ def build_retrieval_intent(
     retrieval_metric = _primary_retrieval_metric(metric, aggregation_shape)
     qualifier_terms = _extract_qualifier_terms(task_text)
     analysis_modes = _task_analysis_modes(task_text, benchmark_overrides)
+    answer_mode, compute_policy, partial_answer_allowed = _classify_answer_mode(
+        task_text,
+        aggregation_shape,
+        analysis_modes,
+    )
     strategy, strategy_confidence, fallback_chain, join_requirements = _select_retrieval_strategy(
         task_text,
         source_bundle,
@@ -506,6 +595,10 @@ def build_retrieval_intent(
         period=period,
         document_family=document_family,
         aggregation_shape=aggregation_shape,
+        analysis_modes=analysis_modes,
+        answer_mode=answer_mode,
+        compute_policy=compute_policy,
+        partial_answer_allowed=partial_answer_allowed,
         strategy=strategy,
         strategy_confidence=strategy_confidence,
         evidence_requirements=[requirement.label for requirement in evidence_plan.requirements],

@@ -222,6 +222,8 @@ class OfficeQAComputeResult(BaseModel):
     display_value: str = ""
     answer_text: str = ""
     unit: str = ""
+    selection_reasoning: str = ""
+    rejected_alternatives: list[str] = Field(default_factory=list)
     validation_errors: list[str] = Field(default_factory=list)
     citations: list[str] = Field(default_factory=list)
     ledger: list[dict[str, Any]] = Field(default_factory=list)
@@ -233,6 +235,7 @@ class OfficeQAValidationResult(BaseModel):
     reasoning: str = ""
     missing_dimensions: list[str] = Field(default_factory=list)
     hard_failures: list[str] = Field(default_factory=list)
+    remediation_guidance: list[str] = Field(default_factory=list)
     stop_reason: str = ""
     insufficiency_answer: str = ""
     replace_answer: bool = False
@@ -338,6 +341,8 @@ EvidenceStrategy = Literal["minimal_exact", "compact_prompt", "document_first", 
 SideEffectLevel = Literal["read_only", "transactional", "blocked"]
 RetrievalStrategy = Literal["table_first", "text_first", "hybrid", "multi_table", "multi_document"]
 EvidenceSupportMode = Literal["table", "text", "table_or_text", "table_and_text"]
+AnswerMode = Literal["deterministic_compute", "grounded_synthesis", "hybrid_grounded"]
+ComputePolicy = Literal["required", "preferred", "not_applicable"]
 
 
 class TaskIntent(BaseModel):
@@ -433,6 +438,10 @@ class RetrievalIntent(BaseModel):
     period: str = ""
     document_family: str = ""
     aggregation_shape: str = ""
+    analysis_modes: list[str] = Field(default_factory=list)
+    answer_mode: AnswerMode = "deterministic_compute"
+    compute_policy: ComputePolicy = "required"
+    partial_answer_allowed: bool = False
     strategy: RetrievalStrategy = "table_first"
     strategy_confidence: float = 0.7
     evidence_requirements: list[str] = Field(default_factory=list)
@@ -477,12 +486,14 @@ class ReviewPacket(BaseModel):
     structured_evidence: dict[str, Any] = Field(default_factory=dict)
     compute_result: dict[str, Any] = Field(default_factory=dict)
     validator_result: dict[str, Any] = Field(default_factory=dict)
+    diagnostic_artifacts: dict[str, Any] = Field(default_factory=dict)
 
 
 class RetrievalAction(BaseModel):
     action: Literal["tool", "answer"] = "tool"
     stage: str = ""
     strategy: str = ""
+    strategy_reason: str = ""
     tool_name: str = ""
     query: str = ""
     url: str = ""
@@ -495,6 +506,8 @@ class RetrievalAction(BaseModel):
     chunk_start: int = 0
     chunk_limit: int = 3
     evidence_gap: str = ""
+    candidate_sources: list[dict[str, Any]] = Field(default_factory=list)
+    rejected_candidates: list[dict[str, Any]] = Field(default_factory=list)
     rationale: str = ""
 
 

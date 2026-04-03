@@ -245,10 +245,13 @@ def get_model_name_for_task(
     execution_mode: str = "",
     task_family: str = "",
     prompt_tokens: int = 0,
+    answer_mode: str = "",
+    analysis_modes: list[str] | None = None,
 ) -> str:
     """Resolve a model name with optional task-aware long-context overrides."""
     canonical = _canonical_role(role)
     env_candidates: list[str] = []
+    analysis_mode_set = {str(item).strip().lower() for item in analysis_modes or [] if str(item).strip()}
 
     if canonical == "solver":
         if execution_mode == "document_grounded_analysis":
@@ -257,11 +260,17 @@ def get_model_name_for_task(
             env_candidates.extend(["RETRIEVAL_SOLVER_MODEL", "LONG_CONTEXT_SOLVER_MODEL"])
         elif task_family == "legal_transactional" and prompt_tokens >= 5000:
             env_candidates.append("LONG_CONTEXT_SOLVER_MODEL")
+        if answer_mode in {"grounded_synthesis", "hybrid_grounded"}:
+            env_candidates.extend(["SYNTHESIS_HEAVY_SOLVER_MODEL", "AMBIGUITY_SOLVER_MODEL"])
+        if analysis_mode_set.intersection({"statistical_analysis", "time_series_forecasting", "risk_metric"}):
+            env_candidates.extend(["FINANCIAL_REASONING_SOLVER_MODEL", "SYNTHESIS_HEAVY_SOLVER_MODEL", "AMBIGUITY_SOLVER_MODEL"])
     elif canonical == "reviewer":
         if execution_mode == "document_grounded_analysis":
             env_candidates.append("DOCUMENT_REVIEWER_MODEL")
         elif execution_mode == "retrieval_augmented_analysis":
             env_candidates.append("RETRIEVAL_REVIEWER_MODEL")
+        if answer_mode in {"grounded_synthesis", "hybrid_grounded"} or analysis_mode_set.intersection({"statistical_analysis", "time_series_forecasting", "risk_metric"}):
+            env_candidates.extend(["SYNTHESIS_HEAVY_REVIEWER_MODEL", "AMBIGUITY_REVIEWER_MODEL"])
 
     if prompt_tokens >= 6000:
         env_candidates.extend(
@@ -326,6 +335,8 @@ def get_model_runtime_kwargs(
     execution_mode: str = "",
     task_family: str = "",
     prompt_tokens: int = 0,
+    answer_mode: str = "",
+    analysis_modes: list[str] | None = None,
 ) -> dict[str, Any]:
     canonical = _canonical_role(role)
     model_name = get_model_name_for_task(
@@ -333,6 +344,8 @@ def get_model_runtime_kwargs(
         execution_mode=execution_mode,
         task_family=task_family,
         prompt_tokens=prompt_tokens,
+        answer_mode=answer_mode,
+        analysis_modes=analysis_modes,
     )
     if not model_name.startswith("gpt-5"):
         return {}
@@ -349,7 +362,14 @@ def get_model_runtime_kwargs(
             effort = "high"
         elif task_family in {"analytical_reasoning", "legal_transactional"}:
             effort = "high"
+        elif answer_mode in {"grounded_synthesis", "hybrid_grounded"}:
+            effort = "high"
+        elif {str(item).strip().lower() for item in analysis_modes or [] if str(item).strip()}.intersection({"statistical_analysis", "time_series_forecasting", "risk_metric"}):
+            effort = "high"
         elif not effort:
+            effort = "medium"
+    elif canonical == "reviewer":
+        if answer_mode in {"grounded_synthesis", "hybrid_grounded"}:
             effort = "medium"
     elif not effort:
         effort = "low"

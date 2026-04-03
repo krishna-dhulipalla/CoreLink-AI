@@ -451,6 +451,46 @@ def _artifact_signature(text: str) -> str:
     return hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:16]
 
 
+def _officeqa_required_compute_insufficiency_answer(reasons: list[str]) -> str:
+    compact_reasons = [str(item).strip() for item in reasons if str(item).strip()]
+    rationale = "Structured evidence is insufficient for the required deterministic financial computation."
+    if compact_reasons:
+        rationale += " Missing or invalid support: " + ", ".join(compact_reasons[:3]) + "."
+    return f"{rationale}\nFinal answer: Cannot calculate from the provided source evidence."
+
+
+def _is_bounded_partial_answer(answer: str) -> bool:
+    lowered = (answer or "").lower()
+    support_markers = (
+        "available evidence supports",
+        "based on the retrieved evidence",
+        "based on the available evidence",
+        "grounded partial answer",
+        "supported portion",
+        "the retrieved evidence shows",
+    )
+    limitation_markers = (
+        "cannot calculate exact",
+        "cannot determine exact",
+        "exact calculation is not supported",
+        "partial answer",
+        "remaining unsupported",
+        "unsupported remainder",
+        "unable to compute the exact",
+    )
+    return any(marker in lowered for marker in support_markers) and any(marker in lowered for marker in limitation_markers)
+
+
+def _partial_answer_missing_dimensions(missing_dimensions: list[str]) -> list[str]:
+    allowed = {
+        "aggregation semantics",
+        "exact grounded answer instead of an insufficiency placeholder",
+        "exact numeric support from retrieved evidence",
+        "monthly sum vs annual total alignment",
+    }
+    return [item for item in missing_dimensions if str(item).strip().lower() not in allowed]
+
+
 def _latest_public_answer(state: RuntimeState) -> str:
     for msg in reversed(state.get("messages", [])):
         if isinstance(msg, AIMessage) and msg.content and not msg.tool_calls:
@@ -720,6 +760,22 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                             journal.retrieved_citations.append(citation)
                     if retrieval_action.tool_name not in tool_plan.selected_tools:
                         tool_plan.selected_tools.append(retrieval_action.tool_name)
+                    retrieval_diagnostics = {
+                        "retrieval_decision": {
+                            "tool_name": retrieval_action.tool_name,
+                            "stage": retrieval_action.stage,
+                            "strategy": retrieval_action.strategy,
+                            "rationale": retrieval_action.rationale,
+                            "evidence_gap": retrieval_action.evidence_gap,
+                        },
+                        "strategy_reason": retrieval_action.strategy_reason,
+                        "candidate_sources": retrieval_action.candidate_sources,
+                        "rejected_candidates": retrieval_action.rejected_candidates,
+                    }
+                    provenance_summary = dict(curated.provenance_summary or {})
+                    provenance_summary["retrieval_diagnostics"] = retrieval_diagnostics
+                    curated.provenance_summary = provenance_summary
+                    workpad["retrieval_diagnostics"] = retrieval_diagnostics
                     workpad = _record_event(workpad, "executor", f"retrieval hop -> {retrieval_action.tool_name}")
                     evidence_sufficiency = assess_evidence_sufficiency(task_text, source_bundle, journal.tool_results, benchmark_overrides)
                     if tracer:
@@ -733,6 +789,11 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                                 "output_preview": "",
                                 "completion_budget": 0,
                                 "retrieval_action": retrieval_action.model_dump(),
+                                "retrieval_decision": retrieval_diagnostics["retrieval_decision"],
+                                "strategy_reason": retrieval_action.strategy_reason,
+                                "candidate_sources": retrieval_action.candidate_sources,
+                                "rejected_candidates": retrieval_action.rejected_candidates,
+                                "evidence_gaps": [retrieval_action.evidence_gap] if retrieval_action.evidence_gap else [],
                             },
                         )
                     return {
@@ -774,11 +835,64 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                     "executor",
                     f"predictive evidence gaps -> {', '.join(predictive_gaps[:4])}",
                 )
+                if tracer:
+                    tracer.record(
+                        "executor",
+                        {
+                            "intent": intent.model_dump(),
+                            "used_llm": False,
+                            "tools_ran": tools_ran_this_call,
+                            "output_preview": "",
+                            "completion_budget": 0,
+                            "evidence_gaps": predictive_gaps,
+                            "strategy_reason": retrieval_intent.evidence_plan.objective or retrieval_intent.strategy,
+                        },
+                    )
+                if retrieval_intent.compute_policy == "required":
+                    answer = _officeqa_required_compute_insufficiency_answer(predictive_gaps)
+                    journal.final_artifact_signature = _artifact_signature(answer)
+                    workpad["completion_budget"] = 0
+                    workpad["review_ready"] = True
+                    workpad = _record_event(
+                        workpad,
+                        "executor",
+                        "required compute blocked by predictive evidence gaps",
+                    )
+                    return {
+                        "messages": [AIMessage(content=answer)],
+                        "last_tool_result": journal.tool_results[-1] if journal.tool_results else None,
+                        "task_intent": intent.model_dump(),
+                        "tool_plan": tool_plan.model_dump(),
+                        "execution_journal": journal.model_dump(),
+                        "curated_context": curated.model_dump(),
+                        "review_packet": build_review_packet(
+                            task_text=task_text,
+                            answer_text=answer,
+                            answer_contract=state.get("answer_contract", {}) or {},
+                            curated_context=curated.model_dump(),
+                            tool_results=journal.tool_results,
+                            evidence_sufficiency=evidence_sufficiency.model_dump(),
+                        ).model_dump(),
+                        "evidence_sufficiency": evidence_sufficiency.model_dump(),
+                        "solver_stage": "SYNTHESIZE",
+                        "review_feedback": None,
+                        "workpad": workpad,
+                    }
             else:
                 compute_result = compute_officeqa_result(task_text, retrieval_intent, curated.structured_evidence)
                 curated = attach_compute_result(curated, compute_result.model_dump())
                 workpad["officeqa_compute"] = compute_result.model_dump()
-                if compute_result.status == "ok" and compute_result.answer_text:
+                provenance_summary = dict(curated.provenance_summary or {})
+                provenance_summary["answer_strategy"] = {
+                    "answer_mode": retrieval_intent.answer_mode,
+                    "compute_policy": retrieval_intent.compute_policy,
+                    "partial_answer_allowed": retrieval_intent.partial_answer_allowed,
+                    "analysis_modes": list(retrieval_intent.analysis_modes[:6]),
+                    "compute_status": compute_result.status,
+                }
+                curated.provenance_summary = provenance_summary
+                workpad["officeqa_answer_strategy"] = provenance_summary["answer_strategy"]
+                if compute_result.status == "ok" and compute_result.answer_text and retrieval_intent.answer_mode == "deterministic_compute":
                     answer = compute_result.answer_text
                     evidence_sufficiency = assess_evidence_sufficiency(task_text, source_bundle, journal.tool_results, benchmark_overrides)
                     journal.final_artifact_signature = _artifact_signature(answer)
@@ -796,6 +910,10 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                                 "output_preview": answer[:2000],
                                 "completion_budget": 0,
                                 "officeqa_compute": compute_result.model_dump(),
+                                "aggregation_reason": compute_result.selection_reasoning,
+                                "rejected_aggregation_alternatives": compute_result.rejected_alternatives,
+                                "answer_mode": retrieval_intent.answer_mode,
+                                "compute_policy": retrieval_intent.compute_policy,
                             },
                         )
                     return {
@@ -818,6 +936,48 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                         "review_feedback": None,
                         "workpad": workpad,
                     }
+                if compute_result.status == "ok" and retrieval_intent.answer_mode == "hybrid_grounded":
+                    workpad = _record_event(
+                        workpad,
+                        "executor",
+                        f"hybrid grounded synthesis using deterministic core -> {compute_result.operation or 'answer'}",
+                    )
+                elif compute_result.status != "ok" and retrieval_intent.compute_policy == "required":
+                    answer = _officeqa_required_compute_insufficiency_answer(list(compute_result.validation_errors))
+                    journal.final_artifact_signature = _artifact_signature(answer)
+                    workpad["completion_budget"] = 0
+                    workpad["review_ready"] = True
+                    workpad = _record_event(
+                        workpad,
+                        "executor",
+                        "required compute unavailable -> bounded insufficiency answer",
+                    )
+                    return {
+                        "messages": [AIMessage(content=answer)],
+                        "last_tool_result": journal.tool_results[-1] if journal.tool_results else None,
+                        "task_intent": intent.model_dump(),
+                        "tool_plan": tool_plan.model_dump(),
+                        "execution_journal": journal.model_dump(),
+                        "curated_context": curated.model_dump(),
+                        "review_packet": build_review_packet(
+                            task_text=task_text,
+                            answer_text=answer,
+                            answer_contract=state.get("answer_contract", {}) or {},
+                            curated_context=curated.model_dump(),
+                            tool_results=journal.tool_results,
+                            evidence_sufficiency=evidence_sufficiency.model_dump(),
+                        ).model_dump(),
+                        "evidence_sufficiency": evidence_sufficiency.model_dump(),
+                        "solver_stage": "SYNTHESIZE",
+                        "review_feedback": None,
+                        "workpad": workpad,
+                    }
+                elif compute_result.status != "ok" and retrieval_intent.compute_policy in {"preferred", "not_applicable"}:
+                    workpad = _record_event(
+                        workpad,
+                        "executor",
+                        f"grounded synthesis fallback -> compute {compute_result.status}",
+                    )
 
         if intent.task_family == "finance_options" and journal.tool_results:
             answer = _options_final_answer({**state, "execution_journal": journal.model_dump()})
@@ -869,6 +1029,11 @@ def make_executor(registry: dict[str, dict[str, Any]]):
             intent.execution_mode,
             benchmark_overrides=benchmark_overrides,
             task_text=task_text,
+            answer_mode=retrieval_intent.answer_mode,
+            compute_policy=retrieval_intent.compute_policy,
+            partial_answer_allowed=retrieval_intent.partial_answer_allowed,
+            analysis_modes=retrieval_intent.analysis_modes,
+            compute_status=str(dict(curated.compute_result or {}).get("status", "") or ""),
         )
         if guidance:
             prompt_messages.append(SystemMessage(content=guidance))
@@ -919,6 +1084,8 @@ def make_executor(registry: dict[str, dict[str, Any]]):
             execution_mode=intent.execution_mode,
             task_family=intent.task_family,
             prompt_tokens=prompt_tokens,
+            answer_mode=retrieval_intent.answer_mode,
+            analysis_modes=retrieval_intent.analysis_modes,
         )
         model = ChatOpenAI(
             model=model_name,
@@ -928,6 +1095,8 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                 execution_mode=intent.execution_mode,
                 task_family=intent.task_family,
                 prompt_tokens=prompt_tokens,
+                answer_mode=retrieval_intent.answer_mode,
+                analysis_modes=retrieval_intent.analysis_modes,
             ),
             temperature=0,
             max_tokens=max_tokens,
@@ -962,6 +1131,8 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                     "prompt": format_messages_for_trace(prompt_messages),
                     "output_preview": content[:2000],
                     "completion_budget": max_tokens,
+                    "answer_mode": retrieval_intent.answer_mode,
+                    "compute_policy": retrieval_intent.compute_policy,
                     "tokens": {
                         "prompt": prompt_tokens,
                         "completion": count_tokens([AIMessage(content=content)]),
@@ -1118,6 +1289,7 @@ def reviewer(state: RuntimeState) -> dict[str, Any]:
             missing = ["complete derivation and final result"]
             score = 0.46 if verdict == "revise" else 0.38
     elif intent.review_mode == "document_grounded":
+        bounded_partial = retrieval_intent.partial_answer_allowed and _is_bounded_partial_answer(answer)
         if not journal.tool_results:
             missing.append("retrieved evidence")
         if not review_packet.citations:
@@ -1138,7 +1310,8 @@ def reviewer(state: RuntimeState) -> dict[str, Any]:
                 "not available in the provided evidence",
             )
         ):
-            missing.append("exact grounded answer instead of an insufficiency placeholder")
+            if not bounded_partial:
+                missing.append("exact grounded answer instead of an insufficiency placeholder")
         if any(
             token in answer_lower
             for token in (
@@ -1166,6 +1339,10 @@ def reviewer(state: RuntimeState) -> dict[str, Any]:
                 missing.append("inclusion and exclusion qualifiers")
         if re.search(r"\d", answer or "") and "numeric or quoted support" in evidence_sufficiency.missing_dimensions:
             missing.append("exact numeric support from retrieved evidence")
+        if bounded_partial:
+            missing = _partial_answer_missing_dimensions(missing)
+            if not missing:
+                reasoning = "Reviewer accepted a bounded grounded partial answer because the supported portion is explicit and source-backed."
         if missing:
             verdict = "revise" if journal.revision_count < 1 else "fail"
             reasoning = "Grounded retrieval answer is missing evidence quality, attribution, or semantic alignment with the requested source, period, entity, or aggregation."
@@ -1208,6 +1385,9 @@ def reviewer(state: RuntimeState) -> dict[str, Any]:
                 "missing_dimensions": missing,
                 "stop_reason": stop_reason,
                 "officeqa_validator": validator_result,
+                "validator_remediation": dict(validator_result or {}).get("remediation_guidance", []),
+                "answer_mode": retrieval_intent.answer_mode,
+                "compute_policy": retrieval_intent.compute_policy,
                 "used_llm": False,
             },
         )

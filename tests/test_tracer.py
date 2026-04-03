@@ -74,3 +74,43 @@ def test_tracer_evicts_old_trace_artifacts(monkeypatch, tmp_path):
 
     remaining = sorted(item.name for item in tmp_path.iterdir())
     assert remaining == ["2026-03-03_00-00-00", "2026-03-04_00-00-00"]
+
+
+def test_tracer_preserves_structured_diagnostic_artifacts(monkeypatch):
+    monkeypatch.setenv("ENABLE_RUN_TRACER", "1")
+    captured: list[dict] = []
+
+    def _capture(payload, profile, trace_identity):
+        captured.append(payload)
+        return "ok"
+
+    monkeypatch.setattr("agent.tracer._write_trace_file", _capture)
+
+    tracer = start_tracer({"request_id": "diag-1"})
+    assert tracer is not None
+    tracer.set_task("diagnostic task")
+    tracer.record(
+        "executor",
+        {
+            "intent": {"task_family": "document_qa", "execution_mode": "document_grounded_analysis", "complexity_tier": "structured_analysis"},
+            "used_llm": False,
+            "tools_ran": ["fetch_officeqa_table"],
+            "retrieval_decision": {"tool_name": "fetch_officeqa_table", "strategy": "table_first"},
+            "strategy_reason": "primary metric is expected to be recoverable from structured table evidence",
+            "candidate_sources": [{"document_id": "treasury_1940_json", "score": 1.0}],
+            "rejected_candidates": [{"document_id": "treasury_1939_json", "reason": "lower-ranked than the selected candidates"}],
+            "aggregation_reason": "Selected monthly-sum compute because the task asks for a within-year monthly aggregation.",
+            "evidence_gaps": ["missing month coverage"],
+            "output_preview": "",
+        },
+    )
+    finalize_tracer("answer")
+
+    assert captured
+    node = captured[0]["nodes"][0]
+    assert node["retrieval_decision"]["tool_name"] == "fetch_officeqa_table"
+    assert node["strategy_reason"]
+    assert node["candidate_sources"]
+    assert node["rejected_candidates"]
+    assert node["aggregation_reason"]
+    assert node["evidence_gaps"] == ["missing month coverage"]

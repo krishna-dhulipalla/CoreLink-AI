@@ -700,6 +700,143 @@ def _rank_search_candidates(
     )
 
 
+def _strategy_reason(retrieval_intent: RetrievalIntent) -> str:
+    plan = retrieval_intent.evidence_plan
+    reasons: list[str] = []
+    if retrieval_intent.strategy == "table_first":
+        reasons.append("primary metric is expected to be recoverable from structured table evidence")
+    if retrieval_intent.strategy == "text_first":
+        reasons.append("question asks for narrative or implicit metric support before table narrowing")
+    if retrieval_intent.strategy == "hybrid":
+        reasons.append("question needs both structured numeric evidence and narrative grounding")
+    if retrieval_intent.strategy == "multi_table":
+        reasons.append("question likely requires joining multiple table fragments before compute")
+    if retrieval_intent.strategy == "multi_document":
+        reasons.append("question spans multiple benchmark-linked source documents")
+    if plan.requires_inflation_support:
+        reasons.append("inflation support is required")
+    if plan.requires_statistical_series:
+        reasons.append("a complete series is required for statistical analysis")
+    if plan.requires_forecast_support:
+        reasons.append("a grounded time series is required for forecasting")
+    if plan.join_keys:
+        reasons.append(f"join keys: {', '.join(plan.join_keys[:4])}")
+    return "; ".join(reasons) or "default retrieval strategy selected from the structured retrieval intent"
+
+
+def _candidate_rejection_reason(
+    candidate: dict[str, Any],
+    score: float,
+    retrieval_intent: RetrievalIntent,
+) -> str:
+    text = _search_candidate_text(candidate).lower()
+    if any(term in text for term in retrieval_intent.must_exclude_terms):
+        return "excluded retrieval term overlap"
+    if any(
+        bad in text
+        for bad in (
+            "monthly catalog",
+            "public documents",
+            "depository invoice",
+            "federal register",
+            "internal revenue bulletin",
+            "cumulative bulletin",
+            "flashcards",
+            "quiz",
+            "public law",
+        )
+    ):
+        return "off-domain or noisy source"
+    if score < 0.55:
+        return "low semantic match score"
+    return "lower-ranked than the selected candidates"
+
+
+def _candidate_diagnostics(
+    candidates: list[dict[str, Any]],
+    retrieval_intent: RetrievalIntent,
+    source_bundle: SourceBundle,
+    benchmark_overrides: dict[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if not candidates:
+        return [], []
+    kept: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    for index, candidate in enumerate(candidates):
+        score = round(_search_candidate_score(candidate, retrieval_intent, source_bundle, benchmark_overrides), 3)
+        item = {
+            "title": str(candidate.get("title", "") or ""),
+            "citation": str(candidate.get("citation", "") or ""),
+            "document_id": str(candidate.get("document_id", "") or ""),
+            "rank": int(candidate.get("rank", 999) or 999),
+            "score": score,
+        }
+        if index < 3:
+            kept.append(item)
+        else:
+            item["reason"] = _candidate_rejection_reason(candidate, score, retrieval_intent)
+            rejected.append(item)
+    return kept, rejected[:6]
+
+
+def _source_file_candidate_diagnostics(indexed_source_matches: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    kept = [
+        {
+            "title": str(item.get("relative_path", "") or item.get("document_id", "") or ""),
+            "citation": str(item.get("relative_path", "") or ""),
+            "document_id": str(item.get("document_id", "") or ""),
+            "rank": index + 1,
+            "score": 1.0,
+        }
+        for index, item in enumerate(indexed_source_matches[:3])
+    ]
+    rejected = [
+        {
+            "title": str(item.get("relative_path", "") or item.get("document_id", "") or ""),
+            "citation": str(item.get("relative_path", "") or ""),
+            "document_id": str(item.get("document_id", "") or ""),
+            "rank": index + 4,
+            "score": 0.95,
+            "reason": "benchmark-linked source not selected in this hop",
+        }
+        for index, item in enumerate(indexed_source_matches[3:9])
+    ]
+    return kept, rejected
+
+
+def _attach_retrieval_diagnostics(
+    action: RetrievalAction,
+    *,
+    retrieval_intent: RetrievalIntent,
+    journal: ExecutionJournal,
+    source_bundle: SourceBundle,
+    benchmark_overrides: dict[str, Any] | None = None,
+) -> RetrievalAction:
+    if action.strategy:
+        strategy = action.strategy
+    else:
+        strategy = retrieval_intent.strategy
+        action.strategy = strategy
+    action.strategy_reason = _strategy_reason(retrieval_intent)
+    ranked = _rank_search_candidates(
+        _search_result_candidates(journal.tool_results[-1] if journal.tool_results else {}),
+        retrieval_intent,
+        source_bundle,
+        benchmark_overrides,
+    )
+    candidate_sources, rejected_candidates = _candidate_diagnostics(
+        ranked,
+        retrieval_intent,
+        source_bundle,
+        benchmark_overrides,
+    )
+    if not candidate_sources and source_bundle.source_files_found:
+        candidate_sources, rejected_candidates = _source_file_candidate_diagnostics(list(source_bundle.source_files_found[:8]))
+    action.candidate_sources = candidate_sources
+    action.rejected_candidates = rejected_candidates
+    return action
+
+
 def _fallback_retrieval_action(
     *,
     execution_mode: str,
@@ -1273,7 +1410,13 @@ def _plan_retrieval_action(
     planned = _validate_retrieval_action(heuristic, tool_plan, registry)
     if not planned.strategy:
         planned.strategy = retrieval_intent.strategy
-    return planned
+    return _attach_retrieval_diagnostics(
+        planned,
+        retrieval_intent=retrieval_intent,
+        journal=journal,
+        source_bundle=source_bundle,
+        benchmark_overrides=benchmark_overrides,
+    )
 
 
 def _tool_args_from_retrieval_action(

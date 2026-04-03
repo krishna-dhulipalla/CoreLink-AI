@@ -561,7 +561,7 @@ Objective:
 
 Tasks:
 
-- [ ] `P11.1` Add explicit trace artifacts for:
+- [x] `P11.1` Add explicit trace artifacts for:
   - `retrieval_decision`
   - `strategy_reason`
   - `candidate_sources`
@@ -569,10 +569,10 @@ Tasks:
   - `text_selection_reason`
   - `aggregation_reason`
   - `evidence_gaps`
-- [ ] `P11.2` Capture rejected retrieval candidates and why they were rejected
-- [ ] `P11.3` Persist compute-path selection reasoning and rejected aggregation alternatives
-- [ ] `P11.4` Persist validator remediation guidance in both run traces and regression reports
-- [ ] `P11.5` Update teammate docs and flow diagrams so embedded stages are visible without source diving
+- [x] `P11.2` Capture rejected retrieval candidates and why they were rejected
+- [x] `P11.3` Persist compute-path selection reasoning and rejected aggregation alternatives
+- [x] `P11.4` Persist validator remediation guidance in both run traces and regression reports
+- [x] `P11.5` Update teammate docs and flow diagrams so embedded stages are visible without source diving
 
 Exit criteria:
 
@@ -586,22 +586,34 @@ Objective:
 
 Tasks:
 
-- [ ] `P12.1` Split questions into:
+- [x] `P12.1` Split questions into:
   - deterministic-compute eligible
   - grounded-synthesis required
   - hybrid numeric-plus-narrative
-- [ ] `P12.2` Add hybrid answer mode:
+- [x] `P12.2` Add hybrid answer mode:
   - deterministic numeric core
   - grounded narrative wrapper
-- [ ] `P12.3` Add grounded synthesis fallback when compute is impossible but evidence is still sufficient for a partial or qualitative answer
-- [ ] `P12.4` Ensure reviewer can approve bounded partial answers when fully deterministic output is impossible
-- [ ] `P12.5` Add stronger model routing for synthesis-heavy, ambiguity-heavy, and long-context OfficeQA tasks
-- [ ] `P12.6` Add regression cases for mixed tasks, partial answers, and synthesis-with-provenance paths
+- [x] `P12.3` Add grounded synthesis fallback when compute is impossible but evidence is still sufficient for a partial or qualitative answer
+- [x] `P12.4` Ensure reviewer can approve bounded partial answers when fully deterministic output is impossible
+- [x] `P12.5` Add stronger model routing for synthesis-heavy, ambiguity-heavy, and long-context OfficeQA tasks
+- [x] `P12.6` Add regression cases for mixed tasks, partial answers, and synthesis-with-provenance paths
 
 Exit criteria:
 
 - hard numeric tasks stay deterministic
 - mixed tasks do not collapse into unnecessary insufficiency
+
+Phase 12 completion notes:
+
+- `RetrievalIntent` now carries `analysis_modes`, `answer_mode`, `compute_policy`, and `partial_answer_allowed`, so answer strategy is explicit runtime state instead of hidden prompt behavior.
+- Point-lookups and synthesis-heavy finance questions no longer force deterministic compute by default. Strict calendar/fiscal/paired-comparison tasks still do.
+- Executor now supports three OfficeQA answer paths:
+  - deterministic finalization for strict numeric tasks
+  - hybrid synthesis that wraps a deterministic numeric core with grounded narrative
+  - grounded synthesis fallback when compute is preferred but not available
+- Validator now distinguishes compute-required versus synthesis-compatible tasks, and reviewer can approve bounded partial answers when the supported portion is explicit and source-backed.
+- Model routing now supports synthesis-heavy and ambiguity-heavy OfficeQA tasks through stronger solver/reviewer override hooks.
+- Regression slices and eval summaries now capture answer mode in addition to subsystem and retrieval strategy.
 
 ## Phase 13: Actionable Validator And Adaptive Orchestration
 

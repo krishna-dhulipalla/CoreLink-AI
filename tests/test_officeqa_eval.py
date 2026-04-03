@@ -105,8 +105,23 @@ def test_capture_officeqa_artifacts_collects_tables_and_ledger():
                 ],
                 "value_count": 12,
             },
+            "provenance_summary": {
+                "retrieval_plan": {
+                    "answer_mode": "hybrid_grounded",
+                    "compute_policy": "preferred",
+                },
+                "retrieval_diagnostics": {
+                    "retrieval_decision": {"tool_name": "fetch_officeqa_table", "strategy": "table_first"},
+                    "strategy_reason": "primary metric is expected to be recoverable from structured table evidence",
+                    "candidate_sources": [{"document_id": "treasury_1940_json", "score": 1.0}],
+                    "rejected_candidates": [{"document_id": "treasury_1939_json", "reason": "lower-ranked than the selected candidates"}],
+                },
+                "evidence_plan_check": {"predictive_gaps": ["missing month coverage"]},
+            },
             "compute_result": {
                 "status": "ok",
+                "selection_reasoning": "Selected monthly-sum compute because the task asks for a within-year monthly aggregation over 1940.",
+                "rejected_alternatives": ["point_lookup rejected because the task requires aggregation or comparison, not a single isolated value"],
                 "ledger": [
                     {
                         "operator": "monthly_sum",
@@ -139,12 +154,23 @@ def test_capture_officeqa_artifacts_collects_tables_and_ledger():
             "stop_reason": "",
             "contract_collapse_attempts": 0,
         },
+        review_packet={"validator_result": {"remediation_guidance": ["Re-extract evidence for the exact requested years."]}},
     )
 
     artifacts = capture_officeqa_artifacts(_trace(state, "<REASONING>x</REASONING><FINAL_ANSWER>2602</FINAL_ANSWER>"))
 
     assert artifacts["source_files_expected"] == ["treasury_1940.json"]
     assert artifacts["structured_value_count"] == 12
+    assert artifacts["retrieval_decision"]["tool_name"] == "fetch_officeqa_table"
+    assert artifacts["answer_mode"] == "hybrid_grounded"
+    assert artifacts["compute_policy"] == "preferred"
+    assert artifacts["strategy_reason"]
+    assert artifacts["candidate_sources"]
+    assert artifacts["rejected_candidates"]
+    assert artifacts["evidence_gaps"] == ["missing month coverage"]
+    assert artifacts["compute_selection_reasoning"]
+    assert artifacts["rejected_aggregation_alternatives"]
+    assert artifacts["validator_remediation"]
     assert artifacts["extracted_tables"][0]["document_id"] == "treasury_1940_json"
     assert artifacts["compute_ledger"][0]["operator"] == "monthly_sum"
     assert artifacts["final_artifact_signature"] == "sig-1"
@@ -154,11 +180,13 @@ def test_summarize_regression_report_sets_go_no_go_threshold():
     good = {
         "classification": {"subsystem": "pass"},
         "retrieval_strategy": "table_first",
+        "answer_mode": "deterministic_compute",
         "artifacts": {"extracted_tables": [{"document_id": "x"}], "final_answer": "42"},
     }
     bad = {
         "classification": {"subsystem": "routing"},
         "retrieval_strategy": "hybrid",
+        "answer_mode": "grounded_synthesis",
         "artifacts": {"extracted_tables": [], "final_answer": ""},
     }
 
@@ -167,6 +195,8 @@ def test_summarize_regression_report_sets_go_no_go_threshold():
     assert summary["counts_by_subsystem"]["routing"] == 1
     assert summary["counts_by_strategy"]["table_first"] == 2
     assert summary["counts_by_strategy"]["hybrid"] == 1
+    assert summary["counts_by_answer_mode"]["deterministic_compute"] == 2
+    assert summary["counts_by_answer_mode"]["grounded_synthesis"] == 1
     assert summary["go_for_full_benchmark"] is False
     assert summary["required_evidence_ready_cases"] == 2
 
@@ -194,7 +224,7 @@ def test_build_case_report_includes_classification_and_artifacts():
             "contract_collapse_attempts": 0,
         },
     )
-    state["retrieval_intent"] = {"strategy": "hybrid"}
+    state["retrieval_intent"] = {"strategy": "hybrid", "answer_mode": "hybrid_grounded"}
 
     report = build_case_report(
         {"id": "case_1", "prompt": "OfficeQA task", "focus_subsystem": "routing", "retrieval_strategy": "hybrid", "smoke": True},
@@ -205,3 +235,4 @@ def test_build_case_report_includes_classification_and_artifacts():
     assert report["classification"]["subsystem"] == "pass"
     assert report["execution_summary"]["execution_mode"] == "document_grounded_analysis"
     assert report["execution_summary"]["retrieval_strategy"] == "hybrid"
+    assert report["execution_summary"]["answer_mode"] == "hybrid_grounded"

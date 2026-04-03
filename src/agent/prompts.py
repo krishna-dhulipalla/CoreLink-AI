@@ -116,12 +116,54 @@ def execution_guidance(
     *,
     benchmark_overrides: dict[str, Any] | None = None,
     task_text: str = "",
+    answer_mode: str = "",
+    compute_policy: str = "",
+    partial_answer_allowed: bool = False,
+    analysis_modes: list[str] | None = None,
+    compute_status: str = "",
 ) -> str:
     """Return runtime guidance for the executor system prompt."""
     _ = task_family
     _ = task_text
+    analysis_markers = set(analysis_modes or [])
     if _officeqa_active(benchmark_overrides):
-        return OFFICEQA_FINANCIAL_DOCUMENT_GUIDANCE
+        guidance_parts = [OFFICEQA_FINANCIAL_DOCUMENT_GUIDANCE]
+        if answer_mode == "deterministic_compute":
+            guidance_parts.append(
+                "This question requires an exact numeric answer. Use deterministic compute when available and do not replace it with free-form reasoning."
+            )
+        elif answer_mode == "hybrid_grounded":
+            guidance_parts.append(
+                "This question needs a grounded narrative wrapper around a numeric core."
+                " If a deterministic compute result is present, treat that numeric result as authoritative and explain it from retrieved evidence without recomputing."
+            )
+        elif answer_mode == "grounded_synthesis":
+            guidance_parts.append(
+                "This question should be answered through grounded synthesis over retrieved evidence."
+                " Do not invent an exact calculation that the evidence or deterministic compute path does not support."
+            )
+        if compute_policy == "preferred":
+            guidance_parts.append(
+                "If exact deterministic compute is unavailable but retrieved evidence still supports part of the task, provide a bounded grounded answer."
+                " Clearly separate supported findings from unsupported remainder."
+            )
+        elif compute_policy == "not_applicable":
+            guidance_parts.append(
+                "Focus on a fully grounded answer from retrieved text and tables rather than forcing a numeric compute path."
+            )
+        if partial_answer_allowed:
+            guidance_parts.append(
+                "When only part of the task is supported, explicitly label the supported portion and the unsupported remainder instead of collapsing into a generic insufficiency response."
+            )
+        if compute_status == "ok":
+            guidance_parts.append(
+                "A deterministic compute result is already available in the context block. Reuse it exactly."
+            )
+        if analysis_markers.intersection({"statistical_analysis", "time_series_forecasting", "risk_metric"}):
+            guidance_parts.append(
+                "For advanced financial reasoning tasks, keep assumptions explicit, preserve ordered series logic, and ground every inference in retrieved evidence."
+            )
+        return "\n".join(guidance_parts)
     if execution_mode == "retrieval_augmented_analysis":
         return RETRIEVAL_GUIDANCE
     if execution_mode == "document_grounded_analysis":

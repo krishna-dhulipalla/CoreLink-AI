@@ -82,6 +82,23 @@ class TestModelConfig:
             == "long-context-model"
         )
 
+    def test_synthesis_heavy_override_applies_to_hybrid_document_solver(self, monkeypatch):
+        monkeypatch.setenv("MODEL_PROFILE", "balanced")
+        monkeypatch.setenv("SYNTHESIS_HEAVY_SOLVER_MODEL", "synthesis-heavy-model")
+        model_config = _reload_model_config()
+
+        assert (
+            model_config.get_model_name_for_task(
+                "solver",
+                execution_mode="document_grounded_analysis",
+                task_family="document_qa",
+                prompt_tokens=3000,
+                answer_mode="hybrid_grounded",
+                analysis_modes=["time_series_forecasting"],
+            )
+            == "synthesis-heavy-model"
+        )
+
     def test_competition_gpt_solver_strips_reasoning_effort_for_nebius(self, monkeypatch):
         monkeypatch.setenv("MODEL_PROFILE", "competition_gpt")
         monkeypatch.delenv("SOLVER_REASONING_EFFORT", raising=False)

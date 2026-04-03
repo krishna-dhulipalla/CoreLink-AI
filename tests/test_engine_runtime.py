@@ -11,7 +11,7 @@ from langchain_core.tools import tool
 
 from agent.budget import BudgetTracker
 from agent.benchmarks.officeqa_index import build_officeqa_index
-from agent.contracts import ExecutionJournal, SourceBundle, ToolPlan
+from agent.contracts import EvidenceSufficiency, ExecutionJournal, SourceBundle, ToolPlan
 from agent.officeqa_structured_evidence import build_officeqa_structured_evidence
 from agent.retrieval_tools import fetch_corpus_document as fetch_corpus_document_tool
 from agent.retrieval_tools import fetch_officeqa_table, lookup_officeqa_cells
@@ -556,10 +556,34 @@ def test_officeqa_retrieval_intent_selects_hybrid_strategy_for_statistical_forec
     retrieval_intent = build_retrieval_intent(prompt, source_bundle, intake(make_state(prompt))["benchmark_overrides"])
 
     assert retrieval_intent.strategy == "hybrid"
+    assert retrieval_intent.answer_mode == "hybrid_grounded"
+    assert retrieval_intent.compute_policy == "preferred"
+    assert retrieval_intent.partial_answer_allowed is True
     assert retrieval_intent.evidence_plan.requires_table_support is True
     assert retrieval_intent.evidence_plan.requires_text_support is True
     assert retrieval_intent.evidence_plan.requires_forecast_support is True
     assert "Capture quoted or page-level narrative support for ambiguous or implicit metrics." in retrieval_intent.evidence_requirements
+
+
+def test_officeqa_retrieval_intent_marks_calendar_year_total_as_deterministic(monkeypatch):
+    monkeypatch.setenv("BENCHMARK_NAME", "officeqa")
+    prompt = "What were the total expenditures for U.S. national defense in the calendar year 1940?"
+    source_bundle = SourceBundle(
+        task_text=prompt,
+        focus_query="national defense expenditures 1940",
+        target_period="1940",
+        entities=["National Defense"],
+        urls=[],
+        inline_facts={},
+        tables=[],
+        formulas=[],
+    )
+
+    retrieval_intent = build_retrieval_intent(prompt, source_bundle, intake(make_state(prompt))["benchmark_overrides"])
+
+    assert retrieval_intent.answer_mode == "deterministic_compute"
+    assert retrieval_intent.compute_policy == "required"
+    assert retrieval_intent.partial_answer_allowed is False
 
 
 def test_officeqa_retrieval_intent_selects_multi_table_for_inflation_adjusted_weighted_average(monkeypatch):
@@ -579,6 +603,9 @@ def test_officeqa_retrieval_intent_selects_multi_table_for_inflation_adjusted_we
     retrieval_intent = build_retrieval_intent(prompt, source_bundle, intake(make_state(prompt))["benchmark_overrides"])
 
     assert retrieval_intent.strategy == "multi_table"
+    assert retrieval_intent.answer_mode == "grounded_synthesis"
+    assert retrieval_intent.compute_policy == "preferred"
+    assert retrieval_intent.partial_answer_allowed is True
     assert retrieval_intent.evidence_plan.requires_inflation_support is True
     assert retrieval_intent.evidence_plan.join_keys
     assert "join_ready_support" in {item.kind for item in retrieval_intent.evidence_plan.requirements}
@@ -641,6 +668,8 @@ def test_officeqa_planner_prefers_text_first_pages_for_narrative_document_questi
 
     assert action.tool_name == "fetch_officeqa_pages"
     assert action.strategy in {"text_first", "hybrid"}
+    assert action.strategy_reason
+    assert action.candidate_sources
 
 
 def test_officeqa_planner_tries_alternate_table_query_for_multi_table_questions():
@@ -693,6 +722,7 @@ def test_officeqa_planner_tries_alternate_table_query_for_multi_table_questions(
     assert action.strategy in {"multi_table", "hybrid"}
     assert action.query
     assert action.query.lower() != "treasury bulletin expenditures 1953"
+    assert action.strategy_reason
 
 
 def test_officeqa_predictive_evidence_gaps_require_month_coverage_before_compute(monkeypatch):
@@ -1154,6 +1184,178 @@ def test_engine_executor_prefers_officeqa_table_first_retrieval(monkeypatch):
     assert third["solver_stage"] == "SYNTHESIZE"
     assert "treasury_1945.json" in str(third["messages"][0].content)
     assert captured
+
+
+def test_officeqa_executor_uses_llm_wrapper_for_hybrid_answer_mode(monkeypatch):
+    prompt = "What was total public debt outstanding in 1945, and what trend does the retrieved evidence suggest?"
+    captured: list = []
+    monkeypatch.setenv("BENCHMARK_NAME", "officeqa")
+    monkeypatch.setattr(
+        "agent.nodes.orchestrator.ChatOpenAI",
+        lambda **kwargs: _FakeModel(
+            AIMessage(
+                content=(
+                    "Based on the retrieved evidence, the 1945 total public debt outstanding was 258.7 and the nearby narrative indicates continued elevated debt pressure. "
+                    "[Source: treasury_1945.json]"
+                )
+            ),
+            captured,
+        ),
+    )
+
+    registry = build_capability_registry([CALCULATOR_TOOL, SEARCH_TOOL, *BUILTIN_RETRIEVAL_TOOLS])
+    executor = make_executor(registry)
+    state = make_state(
+        prompt,
+        task_profile="document_qa",
+        task_intent={
+            "task_family": "document_qa",
+            "execution_mode": "document_grounded_analysis",
+            "complexity_tier": "structured_analysis",
+            "tool_families_needed": ["document_retrieval", "exact_compute", "analytical_reasoning"],
+            "evidence_strategy": "document_first",
+            "review_mode": "document_grounded",
+            "completion_mode": "document_grounded",
+            "routing_rationale": "",
+            "confidence": 0.95,
+            "planner_source": "heuristic",
+        },
+        benchmark_overrides={"benchmark_adapter": "officeqa"},
+        tool_plan={
+            "tool_families_needed": ["document_retrieval", "exact_compute"],
+            "widened_families": [],
+            "selected_tools": ["fetch_officeqa_table", "fetch_officeqa_pages", "lookup_officeqa_cells"],
+            "pending_tools": [],
+            "blocked_families": [],
+            "ace_events": [],
+            "notes": [],
+            "stop_reason": "",
+        },
+        source_bundle={
+            "task_text": prompt,
+            "focus_query": "public debt outstanding 1945 trend",
+            "target_period": "1945",
+            "entities": ["Public debt outstanding"],
+            "urls": [],
+            "inline_facts": {},
+            "tables": [],
+            "formulas": [],
+        },
+        curated_context={
+            "objective": prompt,
+            "facts_in_use": [{"type": "answer_mode", "value": "hybrid_grounded"}],
+            "open_questions": [],
+            "assumptions": [],
+            "requested_output": {"format": "text"},
+            "provenance_summary": {},
+            "structured_evidence": {
+                "tables": [
+                    {
+                        "document_id": "treasury_1945_json",
+                        "citation": "treasury_1945.json",
+                        "page_locator": "page 2",
+                        "table_locator": "table 1",
+                        "headers": ["Category", "Amount"],
+                        "row_count": 1,
+                        "column_count": 2,
+                        "unit": "billion dollars",
+                    }
+                ],
+                "values": [
+                    {
+                        "document_id": "treasury_1945_json",
+                        "citation": "treasury_1945.json",
+                        "page_locator": "page 2",
+                        "table_locator": "table 1",
+                        "row_label": "Total public debt outstanding",
+                        "column_label": "Amount",
+                        "raw_value": "258.7",
+                        "numeric_value": 258.7,
+                        "normalized_value": 258.7,
+                        "unit": "billion",
+                        "unit_multiplier": 1.0,
+                        "unit_kind": "currency",
+                    }
+                ],
+                "page_chunks": [
+                    {
+                        "document_id": "treasury_1945_json",
+                        "citation": "treasury_1945.json",
+                        "page_locator": "page 2",
+                        "text": "Debt remained elevated through 1945 because of war financing pressures.",
+                    }
+                ],
+                "units_seen": ["billion"],
+                "value_count": 1,
+                "provenance_complete": True,
+            },
+        },
+        execution_journal={
+            "events": [],
+            "tool_results": [
+                {
+                    "type": "fetch_officeqa_table",
+                    "facts": {"document_id": "treasury_1945_json", "citation": "treasury_1945.json", "metadata": {"officeqa_status": "ok"}},
+                }
+            ],
+            "routed_tool_families": [],
+            "revision_count": 0,
+            "self_reflection_count": 0,
+            "retrieval_iterations": 99,
+            "retrieval_queries": [],
+            "retrieved_citations": ["treasury_1945.json"],
+            "final_artifact_signature": "",
+            "progress_signatures": [],
+            "stop_reason": "",
+            "contract_collapse_attempts": 0,
+        },
+    )
+    state["retrieval_intent"] = {
+        "entity": "Public debt outstanding",
+        "metric": "public debt outstanding",
+        "period": "1945",
+        "document_family": "official_government_finance",
+        "aggregation_shape": "point_lookup",
+        "analysis_modes": ["time_series_forecasting"],
+        "answer_mode": "hybrid_grounded",
+        "compute_policy": "preferred",
+        "partial_answer_allowed": True,
+        "strategy": "hybrid",
+        "strategy_confidence": 0.82,
+        "evidence_requirements": ["Ground the primary metric in the source evidence."],
+        "fallback_chain": ["text_first", "table_first"],
+        "join_requirements": [],
+        "evidence_plan": {
+            "objective": prompt,
+            "metric_identity": "public debt outstanding",
+            "expected_unit_kind": "currency",
+            "expected_value_count": 1,
+            "required_years": ["1945"],
+            "required_month_coverage": False,
+            "required_month_count": 0,
+            "requires_table_support": True,
+            "requires_text_support": True,
+            "requires_cross_source_alignment": False,
+            "requires_inflation_support": False,
+            "requires_statistical_series": False,
+            "requires_forecast_support": True,
+            "required_series": ["public debt outstanding 1945"],
+            "join_keys": [],
+            "requirements": [],
+        },
+        "must_include_terms": ["public debt outstanding", "1945"],
+        "must_exclude_terms": [],
+        "query_candidates": ["public debt outstanding 1945 Treasury Bulletin"],
+    }
+
+    result = asyncio.run(executor(state))
+
+    assert result["solver_stage"] == "SYNTHESIZE"
+    assert "retrieved evidence" in str(result["messages"][0].content)
+    assert captured
+    serialized_prompt = json.dumps([str(msg.content) for msg in captured[0]], ensure_ascii=True)
+    assert "compute_result" in serialized_prompt
+    assert "selection_reasoning" in serialized_prompt
 
 
 def test_fetch_corpus_document_rejects_paths_outside_corpus_root(monkeypatch):
@@ -1836,6 +2038,9 @@ def test_officeqa_reviewer_blocks_structured_failure_before_reflection_and_recor
     assert result["quality_report"]["verdict"] == "fail"
     assert result["quality_report"]["stop_reason"] == "officeqa_structured_validation_failed"
     assert "deterministic compute support" in result["review_packet"]["validator_result"]["hard_failures"]
+    assert result["review_packet"]["validator_result"]["remediation_guidance"]
+    assert result["review_packet"]["diagnostic_artifacts"]["compute_diagnostics"]
+    assert result["review_packet"]["diagnostic_artifacts"]["validator_remediation"]
     assert route_from_reviewer(state) == "output_adapter"
 
 
@@ -1898,6 +2103,128 @@ def test_officeqa_reviewer_emits_safe_insufficiency_answer_for_adapter():
     assert "provided Treasury Bulletin evidence" in rendered
     assert ("Cannot calculate" in rendered) or ("Cannot determine" in rendered)
     assert "<FINAL_ANSWER>" in rendered
+
+
+def test_officeqa_reviewer_accepts_bounded_partial_answer_when_compute_is_only_preferred(monkeypatch):
+    prompt = "Using Treasury Bulletin data, compute the weighted average expenditures for 1953 and explain the supported trend."
+    monkeypatch.setattr(
+        "agent.nodes.orchestrator.assess_evidence_sufficiency",
+        lambda *args, **kwargs: EvidenceSufficiency(
+            source_family="official_government_document",
+            period_scope="match",
+            aggregation_type="missing_monthly_support",
+            entity_scope="match",
+            is_sufficient=False,
+            missing_dimensions=["aggregation semantics"],
+            rationale="Weighted average support is incomplete, but grounded trend evidence is present.",
+        ),
+    )
+    state = make_state(
+        prompt,
+        task_profile="document_qa",
+        task_intent={
+            "task_family": "document_qa",
+            "execution_mode": "document_grounded_analysis",
+            "complexity_tier": "structured_analysis",
+            "review_mode": "document_grounded",
+            "planner_source": "heuristic",
+        },
+        benchmark_overrides={"benchmark_adapter": "officeqa"},
+        source_bundle={
+            "task_text": prompt,
+            "focus_query": "weighted average expenditures 1953 trend",
+            "target_period": "1953",
+            "entities": ["Expenditures"],
+            "urls": ["treasury_1953.json"],
+            "inline_facts": {},
+            "tables": [],
+            "formulas": [],
+        },
+        execution_journal={
+            "events": [],
+            "tool_results": [
+                {
+                    "type": "fetch_officeqa_pages",
+                    "facts": {
+                        "document_id": "treasury_1953_json",
+                        "citation": "treasury_1953.json",
+                        "chunks": [
+                            {
+                                "locator": "page 4",
+                                "text": "Monthly expenditures rose through mid-year before flattening.",
+                                "citation": "treasury_1953.json",
+                            }
+                        ],
+                        "metadata": {"officeqa_status": "ok"},
+                    },
+                }
+            ],
+            "routed_tool_families": [],
+            "revision_count": 0,
+            "self_reflection_count": 0,
+            "retrieval_iterations": 1,
+            "retrieval_queries": [],
+            "retrieved_citations": ["treasury_1953.json"],
+            "final_artifact_signature": "sig-partial",
+            "progress_signatures": [],
+            "stop_reason": "",
+            "contract_collapse_attempts": 0,
+        },
+        curated_context={
+            "objective": prompt,
+            "facts_in_use": [],
+            "open_questions": [],
+            "assumptions": [],
+            "requested_output": {"format": "text"},
+            "provenance_summary": {},
+            "structured_evidence": {
+                "tables": [],
+                "values": [],
+                "page_chunks": [{"document_id": "treasury_1953_json", "citation": "treasury_1953.json", "page_locator": "page 4"}],
+                "units_seen": [],
+                "value_count": 0,
+                "provenance_complete": True,
+            },
+            "compute_result": {
+                "status": "unsupported",
+                "operation": "point_lookup",
+                "validation_errors": ["Deterministic OfficeQA compute does not yet support aggregation shape 'point_lookup'."],
+                "citations": [],
+                "ledger": [],
+                "provenance_complete": False,
+            },
+        },
+        workpad={"events": [], "stage_outputs": {}, "tool_results": [], "review_ready": True},
+    )
+    state["retrieval_intent"] = {
+        "entity": "Expenditures",
+        "metric": "weighted average expenditures",
+        "period": "1953",
+        "document_family": "official_government_finance",
+        "aggregation_shape": "point_lookup",
+        "analysis_modes": ["weighted_average", "time_series_forecasting"],
+        "answer_mode": "hybrid_grounded",
+        "compute_policy": "preferred",
+        "partial_answer_allowed": True,
+        "must_include_terms": [],
+        "must_exclude_terms": [],
+        "query_candidates": [],
+    }
+    state["messages"].append(
+        AIMessage(
+            content=(
+                "Grounded partial answer: based on the retrieved evidence, monthly expenditures rose through mid-year before flattening. "
+                "An exact weighted average calculation is not supported by the currently retrieved values, so the remaining unsupported remainder is the exact weighted-average amount. "
+                "[Source: treasury_1953.json]"
+            )
+        )
+    )
+
+    result = reviewer(state)
+
+    assert result["solver_stage"] == "COMPLETE"
+    assert result["quality_report"]["verdict"] == "pass"
+    assert result["review_packet"]["validator_result"]["verdict"] == "pass"
 
 
 def test_engine_reviewer_revises_legal_once_then_stops_cleanly():

@@ -35,14 +35,25 @@
     "id": "hybrid_forecast_monthly_1953",
     "focus_subsystem": "compute",
     "retrieval_strategy": "hybrid",
+    "answer_mode": "hybrid_grounded",
     "smoke": false,
     "prompt": "Using Treasury Bulletin data, calculate the regression trend and forecast the monthly expenditures series for 1953.",
+    "source_files": ["treasury_1953.json"]
+  },
+  {
+    "id": "hybrid_numeric_trend_1953",
+    "focus_subsystem": "validation",
+    "retrieval_strategy": "hybrid",
+    "answer_mode": "hybrid_grounded",
+    "smoke": false,
+    "prompt": "Using Treasury Bulletin data, calculate the calendar-year total expenditures for 1953 and explain the supported trend in the monthly series.",
     "source_files": ["treasury_1953.json"]
   },
   {
     "id": "compute_monthly_percent_change_1953_1940",
     "focus_subsystem": "compute",
     "retrieval_strategy": "multi_document",
+    "answer_mode": "deterministic_compute",
     "smoke": false,
     "prompt": "Using specifically only the reported values for all individual calendar months in 1953 and all individual calendar months in 1940, what was the absolute percent change of these total sum values?",
     "source_files": ["treasury_1953.json", "treasury_1940.json"]
@@ -51,14 +62,25 @@
     "id": "compute_inflation_adjusted_difference_1953_1940",
     "focus_subsystem": "compute",
     "retrieval_strategy": "multi_table",
+    "answer_mode": "deterministic_compute",
     "smoke": false,
     "prompt": "Using specifically only the reported values for all individual calendar months in 1953 and all individual calendar months in 1940, what was the absolute difference of these total sum values after adjusting each of them for inflation?",
     "source_files": ["treasury_1953.json", "treasury_1940.json"]
   },
   {
+    "id": "grounded_partial_weighted_average_1953",
+    "focus_subsystem": "validation",
+    "retrieval_strategy": "multi_table",
+    "answer_mode": "grounded_synthesis",
+    "smoke": false,
+    "prompt": "Using Treasury Bulletin data, compute the weighted average expenditures for 1953 and explain what the retrieved evidence supports even if the exact weighted average cannot be completed.",
+    "source_files": ["treasury_1953.json"]
+  },
+  {
     "id": "validation_month_coverage_fiscal_1934",
     "focus_subsystem": "validation",
     "retrieval_strategy": "table_first",
+    "answer_mode": "deterministic_compute",
     "smoke": false,
     "prompt": "What were the total expenditures of the Veterans Administration in FY 1934?",
     "source_files": ["treasury_1934.json"]

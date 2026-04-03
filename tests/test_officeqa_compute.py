@@ -128,6 +128,8 @@ def test_compute_officeqa_monthly_sum_percent_change():
     assert result.status == "ok"
     assert result.operation == "monthly_sum_percent_change"
     assert result.display_value == "100.00"
+    assert result.selection_reasoning
+    assert result.rejected_alternatives
     assert len(result.ledger) == 3
 
 

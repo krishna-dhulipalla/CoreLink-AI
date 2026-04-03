@@ -37,13 +37,20 @@ _HARD_SCOPE_STATUSES = {
 _SOFT_SCOPE_STATUSES = {
     "entity_scope": {"partial"},
 }
+_SOFT_SYNTHESIS_MISSING_DIMENSIONS = {
+    "aggregation semantics",
+    "missing table",
+    "partial table",
+    "missing month coverage",
+    "missing fiscal month coverage",
+    "missing inflation or monthly support",
+}
 
 
 def _requires_deterministic_compute(retrieval_intent: RetrievalIntent) -> bool:
-    return retrieval_intent.aggregation_shape != "point_lookup" or retrieval_intent.metric in {
-        "absolute percent change",
-        "absolute difference",
-    }
+    if retrieval_intent.compute_policy == "required":
+        return True
+    return False
 
 
 def _append_unique(target: list[str], *items: str) -> None:
@@ -60,6 +67,32 @@ def _insufficiency_statement(hard_failures: list[str]) -> str:
         final_value = "Cannot determine from the provided Treasury Bulletin evidence"
     reasoning = "Structured OfficeQA validation failed because " + ", ".join(hard_failures[:3]) + "."
     return f"{reasoning}\nFinal answer: {final_value}."
+
+
+def _remediation_guidance(hard_failures: list[str]) -> list[str]:
+    guidance: list[str] = []
+    for failure in hard_failures:
+        if failure == "structured evidence presence":
+            _append_unique(guidance, "Retrieve grounded pages or tables before attempting compute or final synthesis.")
+        elif failure == "source family correctness":
+            _append_unique(guidance, "Re-rank or re-run retrieval against Treasury Bulletin or other allowed official government sources only.")
+        elif failure == "time scope correctness":
+            _append_unique(guidance, "Re-extract evidence for the exact requested years, months, or fiscal/calendar scope before compute.")
+        elif failure == "aggregation correctness":
+            _append_unique(guidance, "Switch retrieval strategy or extraction stage until the correct table shape and aggregation support are recovered.")
+        elif failure == "entity/category correctness":
+            _append_unique(guidance, "Tighten row, table, or page selection around the exact target entity or category.")
+        elif failure == "unit consistency":
+            _append_unique(guidance, "Normalize units or re-extract evidence until all compared values share a consistent unit basis.")
+        elif failure == "provenance presence":
+            _append_unique(guidance, "Recover citation-complete evidence with page, table, and source references before finalization.")
+        elif failure == "deterministic compute support":
+            _append_unique(guidance, "Collect the remaining required evidence so deterministic compute can run, or fall back to grounded synthesis only if the task is non-deterministic.")
+        elif failure == "deterministic compute validation":
+            _append_unique(guidance, "Inspect the compute ledger and repair missing inputs or invalid aggregation assumptions before retrying.")
+        elif failure == "deterministic compute ledger":
+            _append_unique(guidance, "Persist the chosen compute path and ledger before final formatting.")
+    return guidance
 
 
 def validate_officeqa_final(
@@ -79,7 +112,7 @@ def validate_officeqa_final(
     hard_failures: list[str] = []
     missing_dimensions: list[str] = []
 
-    if not structured.tables and not structured.values:
+    if not structured.tables and not structured.values and not structured.page_chunks:
         _append_unique(hard_failures, "structured evidence presence")
     if not structured.provenance_complete:
         _append_unique(hard_failures, "provenance presence")
@@ -88,6 +121,8 @@ def validate_officeqa_final(
 
     for field_name, blocked_statuses in _HARD_SCOPE_STATUSES.items():
         status = str(getattr(sufficiency, field_name, "") or "")
+        if field_name == "aggregation_type" and retrieval_intent.compute_policy != "required":
+            continue
         if status in blocked_statuses:
             label = field_name.replace("_", " ")
             if field_name == "source_family":
@@ -107,6 +142,8 @@ def validate_officeqa_final(
                 _append_unique(missing_dimensions, "entity/category correctness")
 
     for item in sufficiency.missing_dimensions:
+        if retrieval_intent.compute_policy != "required" and str(item).strip() in _SOFT_SYNTHESIS_MISSING_DIMENSIONS:
+            continue
         mapped = _HARD_MISSING_DIMENSIONS.get(str(item), "")
         if mapped:
             _append_unique(hard_failures, mapped)
@@ -140,6 +177,7 @@ def validate_officeqa_final(
             ),
             missing_dimensions=hard_failures,
             hard_failures=hard_failures,
+            remediation_guidance=_remediation_guidance(hard_failures),
             stop_reason="officeqa_structured_validation_failed",
             insufficiency_answer=_insufficiency_statement(hard_failures),
             replace_answer=True,
@@ -151,6 +189,7 @@ def validate_officeqa_final(
             verdict="revise",
             reasoning="OfficeQA validator found a remaining structured-alignment gap that should be corrected before formatting the final answer.",
             missing_dimensions=missing_dimensions,
+            remediation_guidance=_remediation_guidance(missing_dimensions),
             stop_reason="officeqa_structured_revision_required",
         )
 

@@ -168,6 +168,10 @@ def capture_officeqa_artifacts(trace: dict[str, Any] | None) -> dict[str, Any]:
     structured = _structured_evidence(state)
     compute = _compute_result(state)
     journal = _journal(state)
+    provenance = dict(_curated_context(state).get("provenance_summary") or {})
+    retrieval_plan = dict(provenance.get("retrieval_plan") or {})
+    retrieval_diagnostics = dict(provenance.get("retrieval_diagnostics") or {})
+    validator = _validator_result(state)
     citations = list(dict.fromkeys(str(item).strip() for item in journal.get("retrieved_citations", []) if str(item).strip()))
 
     chosen_sources: list[dict[str, Any]] = []
@@ -223,9 +227,19 @@ def capture_officeqa_artifacts(trace: dict[str, Any] | None) -> dict[str, Any]:
         "source_files_missing": list(source_bundle.get("source_files_missing", []) or overrides.get("source_files_missing", []) or []),
         "chosen_sources": chosen_sources[:10],
         "retrieved_citations": citations[:10],
+        "retrieval_decision": dict(retrieval_diagnostics.get("retrieval_decision") or {}),
+        "strategy_reason": str(retrieval_diagnostics.get("strategy_reason", "") or ""),
+        "answer_mode": str(retrieval_plan.get("answer_mode", "") or _retrieval_intent(state).get("answer_mode", "") or ""),
+        "compute_policy": str(retrieval_plan.get("compute_policy", "") or _retrieval_intent(state).get("compute_policy", "") or ""),
+        "candidate_sources": list(retrieval_diagnostics.get("candidate_sources", []) or [])[:6],
+        "rejected_candidates": list(retrieval_diagnostics.get("rejected_candidates", []) or [])[:6],
+        "evidence_gaps": list(dict(provenance.get("evidence_plan_check") or {}).get("predictive_gaps", []) or []),
         "extracted_tables": extracted_tables,
         "structured_value_count": int(structured.get("value_count", 0) or 0),
+        "compute_selection_reasoning": str(compute.get("selection_reasoning", "") or ""),
+        "rejected_aggregation_alternatives": list(compute.get("rejected_alternatives", []) or [])[:6],
         "compute_ledger": compute_ledger,
+        "validator_remediation": list(validator.get("remediation_guidance", []) or [])[:6],
         "final_answer": answer,
         "final_artifact_signature": str(journal.get("final_artifact_signature", "") or ""),
     }
@@ -236,12 +250,15 @@ def build_case_report(case: dict[str, Any], trace: dict[str, Any] | None) -> dic
     classification = classify_officeqa_trace(trace)
     artifacts = capture_officeqa_artifacts(trace)
     quality_report = _quality_report(state)
-    retrieval_strategy = str(case.get("retrieval_strategy", "") or _retrieval_intent(state).get("strategy", "") or "").strip()
+    retrieval_intent = _retrieval_intent(state)
+    retrieval_strategy = str(case.get("retrieval_strategy", "") or retrieval_intent.get("strategy", "") or "").strip()
+    answer_mode = str(case.get("answer_mode", "") or retrieval_intent.get("answer_mode", "") or artifacts.get("answer_mode", "") or "").strip()
     return {
         "id": str(case.get("id", "") or ""),
         "prompt": str(case.get("prompt", "") or ""),
         "focus_subsystem": str(case.get("focus_subsystem", "") or ""),
         "retrieval_strategy": retrieval_strategy,
+        "answer_mode": answer_mode,
         "smoke": bool(case.get("smoke")),
         "classification": classification,
         "artifacts": artifacts,
@@ -254,6 +271,7 @@ def build_case_report(case: dict[str, Any], trace: dict[str, Any] | None) -> dic
             "task_family": str(dict(state.get("task_intent") or {}).get("task_family", "") or ""),
             "execution_mode": str(dict(state.get("task_intent") or {}).get("execution_mode", "") or ""),
             "retrieval_strategy": retrieval_strategy,
+            "answer_mode": answer_mode,
             "retrieval_iterations": int(_journal(state).get("retrieval_iterations", 0) or 0),
             "tool_count": len(_tool_results(state)),
         },
@@ -263,6 +281,7 @@ def build_case_report(case: dict[str, Any], trace: dict[str, Any] | None) -> dic
 def summarize_regression_report(case_reports: list[dict[str, Any]]) -> dict[str, Any]:
     counts: dict[str, int] = {key: 0 for key in ("pass", "routing", "retrieval", "extraction", "compute", "validation", "formatting")}
     counts_by_strategy: dict[str, int] = {}
+    counts_by_answer_mode: dict[str, int] = {}
     evidence_ready = 0
     for item in case_reports:
         subsystem = str(dict(item.get("classification") or {}).get("subsystem", "") or "pass")
@@ -270,6 +289,9 @@ def summarize_regression_report(case_reports: list[dict[str, Any]]) -> dict[str,
         strategy = str(item.get("retrieval_strategy", "") or dict(item.get("execution_summary") or {}).get("retrieval_strategy", "") or "").strip()
         if strategy:
             counts_by_strategy[strategy] = counts_by_strategy.get(strategy, 0) + 1
+        answer_mode = str(item.get("answer_mode", "") or dict(item.get("execution_summary") or {}).get("answer_mode", "") or "").strip()
+        if answer_mode:
+            counts_by_answer_mode[answer_mode] = counts_by_answer_mode.get(answer_mode, 0) + 1
         artifacts = dict(item.get("artifacts") or {})
         if list(artifacts.get("extracted_tables", [])) and str(artifacts.get("final_answer", "")).strip():
             evidence_ready += 1
@@ -283,6 +305,7 @@ def summarize_regression_report(case_reports: list[dict[str, Any]]) -> dict[str,
         "total_cases": total,
         "counts_by_subsystem": counts,
         "counts_by_strategy": counts_by_strategy,
+        "counts_by_answer_mode": counts_by_answer_mode,
         "evidence_ready_cases": evidence_ready,
         "required_evidence_ready_cases": required_evidence_ready,
         "go_for_full_benchmark": go_for_full_benchmark,

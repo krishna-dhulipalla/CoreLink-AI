@@ -222,6 +222,12 @@ def _officeqa_document_facts_in_use(
         facts.append({"type": "document_family", "value": retrieval_intent.document_family})
     if retrieval_intent.strategy:
         facts.append({"type": "retrieval_strategy", "value": retrieval_intent.strategy})
+    if retrieval_intent.answer_mode:
+        facts.append({"type": "answer_mode", "value": retrieval_intent.answer_mode})
+    if retrieval_intent.compute_policy:
+        facts.append({"type": "compute_policy", "value": retrieval_intent.compute_policy})
+    if retrieval_intent.partial_answer_allowed:
+        facts.append({"type": "partial_answer_allowed", "value": True})
     if retrieval_intent.fallback_chain:
         facts.append({"type": "retrieval_fallback_chain", "value": retrieval_intent.fallback_chain[:4]})
     if retrieval_intent.evidence_requirements:
@@ -305,6 +311,10 @@ def build_curated_context(
             facts_in_use.append({"type": "retrieval_period", "value": retrieval_intent_obj.period})
         if retrieval_intent_obj.aggregation_shape:
             facts_in_use.append({"type": "aggregation_shape", "value": retrieval_intent_obj.aggregation_shape})
+        if retrieval_intent_obj.answer_mode:
+            facts_in_use.append({"type": "answer_mode", "value": retrieval_intent_obj.answer_mode})
+        if retrieval_intent_obj.compute_policy:
+            facts_in_use.append({"type": "compute_policy", "value": retrieval_intent_obj.compute_policy})
         if retrieval_intent_obj.document_family:
             facts_in_use.append({"type": "document_family", "value": retrieval_intent_obj.document_family})
         if retrieval_intent_obj.query_candidates:
@@ -343,6 +353,9 @@ def build_curated_context(
             "retrieval_plan": {
                 "strategy": retrieval_intent_obj.strategy if retrieval_intent_obj else "",
                 "strategy_confidence": retrieval_intent_obj.strategy_confidence if retrieval_intent_obj else 0.0,
+                "answer_mode": retrieval_intent_obj.answer_mode if retrieval_intent_obj else "",
+                "compute_policy": retrieval_intent_obj.compute_policy if retrieval_intent_obj else "",
+                "partial_answer_allowed": retrieval_intent_obj.partial_answer_allowed if retrieval_intent_obj else False,
                 "fallback_chain": list(retrieval_intent_obj.fallback_chain[:4]) if retrieval_intent_obj else [],
                 "evidence_requirements": list(retrieval_intent_obj.evidence_requirements[:5]) if retrieval_intent_obj else [],
                 "required_years": list(retrieval_intent_obj.evidence_plan.required_years[:4]) if retrieval_intent_obj else [],
@@ -548,6 +561,13 @@ def build_review_packet(
     source_summary = dict(provenance.get("source_bundle") or {})
     citations = [str(item) for item in source_summary.get("urls", []) if str(item).strip()]
     citations.extend([item for item in _extract_tool_citations(tool_results) if item not in citations])
+    diagnostic_artifacts = {
+        "retrieval_plan": _compact_prompt_value(provenance.get("retrieval_plan", {})),
+        "retrieval_diagnostics": _compact_prompt_value(provenance.get("retrieval_diagnostics", {})),
+        "evidence_plan_check": _compact_prompt_value(provenance.get("evidence_plan_check", {})),
+        "compute_diagnostics": _compact_prompt_value(provenance.get("compute_result", {})),
+        "validator_remediation": _compact_prompt_value(dict(validator_result or {}).get("remediation_guidance", [])),
+    }
     return ReviewPacket(
         task_text=task_text,
         answer_text=answer_text,
@@ -560,6 +580,7 @@ def build_review_packet(
         structured_evidence=compact_officeqa_structured_evidence(curated_context.get("structured_evidence", {})),
         compute_result=compact_officeqa_compute_result(curated_context.get("compute_result", {})),
         validator_result=dict(validator_result or {}),
+        diagnostic_artifacts={key: value for key, value in diagnostic_artifacts.items() if value not in ("", [], {}, None)},
     )
 
 

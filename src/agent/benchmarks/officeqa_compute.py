@@ -302,6 +302,50 @@ def _build_answer_text(
     return "\n".join(lines)
 
 
+def _compute_selection_reasoning(operation: str, retrieval_intent: RetrievalIntent, years: list[str]) -> str:
+    if operation == "monthly_sum":
+        return f"Selected monthly-sum compute because the task asks for a within-year monthly aggregation over {', '.join(years) or 'the requested period'}."
+    if operation == "calendar_year_total":
+        return f"Selected calendar-year total compute because the task asks for a single-year total over {', '.join(years) or 'the requested year'}."
+    if operation == "fiscal_year_total":
+        return f"Selected fiscal-year total compute because the task explicitly targets a fiscal year ({', '.join(years) or retrieval_intent.period})."
+    if operation == "monthly_sum_percent_change":
+        return f"Selected cross-year monthly-sum percent-change compute because the task compares monthly totals across {', '.join(years[:2])}."
+    if operation == "inflation_adjusted_monthly_difference":
+        return f"Selected inflation-adjusted comparison compute because the task requires inflation support across {', '.join(years[:2])}."
+    if operation == "point_lookup":
+        return "Selected direct point lookup because the task appears to request a single grounded numeric value."
+    return f"Selected deterministic compute path for aggregation shape '{operation}'."
+
+
+def _rejected_aggregation_alternatives(operation: str, retrieval_intent: RetrievalIntent) -> list[str]:
+    rejected: list[str] = []
+    if operation != "point_lookup":
+        rejected.append("point_lookup rejected because the task requires aggregation or comparison, not a single isolated value")
+    if operation not in {"calendar_year_total", "fiscal_year_total"}:
+        rejected.append("single-total path rejected because the task needs a more structured aggregation shape")
+    if operation not in {"monthly_sum_percent_change", "inflation_adjusted_monthly_difference"} and retrieval_intent.metric in {
+        "absolute percent change",
+        "absolute difference",
+    }:
+        rejected.append("simple difference path rejected because the task specifies a comparison metric that requires paired period totals")
+    if operation != "inflation_adjusted_monthly_difference" and "inflation" in (retrieval_intent.metric or "").lower():
+        rejected.append("non-inflation path rejected because the task explicitly asks for inflation support")
+    return list(dict.fromkeys(rejected))
+
+
+def _result_with_diagnostics(
+    *,
+    operation: str,
+    retrieval_intent: RetrievalIntent,
+    years: list[str],
+    **kwargs: Any,
+) -> OfficeQAComputeResult:
+    kwargs.setdefault("selection_reasoning", _compute_selection_reasoning(operation, retrieval_intent, years))
+    kwargs.setdefault("rejected_alternatives", _rejected_aggregation_alternatives(operation, retrieval_intent))
+    return OfficeQAComputeResult(operation=operation, **kwargs)
+
+
 def compact_officeqa_compute_result(payload: dict[str, Any] | None) -> dict[str, Any]:
     data = dict(payload or {})
     if not data:
@@ -310,6 +354,8 @@ def compact_officeqa_compute_result(payload: dict[str, Any] | None) -> dict[str,
         "status": str(data.get("status", "")),
         "operation": str(data.get("operation", "")),
         "display_value": str(data.get("display_value", "")),
+        "selection_reasoning": str(data.get("selection_reasoning", "")),
+        "rejected_alternative_count": len(list(data.get("rejected_alternatives", []))),
         "validation_errors": list(data.get("validation_errors", []))[:6],
         "provenance_complete": bool(data.get("provenance_complete")),
         "ledger": [
@@ -332,9 +378,11 @@ def compute_officeqa_result(
     evidence = dict(structured_evidence or {})
     values = [item for item in list(evidence.get("values", [])) if isinstance(item, dict)]
     if not values:
-        return OfficeQAComputeResult(
+        return _result_with_diagnostics(
             status="insufficient",
             operation=retrieval_intent.aggregation_shape or "unknown",
+            retrieval_intent=retrieval_intent,
+            years=[],
             validation_errors=["No structured OfficeQA values are available for deterministic compute."],
         )
 
@@ -356,16 +404,20 @@ def compute_officeqa_result(
 
     if operation == "monthly_sum":
         if len(years) != 1:
-            return OfficeQAComputeResult(
+            return _result_with_diagnostics(
                 status="insufficient",
                 operation=operation,
+                retrieval_intent=retrieval_intent,
+                years=years,
                 validation_errors=["Monthly sum compute requires exactly one target year."],
             )
         total, refs, mode = _series_total_for_calendar_year(years[0], monthly=monthly, annual={})
         if total is None:
-            return OfficeQAComputeResult(
+            return _result_with_diagnostics(
                 status="insufficient",
                 operation=operation,
+                retrieval_intent=retrieval_intent,
+                years=years,
                 validation_errors=[f"Missing complete monthly coverage for calendar year {years[0]}."],
             )
         append_step(
@@ -378,9 +430,11 @@ def compute_officeqa_result(
             )
         )
         display_value = _format_numeric(total, task_text)
-        return OfficeQAComputeResult(
+        return _result_with_diagnostics(
             status="ok",
             operation=operation,
+            retrieval_intent=retrieval_intent,
+            years=years,
             final_value=total,
             display_value=display_value,
             answer_text=_build_answer_text(operation, display_value, ledger),
@@ -391,16 +445,20 @@ def compute_officeqa_result(
 
     if operation == "calendar_year_total":
         if len(years) != 1:
-            return OfficeQAComputeResult(
+            return _result_with_diagnostics(
                 status="insufficient",
                 operation=operation,
+                retrieval_intent=retrieval_intent,
+                years=years,
                 validation_errors=["Calendar year total compute requires exactly one target year."],
             )
         total, refs, mode = _series_total_for_calendar_year(years[0], monthly=monthly, annual=annual)
         if total is None:
-            return OfficeQAComputeResult(
+            return _result_with_diagnostics(
                 status="insufficient",
                 operation=operation,
+                retrieval_intent=retrieval_intent,
+                years=years,
                 validation_errors=[f"Missing calendar-year support for {years[0]}."],
             )
         append_step(
@@ -413,9 +471,11 @@ def compute_officeqa_result(
             )
         )
         display_value = _format_numeric(total, task_text)
-        return OfficeQAComputeResult(
+        return _result_with_diagnostics(
             status="ok",
             operation=operation,
+            retrieval_intent=retrieval_intent,
+            years=years,
             final_value=total,
             display_value=display_value,
             answer_text=_build_answer_text(operation, display_value, ledger),
@@ -426,16 +486,20 @@ def compute_officeqa_result(
 
     if operation == "fiscal_year_total":
         if len(years) != 1:
-            return OfficeQAComputeResult(
+            return _result_with_diagnostics(
                 status="insufficient",
                 operation=operation,
+                retrieval_intent=retrieval_intent,
+                years=years,
                 validation_errors=["Fiscal year total compute requires exactly one target year."],
             )
         total, refs, mode = _series_total_for_fiscal_year(years[0], monthly=monthly, annual=annual)
         if total is None:
-            return OfficeQAComputeResult(
+            return _result_with_diagnostics(
                 status="insufficient",
                 operation=operation,
+                retrieval_intent=retrieval_intent,
+                years=years,
                 validation_errors=[f"Missing fiscal-year support for {years[0]}."],
             )
         append_step(
@@ -448,9 +512,11 @@ def compute_officeqa_result(
             )
         )
         display_value = _format_numeric(total, task_text)
-        return OfficeQAComputeResult(
+        return _result_with_diagnostics(
             status="ok",
             operation=operation,
+            retrieval_intent=retrieval_intent,
+            years=years,
             final_value=total,
             display_value=display_value,
             answer_text=_build_answer_text(operation, display_value, ledger),
@@ -464,18 +530,22 @@ def compute_officeqa_result(
         "absolute difference",
     }:
         if len(years) < 2:
-            return OfficeQAComputeResult(
+            return _result_with_diagnostics(
                 status="insufficient",
                 operation=operation,
+                retrieval_intent=retrieval_intent,
+                years=years,
                 validation_errors=["Comparison compute requires two target years."],
             )
         base_year, target_year = years[0], years[-1]
         base_total, base_refs, base_mode = _series_total_for_calendar_year(base_year, monthly=monthly, annual=annual)
         target_total, target_refs, target_mode = _series_total_for_calendar_year(target_year, monthly=monthly, annual=annual)
         if base_total is None or target_total is None:
-            return OfficeQAComputeResult(
+            return _result_with_diagnostics(
                 status="insufficient",
                 operation=operation,
+                retrieval_intent=retrieval_intent,
+                years=years,
                 validation_errors=[f"Missing comparable period totals for {base_year} and {target_year}."],
             )
         append_step(
@@ -500,9 +570,11 @@ def compute_officeqa_result(
             base_cpi, base_cpi_refs, base_cpi_mode = _series_average_for_year(base_year, monthly=cpi_monthly, annual=cpi_annual)
             target_cpi, target_cpi_refs, target_cpi_mode = _series_average_for_year(target_year, monthly=cpi_monthly, annual=cpi_annual)
             if base_cpi is None or target_cpi is None:
-                return OfficeQAComputeResult(
+                return _result_with_diagnostics(
                     status="insufficient",
                     operation=operation,
+                    retrieval_intent=retrieval_intent,
+                    years=years,
                     validation_errors=["Inflation-adjusted compute requires CPI support for both comparison years."],
                 )
             adjusted_base = base_total * (target_cpi / base_cpi)
@@ -536,9 +608,11 @@ def compute_officeqa_result(
                 )
             )
             display_value = _format_numeric(final_value, task_text)
-            return OfficeQAComputeResult(
+            return _result_with_diagnostics(
                 status="ok",
                 operation=operation,
+                retrieval_intent=retrieval_intent,
+                years=years,
                 final_value=final_value,
                 display_value=display_value,
                 answer_text=_build_answer_text(operation, display_value, ledger),
@@ -549,9 +623,11 @@ def compute_officeqa_result(
 
         if retrieval_intent.metric == "absolute percent change" or operation == "monthly_sum_percent_change":
             if base_total == 0:
-                return OfficeQAComputeResult(
+                return _result_with_diagnostics(
                     status="insufficient",
                     operation=operation,
+                    retrieval_intent=retrieval_intent,
+                    years=years,
                     validation_errors=["Cannot compute percent change with a zero baseline."],
                 )
             final_value = abs((target_total - base_total) / base_total) * 100.0
@@ -565,9 +641,11 @@ def compute_officeqa_result(
                 )
             )
             display_value = _format_numeric(final_value, task_text, percent=True)
-            return OfficeQAComputeResult(
+            return _result_with_diagnostics(
                 status="ok",
                 operation=operation,
+                retrieval_intent=retrieval_intent,
+                years=years,
                 final_value=final_value,
                 display_value=display_value,
                 answer_text=_build_answer_text(operation, display_value, ledger),
@@ -588,9 +666,11 @@ def compute_officeqa_result(
             )
         )
         display_value = _format_numeric(final_value, task_text)
-        return OfficeQAComputeResult(
+        return _result_with_diagnostics(
             status="ok",
             operation=operation or "absolute_difference",
+            retrieval_intent=retrieval_intent,
+            years=years,
             final_value=final_value,
             display_value=display_value,
             answer_text=_build_answer_text(operation or "absolute_difference", display_value, ledger),
@@ -604,7 +684,7 @@ def compute_officeqa_result(
         if len(relevant) == 1:
             numeric_value = _pick_numeric_value(relevant[0])
             if numeric_value is None:
-                return OfficeQAComputeResult(status="insufficient", operation=operation, validation_errors=["Point lookup value is not numeric."])
+                return _result_with_diagnostics(status="insufficient", operation=operation, retrieval_intent=retrieval_intent, years=years, validation_errors=["Point lookup value is not numeric."])
             refs = [_provenance_ref(relevant[0])]
             append_step(
                 OfficeQAComputeStep(
@@ -616,9 +696,11 @@ def compute_officeqa_result(
                 )
             )
             display_value = _format_numeric(numeric_value, task_text)
-            return OfficeQAComputeResult(
+            return _result_with_diagnostics(
                 status="ok",
                 operation=operation,
+                retrieval_intent=retrieval_intent,
+                years=years,
                 final_value=numeric_value,
                 display_value=display_value,
                 answer_text=_build_answer_text(operation, display_value, ledger),
@@ -627,8 +709,10 @@ def compute_officeqa_result(
                 provenance_complete=provenance_complete and bool(refs),
             )
 
-    return OfficeQAComputeResult(
+    return _result_with_diagnostics(
         status="unsupported",
         operation=operation,
+        retrieval_intent=retrieval_intent,
+        years=years,
         validation_errors=[f"Deterministic OfficeQA compute does not yet support aggregation shape '{operation}'."],
     )
