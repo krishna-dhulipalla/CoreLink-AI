@@ -1,66 +1,62 @@
-# OfficeQA Reasoning Engine
+# CoreLinkAI
 
-This repository is now an OfficeQA-only document reasoning runtime. The active path is built for Treasury Bulletin retrieval, structured evidence extraction, deterministic compute, validation, and exact benchmark answer formatting.
+CoreLinkAI is a document-grounded financial reasoning system. It is designed to answer financial questions from source documents by combining corpus retrieval, structured extraction, deterministic computation, validation, and strict output formatting.
 
 ## Overview
 
-The current goal is to solve OfficeQA reliably:
+CoreLinkAI is built for financial reasoning tasks where the answer must come from documents, not from unsupported model memory. The system is intended for workloads such as:
 
-- retrieve from the Treasury Bulletin corpus
-- extract the correct table, row, cell, or page evidence
-- compute deterministically when the question is numeric
-- emit the exact final answer contract expected by the benchmark
+- financial data extraction from reports and tables
+- multi-period and inflation-adjusted calculations
+- statistical analysis over document-derived series
+- forecasting and trend questions grounded in historical records
+- weighted averages, risk-style metrics, and similar finance computations
 
-OfficeQA is not only simple document lookup. The benchmark includes question surfaces such as:
+The current benchmark target is OfficeQA, which is used as a testing environment for this runtime.
 
-- simple extraction
-- inflation-adjusted multi-year calculations
-- statistical analysis
-- time-series forecasting
-- weighted averages and risk-style financial metrics
+## How It Works
 
-The canonical docs are:
-
-- `docs/officeqa_integration_plan.md`: failure analysis and architecture rationale
-- `docs/officeqa_execution_plan.md`: active backlog and delivery phases
-- `docs/v5_runtime_walkthrough.md`: current V5 runtime walkthrough
-- `docs/progress.md`: short execution log and handoff history
-
-## Runtime Shape
-
-The active runtime is:
+The active runtime flow is:
 
 `A2A request -> benchmark adapter -> corpus retrieval -> structured extraction -> deterministic compute -> validator/reviewer -> output adapter`
 
 Core runtime layers:
 
-- benchmark adapter
-- corpus retrieval layer
-- structured extraction layer
-- deterministic compute layer
-- validator and output adapter
-- tracer, budgets, and run artifacts
+- document retrieval over local or packaged corpora
+- structured evidence extraction with provenance
+- deterministic compute for supported financial operations
+- validation before final answer formatting
+- exact answer adaptation for benchmark or task contracts
 
-## Model Stack
+## Current Benchmark
 
-Role-based model selection lives in `src/agent/model_config.py`.
+CoreLinkAI is currently evaluated against OfficeQA.
 
-Current `MODEL_PROFILE=officeqa` defaults are:
+OfficeQA is a benchmark, not the product identity of the system. It is useful because it stresses the kinds of document-grounded finance tasks CoreLinkAI is meant to handle, including:
 
-- `profiler`: `Qwen/Qwen3-32B-fast`
-- `direct`: `Qwen/Qwen3-32B-fast`
-- `solver`: `deepseek-ai/DeepSeek-V3.2`
-- `reviewer`: `Qwen/Qwen3-32B-fast`
-- `adapter`: `Qwen/Qwen3-32B-fast`
-- `reflection`: `Qwen/Qwen3-32B-fast`
+- simple extraction
+- multi-year inflation-adjusted calculations
+- statistical analysis such as regression, correlation, and standard deviation
+- time-series forecasting
+- weighted averages and risk-style financial metrics
 
-Recommended strong OfficeQA setup:
+## Model Configuration
 
-- keep a strong document solver through `DOCUMENT_SOLVER_MODEL` or `LONG_CONTEXT_SOLVER_MODEL`
-- use `DOCUMENT_REVIEWER_MODEL` when scope or ambiguity failures show up often
-- keep adapter and reflection lightweight unless they become the bottleneck
+The runtime uses role-based model selection from `src/agent/model_config.py`.
 
-The executor logs the active startup model map so teammates can confirm the role stack without reading source.
+Recommended setup:
+
+- use a strong document-grounded solver
+- use a strong reviewer when ambiguity, scope, or long-context failures appear
+- keep adapter and reflection models lighter unless they become bottlenecks
+
+The system supports role-specific overrides through `.env.example`, including:
+
+- `SOLVER_MODEL`
+- `REVIEWER_MODEL`
+- `DOCUMENT_SOLVER_MODEL`
+- `LONG_CONTEXT_SOLVER_MODEL`
+- `DOCUMENT_REVIEWER_MODEL`
 
 ## Getting Started
 
@@ -81,10 +77,13 @@ cp .env.example .env
 Set at least:
 
 - `OPENAI_API_KEY`
-- `BENCHMARK_NAME=officeqa`
 - `MODEL_PROFILE=officeqa`
 
-## Local OfficeQA Corpus
+If you are running the current benchmark flow, also set:
+
+- `BENCHMARK_NAME=officeqa`
+
+## Local OfficeQA Data
 
 The canonical local layout is:
 
@@ -116,18 +115,18 @@ uv run python scripts/verify_officeqa_corpus.py --corpus-root "$OFFICEQA_CORPUS_
 
 The script writes index artifacts under `OFFICEQA_INDEX_DIR` or, by default, under `OFFICEQA_CORPUS_DIR/.officeqa_index/`.
 
-## Competition Deployment
+## Competition And Deployment
 
-Do not assume Judge or A2A exposes the Treasury corpus.
+Do not assume the evaluation environment exposes the corpus to the agent.
 
-- keep the corpus out of git history
-- package or mount the corpus for competition runs
+- keep the OfficeQA corpus out of git history
+- package or mount the corpus for benchmark runs
 - point `OFFICEQA_CORPUS_DIR` at that packaged path
 - when `COMPETITION_MODE=1` and `BENCHMARK_NAME=officeqa`, startup fails fast if corpus or index is missing
 
 Judge tools are optional auxiliary surfaces, not the primary data path.
 
-## Running The Runtime
+## Running
 
 Start the A2A server:
 
@@ -157,17 +156,11 @@ Useful smoke commands:
 - `BENCHMARK_STATELESS=1 uv run python scripts/run_benchmark_stateless_smoke.py`
 - `BENCHMARK_NAME=officeqa BENCHMARK_STATELESS=1 uv run python scripts/run_officeqa_regression.py --smoke`
 
-The OfficeQA regression runner writes JSON reports under `Results&traces/` with:
-
-- subsystem classification: `routing`, `retrieval`, `extraction`, `compute`, `validation`, `formatting`, or `pass`
-- chosen sources and extracted tables
-- compute ledger
-- final answer
+The OfficeQA regression runner writes JSON reports under `Results&traces/` with subsystem classification, chosen sources, extracted tables, compute ledgers, and final answers.
 
 ## Project Structure
 
 - `src/server.py`: A2A Starlette server entrypoint
-- `src/executor.py`: bridge between A2A requests and the OfficeQA graph
+- `src/executor.py`: bridge between A2A requests and the runtime graph
 - `src/agent/`: core runtime implementation
-- `docs/`: analysis, plan, walkthrough, and progress docs
 - `data/officeqa/`: local landing zone for the untracked OfficeQA corpus

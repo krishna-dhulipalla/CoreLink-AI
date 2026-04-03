@@ -279,3 +279,12 @@ Rules:
 - **Validation:** Verified with:
   - `python -m py_compile src/agent/benchmarks/officeqa.py src/agent/context/profiling.py src/agent/curated_context.py src/agent/nodes/orchestrator.py src/agent/nodes/orchestrator_intent.py src/agent/prompts.py src/agent/profile_packs.py src/agent/review_utils.py src/agent/context/evidence.py tests/test_engine_runtime.py`
   - `python -m pytest tests/test_engine_runtime.py -k "officeqa or document_tasks_route_document_first or context_curator_carries_financial_analysis_modes" -q -p no:cacheprovider` -> `15 passed, 28 deselected`
+
+### Chat 19: Phase 9 Prompt Follow-Up For Benchmark-Neutral Model Instructions
+
+- **Role:** Coder
+- **Actions Taken:** Applied a small Phase 9 follow-up in [src/agent/prompts.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\prompts.py) so model-facing prompts no longer mention `OfficeQA` by name. The benchmark name remains in runtime routing and adapter code, but planner, executor, retrieval, and revision prompts now describe a general document-grounded financial reasoning system over source documents such as Treasury Bulletins and similar official financial reports. The prompt text still explicitly supports the required financial question classes: extraction, inflation-adjusted comparisons, statistical analysis, forecasting, weighted averaging, risk-style metrics, and similar document-grounded finance tasks.
+- **Decision:** Keep benchmark-specific activation in code only. Do not teach the model that `OfficeQA` is a reasoning method or domain label.
+- **Validation:** Verified with:
+  - `rg -n "OfficeQA|officeqa" src/agent/prompts.py`
+  - `python -m py_compile src/agent/prompts.py`

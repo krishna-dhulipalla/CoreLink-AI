@@ -1,4 +1,4 @@
-"""Centralized prompt templates for the active OfficeQA runtime."""
+"""Centralized prompt templates for the active document-grounded finance runtime."""
 
 from __future__ import annotations
 
@@ -19,12 +19,12 @@ def _officeqa_active(benchmark_overrides: dict[str, Any] | None = None) -> bool:
 # Planner
 # ---------------------------------------------------------------------------
 PLANNER_SYSTEM = (
-    "You are an OfficeQA runtime planner.\n"
-    "Choose the execution mode and tool families for document-grounded financial questions over Treasury Bulletins.\n\n"
-    "The runtime should support OfficeQA-style question surfaces including "
+    "You are a planner for document-grounded financial reasoning.\n"
+    "Choose the execution mode and tool families for financial questions grounded in source documents such as Treasury Bulletins and similar official reports.\n\n"
+    "The runtime should support question surfaces including "
     f"{_OFFICEQA_REASONING_SURFACES}.\n\n"
     "Prefer document-grounded analysis over generic advisory reasoning.\n"
-    "Prefer retrieved Treasury evidence before any synthesis.\n"
+    "Prefer retrieved document evidence before any synthesis.\n"
     "Use exact compute only when the retrieved evidence supports the operation.\n"
     "Return only JSON matching the schema."
 )
@@ -33,7 +33,7 @@ PLANNER_SYSTEM = (
 # Executor
 # ---------------------------------------------------------------------------
 EXECUTOR_SYSTEM = (
-    "You are a document-grounded financial analyst answering OfficeQA-style questions.\n\n"
+    "You are a document-grounded financial analyst answering financial questions from source documents.\n\n"
     "Ground every claim in the provided tool findings or curated facts.\n"
     "Preserve period scope, aggregation semantics, units, and source alignment.\n"
     "When the task is numeric, prefer extracted values and reproducible calculations over free-form estimation.\n"
@@ -41,7 +41,7 @@ EXECUTOR_SYSTEM = (
 )
 
 RETRIEVAL_PLANNER_SYSTEM = (
-    "You are a retrieval planner for Treasury Bulletin questions.\n"
+    "You are a retrieval planner for financial questions grounded in source documents.\n"
     "Pick exactly ONE next action from the available tools, or 'answer' if evidence is sufficient.\n"
     "Prefer benchmark corpus retrieval and extracted table/page evidence over open-web search.\n"
     "Choose action='answer' only when the retrieved evidence supports the requested entity, period, metric, and aggregation.\n"
@@ -53,10 +53,10 @@ RETRIEVAL_PLANNER_SYSTEM = (
 # Guidance appended as additional system messages
 # ---------------------------------------------------------------------------
 OFFICEQA_FINANCIAL_DOCUMENT_GUIDANCE = (
-    "Treat the question as document-grounded financial reasoning over Treasury Bulletins.\n"
+    "Treat the question as document-grounded financial reasoning over official financial documents.\n"
     "Retrieve the right source before answering.\n"
     "Keep entity, period, unit, and aggregation alignment explicit.\n"
-    "Support OfficeQA-style question classes, including "
+    "Support financial document question classes, including "
     f"{_OFFICEQA_REASONING_SURFACES}.\n"
     "If the task requires a numeric result, derive it from extracted evidence or the deterministic compute path.\n"
     "If deterministic compute is unavailable but evidence is still useful, keep the reasoning tightly grounded in retrieved values and citations.\n"
@@ -172,9 +172,9 @@ def build_revision_prompt(
     prompt = REVISION_TEMPLATE.format(missing_items=missing_str, improve_hint=hint)
     if _officeqa_active(benchmark_overrides):
         prompt += (
-            "\nRe-check Treasury source alignment, entity, period, aggregation, and unit normalization before finalizing."
+            "\nRe-check source alignment, entity, period, aggregation, and unit normalization before finalizing."
             "\nIf the task is numeric, verify whether it requires simple extraction, inflation adjustment, statistical reasoning,"
-            " forecasting logic, weighted averaging, or another grounded financial computation supported by the retrieved evidence."
+            " forecasting logic, weighted averaging, risk-style analysis, or another grounded financial computation supported by the retrieved evidence."
         )
     elif task_text:
         prompt += "\nUse retrieved evidence directly when the task depends on source-backed support."
