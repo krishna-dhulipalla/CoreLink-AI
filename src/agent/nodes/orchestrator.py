@@ -52,13 +52,7 @@ from agent.curated_context import (
 )
 from agent.nodes.orchestrator_intent import (
     _heuristic_intent,
-    _legal_frontload_gap,
-    _legal_structure_option_count,
-    _looks_like_analytical_reasoning,
-    _looks_like_grounded_document_query,
-    _looks_like_market_scenario,
     _normalize_task_intent,
-    _source_requests_live_data,
     _supports_options_fast_path,
     _template_stub,
 )
@@ -103,7 +97,7 @@ from agent.prompts import (
     heuristic_self_score,
     REUSABLE_TOOL_FAMILIES,
 )
-from agent.review_utils import legal_depth_gaps, looks_truncated, matches_exact_json_contract, options_gaps
+from agent.review_utils import looks_truncated, matches_exact_json_contract
 from agent.retrieval_reasoning import assess_evidence_sufficiency
 from agent.state import AgentState
 from context_manager import count_tokens
@@ -333,7 +327,13 @@ def context_curator(state: RuntimeState) -> dict[str, Any]:
     source_bundle = SourceBundle.model_validate(
         state.get("source_bundle") or build_source_bundle(task_text, benchmark_overrides).model_dump()
     )
-    curated_context, evidence_stats = build_curated_context(task_text, answer_contract, intent, source_bundle)
+    curated_context, evidence_stats = build_curated_context(
+        task_text,
+        answer_contract,
+        intent,
+        source_bundle,
+        benchmark_overrides,
+    )
     retrieval_intent, evidence_sufficiency = build_retrieval_bundle(task_text, source_bundle, benchmark_overrides)
     workpad = dict(state.get("workpad", {}))
     workpad["evidence_stats"] = evidence_stats
@@ -838,7 +838,12 @@ def make_executor(registry: dict[str, dict[str, Any]]):
         prompt_messages = [
             SystemMessage(content=EXECUTOR_SYSTEM),
         ]
-        guidance = execution_guidance(intent.task_family, intent.execution_mode)
+        guidance = execution_guidance(
+            intent.task_family,
+            intent.execution_mode,
+            benchmark_overrides=benchmark_overrides,
+            task_text=task_text,
+        )
         if guidance:
             prompt_messages.append(SystemMessage(content=guidance))
         formatting_guidance = contract_guidance(state.get("answer_contract", {}) or {})
@@ -850,6 +855,8 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                 improve_hint=review_feedback.get("improve_hint", ""),
                 reviewer_reasoning=review_feedback.get("reasoning", ""),
                 task_family=intent.task_family,
+                benchmark_overrides=benchmark_overrides,
+                task_text=task_text,
             )
             prompt_messages.append(SystemMessage(content=revision_text))
             journal.revision_count += 1
@@ -974,23 +981,25 @@ def route_from_executor(state: RuntimeState) -> str:
 def _targeted_fix_prompt(missing_dimensions: list[str]) -> str:
     normalized = [str(item).lower() for item in missing_dimensions]
     additions: list[str] = []
-    if any("multiple structure alternatives" in item or "structure alternatives" in item for item in normalized):
-        additions.append("multiple viable structures with tradeoffs and a clear recommendation")
-    if any("liability allocation" in item for item in normalized):
-        additions.append("explicit indemnities, escrow or holdback, caps or baskets, and survival periods")
-    if any("regulatory execution" in item for item in normalized):
-        additions.append("regulatory approvals, pre-closing remediation covenants, third-party consents, and closing-condition mechanics")
-    if any("tax execution" in item for item in normalized):
-        additions.append("who gets the economic or tax benefit, required elections or qualification conditions, and what breaks the intended treatment")
-    if any("employee-transfer" in item or "workforce transfer" in item or "consultation" in item for item in normalized):
-        additions.append("workforce transfer, consultation, retained-liability, and cross-border transition mechanics when relevant")
-    if any("actionable next steps" in item or "next steps" in item for item in normalized):
-        additions.append("a concrete first-week execution plan with owners and sequencing")
-    if any("opening summary" in item or "front-loaded" in item for item in normalized):
-        additions.append("an opening summary that names multiple viable paths, their tradeoffs, and the recommended path before deeper analysis")
+    if any("source" in item or "citation" in item or "provenance" in item for item in normalized):
+        additions.append("the exact supporting Treasury citation, quote, or extracted row backing the answer")
+    if any("period" in item or "calendar year" in item or "fiscal year" in item or "monthly" in item for item in normalized):
+        additions.append("period alignment, including monthly versus annual and calendar-year versus fiscal-year scope")
+    if any("aggregation" in item or "sum" in item or "difference" in item or "percent change" in item for item in normalized):
+        additions.append("the correct aggregation path before finalizing the numeric result")
+    if any("unit" in item for item in normalized):
+        additions.append("unit normalization and magnitude alignment across all extracted values")
+    if any("inflation" in item or "cpi" in item for item in normalized):
+        additions.append("inflation support and CPI alignment for the requested comparison")
+    if any("statistic" in item or "correlation" in item or "regression" in item or "standard deviation" in item for item in normalized):
+        additions.append("the complete extracted series required for the requested statistical analysis")
+    if any("forecast" in item or "projection" in item or "time series" in item for item in normalized):
+        additions.append("the ordered time series evidence needed for the requested forecasting step")
+    if any("risk" in item or "var" in item or "weighted average" in item for item in normalized):
+        additions.append("the exact inputs and weighting assumptions needed for the requested financial metric")
     if not additions:
-        additions.append("one concise but concrete layer of actionable detail for each missing dimension")
-    return "Add concise execution detail covering " + ", ".join(additions[:3]) + "."
+        additions.append("the missing evidence alignment before returning the final benchmark answer")
+    return "Repair the answer by re-checking " + ", ".join(additions[:3]) + "."
 
 
 def reviewer(state: RuntimeState) -> dict[str, Any]:
@@ -1135,26 +1144,6 @@ def reviewer(state: RuntimeState) -> dict[str, Any]:
             verdict = "revise" if journal.revision_count < 1 else "fail"
             reasoning = "Grounded retrieval answer is missing evidence quality, attribution, or semantic alignment with the requested source, period, entity, or aggregation."
             score = 0.58 if verdict == "revise" else 0.48
-    elif intent.task_family == "legal_transactional":
-        missing = legal_depth_gaps(answer, latest_human_text(state["messages"]))
-        if _legal_structure_option_count(answer) < 2:
-            missing = sorted(set([*missing, "multiple structure alternatives with tradeoffs"]))
-        if _legal_frontload_gap(answer):
-            missing = sorted(set([*missing, "opening summary with multiple viable paths before the deep dive"]))
-        if missing:
-            verdict = "revise" if journal.revision_count < 1 else "fail"
-            reasoning = "Final legal answer is directionally correct but still missing actionable execution depth or structure coverage."
-            score = 0.62 if verdict == "revise" else 0.58
-    elif intent.task_family == "finance_options":
-        option_missing = options_gaps(answer)
-        if not journal.tool_results:
-            option_missing.insert(0, "tool-backed strategy analysis")
-        missing = sorted(set(option_missing))
-        if missing:
-            verdict = "revise" if journal.revision_count < 1 else "fail"
-            reasoning = "Options answer is missing benchmark-critical strategy or risk dimensions."
-            score = 0.68 if verdict == "revise" else 0.6
-
     progress = _build_progress_signature(
         execution_mode=intent.execution_mode,
         selected_tools=tool_plan.selected_tools,

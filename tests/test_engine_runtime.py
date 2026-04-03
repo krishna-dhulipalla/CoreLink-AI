@@ -174,6 +174,51 @@ def test_officeqa_document_tasks_route_document_first_without_pending_calculator
     assert "calculator" not in result["tool_plan"]["pending_tools"]
 
 
+def test_officeqa_financial_reasoning_questions_still_route_to_document_qa(monkeypatch):
+    monkeypatch.setenv("BENCHMARK_NAME", "officeqa")
+
+    prompt = (
+        "Using Treasury Bulletin values, compute the inflation-adjusted weighted average expenditures for 1953 "
+        "and report the standard deviation of the monthly series."
+    )
+    state = make_state(prompt)
+    state.update(intake(state))
+    fast_path = fast_path_gate(state)
+    state.update(fast_path)
+    state.update(task_planner(state))
+
+    intent = state["task_intent"]
+    assert intent["task_family"] == "document_qa"
+    assert intent["execution_mode"] == "document_grounded_analysis"
+    assert "exact_compute" in intent["tool_families_needed"]
+    assert "analytical_reasoning" in intent["tool_families_needed"]
+    assert "needs_math" in state["capability_flags"]
+    assert "needs_analytical_reasoning" in state["capability_flags"]
+
+
+def test_officeqa_context_curator_carries_financial_analysis_modes(monkeypatch):
+    monkeypatch.setenv("BENCHMARK_NAME", "officeqa")
+    prompt = (
+        "Using Treasury Bulletin data, compute the inflation-adjusted weighted average expenditures for 1953 "
+        "and explain the forecast trend for the monthly series."
+    )
+    state = make_state(prompt)
+    state.update(intake(state))
+    state.update(fast_path_gate(state))
+    state.update(task_planner(state))
+    resolver = make_capability_resolver(build_capability_registry([CALCULATOR_TOOL, SEARCH_TOOL, *BUILTIN_RETRIEVAL_TOOLS]))
+    state.update(resolver(state))
+
+    result = context_curator(state)
+    analysis_fact = next(
+        fact for fact in result["curated_context"]["facts_in_use"] if fact["type"] == "officeqa_analysis_modes"
+    )
+
+    assert "inflation_adjustment" in analysis_fact["value"]
+    assert "weighted_average" in analysis_fact["value"]
+    assert "time_series_forecasting" in analysis_fact["value"]
+
+
 def test_officeqa_document_tasks_do_not_infer_pnl_report_as_document_tool(monkeypatch):
     monkeypatch.setenv("BENCHMARK_NAME", "officeqa")
 

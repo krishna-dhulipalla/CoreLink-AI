@@ -65,6 +65,66 @@ OFFICEQA_EXCLUDED_RETRIEVAL_TERMS = {
     "flashcards",
 }
 
+_OFFICEQA_ANALYSIS_PATTERNS: dict[str, tuple[str, ...]] = {
+    "inflation_adjustment": (
+        "inflation adjusted",
+        "inflation-adjusted",
+        "adjusted for inflation",
+        "cpi",
+        "consumer price index",
+        "constant dollars",
+        "real dollars",
+    ),
+    "statistical_analysis": (
+        "regression",
+        "correlation",
+        "standard deviation",
+        "std dev",
+        "std. dev",
+        "variance",
+        "covariance",
+    ),
+    "time_series_forecasting": (
+        "forecast",
+        "forecasting",
+        "projected",
+        "projection",
+        "predict",
+        "trend",
+        "time series",
+    ),
+    "weighted_average": (
+        "weighted average",
+        "weighted mean",
+    ),
+    "risk_metric": (
+        "value at risk",
+        "var",
+        "volatility",
+    ),
+}
+
+
+def officeqa_analysis_modes(task_text: str, capability_flags: list[str] | None = None) -> list[str]:
+    lowered = (task_text or "").lower()
+    flags = set(capability_flags or [])
+    modes: list[str] = []
+    if any(token in lowered for token in _OFFICEQA_ANALYSIS_PATTERNS["inflation_adjustment"]):
+        modes.append("inflation_adjustment")
+    if any(token in lowered for token in _OFFICEQA_ANALYSIS_PATTERNS["statistical_analysis"]):
+        modes.append("statistical_analysis")
+    if any(token in lowered for token in _OFFICEQA_ANALYSIS_PATTERNS["time_series_forecasting"]):
+        modes.append("time_series_forecasting")
+    if any(token in lowered for token in _OFFICEQA_ANALYSIS_PATTERNS["weighted_average"]):
+        modes.append("weighted_average")
+    if any(token in lowered for token in _OFFICEQA_ANALYSIS_PATTERNS["risk_metric"]):
+        modes.append("risk_metric")
+    if "needs_math" in flags and not modes:
+        modes.append("numeric_compute")
+    if not modes:
+        modes.append("simple_extraction")
+    return list(dict.fromkeys(modes))
+
 
 def build_officeqa_overrides(task_text: str, benchmark_name: str) -> dict[str, Any]:
     explicit_benchmark = benchmark_name == "officeqa"
@@ -173,31 +233,59 @@ def officeqa_task_intent(task_text: str, capability_flags: list[str], benchmark_
     if overrides.get("benchmark_adapter") != "officeqa":
         return None
     normalized = (task_text or "").lower()
-    needs_compute = "needs_math" in capability_flags or "needs_analytical_reasoning" in capability_flags or any(
-        token in normalized
-        for token in (
-            "sum",
-            "total sum",
-            "difference",
-            "absolute difference",
-            "percent change",
-            "rounded",
-            "inflation",
-            "adjusted",
+    analysis_modes = officeqa_analysis_modes(task_text, capability_flags)
+    needs_compute = (
+        "needs_math" in capability_flags
+        or "needs_analytical_reasoning" in capability_flags
+        or any(
+            token in normalized
+            for token in (
+                "sum",
+                "total sum",
+                "difference",
+                "absolute difference",
+                "percent change",
+                "rounded",
+                "average",
+            )
+        )
+        or any(
+            mode in analysis_modes
+            for mode in (
+                "inflation_adjustment",
+                "statistical_analysis",
+                "time_series_forecasting",
+                "weighted_average",
+                "risk_metric",
+                "numeric_compute",
+            )
+        )
+    )
+    needs_reasoning = (
+        "needs_analytical_reasoning" in capability_flags
+        or any(
+            mode in analysis_modes
+            for mode in ("statistical_analysis", "time_series_forecasting", "risk_metric")
         )
     )
     tool_families = ["document_retrieval"]
+    if needs_reasoning:
+        tool_families.append("analytical_reasoning")
     if needs_compute:
-        tool_families.extend(["analytical_reasoning", "exact_compute"])
+        tool_families.append("exact_compute")
     return TaskIntent(
         task_family="document_qa",
         execution_mode="document_grounded_analysis",
         complexity_tier="structured_analysis",
-        tool_families_needed=tool_families,
+        tool_families_needed=list(dict.fromkeys(tool_families)),
         evidence_strategy="document_first",
         review_mode="document_grounded",
         completion_mode="document_grounded",
-        routing_rationale="OfficeQA runs must retrieve grounded Treasury evidence before synthesis and only compute from extracted document values.",
+        routing_rationale=(
+            "OfficeQA runs must retrieve grounded Treasury evidence before synthesis. "
+            "Question types may include extraction, inflation-adjusted comparisons, statistical analysis, "
+            "forecasting, weighted averages, and risk metrics, but all must stay document-grounded."
+        ),
         confidence=0.97 if overrides.get("benchmark_name") == "officeqa" else 0.95,
         planner_source="heuristic",
     )

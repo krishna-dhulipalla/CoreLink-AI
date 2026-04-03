@@ -15,6 +15,7 @@ from agent.context.evidence import (
 )
 from agent.context.extraction import extract_entities, extract_formulas, extract_inline_facts, extract_urls, parse_markdown_tables
 from agent.context.profiling import _extract_labeled_json_block
+from agent.benchmarks.officeqa import officeqa_analysis_modes
 from agent.benchmarks.officeqa_compute import compact_officeqa_compute_result
 from agent.contracts import CuratedContext, EvidenceSufficiency, RetrievalIntent, ReviewPacket, SourceBundle, TaskIntent
 from agent.officeqa_structured_evidence import build_officeqa_structured_evidence, compact_officeqa_structured_evidence
@@ -200,11 +201,48 @@ def _retrieval_facts_in_use(task_text: str, source_bundle: SourceBundle) -> list
     return _dedupe_facts(facts)
 
 
+def _officeqa_document_facts_in_use(
+    task_text: str,
+    source_bundle: SourceBundle,
+    benchmark_overrides: dict[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    retrieval_intent = build_retrieval_intent(task_text, source_bundle, benchmark_overrides)
+    analysis_modes = officeqa_analysis_modes(task_text)
+    facts = _retrieval_facts_in_use(task_text, source_bundle)
+    facts.append({"type": "officeqa_analysis_modes", "value": analysis_modes})
+    if retrieval_intent.metric:
+        facts.append({"type": "retrieval_metric", "value": retrieval_intent.metric})
+    if retrieval_intent.entity:
+        facts.append({"type": "retrieval_entity", "value": retrieval_intent.entity})
+    if retrieval_intent.period:
+        facts.append({"type": "retrieval_period", "value": retrieval_intent.period})
+    if retrieval_intent.aggregation_shape:
+        facts.append({"type": "aggregation_shape", "value": retrieval_intent.aggregation_shape})
+    if retrieval_intent.document_family:
+        facts.append({"type": "document_family", "value": retrieval_intent.document_family})
+    if retrieval_intent.query_candidates:
+        facts.append({"type": "query_candidates", "value": retrieval_intent.query_candidates[:3]})
+
+    open_questions = [
+        "Confirm the exact Treasury source, entity, period, aggregation, and unit support before finalizing the answer.",
+    ]
+    if "inflation_adjustment" in analysis_modes:
+        open_questions.append("Check whether CPI or inflation support is required alongside the target financial series.")
+    if "statistical_analysis" in analysis_modes:
+        open_questions.append("Verify the extracted series is complete enough for the requested statistical analysis.")
+    if "time_series_forecasting" in analysis_modes:
+        open_questions.append("Verify the retrieved series is ordered and complete enough for grounded forecasting or trend projection.")
+    if "risk_metric" in analysis_modes:
+        open_questions.append("Verify the risk metric inputs and units are grounded in the retrieved Treasury evidence.")
+    return _dedupe_facts(facts), list(dict.fromkeys(open_questions))
+
+
 def build_curated_context(
     task_text: str,
     answer_contract: dict[str, Any],
     intent: TaskIntent,
     source_bundle: SourceBundle,
+    benchmark_overrides: dict[str, Any] | None = None,
 ) -> tuple[CuratedContext, dict[str, Any]]:
     evidence_stats: dict[str, Any] = {
         "raw_tables": len(source_bundle.tables),
@@ -212,7 +250,11 @@ def build_curated_context(
         "raw_urls": len(source_bundle.urls),
         "raw_entities": len(source_bundle.entities),
     }
-    if intent.task_family == "finance_quant":
+    overrides = dict(benchmark_overrides or {})
+    if str(overrides.get("benchmark_adapter", "") or "") == "officeqa":
+        facts_in_use, open_questions = _officeqa_document_facts_in_use(task_text, source_bundle, overrides)
+        assumptions: list[str] = []
+    elif intent.task_family == "finance_quant":
         facts_in_use, quant_stats = _quant_facts_in_use(source_bundle)
         evidence_stats.update(quant_stats)
         open_questions: list[str] = []

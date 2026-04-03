@@ -140,6 +140,29 @@ def detect_capability_flags(task_text: str, answer_contract: AnswerContract) -> 
         )
     ):
         flags.add("needs_math")
+    if any(
+        token in normalized
+        for token in (
+            "inflation adjusted",
+            "inflation-adjusted",
+            "adjusted for inflation",
+            "weighted average",
+            "weighted mean",
+            "value at risk",
+            "regression",
+            "correlation",
+            "standard deviation",
+            "std dev",
+            "variance",
+            "forecast",
+            "forecasting",
+            "projection",
+            "time series",
+        )
+    ):
+        flags.add("needs_math")
+    if re.search(r"\bvar\b", normalized):
+        flags.add("needs_math")
     if "|---" in task_text or ("row" in normalized and "column" in normalized):
         flags.add("needs_tables")
     if extract_urls(task_text) or any(ext in normalized for ext in (".pdf", ".csv", ".xlsx", ".xls", ".docx", ".json")):
@@ -233,6 +256,15 @@ def detect_capability_flags(task_text: str, answer_contract: AnswerContract) -> 
             "minimise",
             "minimize",
             "prove that",
+            "regression",
+            "correlation",
+            "standard deviation",
+            "std dev",
+            "variance",
+            "forecast",
+            "forecasting",
+            "projection",
+            "time series",
         )
     ):
         flags.add("needs_analytical_reasoning")
@@ -266,6 +298,8 @@ def detect_capability_flags(task_text: str, answer_contract: AnswerContract) -> 
         flags.add("needs_artifact_generation")
     if answer_contract.requires_adapter:
         flags.add("requires_exact_format")
+    if "value at risk" in normalized or re.search(r"\bvar\b", normalized):
+        flags.add("needs_portfolio_risk")
 
     return sorted(flags)
 

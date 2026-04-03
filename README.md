@@ -11,6 +11,14 @@ The current goal is to solve OfficeQA reliably:
 - compute deterministically when the question is numeric
 - emit the exact final answer contract expected by the benchmark
 
+OfficeQA is not only simple document lookup. The benchmark includes question surfaces such as:
+
+- simple extraction
+- inflation-adjusted multi-year calculations
+- statistical analysis
+- time-series forecasting
+- weighted averages and risk-style financial metrics
+
 The canonical docs are:
 
 - `docs/officeqa_integration_plan.md`: failure analysis and architecture rationale

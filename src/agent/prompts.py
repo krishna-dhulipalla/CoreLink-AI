@@ -1,49 +1,31 @@
-"""Centralized prompt templates for the active runtime.
-
-Every LLM-facing string lives here so that nodes.py stays logic-only.
-Prompt design follows patterns from top-scoring finance agents:
-  - Positive instructions (no "do not" blocks)
-  - Domain-specific guidance per task family
-  - Structured self-reflection rubric with heuristic pre-check
-"""
+"""Centralized prompt templates for the active OfficeQA runtime."""
 
 from __future__ import annotations
 
 from typing import Any
 
+_OFFICEQA_REASONING_SURFACES = (
+    "simple extraction, inflation-adjusted multi-year comparisons, statistical analysis "
+    "(regression, correlation, standard deviation), time-series forecasting, and complex "
+    "financial metrics such as weighted averages and value-at-risk style calculations"
+)
+
+
+def _officeqa_active(benchmark_overrides: dict[str, Any] | None = None) -> bool:
+    return str((benchmark_overrides or {}).get("benchmark_adapter") or "") == "officeqa"
+
+
 # ---------------------------------------------------------------------------
 # Planner
 # ---------------------------------------------------------------------------
 PLANNER_SYSTEM = (
-    "You are a finance task router.\n"
-    "Given the task, select the best execution mode and tool families.\n\n"
-    "Finance task families:\n"
-    "- finance_quant: formulas, tables, exact numeric answers (NPV, IRR, amortization)\n"
-    "- finance_options: Black-Scholes, Greeks, option strategies, IV analysis\n"
-    "- legal_transactional: M&A structures, deal terms, regulatory compliance, tax treatment\n"
-    "- analytical_reasoning: derivations, calculus, symbolic or numerical reasoning tied to finance/business logic\n"
-    "- market_scenario: scenario-driven trading, risk, crypto, or stress analysis\n"
-    "- document_qa: questions grounded in uploaded files or reference documents\n"
-    "- external_retrieval: questions requiring current market or source-backed data\n"
-    "- unsupported_artifact: requests for non-finance media/artifact generation outside this system's scope\n"
-    "- general: anything that does not clearly fit above\n\n"
-    "Canonical tool families:\n"
-    "- exact_compute\n"
-    "- market_data_retrieval\n"
-    "- document_retrieval\n"
-    "- external_retrieval\n"
-    "- options_strategy_analysis\n"
-    "- options_scenario_analysis\n"
-    "- legal_playbook_retrieval\n"
-    "- transaction_structure_analysis\n"
-    "- regulatory_execution_analysis\n"
-    "- tax_structure_analysis\n"
-    "- analytical_reasoning\n"
-    "- market_scenario_analysis\n\n"
-    "Be conservative with exact fast paths. Use them only when the prompt already "
-    "contains the formula, the relevant table, and an exact output contract.\n"
-    "Prefer broader capability access for finance/legal analysis instead of calculator-only reasoning.\n"
-    "Do not classify a task as finance_options unless the prompt clearly refers to listed-options market analysis.\n\n"
+    "You are an OfficeQA runtime planner.\n"
+    "Choose the execution mode and tool families for document-grounded financial questions over Treasury Bulletins.\n\n"
+    "The runtime should support OfficeQA-style question surfaces including "
+    f"{_OFFICEQA_REASONING_SURFACES}.\n\n"
+    "Prefer document-grounded analysis over generic advisory reasoning.\n"
+    "Prefer retrieved Treasury evidence before any synthesis.\n"
+    "Use exact compute only when the retrieved evidence supports the operation.\n"
     "Return only JSON matching the schema."
 )
 
@@ -51,59 +33,39 @@ PLANNER_SYSTEM = (
 # Executor
 # ---------------------------------------------------------------------------
 EXECUTOR_SYSTEM = (
-    "You are a senior finance analyst producing a decision-ready answer.\n\n"
+    "You are a document-grounded financial analyst answering OfficeQA-style questions.\n\n"
     "Ground every claim in the provided tool findings or curated facts.\n"
-    "Be specific about numbers, dates, entities, and mechanics.\n"
-    "State material assumptions explicitly.\n"
-    "If the data does not support a conclusion, say so rather than hedging."
+    "Preserve period scope, aggregation semantics, units, and source alignment.\n"
+    "When the task is numeric, prefer extracted values and reproducible calculations over free-form estimation.\n"
+    "If the evidence does not support the requested answer, say so directly instead of guessing."
 )
 
 RETRIEVAL_PLANNER_SYSTEM = (
-    "You are a retrieval planner for finance and document-grounded tasks.\n"
+    "You are a retrieval planner for Treasury Bulletin questions.\n"
     "Pick exactly ONE next action from the available tools, or 'answer' if evidence is sufficient.\n"
-    "Prefer corpus or document retrieval over open-web search when the task references reports, filings, bulletins, or provided documents.\n"
-    "Choose action='answer' only when the retrieved evidence already supports a grounded answer.\n"
+    "Prefer benchmark corpus retrieval and extracted table/page evidence over open-web search.\n"
+    "Choose action='answer' only when the retrieved evidence supports the requested entity, period, metric, and aggregation.\n"
     "Return only JSON matching the schema."
 )
 
-# ---------------------------------------------------------------------------
-# Family-specific guidance — appended as a second system message
-# ---------------------------------------------------------------------------
-LEGAL_GUIDANCE = (
-    "Start with a compact opening snapshot before any deep dive.\n"
-    "In the first section, list multiple viable structure alternatives with one-line tradeoffs, "
-    "then name the recommended path.\n"
-    "Make the opening summary self-sufficient for skimmers: it should already show the options, "
-    "recommendation, economic or tax tradeoffs, liability mechanics, execution constraints, "
-    "and a concrete next-step plan.\n"
-    "For each structure cover:\n"
-    "  (1) economic and tax treatment — who benefits and what breaks it,\n"
-    "  (2) liability allocation — indemnities, escrow or holdback, caps, survival periods,\n"
-    "  (3) execution constraints — required approvals, consultations, third-party consents, and timing,\n"
-    "  (4) rapid next-step plan with owners and sequencing."
-)
 
-OPTIONS_GUIDANCE = (
-    "Start with a direct buy/sell recommendation.\n"
-    "Present the primary strategy with explicit Greek values "
-    "(Delta, Gamma, Theta, Vega) as numbers.\n"
-    "Show breakeven levels and max profit/loss.\n"
-    "Compare at least one alternative strategy with defined-risk characteristics.\n"
-    "Include concrete risk management rules "
-    "(exit triggers, adjustment thresholds, position sizing)."
-)
-
-QUANT_GUIDANCE = (
-    "Apply the specified formula to the correct data row.\n"
-    "Show intermediate calculation steps.\n"
-    "Return the result in the exact output format requested."
+# ---------------------------------------------------------------------------
+# Guidance appended as additional system messages
+# ---------------------------------------------------------------------------
+OFFICEQA_FINANCIAL_DOCUMENT_GUIDANCE = (
+    "Treat the question as document-grounded financial reasoning over Treasury Bulletins.\n"
+    "Retrieve the right source before answering.\n"
+    "Keep entity, period, unit, and aggregation alignment explicit.\n"
+    "Support OfficeQA-style question classes, including "
+    f"{_OFFICEQA_REASONING_SURFACES}.\n"
+    "If the task requires a numeric result, derive it from extracted evidence or the deterministic compute path.\n"
+    "If deterministic compute is unavailable but evidence is still useful, keep the reasoning tightly grounded in retrieved values and citations.\n"
+    "Wrong-source or wrong-period answers are worse than reporting insufficiency."
 )
 
 DOCUMENT_GROUNDED_GUIDANCE = (
     "Ground the answer in retrieved evidence.\n"
     "Use the retrieved documents or corpus content before outside knowledge.\n"
-    "Wrong-source answers are worse than saying the evidence is insufficient.\n"
-    "For benchmark-style document QA, answer only after the retrieved evidence matches the requested entity, period, and aggregation.\n"
     "Quote the exact supporting phrase, number, or table row when it materially supports the answer.\n"
     "Cite the supporting source inline using the available citation or document label.\n"
     "Keep unsupported parts clearly marked as open questions."
@@ -111,27 +73,13 @@ DOCUMENT_GROUNDED_GUIDANCE = (
 
 RETRIEVAL_GUIDANCE = (
     "Answer from retrieved sources rather than model memory.\n"
-    "Use the available search, corpus, or document findings to ground the answer.\n"
-    "Choose the next retrieval action from evidence quality, not from general background knowledge.\n"
+    "Choose the next retrieval action from evidence quality, not from background knowledge.\n"
     "Prefer exact quotes or extracted numeric facts when they resolve the question.\n"
     "Cite the source used for the key conclusion."
 )
 
 GENERAL_GUIDANCE = (
-    "Answer directly using the provided context "
-    "and keep the structure aligned to the requested output."
-)
-
-ANALYTICAL_REASONING_GUIDANCE = (
-    "Solve step by step and keep the derivation explicit.\n"
-    "Use equations or symbolic steps only when they advance the reasoning.\n"
-    "Finish with the exact requested result, not just intermediate work."
-)
-
-MARKET_SCENARIO_GUIDANCE = (
-    "Treat the task as a scenario-driven finance decision.\n"
-    "State the setup, stress case, base case, and risk controls.\n"
-    "Tie the recommendation to the specific scenario rather than giving a generic market memo."
+    "Answer directly using the provided context and keep the structure aligned to the requested output."
 )
 
 
@@ -162,18 +110,18 @@ def contract_guidance(answer_contract: dict[str, Any]) -> str:
     return ""
 
 
-def execution_guidance(task_family: str, execution_mode: str) -> str:
-    """Return family-specific guidance for the executor system prompt."""
-    if task_family == "legal_transactional":
-        return LEGAL_GUIDANCE
-    if task_family == "finance_options":
-        return OPTIONS_GUIDANCE
-    if task_family == "finance_quant":
-        return QUANT_GUIDANCE
-    if task_family == "analytical_reasoning":
-        return ANALYTICAL_REASONING_GUIDANCE
-    if task_family == "market_scenario":
-        return MARKET_SCENARIO_GUIDANCE
+def execution_guidance(
+    task_family: str,
+    execution_mode: str,
+    *,
+    benchmark_overrides: dict[str, Any] | None = None,
+    task_text: str = "",
+) -> str:
+    """Return runtime guidance for the executor system prompt."""
+    _ = task_family
+    _ = task_text
+    if _officeqa_active(benchmark_overrides):
+        return OFFICEQA_FINANCIAL_DOCUMENT_GUIDANCE
     if execution_mode == "retrieval_augmented_analysis":
         return RETRIEVAL_GUIDANCE
     if execution_mode == "document_grounded_analysis":
@@ -182,7 +130,7 @@ def execution_guidance(task_family: str, execution_mode: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Self-reflection — LLM rubric (for complex_qualitative tasks)
+# Self-reflection
 # ---------------------------------------------------------------------------
 SELF_REFLECTION_SYSTEM = (
     "Evaluate this answer against the original task.\n"
@@ -195,8 +143,9 @@ SELF_REFLECTION_SYSTEM = (
     '"improve_prompt": "one sentence telling what to add"}'
 )
 
+
 # ---------------------------------------------------------------------------
-# Revision — targeted improvement prompt
+# Revision
 # ---------------------------------------------------------------------------
 REVISION_TEMPLATE = (
     "Your previous answer was incomplete.\n"
@@ -213,26 +162,27 @@ def build_revision_prompt(
     reviewer_reasoning: str = "",
     *,
     task_family: str = "",
+    benchmark_overrides: dict[str, Any] | None = None,
+    task_text: str = "",
 ) -> str:
-    """Build a targeted revision prompt from reflection/reviewer output."""
+    """Build a targeted revision prompt from reflection or reviewer output."""
+    _ = task_family
     missing_str = ", ".join(missing_dimensions) if missing_dimensions else "see below"
     hint = improve_hint or reviewer_reasoning or "add the missing detail"
     prompt = REVISION_TEMPLATE.format(missing_items=missing_str, improve_hint=hint)
-    if task_family == "legal_transactional":
+    if _officeqa_active(benchmark_overrides):
         prompt += (
-            "\nKeep the opening section compact. Start with a snapshot naming multiple viable structures, "
-            "one-line tradeoffs, and the recommended path before any deep dive."
+            "\nRe-check Treasury source alignment, entity, period, aggregation, and unit normalization before finalizing."
+            "\nIf the task is numeric, verify whether it requires simple extraction, inflation adjustment, statistical reasoning,"
+            " forecasting logic, weighted averaging, or another grounded financial computation supported by the retrieved evidence."
         )
-    if task_family in {"document_qa", "external_retrieval"}:
-        prompt += (
-            "\nUse retrieved evidence directly. Add the missing supporting quote, citation, or extracted number "
-            "instead of general background."
-        )
+    elif task_text:
+        prompt += "\nUse retrieved evidence directly when the task depends on source-backed support."
     return prompt
 
 
 # ---------------------------------------------------------------------------
-# Heuristic self-reflection (pre-check before LLM call)
+# Heuristic self-reflection
 # ---------------------------------------------------------------------------
 _ERROR_PHRASES = frozenset([
     "task failed", "error occurred", "unable to", "cannot access",
@@ -252,16 +202,10 @@ def heuristic_self_score(
     tool_count: int = 0,
     task_family: str = "",
 ) -> float:
-    """Fast zero-API quality score — skip LLM if clearly good (>= 0.85).
-
-    Mirrors Purple Agent's computeAgentQuality() pattern:
-    penalises empty data, no tool calls, very short answers, error phrases;
-    rewards structured output, tool usage, completeness markers.
-    """
+    """Fast zero-API quality score."""
     score = 0.50
     length = len((answer or "").strip())
 
-    # Length signals
     if length > 1200:
         score += 0.20
     elif length > 600:
@@ -271,7 +215,6 @@ def heuristic_self_score(
     elif length < 80:
         score -= 0.20
 
-    # Tool usage signals
     if tool_count >= 4:
         score += 0.15
     elif tool_count >= 2:
@@ -281,18 +224,15 @@ def heuristic_self_score(
     elif tool_count == 0 and task_family not in ("finance_quant",):
         score -= 0.10
 
-    # Structure signals
     answer_lower = (answer or "").lower()
     if any(marker in answer_lower for marker in _COMPLETION_MARKERS):
         score += 0.08
     if "{" in answer and "}" in answer:
         score += 0.05
 
-    # Error penalty
     if any(phrase in answer_lower for phrase in _ERROR_PHRASES):
         score -= 0.25
 
-    # Truncation penalty
     if answer and answer.rstrip()[-1] not in ".!?}]\n\"'":
         score -= 0.15
 
@@ -300,13 +240,9 @@ def heuristic_self_score(
 
 
 # ---------------------------------------------------------------------------
-# Tools whose results are safe to skip on revision (non-live-data)
+# Tools safe to skip on revision
 # ---------------------------------------------------------------------------
 REUSABLE_TOOL_FAMILIES = frozenset([
-    "legal_playbook_retrieval",
-    "transaction_structure_checklist",
-    "regulatory_execution_checklist",
-    "tax_structure_checklist",
     "document_retrieval",
     "fetch_reference_file",
     "list_reference_files",

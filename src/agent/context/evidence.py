@@ -408,7 +408,7 @@ def _extract_policy_context(
     ):
         policy["requires_timestamped_evidence"] = True
 
-    if task_profile in {"finance_quant", "finance_options"} and action_orientation:
+    if task_profile == "document_qa" and action_orientation:
         policy["requires_recommendation_class"] = True
 
     return policy
@@ -444,8 +444,6 @@ def build_evidence_pack(
     )
     if market_snapshot:
         prompt_facts["market_snapshot"] = market_snapshot
-        if task_profile == "finance_options":
-            policy_context.pop("requires_timestamped_evidence", None)
 
     constraints: list[str] = []
     if "requires_exact_format" in capability_flags:
@@ -468,10 +466,6 @@ def build_evidence_pack(
         constraints.append(rule)
 
     open_questions: list[str] = []
-    if task_profile == "finance_options" and not _has_prompt_fact(prompt_facts, "spot", "spot_price", '"spot"'):
-        open_questions.append("Spot price is not explicit in the prompt; any strategy pricing may require a stated assumption.")
-    if policy_context.get("defined_risk_only") and task_profile == "finance_options":
-        open_questions.append("A defined-risk alternative may be required even if the first tool-backed strategy is naked short premium.")
     if document_placeholders:
         open_questions.append("Document evidence has not been extracted yet; start with metadata or a targeted fetch before answering.")
 

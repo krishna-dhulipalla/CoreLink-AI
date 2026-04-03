@@ -486,26 +486,34 @@ Objective:
 
 Tasks:
 
-- [ ] `P9.1` Audit remaining non-OfficeQA `TaskProfile`, `ExecutionMode`, and `ProfileContextPack` branches that still participate in the active runtime
-- [ ] `P9.2` Remove or isolate finance/options/legal prompt guidance from the active OfficeQA path:
+- [x] `P9.1` Audit remaining non-OfficeQA `TaskProfile`, `ExecutionMode`, and `ProfileContextPack` branches that still participate in the active runtime
+- [x] `P9.2` Remove or isolate finance/options/legal prompt guidance from the active OfficeQA path:
   - `src/agent/profile_packs.py`
   - `src/agent/prompts.py`
   - `src/agent/review_utils.py`
   - `src/agent/context/evidence.py`
   - `src/agent/nodes/orchestrator_intent.py`
-- [ ] `P9.3` Reduce the active runtime taxonomy to an OfficeQA-minimal set, or move legacy task families behind an explicit archive-compatibility boundary
-- [ ] `P9.4` Make the active role-model mapping visible at startup and in teammate docs
-- [ ] `P9.5` Choose and document the strong default OfficeQA role stack:
+- [x] `P9.3` Reduce the active runtime taxonomy to an OfficeQA-minimal set, or move legacy task families behind an explicit archive-compatibility boundary
+- [x] `P9.4` Make the active role-model mapping visible at startup and in teammate docs
+- [x] `P9.5` Choose and document the strong default OfficeQA role stack:
   - strong document-grounded solver
   - strong reviewer for ambiguity and scope checks
   - lightweight adapter and reflection models
-- [ ] `P9.6` Define the canonical local corpus layout under `data/officeqa/` and keep it reproducible across teammates
-- [ ] `P9.7` Add regression coverage proving OfficeQA execution no longer depends on retired finance/legal prompt branches
+- [x] `P9.6` Define the canonical local corpus layout under `data/officeqa/` and keep it reproducible across teammates
+- [x] `P9.7` Add regression coverage proving OfficeQA execution no longer depends on retired finance/legal prompt branches
 
 Exit criteria:
 
 - teammates can see the active models and corpus path without reading source
 - OfficeQA runtime no longer depends on finance/legal profile guidance in normal execution
+
+Phase 9 completion notes:
+
+- OfficeQA benchmark intent is now resolved before generic task-family inference, so benchmark runs no longer depend on legacy finance/legal/options routing to reach the active path.
+- The centralized prompt layer is now OfficeQA financial-document guidance rather than a general finance router. It explicitly supports extraction, inflation-adjusted comparisons, statistical analysis, forecasting, weighted averages, and risk-style metrics as document-grounded question classes.
+- The active reviewer path no longer imports or uses legal/options review gaps. Those old heuristics are removed from the live OfficeQA flow.
+- `src/agent/profile_packs.py` is reduced to a minimal compatibility surface instead of a broad finance/legal catalog.
+- `context_curator` now carries OfficeQA analysis-mode facts into curated context so the solver sees the benchmark's financial reasoning surfaces without relying on retired profiles.
 
 ## Phase 10: Adaptive Retrieval Control Plane
 

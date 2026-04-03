@@ -250,6 +250,11 @@ def _heuristic_intent(
     contract_obj = AnswerContract.model_validate(answer_contract or {})
     capability_flags = detect_capability_flags(task_text, contract_obj)
     ambiguity_flags = detect_ambiguity_flags(task_text, capability_flags)
+
+    benchmark_intent = benchmark_task_intent(task_text, capability_flags, benchmark_overrides)
+    if benchmark_intent is not None:
+        return benchmark_intent, capability_flags, ambiguity_flags
+
     task_family = infer_task_profile(task_text, capability_flags)
     lowered = (task_text or "").lower()
     has_formula = "=" in task_text or "\\frac" in task_text
@@ -273,10 +278,6 @@ def _heuristic_intent(
             capability_flags,
             ambiguity_flags,
         )
-
-    benchmark_intent = benchmark_task_intent(task_text, capability_flags, benchmark_overrides)
-    if benchmark_intent is not None:
-        return benchmark_intent, capability_flags, ambiguity_flags
 
     if task_family == "finance_quant" and has_formula and has_table and exact_contract and "needs_live_data" not in capability_flags:
         return (
