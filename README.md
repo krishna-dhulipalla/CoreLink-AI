@@ -96,24 +96,28 @@ data/
     officeqa.csv
 ```
 
-Local setup:
+Fastest local setup:
 
-1. Download or clone the OfficeQA corpus locally.
-2. Put the parsed corpus under `data/officeqa/treasury_bulletins_parsed/`.
-3. Set `OFFICEQA_CORPUS_DIR=data/officeqa/treasury_bulletins_parsed`.
-4. Build the index:
-
-```bash
-uv run python scripts/build_officeqa_index.py --corpus-root "$OFFICEQA_CORPUS_DIR"
+```powershell
+git clone https://github.com/databricks/officeqa.git data/officeqa/source
+$env:OFFICEQA_CORPUS_DIR="data/officeqa/source/treasury_bulletin_pdfs"
+uv run python scripts/build_officeqa_index.py --corpus-root "$env:OFFICEQA_CORPUS_DIR"
+uv run python scripts/verify_officeqa_corpus.py --corpus-root "$env:OFFICEQA_CORPUS_DIR"
 ```
 
-5. Verify the bundle:
+If you already have parsed artifacts locally, point `OFFICEQA_CORPUS_DIR` to `data/officeqa/treasury_bulletins_parsed` instead.
 
-```bash
-uv run python scripts/verify_officeqa_corpus.py --corpus-root "$OFFICEQA_CORPUS_DIR"
+The runtime can index raw PDFs, JSON, CSV, TSV, and text files. Parsed artifacts are usually faster and cleaner, but the official OfficeQA PDF folder also works.
+
+After corpus setup, run the local smoke path:
+
+```powershell
+$env:BENCHMARK_NAME="officeqa"
+$env:BENCHMARK_STATELESS="1"
+uv run python scripts/run_officeqa_regression.py --smoke
 ```
 
-The script writes index artifacts under `OFFICEQA_INDEX_DIR` or, by default, under `OFFICEQA_CORPUS_DIR/.officeqa_index/`.
+The index is written under `OFFICEQA_INDEX_DIR` or, by default, under `OFFICEQA_CORPUS_DIR/.officeqa_index/`.
 
 ## Competition And Deployment
 

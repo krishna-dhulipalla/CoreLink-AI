@@ -34,60 +34,6 @@ http-server = [
 ]
 
 [[package]]
-name = "agent-template"
-version = "0.1.0"
-source = { virtual = "." }
-dependencies = [
-    { name = "a2a-sdk", extra = ["http-server"] },
-    { name = "langchain-core" },
-    { name = "langchain-mcp-adapters" },
-    { name = "langchain-openai" },
-    { name = "langgraph" },
-    { name = "mcp" },
-    { name = "openpyxl" },
-    { name = "pandas" },
-    { name = "pdfplumber" },
-    { name = "pypdf" },
-    { name = "python-docx" },
-    { name = "python-dotenv" },
-    { name = "tavily-python" },
-    { name = "tiktoken" },
-    { name = "uvicorn" },
-    { name = "yfinance" },
-]
-
-[package.optional-dependencies]
-test = [
-    { name = "httpx" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "a2a-sdk", extras = ["http-server"], specifier = ">=0.3.20" },
-    { name = "httpx", marker = "extra == 'test'", specifier = ">=0.28.1" },
-    { name = "langchain-core", specifier = ">=0.3.0" },
-    { name = "langchain-mcp-adapters", specifier = ">=0.1.0" },
-    { name = "langchain-openai", specifier = ">=0.3.0" },
-    { name = "langgraph", specifier = ">=0.5.0" },
-    { name = "mcp", specifier = ">=1.26.0" },
-    { name = "openpyxl", specifier = ">=3.1.5" },
-    { name = "pandas", specifier = ">=2.0.0" },
-    { name = "pdfplumber", specifier = ">=0.11.4" },
-    { name = "pypdf", specifier = ">=6.7.5" },
-    { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0.0" },
-    { name = "pytest-asyncio", marker = "extra == 'test'", specifier = ">=0.24.0" },
-    { name = "python-docx", specifier = ">=1.2.0" },
-    { name = "python-dotenv", specifier = ">=1.0.0" },
-    { name = "tavily-python", specifier = ">=0.5.0" },
-    { name = "tiktoken", specifier = ">=0.7.0" },
-    { name = "uvicorn", specifier = ">=0.38.0" },
-    { name = "yfinance", specifier = ">=0.2.40" },
-]
-provides-extras = ["test"]
-
-[[package]]
 name = "annotated-doc"
 version = "0.0.4"
 source = { registry = "https://pypi.org/simple" }
@@ -263,6 +209,60 @@ sdist = { url = "https://files.pythonhosted.org/packages/d8/53/6f443c9a4a8358a93
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d1/d6/3965ed04c63042e047cb6a3e6ed1a63a35087b6a609aa3a15ed8ac56c221/colorama-0.4.6-py2.py3-none-any.whl", hash = "sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6", size = 25335, upload-time = "2022-10-25T02:36:20.889Z" },
 ]
+
+[[package]]
+name = "corelink-ai"
+version = "0.1.0"
+source = { virtual = "." }
+dependencies = [
+    { name = "a2a-sdk", extra = ["http-server"] },
+    { name = "langchain-core" },
+    { name = "langchain-mcp-adapters" },
+    { name = "langchain-openai" },
+    { name = "langgraph" },
+    { name = "mcp" },
+    { name = "openpyxl" },
+    { name = "pandas" },
+    { name = "pdfplumber" },
+    { name = "pypdf" },
+    { name = "python-docx" },
+    { name = "python-dotenv" },
+    { name = "tavily-python" },
+    { name = "tiktoken" },
+    { name = "uvicorn" },
+    { name = "yfinance" },
+]
+
+[package.optional-dependencies]
+test = [
+    { name = "httpx" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "a2a-sdk", extras = ["http-server"], specifier = ">=0.3.20" },
+    { name = "httpx", marker = "extra == 'test'", specifier = ">=0.28.1" },
+    { name = "langchain-core", specifier = ">=0.3.0" },
+    { name = "langchain-mcp-adapters", specifier = ">=0.1.0" },
+    { name = "langchain-openai", specifier = ">=0.3.0" },
+    { name = "langgraph", specifier = ">=0.5.0" },
+    { name = "mcp", specifier = ">=1.26.0" },
+    { name = "openpyxl", specifier = ">=3.1.5" },
+    { name = "pandas", specifier = ">=2.0.0" },
+    { name = "pdfplumber", specifier = ">=0.11.4" },
+    { name = "pypdf", specifier = ">=6.7.5" },
+    { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0.0" },
+    { name = "pytest-asyncio", marker = "extra == 'test'", specifier = ">=0.24.0" },
+    { name = "python-docx", specifier = ">=1.2.0" },
+    { name = "python-dotenv", specifier = ">=1.0.0" },
+    { name = "tavily-python", specifier = ">=0.5.0" },
+    { name = "tiktoken", specifier = ">=0.7.0" },
+    { name = "uvicorn", specifier = ">=0.38.0" },
+    { name = "yfinance", specifier = ">=0.2.40" },
+]
+provides-extras = ["test"]
 
 [[package]]
 name = "cryptography"

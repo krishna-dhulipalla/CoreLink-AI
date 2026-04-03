@@ -72,6 +72,10 @@ LOCAL_BACKEND_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0"}
 # Nebius token factory and similar hosted vLLM backends that
 # reject request-level chat templates / native tool calling
 _PROMPT_TOOL_HOSTS = {"api.tokenfactory.nebius.com", "api.studio.nebius.ai"}
+_PROFILE_ALIASES: dict[str, str] = {
+    "competition_gpt": "officeqa",
+    "officeqa_gpt": "officeqa",
+}
 
 
 class ChatOpenAI(_BaseChatOpenAI):
@@ -147,7 +151,8 @@ def _current_default_model() -> str:
 
 
 def _current_model_profile() -> str:
-    return os.getenv("MODEL_PROFILE", "custom").strip().lower()
+    raw = os.getenv("MODEL_PROFILE", "custom").strip().lower()
+    return _PROFILE_ALIASES.get(raw, raw)
 
 
 def _benchmark_name() -> str:
@@ -198,22 +203,6 @@ def _profile_models() -> dict[str, dict[str, str]]:
             "reflection": "Qwen/Qwen3-32B-fast",
         },
         "officeqa": {
-            "profiler": "Qwen/Qwen3-32B-fast",
-            "direct": "Qwen/Qwen3-32B-fast",
-            "solver": "deepseek-ai/DeepSeek-V3.2",
-            "reviewer": "Qwen/Qwen3-32B-fast",
-            "adapter": "Qwen/Qwen3-32B-fast",
-            "reflection": "Qwen/Qwen3-32B-fast",
-        },
-        "competition_gpt": {
-            "profiler": "Qwen/Qwen3-32B-fast",
-            "direct": "Qwen/Qwen3-32B-fast",
-            "solver": "deepseek-ai/DeepSeek-V3.2",
-            "reviewer": "Qwen/Qwen3-32B-fast",
-            "adapter": "Qwen/Qwen3-32B-fast",
-            "reflection": "Qwen/Qwen3-32B-fast",
-        },
-        "officeqa_gpt": {
             "profiler": "Qwen/Qwen3-32B-fast",
             "direct": "Qwen/Qwen3-32B-fast",
             "solver": "deepseek-ai/DeepSeek-V3.2",
@@ -310,15 +299,7 @@ def _role_reasoning_effort_env_names(role: str) -> list[str]:
 
 def _profile_reasoning_efforts() -> dict[str, dict[str, str]]:
     return {
-        "competition_gpt": {
-            "profiler": "low",
-            "direct": "medium",
-            "solver": "high",
-            "reviewer": "medium",
-            "adapter": "low",
-            "reflection": "medium",
-        },
-        "officeqa_gpt": {
+        "officeqa": {
             "profiler": "low",
             "direct": "medium",
             "solver": "high",
