@@ -332,6 +332,83 @@ def _officeqa_column_query(retrieval_intent: RetrievalIntent) -> str:
     return re.sub(r"\s+", " ", " ".join(part for part in parts if part)).strip()[:200]
 
 
+def _strategy_chain(retrieval_intent: RetrievalIntent) -> list[str]:
+    ordered = [retrieval_intent.strategy, *retrieval_intent.fallback_chain]
+    return [item for item in dict.fromkeys(item for item in ordered if item)]
+
+
+def _strategy_prefers_text_first(retrieval_intent: RetrievalIntent, strategy: str) -> bool:
+    if strategy == "text_first":
+        return True
+    if strategy != "hybrid":
+        return False
+    implicit_metric = not retrieval_intent.metric or retrieval_intent.metric.lower() in {"absolute percent change", "absolute difference"}
+    return bool(retrieval_intent.evidence_plan.requires_text_support and implicit_metric)
+
+
+def _document_ref_from_result(tool_result: dict[str, Any]) -> tuple[str, str]:
+    facts = dict(tool_result.get("facts") or {})
+    assumptions = dict(tool_result.get("assumptions") or {})
+    document_id = str(assumptions.get("document_id", facts.get("document_id", "")) or "")
+    path = str(assumptions.get("path", facts.get("citation", "")) or "")
+    return document_id, path
+
+
+def _used_document_ids(journal: ExecutionJournal) -> set[str]:
+    used: set[str] = set()
+    for result in journal.tool_results:
+        document_id, _ = _document_ref_from_result(result)
+        if document_id:
+            used.add(document_id)
+    return used
+
+
+def _next_indexed_source_match(indexed_source_matches: list[dict[str, Any]], journal: ExecutionJournal) -> dict[str, Any] | None:
+    used = _used_document_ids(journal)
+    for match in indexed_source_matches:
+        document_id = str(match.get("document_id", "") or "")
+        if document_id and document_id in used:
+            continue
+        return match
+    return None
+
+
+def _used_table_queries(journal: ExecutionJournal) -> set[str]:
+    used: set[str] = set()
+    for result in journal.tool_results:
+        assumptions = dict(result.get("assumptions") or {})
+        query = re.sub(r"\s+", " ", str(assumptions.get("table_query", "") or "")).strip().lower()
+        if query:
+            used.add(query)
+    return used
+
+
+def _officeqa_table_query_variants(retrieval_intent: RetrievalIntent, source_bundle: SourceBundle) -> list[str]:
+    plan = retrieval_intent.evidence_plan
+    queries = [
+        _officeqa_table_query(retrieval_intent, source_bundle),
+        _normalize_query(" ".join(part for part in [retrieval_intent.entity, plan.metric_identity, retrieval_intent.period] if part)),
+        _normalize_query(" ".join(part for part in [plan.metric_identity, retrieval_intent.period] if part)),
+    ]
+    queries.extend(_normalize_query(series) for series in plan.required_series[:3])
+    if plan.requires_inflation_support:
+        queries.append(_normalize_query(f"{retrieval_intent.period} CPI inflation price index"))
+    return [query for query in dict.fromkeys(query for query in queries if query)]
+
+
+def _normalize_query(query: str) -> str:
+    return re.sub(r"\s+", " ", query or "").strip()[:280]
+
+
+def _next_table_query(journal: ExecutionJournal, retrieval_intent: RetrievalIntent, source_bundle: SourceBundle) -> str:
+    used = _used_table_queries(journal)
+    for candidate in _officeqa_table_query_variants(retrieval_intent, source_bundle):
+        normalized = candidate.lower()
+        if normalized and normalized not in used:
+            return candidate
+    return _officeqa_table_query(retrieval_intent, source_bundle)
+
+
 def _retrieval_content_text(facts: dict[str, Any]) -> str:
     parts: list[str] = []
     for chunk in facts.get("chunks", []):
@@ -668,33 +745,66 @@ def _fallback_retrieval_action(
         last_facts = dict(last_result.get("facts") or {})
         last_metadata = dict(last_facts.get("metadata") or {})
         officeqa_status = str(last_metadata.get("officeqa_status", "") or "")
+        current_document_id, current_path = _document_ref_from_result(last_result)
+        next_source_match = _next_indexed_source_match(indexed_source_matches, journal)
+        next_table_query = _next_table_query(journal, retrieval_intent, source_bundle)
+        strategy_chain = _strategy_chain(retrieval_intent)
+        active_strategy = retrieval_intent.strategy or "table_first"
+        if last_type in {"fetch_officeqa_table", "lookup_officeqa_rows", "lookup_officeqa_cells"} and officeqa_status in {
+            "missing_table",
+            "missing_row",
+            "partial_table",
+            "unit_ambiguity",
+        }:
+            if active_strategy == "table_first" and "hybrid" in strategy_chain:
+                active_strategy = "hybrid"
+            elif active_strategy in {"multi_table", "multi_document"} and "hybrid" in strategy_chain:
+                active_strategy = "hybrid"
+            elif "text_first" in strategy_chain:
+                active_strategy = "text_first"
+        elif last_type in {"fetch_officeqa_pages", "fetch_corpus_document"} and retrieval_intent.evidence_plan.requires_table_support:
+            if active_strategy == "text_first" and "hybrid" in strategy_chain:
+                active_strategy = "hybrid"
+        prefer_text_first = _strategy_prefers_text_first(retrieval_intent, active_strategy)
 
         if not journal.tool_results:
-            if indexed_source_matches:
-                first_match = indexed_source_matches[0]
+            if next_source_match:
+                if prefer_text_first and officeqa_page_tools:
+                    return RetrievalAction(
+                        action="tool",
+                        stage="locate_pages",
+                        strategy=active_strategy,
+                        tool_name=officeqa_page_tools[0],
+                        document_id=str(next_source_match.get("document_id", "")),
+                        path=str(next_source_match.get("relative_path", "")),
+                        rationale="Start from the benchmark-linked source file and inspect pages first for grounded context.",
+                    )
                 if officeqa_table_tools:
                     return RetrievalAction(
                         action="tool",
                         stage="locate_table",
+                        strategy=active_strategy,
                         tool_name=officeqa_table_tools[0],
-                        document_id=str(first_match.get("document_id", "")),
-                        path=str(first_match.get("relative_path", "")),
-                        query=officeqa_table_query,
-                        rationale="Start from the benchmark-linked source file and extract the relevant table first.",
+                        document_id=str(next_source_match.get("document_id", "")),
+                        path=str(next_source_match.get("relative_path", "")),
+                        query=next_table_query or officeqa_table_query,
+                        rationale="Start from the benchmark-linked source file and extract the strongest table candidate first.",
                     )
                 if officeqa_page_tools:
                     return RetrievalAction(
                         action="tool",
                         stage="locate_pages",
+                        strategy=active_strategy,
                         tool_name=officeqa_page_tools[0],
-                        document_id=str(first_match.get("document_id", "")),
-                        path=str(first_match.get("relative_path", "")),
+                        document_id=str(next_source_match.get("document_id", "")),
+                        path=str(next_source_match.get("relative_path", "")),
                         rationale="Start from the benchmark-linked source file and read the relevant pages.",
                     )
             if officeqa_search_tools:
                 return RetrievalAction(
                     action="tool",
                     stage="identify_source",
+                    strategy=active_strategy,
                     tool_name=officeqa_search_tools[0],
                     query=seed_query,
                     rationale="Identify the best OfficeQA source document before extraction.",
@@ -703,6 +813,7 @@ def _fallback_retrieval_action(
                 return RetrievalAction(
                     action="tool",
                     stage="identify_source",
+                    strategy=active_strategy,
                     tool_name=document_search_tools[0],
                     query=seed_query,
                     rationale="Search the packaged OfficeQA corpus for a grounded source document.",
@@ -711,6 +822,7 @@ def _fallback_retrieval_action(
                 return RetrievalAction(
                     action="tool",
                     stage="locate_pages",
+                    strategy=active_strategy,
                     tool_name=officeqa_page_tools[0],
                     url=source_bundle.urls[0],
                     rationale="Read the first supplied reference document.",
@@ -719,6 +831,7 @@ def _fallback_retrieval_action(
                 return RetrievalAction(
                     action="tool",
                     stage="identify_source",
+                    strategy=active_strategy,
                     tool_name=external_search_tools[0],
                     query=seed_query,
                     rationale="Use web search only as an explicit OfficeQA fallback.",
@@ -731,6 +844,7 @@ def _fallback_retrieval_action(
                 return RetrievalAction(
                     action="tool",
                     stage="identify_source",
+                    strategy=active_strategy,
                     tool_name=last_type,
                     query=next_query,
                     rationale="Refine OfficeQA source search because the prior results were weak.",
@@ -744,24 +858,37 @@ def _fallback_retrieval_action(
                 return RetrievalAction(
                     action="tool",
                     stage="identify_source",
+                    strategy=active_strategy,
                     tool_name=last_type,
                     query=next_query,
                     rationale="Refine OfficeQA source search because the top result is still off-target.",
+                )
+            if prefer_text_first and officeqa_page_tools:
+                return RetrievalAction(
+                    action="tool",
+                    stage="locate_pages",
+                    strategy=active_strategy,
+                    tool_name=officeqa_page_tools[0],
+                    document_id=first.get("document_id", ""),
+                    path=first.get("path", "") or first.get("citation", ""),
+                    rationale="Open the best matching OfficeQA document and inspect pages first for context.",
                 )
             if officeqa_table_tools:
                 return RetrievalAction(
                     action="tool",
                     stage="locate_table",
+                    strategy=active_strategy,
                     tool_name=officeqa_table_tools[0],
                     document_id=first.get("document_id", ""),
                     path=first.get("path", "") or first.get("citation", ""),
-                    query=officeqa_table_query,
+                    query=next_table_query or officeqa_table_query,
                     rationale="Open the best matching OfficeQA document and extract the relevant table first.",
                 )
             if officeqa_page_tools:
                 return RetrievalAction(
                     action="tool",
                     stage="locate_pages",
+                    strategy=active_strategy,
                     tool_name=officeqa_page_tools[0],
                     document_id=first.get("document_id", ""),
                     path=first.get("path", "") or first.get("citation", ""),
@@ -771,25 +898,70 @@ def _fallback_retrieval_action(
         if last_type == "fetch_officeqa_table":
             if _retrieved_evidence_is_sufficient(source_bundle, last_result, overrides):
                 return RetrievalAction(action="answer", stage="answer", rationale="OfficeQA table evidence is sufficient for the final answer.")
+            current_table_query = _normalize_query(str((last_result.get("assumptions") or {}).get("table_query", "") or ""))
+            if retrieval_intent.strategy in {"multi_table", "multi_document"} and officeqa_table_tools:
+                alternate_query = _next_table_query(journal, retrieval_intent, source_bundle)
+                if alternate_query and alternate_query.lower() != current_table_query.lower():
+                    return RetrievalAction(
+                        action="tool",
+                        stage="locate_table",
+                        strategy=active_strategy,
+                        tool_name=officeqa_table_tools[0],
+                        document_id=current_document_id,
+                        path=current_path,
+                        query=alternate_query,
+                        evidence_gap="join-ready evidence",
+                        rationale="Try an alternate table candidate because the current table is not sufficient yet.",
+                    )
             if officeqa_status == "ok" and officeqa_row_tools and last_facts.get("tables"):
                 return RetrievalAction(
                     action="tool",
                     stage="extract_rows",
+                    strategy=active_strategy,
                     tool_name=officeqa_row_tools[0],
-                    document_id=str((last_result.get("assumptions") or {}).get("document_id", last_facts.get("document_id", "")) or ""),
-                    path=str((last_result.get("assumptions") or {}).get("path", last_facts.get("citation", "")) or ""),
+                    document_id=current_document_id,
+                    path=current_path,
                     query=officeqa_row_query,
                     rationale="Narrow the OfficeQA table down to the target rows before computing.",
                 )
-            if officeqa_page_tools and officeqa_status in {"missing_table", "partial_table", "unit_ambiguity"}:
+            if officeqa_page_tools and (
+                active_strategy in {"text_first", "hybrid", "multi_table", "multi_document"}
+                or officeqa_status in {"missing_table", "partial_table", "unit_ambiguity"}
+            ):
                 return RetrievalAction(
                     action="tool",
                     stage="locate_pages",
+                    strategy=active_strategy,
                     tool_name=officeqa_page_tools[0],
-                    document_id=str((last_result.get("assumptions") or {}).get("document_id", last_facts.get("document_id", "")) or ""),
-                    path=str((last_result.get("assumptions") or {}).get("path", last_facts.get("citation", "")) or ""),
-                    rationale="Fallback to page inspection because OfficeQA table extraction was incomplete.",
+                    document_id=current_document_id,
+                    path=current_path,
+                    evidence_gap="narrative support",
+                    rationale="Fallback to page inspection because table extraction alone was incomplete or ambiguous.",
                 )
+            if active_strategy == "multi_document" and next_source_match:
+                if prefer_text_first and officeqa_page_tools:
+                    return RetrievalAction(
+                        action="tool",
+                        stage="locate_pages",
+                        strategy=active_strategy,
+                        tool_name=officeqa_page_tools[0],
+                        document_id=str(next_source_match.get("document_id", "")),
+                        path=str(next_source_match.get("relative_path", "")),
+                        evidence_gap="cross-document alignment",
+                        rationale="Move to the next benchmark-linked source document to complete multi-document evidence.",
+                    )
+                if officeqa_table_tools:
+                    return RetrievalAction(
+                        action="tool",
+                        stage="locate_table",
+                        strategy=active_strategy,
+                        tool_name=officeqa_table_tools[0],
+                        document_id=str(next_source_match.get("document_id", "")),
+                        path=str(next_source_match.get("relative_path", "")),
+                        query=next_table_query or officeqa_table_query,
+                        evidence_gap="cross-document alignment",
+                        rationale="Move to the next benchmark-linked source document to complete multi-document evidence.",
+                    )
 
         if last_type == "lookup_officeqa_rows":
             if _retrieved_evidence_is_sufficient(source_bundle, last_result, overrides):
@@ -798,41 +970,122 @@ def _fallback_retrieval_action(
                 return RetrievalAction(
                     action="tool",
                     stage="extract_cells",
+                    strategy=active_strategy,
                     tool_name=officeqa_cell_tools[0],
-                    document_id=str((last_result.get("assumptions") or {}).get("document_id", last_facts.get("document_id", "")) or ""),
-                    path=str((last_result.get("assumptions") or {}).get("path", last_facts.get("citation", "")) or ""),
+                    document_id=current_document_id,
+                    path=current_path,
                     query=officeqa_column_query,
                     rationale="Narrow the OfficeQA rows down to the target cells before computing.",
                 )
-            if officeqa_page_tools and officeqa_status in {"missing_row", "partial_table", "unit_ambiguity"}:
+            if retrieval_intent.strategy in {"multi_table", "multi_document"} and officeqa_table_tools:
+                alternate_query = _next_table_query(journal, retrieval_intent, source_bundle)
+                current_table_query = _normalize_query(str((last_result.get("assumptions") or {}).get("table_query", "") or ""))
+                if alternate_query and alternate_query.lower() != current_table_query.lower():
+                    return RetrievalAction(
+                        action="tool",
+                        stage="locate_table",
+                        strategy=active_strategy,
+                        tool_name=officeqa_table_tools[0],
+                        document_id=current_document_id,
+                        path=current_path,
+                        query=alternate_query,
+                        evidence_gap="join-ready evidence",
+                        rationale="Try a second table candidate because the current row extraction is incomplete.",
+                    )
+            if officeqa_page_tools and (
+                active_strategy in {"text_first", "hybrid", "multi_table", "multi_document"}
+                or officeqa_status in {"missing_row", "partial_table", "unit_ambiguity"}
+            ):
                 return RetrievalAction(
                     action="tool",
                     stage="locate_pages",
+                    strategy=active_strategy,
                     tool_name=officeqa_page_tools[0],
-                    document_id=str((last_result.get("assumptions") or {}).get("document_id", last_facts.get("document_id", "")) or ""),
-                    path=str((last_result.get("assumptions") or {}).get("path", last_facts.get("citation", "")) or ""),
+                    document_id=current_document_id,
+                    path=current_path,
+                    evidence_gap="narrative support",
                     rationale="Fallback to page inspection because row extraction was incomplete.",
                 )
 
         if last_type == "lookup_officeqa_cells":
             if _retrieved_evidence_is_sufficient(source_bundle, last_result, overrides):
                 return RetrievalAction(action="answer", stage="answer", rationale="OfficeQA cell evidence is sufficient for the final answer.")
-            if officeqa_page_tools and officeqa_status in {"partial_table", "unit_ambiguity"}:
+            if retrieval_intent.strategy in {"multi_table", "multi_document"} and officeqa_table_tools:
+                alternate_query = _next_table_query(journal, retrieval_intent, source_bundle)
+                current_table_query = _normalize_query(str((last_result.get("assumptions") or {}).get("table_query", "") or ""))
+                if alternate_query and alternate_query.lower() != current_table_query.lower():
+                    return RetrievalAction(
+                        action="tool",
+                        stage="locate_table",
+                        strategy=active_strategy,
+                        tool_name=officeqa_table_tools[0],
+                        document_id=current_document_id,
+                        path=current_path,
+                        query=alternate_query,
+                        evidence_gap="join-ready evidence",
+                        rationale="Try another table candidate because the current cell extraction remains ambiguous.",
+                    )
+            if officeqa_page_tools and (
+                active_strategy in {"text_first", "hybrid", "multi_table", "multi_document"}
+                or officeqa_status in {"partial_table", "unit_ambiguity"}
+            ):
                 return RetrievalAction(
                     action="tool",
                     stage="locate_pages",
+                    strategy=active_strategy,
                     tool_name=officeqa_page_tools[0],
-                    document_id=str((last_result.get("assumptions") or {}).get("document_id", last_facts.get("document_id", "")) or ""),
-                    path=str((last_result.get("assumptions") or {}).get("path", last_facts.get("citation", "")) or ""),
+                    document_id=current_document_id,
+                    path=current_path,
+                    evidence_gap="narrative support",
                     rationale="Inspect the OfficeQA pages directly because cell extraction is still ambiguous.",
                 )
 
         if last_type in {"fetch_officeqa_pages", "fetch_corpus_document"}:
             if _retrieved_evidence_is_sufficient(source_bundle, last_result, overrides):
                 return RetrievalAction(action="answer", stage="answer", rationale="OfficeQA page evidence is sufficient for the final answer.")
+            if active_strategy in {"hybrid", "multi_table", "multi_document"} and officeqa_table_tools:
+                current_page_path = current_path or str(last_facts.get("citation", "") or "")
+                alternate_query = _next_table_query(journal, retrieval_intent, source_bundle)
+                if current_document_id or current_page_path:
+                    return RetrievalAction(
+                        action="tool",
+                        stage="locate_table",
+                        strategy=active_strategy,
+                        tool_name=officeqa_table_tools[0],
+                        document_id=current_document_id,
+                        path=current_page_path,
+                        query=alternate_query or officeqa_table_query,
+                        evidence_gap="table support",
+                        rationale="Use the page findings to pivot back into table extraction for structured values.",
+                    )
             next_pages = _next_officeqa_page_action(last_result, last_type if last_type in {"fetch_officeqa_pages", "fetch_corpus_document"} else "fetch_officeqa_pages")
             if next_pages is not None and _retrieved_window_is_promising(source_bundle, retrieval_intent, last_result, overrides):
+                next_pages.strategy = active_strategy
                 return next_pages
+            if active_strategy == "multi_document" and next_source_match:
+                if prefer_text_first and officeqa_page_tools:
+                    return RetrievalAction(
+                        action="tool",
+                        stage="locate_pages",
+                        strategy=active_strategy,
+                        tool_name=officeqa_page_tools[0],
+                        document_id=str(next_source_match.get("document_id", "")),
+                        path=str(next_source_match.get("relative_path", "")),
+                        evidence_gap="cross-document alignment",
+                        rationale="Move to the next benchmark-linked source document after page-level evidence remained incomplete.",
+                    )
+                if officeqa_table_tools:
+                    return RetrievalAction(
+                        action="tool",
+                        stage="locate_table",
+                        strategy=active_strategy,
+                        tool_name=officeqa_table_tools[0],
+                        document_id=str(next_source_match.get("document_id", "")),
+                        path=str(next_source_match.get("relative_path", "")),
+                        query=next_table_query or officeqa_table_query,
+                        evidence_gap="cross-document alignment",
+                        rationale="Move to the next benchmark-linked source document after page-level evidence remained incomplete.",
+                    )
 
         if journal.retrieval_iterations >= MAX_RETRIEVAL_HOPS - 1:
             return RetrievalAction(action="answer", stage="answer", rationale="OfficeQA retrieval hop budget exhausted.")
@@ -840,6 +1093,7 @@ def _fallback_retrieval_action(
             return RetrievalAction(
                 action="tool",
                 stage="identify_source",
+                strategy=active_strategy,
                 tool_name=external_search_tools[0],
                 query=_next_retrieval_query(journal, retrieval_intent, source_bundle),
                 rationale="Use explicit OfficeQA web fallback after corpus retrieval failed.",
@@ -1016,7 +1270,10 @@ def _plan_retrieval_action(
         registry=registry,
         benchmark_overrides=benchmark_overrides,
     )
-    return _validate_retrieval_action(heuristic, tool_plan, registry)
+    planned = _validate_retrieval_action(heuristic, tool_plan, registry)
+    if not planned.strategy:
+        planned.strategy = retrieval_intent.strategy
+    return planned
 
 
 def _tool_args_from_retrieval_action(

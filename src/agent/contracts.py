@@ -336,6 +336,8 @@ ReviewMode = Literal["exact_quant", "tool_compute", "qualitative_advisory", "doc
 CompletionMode = Literal["scalar_or_json", "compact_sections", "advisory_memo", "document_grounded", "long_form_derivation", "capability_gap"]
 EvidenceStrategy = Literal["minimal_exact", "compact_prompt", "document_first", "retrieval_first", "scenario_first"]
 SideEffectLevel = Literal["read_only", "transactional", "blocked"]
+RetrievalStrategy = Literal["table_first", "text_first", "hybrid", "multi_table", "multi_document"]
+EvidenceSupportMode = Literal["table", "text", "table_or_text", "table_and_text"]
 
 
 class TaskIntent(BaseModel):
@@ -395,12 +397,48 @@ class SourceBundle(BaseModel):
     formulas: list[str] = Field(default_factory=list)
 
 
+class EvidenceRequirement(BaseModel):
+    kind: str = ""
+    label: str = ""
+    required: bool = True
+    target_count: int = 1
+    metric: str = ""
+    years: list[str] = Field(default_factory=list)
+    support_mode: EvidenceSupportMode = "table_or_text"
+    rationale: str = ""
+
+
+class EvidencePlan(BaseModel):
+    objective: str = ""
+    metric_identity: str = ""
+    expected_unit_kind: str = ""
+    expected_value_count: int = 1
+    required_years: list[str] = Field(default_factory=list)
+    required_month_coverage: bool = False
+    required_month_count: int = 0
+    requires_table_support: bool = False
+    requires_text_support: bool = False
+    requires_cross_source_alignment: bool = False
+    requires_inflation_support: bool = False
+    requires_statistical_series: bool = False
+    requires_forecast_support: bool = False
+    required_series: list[str] = Field(default_factory=list)
+    join_keys: list[str] = Field(default_factory=list)
+    requirements: list[EvidenceRequirement] = Field(default_factory=list)
+
+
 class RetrievalIntent(BaseModel):
     entity: str = ""
     metric: str = ""
     period: str = ""
     document_family: str = ""
     aggregation_shape: str = ""
+    strategy: RetrievalStrategy = "table_first"
+    strategy_confidence: float = 0.7
+    evidence_requirements: list[str] = Field(default_factory=list)
+    fallback_chain: list[RetrievalStrategy] = Field(default_factory=list)
+    join_requirements: list[str] = Field(default_factory=list)
+    evidence_plan: EvidencePlan = Field(default_factory=EvidencePlan)
     must_include_terms: list[str] = Field(default_factory=list)
     must_exclude_terms: list[str] = Field(default_factory=list)
     query_candidates: list[str] = Field(default_factory=list)
@@ -444,6 +482,7 @@ class ReviewPacket(BaseModel):
 class RetrievalAction(BaseModel):
     action: Literal["tool", "answer"] = "tool"
     stage: str = ""
+    strategy: str = ""
     tool_name: str = ""
     query: str = ""
     url: str = ""
@@ -455,6 +494,7 @@ class RetrievalAction(BaseModel):
     row_limit: int = 200
     chunk_start: int = 0
     chunk_limit: int = 3
+    evidence_gap: str = ""
     rationale: str = ""
 
 

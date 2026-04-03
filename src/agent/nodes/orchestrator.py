@@ -98,7 +98,7 @@ from agent.prompts import (
     REUSABLE_TOOL_FAMILIES,
 )
 from agent.review_utils import looks_truncated, matches_exact_json_contract
-from agent.retrieval_reasoning import assess_evidence_sufficiency
+from agent.retrieval_reasoning import assess_evidence_sufficiency, predictive_evidence_gaps
 from agent.state import AgentState
 from context_manager import count_tokens
 
@@ -749,49 +749,75 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                 workpad = _record_event(workpad, "executor", f"retrieval ready to answer -> {retrieval_action.rationale or 'evidence collected'}")
 
         if benchmark_overrides.get("benchmark_adapter") == "officeqa" and journal.tool_results and curated.structured_evidence:
-            compute_result = compute_officeqa_result(task_text, retrieval_intent, curated.structured_evidence)
-            curated = attach_compute_result(curated, compute_result.model_dump())
-            workpad["officeqa_compute"] = compute_result.model_dump()
-            if compute_result.status == "ok" and compute_result.answer_text:
-                answer = compute_result.answer_text
-                evidence_sufficiency = assess_evidence_sufficiency(task_text, source_bundle, journal.tool_results, benchmark_overrides)
-                journal.final_artifact_signature = _artifact_signature(answer)
-                workpad["completion_budget"] = 0
-                workpad["review_ready"] = True
-                workpad = _record_event(workpad, "executor", f"deterministic officeqa compute -> {compute_result.operation or 'answer'}")
-                if tracer:
-                    tracer.record(
-                        "executor",
-                        {
-                            "intent": intent.model_dump(),
-                            "used_llm": False,
-                            "tools_ran": tools_ran_this_call,
-                            "tool_results": _compact_tool_findings(journal.tool_results),
-                            "output_preview": answer[:2000],
-                            "completion_budget": 0,
-                            "officeqa_compute": compute_result.model_dump(),
-                        },
-                    )
-                return {
-                    "messages": [AIMessage(content=answer)],
-                    "last_tool_result": journal.tool_results[-1] if journal.tool_results else None,
-                    "task_intent": intent.model_dump(),
-                    "tool_plan": tool_plan.model_dump(),
-                    "execution_journal": journal.model_dump(),
-                    "curated_context": curated.model_dump(),
-                    "review_packet": build_review_packet(
-                        task_text=task_text,
-                        answer_text=answer,
-                        answer_contract=state.get("answer_contract", {}) or {},
-                        curated_context=curated.model_dump(),
-                        tool_results=journal.tool_results,
-                        evidence_sufficiency=evidence_sufficiency.model_dump(),
-                    ).model_dump(),
-                    "evidence_sufficiency": evidence_sufficiency.model_dump(),
-                    "solver_stage": "SYNTHESIZE",
-                    "review_feedback": None,
-                    "workpad": workpad,
+            predictive_gaps = predictive_evidence_gaps(retrieval_intent, curated.structured_evidence)
+            if predictive_gaps:
+                merged_missing = list(dict.fromkeys([*evidence_sufficiency.missing_dimensions, *predictive_gaps]))
+                evidence_sufficiency = EvidenceSufficiency(
+                    source_family=evidence_sufficiency.source_family,
+                    period_scope=evidence_sufficiency.period_scope,
+                    aggregation_type=evidence_sufficiency.aggregation_type,
+                    entity_scope=evidence_sufficiency.entity_scope,
+                    is_sufficient=False,
+                    missing_dimensions=merged_missing,
+                    rationale="Structured evidence does not yet satisfy the planned retrieval requirements needed for deterministic compute.",
+                )
+                provenance_summary = dict(curated.provenance_summary or {})
+                provenance_summary["evidence_plan_check"] = {
+                    "status": "insufficient",
+                    "predictive_gaps": predictive_gaps,
+                    "strategy": retrieval_intent.strategy,
                 }
+                curated.provenance_summary = provenance_summary
+                workpad["officeqa_predictive_gaps"] = predictive_gaps
+                workpad = _record_event(
+                    workpad,
+                    "executor",
+                    f"predictive evidence gaps -> {', '.join(predictive_gaps[:4])}",
+                )
+            else:
+                compute_result = compute_officeqa_result(task_text, retrieval_intent, curated.structured_evidence)
+                curated = attach_compute_result(curated, compute_result.model_dump())
+                workpad["officeqa_compute"] = compute_result.model_dump()
+                if compute_result.status == "ok" and compute_result.answer_text:
+                    answer = compute_result.answer_text
+                    evidence_sufficiency = assess_evidence_sufficiency(task_text, source_bundle, journal.tool_results, benchmark_overrides)
+                    journal.final_artifact_signature = _artifact_signature(answer)
+                    workpad["completion_budget"] = 0
+                    workpad["review_ready"] = True
+                    workpad = _record_event(workpad, "executor", f"deterministic officeqa compute -> {compute_result.operation or 'answer'}")
+                    if tracer:
+                        tracer.record(
+                            "executor",
+                            {
+                                "intent": intent.model_dump(),
+                                "used_llm": False,
+                                "tools_ran": tools_ran_this_call,
+                                "tool_results": _compact_tool_findings(journal.tool_results),
+                                "output_preview": answer[:2000],
+                                "completion_budget": 0,
+                                "officeqa_compute": compute_result.model_dump(),
+                            },
+                        )
+                    return {
+                        "messages": [AIMessage(content=answer)],
+                        "last_tool_result": journal.tool_results[-1] if journal.tool_results else None,
+                        "task_intent": intent.model_dump(),
+                        "tool_plan": tool_plan.model_dump(),
+                        "execution_journal": journal.model_dump(),
+                        "curated_context": curated.model_dump(),
+                        "review_packet": build_review_packet(
+                            task_text=task_text,
+                            answer_text=answer,
+                            answer_contract=state.get("answer_contract", {}) or {},
+                            curated_context=curated.model_dump(),
+                            tool_results=journal.tool_results,
+                            evidence_sufficiency=evidence_sufficiency.model_dump(),
+                        ).model_dump(),
+                        "evidence_sufficiency": evidence_sufficiency.model_dump(),
+                        "solver_stage": "SYNTHESIZE",
+                        "review_feedback": None,
+                        "workpad": workpad,
+                    }
 
         if intent.task_family == "finance_options" and journal.tool_results:
             answer = _options_final_answer({**state, "execution_journal": journal.model_dump()})

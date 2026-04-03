@@ -153,16 +153,20 @@ def test_capture_officeqa_artifacts_collects_tables_and_ledger():
 def test_summarize_regression_report_sets_go_no_go_threshold():
     good = {
         "classification": {"subsystem": "pass"},
+        "retrieval_strategy": "table_first",
         "artifacts": {"extracted_tables": [{"document_id": "x"}], "final_answer": "42"},
     }
     bad = {
         "classification": {"subsystem": "routing"},
+        "retrieval_strategy": "hybrid",
         "artifacts": {"extracted_tables": [], "final_answer": ""},
     }
 
     summary = summarize_regression_report([good, good, bad])
 
     assert summary["counts_by_subsystem"]["routing"] == 1
+    assert summary["counts_by_strategy"]["table_first"] == 2
+    assert summary["counts_by_strategy"]["hybrid"] == 1
     assert summary["go_for_full_benchmark"] is False
     assert summary["required_evidence_ready_cases"] == 2
 
@@ -190,12 +194,14 @@ def test_build_case_report_includes_classification_and_artifacts():
             "contract_collapse_attempts": 0,
         },
     )
+    state["retrieval_intent"] = {"strategy": "hybrid"}
 
     report = build_case_report(
-        {"id": "case_1", "prompt": "OfficeQA task", "focus_subsystem": "routing", "smoke": True},
+        {"id": "case_1", "prompt": "OfficeQA task", "focus_subsystem": "routing", "retrieval_strategy": "hybrid", "smoke": True},
         _trace(state, "<REASONING>x</REASONING><FINAL_ANSWER>40.90</FINAL_ANSWER>"),
     )
 
     assert report["id"] == "case_1"
     assert report["classification"]["subsystem"] == "pass"
     assert report["execution_summary"]["execution_mode"] == "document_grounded_analysis"
+    assert report["execution_summary"]["retrieval_strategy"] == "hybrid"

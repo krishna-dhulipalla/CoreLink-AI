@@ -523,30 +523,30 @@ Objective:
 
 Tasks:
 
-- [ ] `P10.1` Extend `RetrievalIntent` with:
+- [x] `P10.1` Extend `RetrievalIntent` with:
   - retrieval strategy
   - strategy confidence
   - evidence requirements
   - fallback chain
   - join requirements
-- [ ] `P10.2` Add explicit retrieval strategies:
+- [x] `P10.2` Add explicit retrieval strategies:
   - `table_first`
   - `text_first`
   - `hybrid`
   - `multi_table`
   - `multi_document`
-- [ ] `P10.3` Add a typed `EvidencePlan` object before retrieval that states:
+- [x] `P10.3` Add a typed `EvidencePlan` object before retrieval that states:
   - required values
   - metric identity
   - expected units
   - time scope
   - minimum source requirements
-- [ ] `P10.4` Use early retrieval signals to switch strategies instead of looping inside one fixed table flow
-- [ ] `P10.5` Add a text-first extraction path for text-only and implicit-metric questions
-- [ ] `P10.6` Add a hybrid table-plus-text retrieval path for implicit metrics and narrative support
-- [ ] `P10.7` Add multi-table joins within a single source document
-- [ ] `P10.8` Add predictive evidence sufficiency checks against the evidence plan before compute
-- [ ] `P10.9` Extend regression slices so failures are grouped by retrieval strategy, not only by subsystem
+- [x] `P10.4` Use early retrieval signals to switch strategies instead of looping inside one fixed table flow
+- [x] `P10.5` Add a text-first extraction path for text-only and implicit-metric questions
+- [x] `P10.6` Add a hybrid table-plus-text retrieval path for implicit metrics and narrative support
+- [x] `P10.7` Add multi-table joins within a single source document
+- [x] `P10.8` Add predictive evidence sufficiency checks against the evidence plan before compute
+- [x] `P10.9` Extend regression slices so failures are grouped by retrieval strategy, not only by subsystem
 
 Exit criteria:
 

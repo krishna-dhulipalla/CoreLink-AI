@@ -3,7 +3,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from agent.contracts import EvidenceSufficiency, RetrievalIntent, SourceBundle
+from agent.benchmarks.officeqa import officeqa_analysis_modes
+from agent.contracts import EvidencePlan, EvidenceRequirement, EvidenceSufficiency, RetrievalIntent, SourceBundle
 
 _MONTH_NAMES = (
     "january",
@@ -120,6 +121,213 @@ def _aggregation_shape(task_text: str) -> str:
     return "point_lookup"
 
 
+def _task_analysis_modes(task_text: str, benchmark_overrides: dict[str, Any] | None = None) -> list[str]:
+    if _officeqa_active(benchmark_overrides):
+        return officeqa_analysis_modes(task_text)
+    return []
+
+
+def _metric_is_implicit(metric: str, aggregation_shape: str) -> bool:
+    normalized = (metric or "").strip().lower()
+    if not normalized:
+        return True
+    return normalized in {"absolute percent change", "absolute difference"} or aggregation_shape in {
+        "monthly_sum_percent_change",
+        "inflation_adjusted_monthly_difference",
+    }
+
+
+def _needs_narrative_support(task_text: str, analysis_modes: list[str]) -> bool:
+    lowered = (task_text or "").lower()
+    if any(
+        token in lowered
+        for token in (
+            "according to",
+            "trend",
+            "forecast",
+            "project",
+            "projection",
+            "explain",
+            "describe",
+            "why",
+            "correlation",
+            "regression",
+            "standard deviation",
+            "variance",
+            "value at risk",
+            "var ",
+        )
+    ):
+        return True
+    return any(mode in analysis_modes for mode in ("statistical_analysis", "time_series_forecasting", "risk_metric"))
+
+
+def _select_retrieval_strategy(
+    task_text: str,
+    source_bundle: SourceBundle,
+    metric: str,
+    aggregation_shape: str,
+    analysis_modes: list[str],
+) -> tuple[str, float, list[str], list[str]]:
+    lowered = (task_text or "").lower()
+    implicit_metric = _metric_is_implicit(metric, aggregation_shape)
+    narrative_support = _needs_narrative_support(task_text, analysis_modes)
+    multi_document = len(source_bundle.source_files_expected) > 1 or any(
+        token in lowered
+        for token in (
+            "across documents",
+            "across reports",
+            "between documents",
+            "source files",
+            "compare multiple bulletins",
+            "combine multiple documents",
+        )
+    )
+    multi_table = any(mode in analysis_modes for mode in ("inflation_adjustment", "weighted_average")) or any(
+        token in lowered
+        for token in (
+            "weighted average",
+            "inflation-adjusted",
+            "adjusted for inflation",
+            "join",
+            "combine table",
+        )
+    )
+    advanced_reasoning = any(
+        mode in analysis_modes for mode in ("statistical_analysis", "time_series_forecasting", "risk_metric")
+    )
+
+    if multi_document:
+        return "multi_document", 0.9, ["multi_table", "hybrid", "text_first"], ["document_id", "year", "month", "unit"]
+    if multi_table:
+        return "multi_table", 0.84, ["hybrid", "text_first", "table_first"], ["year", "month", "metric", "unit"]
+    if advanced_reasoning:
+        return "hybrid", 0.8, ["text_first", "table_first", "multi_table"], ["year", "month", "metric"]
+    if implicit_metric and narrative_support:
+        return "hybrid", 0.76, ["text_first", "table_first"], ["metric", "year"]
+    if narrative_support and aggregation_shape == "point_lookup":
+        return "text_first", 0.74, ["hybrid", "table_first"], ["metric", "year"]
+    return "table_first", 0.88, ["hybrid", "text_first"], []
+
+
+def _expected_unit_kind(task_text: str, metric: str, analysis_modes: list[str]) -> str:
+    lowered = f"{task_text} {metric}".lower()
+    if "percent" in lowered or "%" in lowered:
+        return "percent"
+    if any(token in lowered for token in ("dollar", "expenditure", "receipts", "debt", "balance", "outlay")):
+        return "currency"
+    if "risk_metric" in analysis_modes and "var" in lowered:
+        return "currency"
+    return "scalar"
+
+
+def _build_evidence_plan(
+    task_text: str,
+    source_bundle: SourceBundle,
+    metric: str,
+    period: str,
+    aggregation_shape: str,
+    strategy: str,
+    analysis_modes: list[str],
+    join_requirements: list[str],
+) -> EvidencePlan:
+    years = _period_years(period, task_text)
+    metric_identity = _primary_retrieval_metric(metric, aggregation_shape) or "document-grounded financial value"
+    required_month_coverage = aggregation_shape.startswith("monthly") or any(
+        mode in analysis_modes for mode in ("statistical_analysis", "time_series_forecasting")
+    )
+    required_month_count = 12 if required_month_coverage else 0
+    requires_inflation_support = aggregation_shape == "inflation_adjusted_monthly_difference" or "inflation_adjustment" in analysis_modes
+    requires_statistical_series = "statistical_analysis" in analysis_modes
+    requires_forecast_support = "time_series_forecasting" in analysis_modes
+    requires_cross_source_alignment = strategy == "multi_document"
+    requires_text_support = strategy in {"text_first", "hybrid", "multi_document"} or _needs_narrative_support(task_text, analysis_modes)
+    requires_table_support = strategy in {"table_first", "hybrid", "multi_table", "multi_document"} or aggregation_shape != "point_lookup"
+    expected_value_count = max(1, len(years) or 1)
+    if required_month_coverage:
+        expected_value_count = max(expected_value_count, max(1, len(years) or 1) * 12)
+
+    requirements: list[EvidenceRequirement] = [
+        EvidenceRequirement(
+            kind="primary_series",
+            label=f"Ground the primary metric '{metric_identity}' in the source evidence.",
+            target_count=max(1, len(years) or 1),
+            metric=metric_identity,
+            years=years,
+            support_mode="table" if requires_table_support and not requires_text_support else "table_or_text",
+            rationale="The target metric must be recovered before synthesis or compute can be trusted.",
+        )
+    ]
+    if required_month_coverage:
+        requirements.append(
+            EvidenceRequirement(
+                kind="monthly_coverage",
+                label="Recover a complete monthly series for the requested period.",
+                target_count=max(12, expected_value_count),
+                metric=metric_identity,
+                years=years,
+                support_mode="table",
+                rationale="Monthly aggregation, statistics, and forecasting all require broad month coverage.",
+            )
+        )
+    if requires_inflation_support:
+        requirements.append(
+            EvidenceRequirement(
+                kind="inflation_support",
+                label="Recover CPI or inflation support aligned to the requested period.",
+                target_count=max(1, len(years) or 1),
+                metric="cpi",
+                years=years,
+                support_mode="table_or_text",
+                rationale="Inflation-adjusted calculations require a grounded price-index series or explicit inflation support.",
+            )
+        )
+    if requires_text_support:
+        requirements.append(
+            EvidenceRequirement(
+                kind="narrative_support",
+                label="Capture quoted or page-level narrative support for ambiguous or implicit metrics.",
+                target_count=1,
+                metric=metric_identity,
+                years=years,
+                support_mode="text",
+                rationale="Narrative context helps disambiguate implicit metrics, trends, and forecasting questions.",
+            )
+        )
+    if join_requirements:
+        requirements.append(
+            EvidenceRequirement(
+                kind="join_ready_support",
+                label="Align retrieved evidence across the join keys needed for compute.",
+                target_count=max(1, len(years) or 1),
+                metric=metric_identity,
+                years=years,
+                support_mode="table_and_text" if requires_text_support else "table",
+                rationale="Multi-table and multi-document questions require aligned keys before deterministic compute.",
+            )
+        )
+
+    required_series = [f"{metric_identity} {year}".strip() for year in years] if years else [metric_identity]
+    return EvidencePlan(
+        objective=_normalize_space(source_bundle.focus_query or task_text)[:240],
+        metric_identity=metric_identity,
+        expected_unit_kind=_expected_unit_kind(task_text, metric_identity, analysis_modes),
+        expected_value_count=expected_value_count,
+        required_years=years,
+        required_month_coverage=required_month_coverage,
+        required_month_count=required_month_count,
+        requires_table_support=requires_table_support,
+        requires_text_support=requires_text_support,
+        requires_cross_source_alignment=requires_cross_source_alignment,
+        requires_inflation_support=requires_inflation_support,
+        requires_statistical_series=requires_statistical_series,
+        requires_forecast_support=requires_forecast_support,
+        required_series=required_series,
+        join_keys=list(dict.fromkeys(join_requirements)),
+        requirements=requirements,
+    )
+
+
 def _period_years(period: str, task_text: str) -> list[str]:
     years = re.findall(r"\b((?:19|20)\d{2})\b", f"{period} {task_text}")
     return list(dict.fromkeys(years[:4]))
@@ -179,6 +387,24 @@ def build_retrieval_intent(
     years = _period_years(period, task_text)
     retrieval_metric = _primary_retrieval_metric(metric, aggregation_shape)
     qualifier_terms = _extract_qualifier_terms(task_text)
+    analysis_modes = _task_analysis_modes(task_text, benchmark_overrides)
+    strategy, strategy_confidence, fallback_chain, join_requirements = _select_retrieval_strategy(
+        task_text,
+        source_bundle,
+        metric,
+        aggregation_shape,
+        analysis_modes,
+    )
+    evidence_plan = _build_evidence_plan(
+        task_text,
+        source_bundle,
+        metric,
+        period,
+        aggregation_shape,
+        strategy,
+        analysis_modes,
+        join_requirements,
+    )
 
     must_include_terms: list[str] = []
     if document_family == "treasury_bulletin":
@@ -280,10 +506,94 @@ def build_retrieval_intent(
         period=period,
         document_family=document_family,
         aggregation_shape=aggregation_shape,
+        strategy=strategy,
+        strategy_confidence=strategy_confidence,
+        evidence_requirements=[requirement.label for requirement in evidence_plan.requirements],
+        fallback_chain=fallback_chain,
+        join_requirements=join_requirements,
+        evidence_plan=evidence_plan,
         must_include_terms=must_include_terms,
         must_exclude_terms=must_exclude_terms,
         query_candidates=query_candidates,
     )
+
+
+def _structured_years_from_value(value: dict[str, Any]) -> list[str]:
+    text = " ".join(
+        [
+            str(value.get("document_id", "")),
+            str(value.get("citation", "")),
+            str(value.get("page_locator", "")),
+            str(value.get("table_locator", "")),
+            str(value.get("row_label", "")),
+            str(value.get("column_label", "")),
+        ]
+    )
+    return re.findall(r"(?<!\d)((?:19|20)\d{2})(?!\d)", text)
+
+
+def _structured_month_counts(values: list[dict[str, Any]]) -> dict[str, set[str]]:
+    counts: dict[str, set[str]] = {}
+    for value in values:
+        lowered = str(value.get("row_label", "")).lower()
+        month = next((name for name in _MONTH_NAMES if name in lowered), "")
+        if not month:
+            continue
+        years = _structured_years_from_value(value)
+        for year in years[:1]:
+            counts.setdefault(year, set()).add(month)
+    return counts
+
+
+def predictive_evidence_gaps(
+    retrieval_intent: RetrievalIntent,
+    structured_evidence: dict[str, Any] | None,
+) -> list[str]:
+    payload = dict(structured_evidence or {})
+    plan = retrieval_intent.evidence_plan
+    values = [item for item in list(payload.get("values", [])) if isinstance(item, dict)]
+    tables = [item for item in list(payload.get("tables", [])) if isinstance(item, dict)]
+    page_chunks = [item for item in list(payload.get("page_chunks", [])) if isinstance(item, dict)]
+    gaps: list[str] = []
+
+    if plan.requires_table_support and not (tables or values):
+        gaps.append("table support")
+    if plan.requires_text_support and not page_chunks:
+        gaps.append("narrative support")
+    if plan.required_years:
+        found_years = {year for value in values for year in _structured_years_from_value(value)}
+        if set(plan.required_years) - found_years:
+            gaps.append("year coverage")
+    if plan.required_month_coverage and plan.required_month_count:
+        month_counts = _structured_month_counts(values)
+        missing_months = [
+            year
+            for year in (plan.required_years or list(month_counts.keys()))
+            if len(month_counts.get(year, set())) < min(12, plan.required_month_count)
+        ]
+        if missing_months:
+            gaps.append("missing month coverage")
+    if plan.requires_inflation_support:
+        inflation_supported = any(
+            any(token in " ".join(str(value.get(key, "")) for key in ("row_label", "column_label", "table_locator", "citation")).lower() for token in ("cpi", "inflation", "price index"))
+            for value in values
+        ) or any(
+            any(token in str(chunk.get("text", "")).lower() for token in ("cpi", "inflation", "price index"))
+            for chunk in page_chunks
+        )
+        if not inflation_supported:
+            gaps.append("inflation support")
+    if plan.join_keys and retrieval_intent.strategy in {"multi_table", "multi_document"} and len(tables) < 2:
+        gaps.append("join-ready evidence")
+    if plan.requires_cross_source_alignment:
+        document_ids = {
+            str(item.get("document_id", "")).strip()
+            for item in [*values, *tables]
+            if str(item.get("document_id", "")).strip()
+        }
+        if len(document_ids) < 2:
+            gaps.append("cross-document alignment")
+    return list(dict.fromkeys(gaps))
 
 
 def _tool_result_text(tool_result: dict[str, Any]) -> str:

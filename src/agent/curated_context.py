@@ -220,6 +220,16 @@ def _officeqa_document_facts_in_use(
         facts.append({"type": "aggregation_shape", "value": retrieval_intent.aggregation_shape})
     if retrieval_intent.document_family:
         facts.append({"type": "document_family", "value": retrieval_intent.document_family})
+    if retrieval_intent.strategy:
+        facts.append({"type": "retrieval_strategy", "value": retrieval_intent.strategy})
+    if retrieval_intent.fallback_chain:
+        facts.append({"type": "retrieval_fallback_chain", "value": retrieval_intent.fallback_chain[:4]})
+    if retrieval_intent.evidence_requirements:
+        facts.append({"type": "evidence_requirements", "value": retrieval_intent.evidence_requirements[:5]})
+    if retrieval_intent.evidence_plan.metric_identity:
+        facts.append({"type": "evidence_metric_identity", "value": retrieval_intent.evidence_plan.metric_identity})
+    if retrieval_intent.evidence_plan.required_years:
+        facts.append({"type": "evidence_required_years", "value": retrieval_intent.evidence_plan.required_years[:4]})
     if retrieval_intent.query_candidates:
         facts.append({"type": "query_candidates", "value": retrieval_intent.query_candidates[:3]})
 
@@ -250,8 +260,10 @@ def build_curated_context(
         "raw_urls": len(source_bundle.urls),
         "raw_entities": len(source_bundle.entities),
     }
+    retrieval_intent_obj: RetrievalIntent | None = None
     overrides = dict(benchmark_overrides or {})
     if str(overrides.get("benchmark_adapter", "") or "") == "officeqa":
+        retrieval_intent_obj = build_retrieval_intent(task_text, source_bundle, overrides)
         facts_in_use, open_questions = _officeqa_document_facts_in_use(task_text, source_bundle, overrides)
         assumptions: list[str] = []
     elif intent.task_family == "finance_quant":
@@ -286,17 +298,17 @@ def build_curated_context(
         ]
     elif intent.execution_mode in {"retrieval_augmented_analysis", "document_grounded_analysis"}:
         facts_in_use = _retrieval_facts_in_use(task_text, source_bundle)
-        retrieval_intent = build_retrieval_intent(task_text, source_bundle)
-        if retrieval_intent.entity:
-            facts_in_use.append({"type": "retrieval_entity", "value": retrieval_intent.entity})
-        if retrieval_intent.period:
-            facts_in_use.append({"type": "retrieval_period", "value": retrieval_intent.period})
-        if retrieval_intent.aggregation_shape:
-            facts_in_use.append({"type": "aggregation_shape", "value": retrieval_intent.aggregation_shape})
-        if retrieval_intent.document_family:
-            facts_in_use.append({"type": "document_family", "value": retrieval_intent.document_family})
-        if retrieval_intent.query_candidates:
-            facts_in_use.append({"type": "query_candidates", "value": retrieval_intent.query_candidates[:3]})
+        retrieval_intent_obj = build_retrieval_intent(task_text, source_bundle)
+        if retrieval_intent_obj.entity:
+            facts_in_use.append({"type": "retrieval_entity", "value": retrieval_intent_obj.entity})
+        if retrieval_intent_obj.period:
+            facts_in_use.append({"type": "retrieval_period", "value": retrieval_intent_obj.period})
+        if retrieval_intent_obj.aggregation_shape:
+            facts_in_use.append({"type": "aggregation_shape", "value": retrieval_intent_obj.aggregation_shape})
+        if retrieval_intent_obj.document_family:
+            facts_in_use.append({"type": "document_family", "value": retrieval_intent_obj.document_family})
+        if retrieval_intent_obj.query_candidates:
+            facts_in_use.append({"type": "query_candidates", "value": retrieval_intent_obj.query_candidates[:3]})
         open_questions = [
             "Find the exact supporting quote, table row, or document window before finalizing the answer.",
         ]
@@ -327,6 +339,14 @@ def build_curated_context(
                 "source_files_expected": source_bundle.source_files_expected[:8],
                 "source_files_found": source_bundle.source_files_found[:8],
                 "target_period": source_bundle.target_period,
+            },
+            "retrieval_plan": {
+                "strategy": retrieval_intent_obj.strategy if retrieval_intent_obj else "",
+                "strategy_confidence": retrieval_intent_obj.strategy_confidence if retrieval_intent_obj else 0.0,
+                "fallback_chain": list(retrieval_intent_obj.fallback_chain[:4]) if retrieval_intent_obj else [],
+                "evidence_requirements": list(retrieval_intent_obj.evidence_requirements[:5]) if retrieval_intent_obj else [],
+                "required_years": list(retrieval_intent_obj.evidence_plan.required_years[:4]) if retrieval_intent_obj else [],
+                "join_keys": list(retrieval_intent_obj.evidence_plan.join_keys[:6]) if retrieval_intent_obj else [],
             },
             "fact_count": len(facts_in_use),
         },

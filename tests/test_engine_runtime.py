@@ -11,17 +11,18 @@ from langchain_core.tools import tool
 
 from agent.budget import BudgetTracker
 from agent.benchmarks.officeqa_index import build_officeqa_index
-from agent.contracts import SourceBundle
+from agent.contracts import ExecutionJournal, SourceBundle, ToolPlan
 from agent.officeqa_structured_evidence import build_officeqa_structured_evidence
 from agent.retrieval_tools import fetch_corpus_document as fetch_corpus_document_tool
 from agent.retrieval_tools import fetch_officeqa_table, lookup_officeqa_cells
-from agent.retrieval_reasoning import assess_evidence_sufficiency, build_retrieval_intent
+from agent.retrieval_reasoning import assess_evidence_sufficiency, build_retrieval_intent, predictive_evidence_gaps
 from agent.tools.normalization import normalize_tool_output
 from agent.nodes.intake import intake
 from agent.nodes.output_adapter import output_adapter
 from agent.tracer import RunTracer
 from agent.capabilities import BUILTIN_LEGAL_TOOLS, BUILTIN_RETRIEVAL_TOOLS, build_capability_registry, filter_registry_for_benchmark
 from agent.curated_context import attach_structured_evidence, solver_context_block
+from agent.nodes.orchestrator_retrieval import _plan_retrieval_action
 from agent.nodes.orchestrator import (
     context_curator,
     fast_path_gate,
@@ -533,6 +534,208 @@ def test_officeqa_retrieval_intent_avoids_legacy_web_query_templates(monkeypatch
     assert "site:govinfo.gov" not in joined_queries
     assert "federal reserve bank of minneapolis" not in joined_queries
     assert "national defense and associated activities" not in joined_queries
+
+
+def test_officeqa_retrieval_intent_selects_hybrid_strategy_for_statistical_forecast_questions(monkeypatch):
+    monkeypatch.setenv("BENCHMARK_NAME", "officeqa")
+    prompt = (
+        "Using Treasury Bulletin data, calculate the regression trend and forecast the monthly expenditures series "
+        "for 1953."
+    )
+    source_bundle = SourceBundle(
+        task_text=prompt,
+        focus_query="monthly expenditures 1953 regression forecast",
+        target_period="1953",
+        entities=["Treasury Bulletin"],
+        urls=[],
+        inline_facts={},
+        tables=[],
+        formulas=[],
+    )
+
+    retrieval_intent = build_retrieval_intent(prompt, source_bundle, intake(make_state(prompt))["benchmark_overrides"])
+
+    assert retrieval_intent.strategy == "hybrid"
+    assert retrieval_intent.evidence_plan.requires_table_support is True
+    assert retrieval_intent.evidence_plan.requires_text_support is True
+    assert retrieval_intent.evidence_plan.requires_forecast_support is True
+    assert "Capture quoted or page-level narrative support for ambiguous or implicit metrics." in retrieval_intent.evidence_requirements
+
+
+def test_officeqa_retrieval_intent_selects_multi_table_for_inflation_adjusted_weighted_average(monkeypatch):
+    monkeypatch.setenv("BENCHMARK_NAME", "officeqa")
+    prompt = "Using Treasury Bulletin data, compute the inflation-adjusted weighted average expenditures for 1953."
+    source_bundle = SourceBundle(
+        task_text=prompt,
+        focus_query="inflation adjusted weighted average expenditures 1953",
+        target_period="1953",
+        entities=["Treasury Bulletin"],
+        urls=[],
+        inline_facts={},
+        tables=[],
+        formulas=[],
+    )
+
+    retrieval_intent = build_retrieval_intent(prompt, source_bundle, intake(make_state(prompt))["benchmark_overrides"])
+
+    assert retrieval_intent.strategy == "multi_table"
+    assert retrieval_intent.evidence_plan.requires_inflation_support is True
+    assert retrieval_intent.evidence_plan.join_keys
+    assert "join_ready_support" in {item.kind for item in retrieval_intent.evidence_plan.requirements}
+
+
+def test_officeqa_context_curator_carries_retrieval_plan_summary(monkeypatch):
+    monkeypatch.setenv("BENCHMARK_NAME", "officeqa")
+    prompt = "Using Treasury Bulletin data, calculate the regression trend and forecast the monthly expenditures series for 1953."
+    state = make_state(prompt)
+    state.update(intake(state))
+    state.update(fast_path_gate(state))
+    state.update(task_planner(state))
+    resolver = make_capability_resolver(build_capability_registry([CALCULATOR_TOOL, SEARCH_TOOL, *BUILTIN_RETRIEVAL_TOOLS]))
+    state.update(resolver(state))
+
+    result = context_curator(state)
+    retrieval_plan = result["curated_context"]["provenance_summary"]["retrieval_plan"]
+
+    assert retrieval_plan["strategy"] == "hybrid"
+    assert retrieval_plan["required_years"] == ["1953"]
+    assert retrieval_plan["evidence_requirements"]
+
+
+def test_officeqa_planner_prefers_text_first_pages_for_narrative_document_questions():
+    prompt = "According to the Treasury Bulletin narrative discussion, what reason was given for the 1945 debt outlook?"
+    source_bundle = SourceBundle(
+        task_text=prompt,
+        focus_query="debt outlook 1945 narrative discussion",
+        target_period="1945",
+        entities=["Treasury Bulletin"],
+        urls=[],
+        source_files_found=[{"document_id": "treasury_1945_json", "relative_path": "treasury_1945.json"}],
+        inline_facts={},
+        tables=[],
+        formulas=[],
+    )
+    retrieval_intent = build_retrieval_intent(prompt, source_bundle, {"benchmark_adapter": "officeqa"})
+    registry = build_capability_registry([CALCULATOR_TOOL, *BUILTIN_RETRIEVAL_TOOLS])
+    tool_plan = ToolPlan(
+        tool_families_needed=["document_retrieval", "exact_compute"],
+        selected_tools=[
+            "search_officeqa_documents",
+            "fetch_officeqa_pages",
+            "fetch_officeqa_table",
+            "lookup_officeqa_rows",
+            "lookup_officeqa_cells",
+            "calculator",
+        ],
+    )
+
+    action = _plan_retrieval_action(
+        execution_mode="document_grounded_analysis",
+        source_bundle=source_bundle,
+        retrieval_intent=retrieval_intent,
+        tool_plan=tool_plan,
+        journal=ExecutionJournal(),
+        registry=registry,
+        benchmark_overrides={"benchmark_adapter": "officeqa"},
+    )
+
+    assert action.tool_name == "fetch_officeqa_pages"
+    assert action.strategy in {"text_first", "hybrid"}
+
+
+def test_officeqa_planner_tries_alternate_table_query_for_multi_table_questions():
+    prompt = "Using Treasury Bulletin data, compute the inflation-adjusted weighted average expenditures for 1953."
+    source_bundle = SourceBundle(
+        task_text=prompt,
+        focus_query="inflation adjusted weighted average expenditures 1953",
+        target_period="1953",
+        entities=["Treasury Bulletin"],
+        urls=[],
+        source_files_found=[{"document_id": "treasury_1953_json", "relative_path": "treasury_1953.json"}],
+        inline_facts={},
+        tables=[],
+        formulas=[],
+    )
+    retrieval_intent = build_retrieval_intent(prompt, source_bundle, {"benchmark_adapter": "officeqa"})
+    registry = build_capability_registry([CALCULATOR_TOOL, *BUILTIN_RETRIEVAL_TOOLS])
+    tool_plan = ToolPlan(
+        tool_families_needed=["document_retrieval", "exact_compute"],
+        selected_tools=["fetch_officeqa_table", "fetch_officeqa_pages", "lookup_officeqa_rows", "lookup_officeqa_cells"],
+    )
+    journal = ExecutionJournal(
+        tool_results=[
+            {
+                "type": "fetch_officeqa_table",
+                "retrieval_status": "ok",
+                "assumptions": {"document_id": "treasury_1953_json", "path": "treasury_1953.json", "table_query": "Treasury Bulletin expenditures 1953"},
+                "facts": {
+                    "document_id": "treasury_1953_json",
+                    "citation": "treasury_1953.json",
+                    "metadata": {"officeqa_status": "partial_table"},
+                    "tables": [{"locator": "table 1", "headers": ["Month", "Expenditures"], "rows": [["January", "10.0"]]}],
+                },
+            }
+        ],
+        retrieval_iterations=1,
+    )
+
+    action = _plan_retrieval_action(
+        execution_mode="document_grounded_analysis",
+        source_bundle=source_bundle,
+        retrieval_intent=retrieval_intent,
+        tool_plan=tool_plan,
+        journal=journal,
+        registry=registry,
+        benchmark_overrides={"benchmark_adapter": "officeqa"},
+    )
+
+    assert action.tool_name == "fetch_officeqa_table"
+    assert action.strategy in {"multi_table", "hybrid"}
+    assert action.query
+    assert action.query.lower() != "treasury bulletin expenditures 1953"
+
+
+def test_officeqa_predictive_evidence_gaps_require_month_coverage_before_compute(monkeypatch):
+    monkeypatch.setenv("BENCHMARK_NAME", "officeqa")
+    prompt = (
+        "Using specifically only the reported values for all individual calendar months in 1953 and all "
+        "individual calendar months in 1940, what was the absolute percent change of these total sum values?"
+    )
+    source_bundle = SourceBundle(
+        task_text=prompt,
+        focus_query="monthly expenditures 1953 1940",
+        target_period="1953 1940",
+        entities=["Treasury Bulletin"],
+        urls=[],
+        inline_facts={},
+        tables=[],
+        formulas=[],
+    )
+    retrieval_intent = build_retrieval_intent(prompt, source_bundle, intake(make_state(prompt))["benchmark_overrides"])
+
+    gaps = predictive_evidence_gaps(
+        retrieval_intent,
+        {
+            "tables": [{"document_id": "treasury_1953_json", "table_locator": "table 1"}],
+            "values": [
+                {
+                    "document_id": "treasury_1953_json",
+                    "citation": "treasury_1953.json",
+                    "page_locator": "page 1",
+                    "table_locator": "table 1",
+                    "row_label": "January 1953",
+                    "column_label": "Expenditures",
+                    "raw_value": "10.0",
+                    "numeric_value": 10.0,
+                    "normalized_value": 10000000.0,
+                }
+            ],
+            "page_chunks": [],
+        },
+    )
+
+    assert "missing month coverage" in gaps
+    assert "year coverage" in gaps
 
 
 def test_officeqa_evidence_sufficiency_rejects_wrong_source_family(monkeypatch):

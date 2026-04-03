@@ -52,6 +52,10 @@ def _benchmark_overrides(state: dict[str, Any]) -> dict[str, Any]:
     return dict(state.get("benchmark_overrides") or {})
 
 
+def _retrieval_intent(state: dict[str, Any]) -> dict[str, Any]:
+    return dict(state.get("retrieval_intent") or {})
+
+
 def _structured_evidence(state: dict[str, Any]) -> dict[str, Any]:
     return dict(_curated_context(state).get("structured_evidence") or {})
 
@@ -232,10 +236,12 @@ def build_case_report(case: dict[str, Any], trace: dict[str, Any] | None) -> dic
     classification = classify_officeqa_trace(trace)
     artifacts = capture_officeqa_artifacts(trace)
     quality_report = _quality_report(state)
+    retrieval_strategy = str(case.get("retrieval_strategy", "") or _retrieval_intent(state).get("strategy", "") or "").strip()
     return {
         "id": str(case.get("id", "") or ""),
         "prompt": str(case.get("prompt", "") or ""),
         "focus_subsystem": str(case.get("focus_subsystem", "") or ""),
+        "retrieval_strategy": retrieval_strategy,
         "smoke": bool(case.get("smoke")),
         "classification": classification,
         "artifacts": artifacts,
@@ -247,6 +253,7 @@ def build_case_report(case: dict[str, Any], trace: dict[str, Any] | None) -> dic
         "execution_summary": {
             "task_family": str(dict(state.get("task_intent") or {}).get("task_family", "") or ""),
             "execution_mode": str(dict(state.get("task_intent") or {}).get("execution_mode", "") or ""),
+            "retrieval_strategy": retrieval_strategy,
             "retrieval_iterations": int(_journal(state).get("retrieval_iterations", 0) or 0),
             "tool_count": len(_tool_results(state)),
         },
@@ -255,10 +262,14 @@ def build_case_report(case: dict[str, Any], trace: dict[str, Any] | None) -> dic
 
 def summarize_regression_report(case_reports: list[dict[str, Any]]) -> dict[str, Any]:
     counts: dict[str, int] = {key: 0 for key in ("pass", "routing", "retrieval", "extraction", "compute", "validation", "formatting")}
+    counts_by_strategy: dict[str, int] = {}
     evidence_ready = 0
     for item in case_reports:
         subsystem = str(dict(item.get("classification") or {}).get("subsystem", "") or "pass")
         counts[subsystem] = counts.get(subsystem, 0) + 1
+        strategy = str(item.get("retrieval_strategy", "") or dict(item.get("execution_summary") or {}).get("retrieval_strategy", "") or "").strip()
+        if strategy:
+            counts_by_strategy[strategy] = counts_by_strategy.get(strategy, 0) + 1
         artifacts = dict(item.get("artifacts") or {})
         if list(artifacts.get("extracted_tables", [])) and str(artifacts.get("final_answer", "")).strip():
             evidence_ready += 1
@@ -271,6 +282,7 @@ def summarize_regression_report(case_reports: list[dict[str, Any]]) -> dict[str,
     return {
         "total_cases": total,
         "counts_by_subsystem": counts,
+        "counts_by_strategy": counts_by_strategy,
         "evidence_ready_cases": evidence_ready,
         "required_evidence_ready_cases": required_evidence_ready,
         "go_for_full_benchmark": go_for_full_benchmark,
