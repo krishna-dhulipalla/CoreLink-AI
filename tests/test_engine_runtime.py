@@ -24,6 +24,7 @@ from agent.capabilities import BUILTIN_LEGAL_TOOLS, BUILTIN_RETRIEVAL_TOOLS, bui
 from agent.curated_context import attach_structured_evidence, solver_context_block
 from agent.nodes.orchestrator_retrieval import _plan_retrieval_action
 from agent.nodes.orchestrator import (
+    _MAX_RETRIEVAL_HOPS,
     context_curator,
     fast_path_gate,
     make_capability_resolver,
@@ -1358,6 +1359,136 @@ def test_officeqa_executor_uses_llm_wrapper_for_hybrid_answer_mode(monkeypatch):
     assert "selection_reasoning" in serialized_prompt
 
 
+def test_officeqa_executor_honors_validator_directed_gather_retry(monkeypatch):
+    @tool
+    def search_officeqa_documents(query: str, top_k: int = 5, snippet_chars: int = 700, source_files: list[str] | None = None) -> dict:
+        """Search the indexed OfficeQA corpus for candidate Treasury source documents."""
+        return {
+            "results": [
+                {
+                    "rank": 1,
+                    "title": "treasury_1940.json",
+                    "snippet": "Treasury Bulletin expenditures table.",
+                    "url": "treasury_1940.json",
+                    "document_id": "treasury_1940_json",
+                }
+            ],
+            "documents": [
+                {
+                    "document_id": "treasury_1940_json",
+                    "citation": "treasury_1940.json",
+                    "format": "json",
+                    "path": "treasury_1940.json",
+                }
+            ],
+        }
+
+    registry = build_capability_registry([CALCULATOR_TOOL, SEARCH_TOOL, search_officeqa_documents, *BUILTIN_RETRIEVAL_TOOLS])
+    executor = make_executor(registry)
+    state = make_state(
+        "What were the total expenditures for U.S. national defense in the calendar year 1940?",
+        task_profile="document_qa",
+        task_intent={
+            "task_family": "document_qa",
+            "execution_mode": "document_grounded_analysis",
+            "complexity_tier": "structured_analysis",
+            "tool_families_needed": ["document_retrieval", "exact_compute"],
+            "evidence_strategy": "document_first",
+            "review_mode": "document_grounded",
+            "completion_mode": "document_grounded",
+            "routing_rationale": "",
+            "confidence": 0.95,
+            "planner_source": "heuristic",
+        },
+        benchmark_overrides={"benchmark_adapter": "officeqa"},
+        tool_plan={
+            "tool_families_needed": ["document_retrieval", "exact_compute"],
+            "widened_families": [],
+            "selected_tools": ["search_officeqa_documents", "fetch_officeqa_table"],
+            "pending_tools": [],
+            "blocked_families": [],
+            "ace_events": [],
+            "notes": [],
+            "stop_reason": "",
+        },
+        source_bundle={
+            "task_text": "What were the total expenditures for U.S. national defense in the calendar year 1940?",
+            "focus_query": "national defense expenditures 1940",
+            "target_period": "1940",
+            "entities": ["National Defense"],
+            "urls": [],
+            "inline_facts": {},
+            "tables": [],
+            "formulas": [],
+        },
+        curated_context={
+            "objective": "national defense expenditures 1940",
+            "facts_in_use": [],
+            "open_questions": [],
+            "assumptions": [],
+            "requested_output": {"format": "text"},
+            "provenance_summary": {},
+            "structured_evidence": {},
+            "compute_result": {},
+        },
+        execution_journal={
+            "events": [],
+            "tool_results": [],
+            "routed_tool_families": [],
+            "revision_count": 0,
+            "self_reflection_count": 0,
+            "retrieval_iterations": 0,
+            "retrieval_queries": [],
+            "retrieved_citations": [],
+            "final_artifact_signature": "",
+            "progress_signatures": [],
+            "stop_reason": "",
+            "contract_collapse_attempts": 0,
+        },
+        review_feedback={
+            "verdict": "revise",
+            "reasoning": "Recover the exact table support.",
+            "missing_dimensions": ["aggregation correctness"],
+            "improve_hint": "Recover the exact table support.",
+            "repair_target": "gather",
+            "repair_class": "missing_evidence",
+            "orchestration_strategy": "table_compute",
+            "remediation_codes": ["RECOVER_AGGREGATION_SUPPORT"],
+            "retry_allowed": True,
+            "retry_stop_reason": "",
+        },
+    )
+    state["retrieval_intent"] = {
+        "entity": "National Defense",
+        "metric": "total expenditures",
+        "period": "1940",
+        "document_family": "official_government_finance",
+        "aggregation_shape": "calendar_year_total",
+        "answer_mode": "deterministic_compute",
+        "compute_policy": "required",
+        "partial_answer_allowed": False,
+        "strategy": "table_first",
+        "analysis_modes": [],
+        "evidence_plan": {
+            "requires_table_support": True,
+            "requires_text_support": False,
+            "requires_cross_source_alignment": False,
+            "required_years": ["1940"],
+            "join_keys": [],
+        },
+        "must_include_terms": ["National Defense", "1940"],
+        "must_exclude_terms": [],
+        "query_candidates": ["National Defense expenditures 1940 Treasury Bulletin"],
+    }
+
+    result = asyncio.run(executor(state))
+
+    assert result["solver_stage"] == "GATHER"
+    assert result["last_tool_result"]["type"] == "search_officeqa_documents"
+    assert result["workpad"]["officeqa_retry_path"]["repair_target"] == "gather"
+    assert result["workpad"]["officeqa_retry_path"]["orchestration_strategy"] == "table_compute"
+
+
 def test_fetch_corpus_document_rejects_paths_outside_corpus_root(monkeypatch):
     scratch_parent = Path("results") / "pytest_scratch"
     scratch_parent.mkdir(parents=True, exist_ok=True)
@@ -1713,7 +1844,16 @@ def test_engine_reviewer_collapses_exact_output_to_adapter_instead_of_looping():
             "planner_source": "heuristic",
         },
         answer_contract={"format": "json", "requires_adapter": True, "wrapper_key": "answer"},
-        tool_plan={"tool_families_needed": [], "widened_families": [], "selected_tools": [], "pending_tools": [], "blocked_families": [], "ace_events": [], "notes": [], "stop_reason": ""},
+        tool_plan={
+            "tool_families_needed": [],
+            "widened_families": [],
+            "selected_tools": ["search_officeqa_documents", "fetch_officeqa_table", "lookup_officeqa_rows"],
+            "pending_tools": [],
+            "blocked_families": [],
+            "ace_events": [],
+            "notes": [],
+            "stop_reason": "",
+        },
         execution_journal={"events": [], "tool_results": [], "routed_tool_families": [], "revision_count": 0, "self_reflection_count": 0, "final_artifact_signature": "abc", "progress_signatures": [], "stop_reason": "", "contract_collapse_attempts": 0},
         curated_context={"objective": prompt, "facts_in_use": [], "open_questions": [], "assumptions": [], "requested_output": {"format": "json", "requires_adapter": True, "wrapper_key": "answer"}, "provenance_summary": {}},
         workpad={"events": [], "stage_outputs": {}, "tool_results": [], "review_ready": True},
@@ -1892,7 +2032,7 @@ def test_engine_reviewer_flags_missing_grounding_for_document_answers():
     assert "source attribution" in " ".join(result["review_feedback"]["missing_dimensions"]).lower()
 
 
-def test_officeqa_reviewer_blocks_structured_failure_before_reflection_and_records_validator_result():
+def test_officeqa_reviewer_routes_structured_failure_into_targeted_gather_retry_and_records_validator_result():
     prompt = (
         "Using specifically only the reported values for all individual calendar months in 1953 and all "
         "individual calendar months in 1940, what was the absolute percent change of these total sum values?"
@@ -1919,7 +2059,16 @@ def test_officeqa_reviewer_blocks_structured_failure_before_reflection_and_recor
             "tables": [],
             "formulas": [],
         },
-        tool_plan={"tool_families_needed": [], "widened_families": [], "selected_tools": [], "pending_tools": [], "blocked_families": [], "ace_events": [], "notes": [], "stop_reason": ""},
+        tool_plan={
+            "tool_families_needed": [],
+            "widened_families": [],
+            "selected_tools": ["search_officeqa_documents", "fetch_officeqa_table", "lookup_officeqa_rows"],
+            "pending_tools": [],
+            "blocked_families": [],
+            "ace_events": [],
+            "notes": [],
+            "stop_reason": "",
+        },
         execution_journal={
             "events": [],
             "tool_results": [
@@ -2034,13 +2183,107 @@ def test_officeqa_reviewer_blocks_structured_failure_before_reflection_and_recor
     result = reviewer(state)
     state.update(result)
 
-    assert result["solver_stage"] == "COMPLETE"
-    assert result["quality_report"]["verdict"] == "fail"
-    assert result["quality_report"]["stop_reason"] == "officeqa_structured_validation_failed"
+    assert result["solver_stage"] == "REVISE"
+    assert result["quality_report"]["verdict"] == "revise"
+    assert result["review_feedback"]["repair_target"] == "gather"
+    assert result["review_feedback"]["repair_class"] == "missing_evidence"
+    assert result["review_feedback"]["orchestration_strategy"] == "table_compute"
+    assert result["review_feedback"]["remediation_codes"]
     assert "deterministic compute support" in result["review_packet"]["validator_result"]["hard_failures"]
+    assert result["review_packet"]["validator_result"]["recommended_repair_target"] == "gather"
+    assert result["review_packet"]["validator_result"]["orchestration_strategy"] == "table_compute"
+    assert result["review_packet"]["validator_result"]["retry_allowed"] is True
     assert result["review_packet"]["validator_result"]["remediation_guidance"]
     assert result["review_packet"]["diagnostic_artifacts"]["compute_diagnostics"]
+    assert result["review_packet"]["diagnostic_artifacts"]["validator_codes"]
+    assert result["review_packet"]["diagnostic_artifacts"]["validator_orchestration"]
     assert result["review_packet"]["diagnostic_artifacts"]["validator_remediation"]
+    assert route_from_reviewer(state) == "executor"
+
+
+def test_officeqa_reviewer_stops_when_validator_retry_path_is_exhausted():
+    prompt = (
+        "Using specifically only the reported values for all individual calendar months in 1953 and all "
+        "individual calendar months in 1940, what was the absolute percent change of these total sum values?"
+    )
+    state = make_state(
+        prompt,
+        task_profile="document_qa",
+        task_intent={
+            "task_family": "document_qa",
+            "execution_mode": "document_grounded_analysis",
+            "complexity_tier": "complex_qualitative",
+            "review_mode": "document_grounded",
+            "planner_source": "heuristic",
+        },
+        benchmark_overrides={"benchmark_adapter": "officeqa", "officeqa_xml_contract": True},
+        answer_contract={"format": "xml", "requires_adapter": True, "xml_root_tag": "FINAL_ANSWER", "value_rules": {"reasoning_tag": "REASONING", "final_answer_tag": "FINAL_ANSWER"}},
+        source_bundle={
+            "task_text": prompt,
+            "focus_query": "Treasury Bulletin expenditures 1953 1940",
+            "target_period": "1953 1940",
+            "entities": ["National Defense"],
+            "urls": ["https://govinfo.gov/treasury_1953.pdf"],
+            "inline_facts": {},
+            "tables": [],
+            "formulas": [],
+        },
+        tool_plan={"tool_families_needed": [], "widened_families": [], "selected_tools": ["fetch_officeqa_table"], "pending_tools": [], "blocked_families": [], "ace_events": [], "notes": [], "stop_reason": ""},
+        execution_journal={
+            "events": [],
+            "tool_results": [],
+            "routed_tool_families": [],
+            "revision_count": 0,
+            "self_reflection_count": 0,
+            "retrieval_iterations": _MAX_RETRIEVAL_HOPS,
+            "retrieval_queries": ["national defense expenditures 1953 1940"],
+            "retrieved_citations": ["https://govinfo.gov/treasury_1953.pdf"],
+            "final_artifact_signature": "abc",
+            "progress_signatures": [],
+            "stop_reason": "",
+            "contract_collapse_attempts": 0,
+        },
+        curated_context={
+            "objective": prompt,
+            "facts_in_use": [],
+            "open_questions": [],
+            "assumptions": [],
+            "requested_output": {"format": "xml"},
+            "provenance_summary": {"source_bundle": {"urls": ["https://govinfo.gov/treasury_1953.pdf"]}},
+            "structured_evidence": {},
+            "compute_result": {"status": "insufficient", "operation": "monthly_sum_percent_change", "validation_errors": ["Missing comparable period totals for 1940 and 1953."]},
+        },
+        workpad={"events": [], "stage_outputs": {}, "tool_results": [], "review_ready": True},
+    )
+    state["retrieval_intent"] = {
+        "entity": "National Defense",
+        "metric": "absolute percent change",
+        "period": "1953 1940",
+        "document_family": "official_government_finance",
+        "aggregation_shape": "monthly_sum_percent_change",
+        "answer_mode": "deterministic_compute",
+        "compute_policy": "required",
+        "partial_answer_allowed": False,
+        "strategy": "table_first",
+        "analysis_modes": [],
+        "evidence_plan": {
+            "requires_table_support": True,
+            "requires_text_support": False,
+            "requires_cross_source_alignment": False,
+            "join_keys": [],
+        },
+        "must_include_terms": [],
+        "must_exclude_terms": [],
+        "query_candidates": [],
+    }
+    state["messages"].append(AIMessage(content="The absolute percent change was 18.2."))
+
+    result = reviewer(state)
+    state.update(result)
+
+    assert result["solver_stage"] == "COMPLETE"
+    assert result["quality_report"]["verdict"] == "fail"
+    assert result["quality_report"]["stop_reason"] == "officeqa_retry_exhausted"
     assert route_from_reviewer(state) == "output_adapter"
 
 
@@ -2099,7 +2342,7 @@ def test_officeqa_reviewer_emits_safe_insufficiency_answer_for_adapter():
     adapted = output_adapter({**state, "messages": state["messages"]})
     rendered = str(adapted["messages"][0].content)
 
-    assert reviewed["quality_report"]["stop_reason"] == "officeqa_structured_validation_failed"
+    assert reviewed["quality_report"]["stop_reason"] == "officeqa_no_retrieval_repair_path"
     assert "provided Treasury Bulletin evidence" in rendered
     assert ("Cannot calculate" in rendered) or ("Cannot determine" in rendered)
     assert "<FINAL_ANSWER>" in rendered

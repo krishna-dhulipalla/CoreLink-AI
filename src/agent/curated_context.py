@@ -566,6 +566,15 @@ def build_review_packet(
         "retrieval_diagnostics": _compact_prompt_value(provenance.get("retrieval_diagnostics", {})),
         "evidence_plan_check": _compact_prompt_value(provenance.get("evidence_plan_check", {})),
         "compute_diagnostics": _compact_prompt_value(provenance.get("compute_result", {})),
+        "validator_codes": _compact_prompt_value(dict(validator_result or {}).get("remediation_codes", [])),
+        "validator_orchestration": _compact_prompt_value(
+            {
+                "recommended_repair_target": dict(validator_result or {}).get("recommended_repair_target", ""),
+                "orchestration_strategy": dict(validator_result or {}).get("orchestration_strategy", ""),
+                "retry_allowed": dict(validator_result or {}).get("retry_allowed", False),
+                "retry_stop_reason": dict(validator_result or {}).get("retry_stop_reason", ""),
+            }
+        ),
         "validator_remediation": _compact_prompt_value(dict(validator_result or {}).get("remediation_guidance", [])),
     }
     return ReviewPacket(

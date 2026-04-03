@@ -45,6 +45,18 @@ _SOFT_SYNTHESIS_MISSING_DIMENSIONS = {
     "missing fiscal month coverage",
     "missing inflation or monthly support",
 }
+_FAILURE_REMEDIATION_CODES = {
+    "structured evidence presence": "RETRIEVE_GROUNDED_EVIDENCE",
+    "source family correctness": "RERANK_ALLOWED_SOURCES",
+    "time scope correctness": "RETRIEVE_EXACT_PERIOD",
+    "aggregation correctness": "RECOVER_AGGREGATION_SUPPORT",
+    "entity/category correctness": "RETIGHTEN_ENTITY_SCOPE",
+    "unit consistency": "NORMALIZE_UNITS",
+    "provenance presence": "RECOVER_PROVENANCE",
+    "deterministic compute support": "COLLECT_COMPUTE_INPUTS",
+    "deterministic compute validation": "REPAIR_COMPUTE_VALIDATION",
+    "deterministic compute ledger": "REBUILD_COMPUTE_LEDGER",
+}
 
 
 def _requires_deterministic_compute(retrieval_intent: RetrievalIntent) -> bool:
@@ -95,6 +107,38 @@ def _remediation_guidance(hard_failures: list[str]) -> list[str]:
     return guidance
 
 
+def officeqa_orchestration_strategy(retrieval_intent: RetrievalIntent) -> str:
+    plan = retrieval_intent.evidence_plan
+    if plan.requires_cross_source_alignment or retrieval_intent.strategy == "multi_document":
+        return "cross_document_comparison"
+    if retrieval_intent.strategy in {"hybrid", "multi_table"} or plan.join_keys or (plan.requires_table_support and plan.requires_text_support):
+        return "hybrid_join"
+    if retrieval_intent.answer_mode == "grounded_synthesis" and plan.requires_text_support and not plan.requires_table_support:
+        return "text_reasoning"
+    if retrieval_intent.answer_mode in {"grounded_synthesis", "hybrid_grounded"} and plan.requires_text_support and retrieval_intent.compute_policy != "required":
+        return "text_reasoning"
+    return "table_compute"
+
+
+def _remediation_codes(failures: list[str]) -> list[str]:
+    codes: list[str] = []
+    for failure in failures:
+        code = _FAILURE_REMEDIATION_CODES.get(str(failure).strip(), "")
+        if code and code not in codes:
+            codes.append(code)
+    return codes
+
+
+def _recommended_repair_target(remediation_codes: list[str]) -> str:
+    if any(code in remediation_codes for code in ("COLLECT_COMPUTE_INPUTS",)):
+        return "gather"
+    if any(code in remediation_codes for code in ("REPAIR_COMPUTE_VALIDATION", "REBUILD_COMPUTE_LEDGER")):
+        return "compute"
+    if remediation_codes:
+        return "gather"
+    return "none"
+
+
 def validate_officeqa_final(
     *,
     task_text: str,
@@ -108,6 +152,7 @@ def validate_officeqa_final(
     structured = OfficeQAStructuredEvidence.model_validate(curated.structured_evidence or {})
     compute = OfficeQAComputeResult.model_validate(curated.compute_result or {})
     citation_list = [str(item).strip() for item in citations or [] if str(item).strip()]
+    orchestration_strategy = officeqa_orchestration_strategy(retrieval_intent)
 
     hard_failures: list[str] = []
     missing_dimensions: list[str] = []
@@ -169,31 +214,42 @@ def validate_officeqa_final(
 
     if hard_failures:
         hard_failures = list(dict.fromkeys(hard_failures))
+        remediation_codes = _remediation_codes(hard_failures)
         return OfficeQAValidationResult(
-            verdict="fail",
+            verdict="revise",
             reasoning=(
-                "OfficeQA validator rejected the final artifact because structured evidence, source alignment, "
-                "or deterministic compute support is insufficient for a grounded benchmark answer."
+                "OfficeQA validator found a structured grounding or compute gap that should drive a targeted repair pass "
+                "instead of another generic synthesis loop."
             ),
             missing_dimensions=hard_failures,
             hard_failures=hard_failures,
+            remediation_codes=remediation_codes,
             remediation_guidance=_remediation_guidance(hard_failures),
-            stop_reason="officeqa_structured_validation_failed",
+            recommended_repair_target=_recommended_repair_target(remediation_codes),
+            orchestration_strategy=orchestration_strategy,
+            retry_allowed=True,
+            stop_reason="officeqa_structured_revision_required",
             insufficiency_answer=_insufficiency_statement(hard_failures),
-            replace_answer=True,
+            replace_answer=False,
         )
 
     if missing_dimensions:
         missing_dimensions = list(dict.fromkeys(missing_dimensions))
+        remediation_codes = _remediation_codes(missing_dimensions)
         return OfficeQAValidationResult(
             verdict="revise",
             reasoning="OfficeQA validator found a remaining structured-alignment gap that should be corrected before formatting the final answer.",
             missing_dimensions=missing_dimensions,
+            remediation_codes=remediation_codes,
             remediation_guidance=_remediation_guidance(missing_dimensions),
+            recommended_repair_target=_recommended_repair_target(remediation_codes),
+            orchestration_strategy=orchestration_strategy,
+            retry_allowed=True,
             stop_reason="officeqa_structured_revision_required",
         )
 
     return OfficeQAValidationResult(
         verdict="pass",
         reasoning="OfficeQA validator accepted the structured evidence, provenance, and compute state.",
+        orchestration_strategy=orchestration_strategy,
     )

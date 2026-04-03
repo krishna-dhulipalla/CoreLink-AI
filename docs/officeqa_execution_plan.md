@@ -623,20 +623,26 @@ Objective:
 
 Tasks:
 
-- [ ] `P13.1` Make validator return machine-actionable remediation codes plus human-readable repair guidance
-- [ ] `P13.2` Add orchestration strategies for:
+- [x] `P13.1` Make validator return machine-actionable remediation codes plus human-readable repair guidance
+- [x] `P13.2` Add orchestration strategies for:
   - table compute
   - text reasoning
   - hybrid join
   - cross-document comparison
-- [ ] `P13.3` Bind orchestration strategy selection to `TaskIntent`, `RetrievalIntent`, and `EvidencePlan`
-- [ ] `P13.4` Add retry policies keyed to validator remediation instead of generic revise loops
-- [ ] `P13.5` Add stop rules that prevent useless retries when evidence requirements cannot be met
-- [ ] `P13.6` Capture orchestration choice and retry path in the trace and regression report
+- [x] `P13.3` Bind orchestration strategy selection to `TaskIntent`, `RetrievalIntent`, and `EvidencePlan`
+- [x] `P13.4` Add retry policies keyed to validator remediation instead of generic revise loops
+- [x] `P13.5` Add stop rules that prevent useless retries when evidence requirements cannot be met
+- [x] `P13.6` Capture orchestration choice and retry path in the trace and regression report
 
 Exit criteria:
 
 - the runtime can adapt its flow instead of repeating one best-effort pipeline
+
+Phase 13 completion notes:
+
+- `src/agent/benchmarks/officeqa_validator.py` now returns machine-actionable remediation codes, repair guidance, recommended repair targets, and orchestration strategy hints instead of only hard-failure labels.
+- `src/agent/nodes/orchestrator.py` now converts OfficeQA validator revisions into targeted gather or compute retries, applies orchestration-specific retrieval strategy overrides, and stops early with explicit `officeqa_*` stop reasons when no useful repair path remains.
+- `src/agent/curated_context.py`, `src/agent/benchmarks/officeqa_eval.py`, and runtime traces now preserve validator codes, orchestration strategy, retry allowance, and retry stop reason so debugging and regression reports expose the same control decisions the runtime used.
 
 ## Phase 14: Multi-Document Support And Future Document Adapters
 

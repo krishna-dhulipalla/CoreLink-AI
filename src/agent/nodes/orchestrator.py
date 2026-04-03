@@ -38,7 +38,7 @@ from agent.solver.quant import deterministic_quant_final_answer
 from agent.tracer import format_messages_for_trace, get_tracer
 from agent.capabilities import resolve_tool_plan
 from agent.benchmarks.officeqa_compute import compute_officeqa_result
-from agent.benchmarks.officeqa_validator import validate_officeqa_final
+from agent.benchmarks.officeqa_validator import officeqa_orchestration_strategy, validate_officeqa_final
 from agent.benchmarks import benchmark_task_intent
 from agent.curated_context import (
     _compact_tool_findings,
@@ -491,6 +491,62 @@ def _partial_answer_missing_dimensions(missing_dimensions: list[str]) -> list[st
     return [item for item in missing_dimensions if str(item).strip().lower() not in allowed]
 
 
+def _orchestration_retrieval_strategy(orchestration_strategy: str, retrieval_intent: RetrievalIntent) -> str:
+    if orchestration_strategy == "cross_document_comparison":
+        return "multi_document"
+    if orchestration_strategy == "hybrid_join":
+        return retrieval_intent.strategy if retrieval_intent.strategy in {"hybrid", "multi_table", "multi_document"} else "hybrid"
+    if orchestration_strategy == "text_reasoning":
+        return "text_first"
+    return "table_first"
+
+
+def _apply_review_orchestration(retrieval_intent: RetrievalIntent, review_feedback: dict[str, Any] | None) -> RetrievalIntent:
+    if not review_feedback:
+        return retrieval_intent
+    orchestration_strategy = str(review_feedback.get("orchestration_strategy", "") or "").strip()
+    if not orchestration_strategy:
+        return retrieval_intent
+    updated = retrieval_intent.model_copy(deep=True)
+    updated.strategy = _orchestration_retrieval_strategy(orchestration_strategy, retrieval_intent)  # type: ignore[assignment]
+    if orchestration_strategy == "text_reasoning":
+        updated.fallback_chain = [item for item in dict.fromkeys(["hybrid", "table_first", *updated.fallback_chain]) if item != updated.strategy]
+    elif orchestration_strategy == "cross_document_comparison":
+        updated.fallback_chain = [item for item in dict.fromkeys(["hybrid", "multi_table", "text_first", *updated.fallback_chain]) if item != updated.strategy]
+    elif orchestration_strategy == "hybrid_join":
+        updated.fallback_chain = [item for item in dict.fromkeys(["text_first", "table_first", *updated.fallback_chain]) if item != updated.strategy]
+    return updated
+
+
+def _officeqa_retry_policy(
+    officeqa_validation: Any,
+    *,
+    journal: ExecutionJournal,
+    tool_plan: ToolPlan,
+    retrieval_intent: RetrievalIntent,
+) -> tuple[bool, str]:
+    repair_target = str(getattr(officeqa_validation, "recommended_repair_target", "") or "none")
+    orchestration_strategy = str(getattr(officeqa_validation, "orchestration_strategy", "") or officeqa_orchestration_strategy(retrieval_intent))
+    if repair_target == "none":
+        return False, "officeqa_no_repair_target"
+    if repair_target == "gather":
+        if journal.retrieval_iterations >= _MAX_RETRIEVAL_HOPS:
+            return False, "officeqa_retry_exhausted"
+        retrieval_tools = [
+            tool_name
+            for tool_name in tool_plan.selected_tools
+            if tool_name in {"search_officeqa_documents", "fetch_officeqa_pages", "fetch_officeqa_table", "lookup_officeqa_rows", "lookup_officeqa_cells", "search_reference_corpus", "fetch_corpus_document", "fetch_reference_file", "list_reference_files", "internet_search"}
+        ]
+        if not retrieval_tools:
+            return False, "officeqa_no_retrieval_repair_path"
+        if orchestration_strategy == "cross_document_comparison" and not retrieval_intent.evidence_plan.requires_cross_source_alignment and len(retrieval_intent.fallback_chain) == 0:
+            return False, "officeqa_cross_document_repair_not_supported"
+    if repair_target == "compute":
+        if not retrieval_intent.compute_policy == "required" and not retrieval_intent.evidence_plan.requires_table_support:
+            return False, "officeqa_compute_repair_not_applicable"
+    return True, ""
+
+
 def _latest_public_answer(state: RuntimeState) -> str:
     for msg in reversed(state.get("messages", [])):
         if isinstance(msg, AIMessage) and msg.content and not msg.tool_calls:
@@ -570,6 +626,12 @@ def make_executor(registry: dict[str, dict[str, Any]]):
         journal = ExecutionJournal.model_validate(state.get("execution_journal") or {})
         workpad = dict(state.get("workpad", {}))
         review_feedback = dict(state.get("review_feedback") or {})
+        targeted_retrieval_retry = bool(
+            review_feedback
+            and review_feedback.get("repair_target") == "gather"
+            and review_feedback.get("retry_allowed", True)
+        )
+        active_retrieval_intent = _apply_review_orchestration(retrieval_intent, review_feedback)
         budget = state.get("budget_tracker")
         tracker = state.get("cost_tracker")
         tracer = get_tracer()
@@ -678,7 +740,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                     "workpad": workpad,
                 }
 
-        if tool_plan.pending_tools and not review_feedback:
+        if tool_plan.pending_tools and (not review_feedback or targeted_retrieval_retry):
             next_tool = tool_plan.pending_tools[0]
             if budget and budget.tool_calls_exhausted():
                 budget.log_budget_exit("tool_budget_exhausted", f"Blocked tool '{next_tool}' after reaching tool-call cap.")
@@ -729,11 +791,11 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                         "workpad": workpad,
                     }
 
-        if intent.execution_mode in _RETRIEVAL_EXECUTION_MODES and not review_feedback and journal.retrieval_iterations < _MAX_RETRIEVAL_HOPS:
+        if intent.execution_mode in _RETRIEVAL_EXECUTION_MODES and (not review_feedback or targeted_retrieval_retry) and journal.retrieval_iterations < _MAX_RETRIEVAL_HOPS:
             retrieval_action = _plan_retrieval_action(
                 execution_mode=intent.execution_mode,
                 source_bundle=source_bundle,
-                retrieval_intent=retrieval_intent,
+                retrieval_intent=active_retrieval_intent,
                 tool_plan=tool_plan,
                 journal=journal,
                 registry=registry,
@@ -743,7 +805,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                 if budget and budget.tool_calls_exhausted():
                     budget.log_budget_exit("tool_budget_exhausted", f"Blocked tool '{retrieval_action.tool_name}' after reaching tool-call cap.")
                 else:
-                    tool_args = _tool_args_from_retrieval_action(retrieval_action, source_bundle, registry, retrieval_intent)
+                    tool_args = _tool_args_from_retrieval_action(retrieval_action, source_bundle, registry, active_retrieval_intent)
                     _, tool_result = await _run_tool_step_with_args(state, registry, retrieval_action.tool_name, tool_args)
                     if tracker:
                         tracker.record_mcp_call()
@@ -776,6 +838,12 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                     provenance_summary["retrieval_diagnostics"] = retrieval_diagnostics
                     curated.provenance_summary = provenance_summary
                     workpad["retrieval_diagnostics"] = retrieval_diagnostics
+                    if targeted_retrieval_retry:
+                        workpad["officeqa_retry_path"] = {
+                            "repair_target": review_feedback.get("repair_target", ""),
+                            "orchestration_strategy": review_feedback.get("orchestration_strategy", ""),
+                            "remediation_codes": list(review_feedback.get("remediation_codes", [])),
+                        }
                     workpad = _record_event(workpad, "executor", f"retrieval hop -> {retrieval_action.tool_name}")
                     evidence_sufficiency = assess_evidence_sufficiency(task_text, source_bundle, journal.tool_results, benchmark_overrides)
                     if tracer:
@@ -794,6 +862,8 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                                 "candidate_sources": retrieval_action.candidate_sources,
                                 "rejected_candidates": retrieval_action.rejected_candidates,
                                 "evidence_gaps": [retrieval_action.evidence_gap] if retrieval_action.evidence_gap else [],
+                                "orchestration_strategy": review_feedback.get("orchestration_strategy", "") if targeted_retrieval_retry else "",
+                                "retry_path": dict(workpad.get("officeqa_retry_path") or {}),
                             },
                         )
                     return {
@@ -1233,6 +1303,24 @@ def reviewer(state: RuntimeState) -> dict[str, Any]:
                 if str(item).strip()
             ],
         )
+        if officeqa_validation.verdict == "revise":
+            retry_allowed, retry_stop_reason = _officeqa_retry_policy(
+                officeqa_validation,
+                journal=journal,
+                tool_plan=tool_plan,
+                retrieval_intent=retrieval_intent,
+            )
+            officeqa_validation.retry_allowed = retry_allowed
+            officeqa_validation.retry_stop_reason = retry_stop_reason
+            workpad["officeqa_retry_policy"] = {
+                "recommended_repair_target": officeqa_validation.recommended_repair_target,
+                "orchestration_strategy": officeqa_validation.orchestration_strategy,
+                "remediation_codes": list(officeqa_validation.remediation_codes),
+                "retry_allowed": retry_allowed,
+                "retry_stop_reason": retry_stop_reason,
+            }
+            if not retry_allowed and officeqa_validation.insufficiency_answer:
+                answer = officeqa_validation.insufficiency_answer
         validator_result = officeqa_validation.model_dump()
         if officeqa_validation.replace_answer and officeqa_validation.insufficiency_answer:
             answer = officeqa_validation.insufficiency_answer
@@ -1354,6 +1442,13 @@ def reviewer(state: RuntimeState) -> dict[str, Any]:
         artifact_signature=journal.final_artifact_signature or _artifact_signature(answer),
         contract_status=_contract_status(answer, answer_contract, intent.review_mode),
     )
+    if officeqa_validation and officeqa_validation.verdict == "revise" and not officeqa_validation.retry_allowed:
+        verdict = "fail"
+        reasoning = (
+            "OfficeQA validator found a repairable gap, but the runtime has no remaining targeted repair path for this run."
+        )
+        stop_reason = officeqa_validation.retry_stop_reason or "officeqa_no_repair_path"
+        score = min(score, 0.4)
     if journal.progress_signatures and journal.progress_signatures[-1].get("signature") == progress.signature and verdict == "revise":
         verdict = "fail"
         reasoning = "Progress stalled: the answer repeated the same unresolved gap without a materially different artifact."
@@ -1386,6 +1481,10 @@ def reviewer(state: RuntimeState) -> dict[str, Any]:
                 "stop_reason": stop_reason,
                 "officeqa_validator": validator_result,
                 "validator_remediation": dict(validator_result or {}).get("remediation_guidance", []),
+                "validator_codes": dict(validator_result or {}).get("remediation_codes", []),
+                "orchestration_strategy": dict(validator_result or {}).get("orchestration_strategy", ""),
+                "retry_allowed": dict(validator_result or {}).get("retry_allowed", False),
+                "retry_stop_reason": dict(validator_result or {}).get("retry_stop_reason", ""),
                 "answer_mode": retrieval_intent.answer_mode,
                 "compute_policy": retrieval_intent.compute_policy,
                 "used_llm": False,
@@ -1417,8 +1516,38 @@ def reviewer(state: RuntimeState) -> dict[str, Any]:
                 "reasoning": report.targeted_fix_prompt or reasoning,
                 "missing_dimensions": missing,
                 "improve_hint": report.targeted_fix_prompt,
-                "repair_target": "final",
-                "repair_class": "missing_section",
+                "repair_target": (
+                    officeqa_validation.recommended_repair_target
+                    if officeqa_validation and officeqa_validation.verdict == "revise"
+                    else "final"
+                ),
+                "repair_class": (
+                    "missing_evidence"
+                    if officeqa_validation and officeqa_validation.recommended_repair_target == "gather"
+                    else "scalar_only"
+                    if officeqa_validation and officeqa_validation.recommended_repair_target == "compute"
+                    else "missing_section"
+                ),
+                "orchestration_strategy": (
+                    officeqa_validation.orchestration_strategy
+                    if officeqa_validation and officeqa_validation.verdict == "revise"
+                    else ""
+                ),
+                "remediation_codes": (
+                    list(officeqa_validation.remediation_codes)
+                    if officeqa_validation and officeqa_validation.verdict == "revise"
+                    else []
+                ),
+                "retry_allowed": (
+                    officeqa_validation.retry_allowed
+                    if officeqa_validation and officeqa_validation.verdict == "revise"
+                    else True
+                ),
+                "retry_stop_reason": (
+                    officeqa_validation.retry_stop_reason
+                    if officeqa_validation and officeqa_validation.verdict == "revise"
+                    else ""
+                ),
             },
             "solver_stage": "REVISE",
             "workpad": workpad,
@@ -1435,7 +1564,7 @@ def reviewer(state: RuntimeState) -> dict[str, Any]:
         "solver_stage": "COMPLETE",
         "workpad": workpad,
     }
-    if officeqa_validation and officeqa_validation.replace_answer:
+    if officeqa_validation and (officeqa_validation.replace_answer or (officeqa_validation.verdict == "revise" and not officeqa_validation.retry_allowed)):
         result["messages"] = [AIMessage(content=answer)]
     return result
 

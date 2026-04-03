@@ -154,7 +154,15 @@ def test_capture_officeqa_artifacts_collects_tables_and_ledger():
             "stop_reason": "",
             "contract_collapse_attempts": 0,
         },
-        review_packet={"validator_result": {"remediation_guidance": ["Re-extract evidence for the exact requested years."]}},
+        review_packet={
+            "validator_result": {
+                "remediation_codes": ["RETRIEVE_EXACT_PERIOD"],
+                "remediation_guidance": ["Re-extract evidence for the exact requested years."],
+                "orchestration_strategy": "table_compute",
+                "retry_allowed": True,
+                "retry_stop_reason": "",
+            }
+        },
     )
 
     artifacts = capture_officeqa_artifacts(_trace(state, "<REASONING>x</REASONING><FINAL_ANSWER>2602</FINAL_ANSWER>"))
@@ -170,6 +178,9 @@ def test_capture_officeqa_artifacts_collects_tables_and_ledger():
     assert artifacts["evidence_gaps"] == ["missing month coverage"]
     assert artifacts["compute_selection_reasoning"]
     assert artifacts["rejected_aggregation_alternatives"]
+    assert artifacts["validator_codes"] == ["RETRIEVE_EXACT_PERIOD"]
+    assert artifacts["orchestration_strategy"] == "table_compute"
+    assert artifacts["retry_allowed"] is True
     assert artifacts["validator_remediation"]
     assert artifacts["extracted_tables"][0]["document_id"] == "treasury_1940_json"
     assert artifacts["compute_ledger"][0]["operator"] == "monthly_sum"

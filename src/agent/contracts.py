@@ -235,7 +235,12 @@ class OfficeQAValidationResult(BaseModel):
     reasoning: str = ""
     missing_dimensions: list[str] = Field(default_factory=list)
     hard_failures: list[str] = Field(default_factory=list)
+    remediation_codes: list[str] = Field(default_factory=list)
     remediation_guidance: list[str] = Field(default_factory=list)
+    recommended_repair_target: Literal["none", "gather", "compute", "synthesize", "final"] = "none"
+    orchestration_strategy: str = ""
+    retry_allowed: bool = False
+    retry_stop_reason: str = ""
     stop_reason: str = ""
     insufficiency_answer: str = ""
     replace_answer: bool = False
