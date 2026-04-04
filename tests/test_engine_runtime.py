@@ -360,6 +360,7 @@ def test_officeqa_structured_evidence_projects_normalized_table_values(monkeypat
     assert structured["provenance_complete"] is True
     assert structured["value_count"] >= 2
     assert structured["units_seen"] == ["million"]
+    assert structured["structure_confidence_summary"]["table_confidence_gate_passed"] is True
     february_value = next(
         item
         for item in structured["values"]
@@ -903,6 +904,56 @@ def test_officeqa_predictive_evidence_gaps_require_month_coverage_before_compute
 
     assert "missing month coverage" in gaps
     assert "year coverage" in gaps
+
+
+def test_officeqa_predictive_evidence_gaps_flag_low_confidence_structure(monkeypatch):
+    monkeypatch.setenv("BENCHMARK_NAME", "officeqa")
+    prompt = "According to the Treasury Bulletin, what was total public debt outstanding in 1945?"
+    source_bundle = SourceBundle(
+        task_text=prompt,
+        focus_query="total public debt outstanding 1945",
+        target_period="1945",
+        entities=["Treasury Bulletin"],
+        urls=[],
+        inline_facts={},
+        tables=[],
+        formulas=[],
+    )
+    retrieval_intent = build_retrieval_intent(prompt, source_bundle, intake(make_state(prompt))["benchmark_overrides"])
+
+    gaps = predictive_evidence_gaps(
+        retrieval_intent,
+        {
+            "tables": [{"document_id": "treasury_1945_json", "table_locator": "table 19"}],
+            "values": [
+                {
+                    "document_id": "treasury_1945_json",
+                    "citation": "treasury_1945.json",
+                    "page_locator": "page 29",
+                    "table_locator": "table 19",
+                    "row_label": "Total public debt",
+                    "row_path": ["Total public debt outstanding"],
+                    "column_label": "Estimated 1/",
+                    "column_path": ["End of fiscal years, 1941 to 1945", "1945"],
+                    "raw_value": "258682",
+                    "numeric_value": 258682.0,
+                    "normalized_value": 258682.0,
+                    "structure_confidence": 0.42,
+                }
+            ],
+            "page_chunks": [],
+            "structure_confidence_summary": {
+                "min_confidence": 0.42,
+                "avg_confidence": 0.42,
+                "max_confidence": 0.42,
+                "low_confidence_value_count": 1,
+                "low_confidence_table_count": 1,
+                "table_confidence_gate_passed": False,
+            },
+        },
+    )
+
+    assert "low-confidence structure" in gaps
 
 
 def test_officeqa_evidence_sufficiency_rejects_wrong_source_family(monkeypatch):

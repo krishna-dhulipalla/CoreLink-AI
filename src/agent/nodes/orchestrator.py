@@ -918,6 +918,8 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                         },
                     )
                 if retrieval_intent.compute_policy == "required":
+                    if "low-confidence structure" in predictive_gaps:
+                        journal.stop_reason = "officeqa_low_confidence_structure"
                     answer = _officeqa_required_compute_insufficiency_answer(predictive_gaps)
                     journal.final_artifact_signature = _artifact_signature(answer)
                     workpad["completion_budget"] = 0

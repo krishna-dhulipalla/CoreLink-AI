@@ -767,24 +767,24 @@ Why now:
 
 Tasks:
 
-- [ ] `P16.1` Rework structured evidence projection so each value is keyed by resolved:
+- [x] `P16.1` Rework structured evidence projection so each value is keyed by resolved:
   - row path
   - column path
   - year or period
   - unit
   - table / page provenance
-- [ ] `P16.2` Add confidence fields for:
+- [x] `P16.2` Add confidence fields for:
   - header reconstruction
   - row classification
   - cell assignment
   - unit assignment
   - period resolution
-- [ ] `P16.3` Add a confidence gate before deterministic compute:
+- [x] `P16.3` Add a confidence gate before deterministic compute:
   - allow compute on high-confidence evidence
   - stop or fall back on low-confidence structure
-- [ ] `P16.4` Rewrite `point_lookup` and related selection logic to query against resolved header paths rather than raw row/cell text overlap
-- [ ] `P16.5` Add explicit low-confidence stop reasons and diagnostics to traces and regression reports
-- [ ] `P16.6` Add fallback policy for low-confidence tables:
+- [x] `P16.4` Rewrite `point_lookup` and related selection logic to query against resolved header paths rather than raw row/cell text overlap
+- [x] `P16.5` Add explicit low-confidence stop reasons and diagnostics to traces and regression reports
+- [x] `P16.6` Add fallback policy for low-confidence tables:
   - slower alternate extractor
   - alternate normalization strategy
   - or bounded insufficiency when neither path is trustworthy
@@ -800,6 +800,17 @@ Exit criteria:
 
 - deterministic point lookup uses resolved structural paths instead of raw flattened labels
 - compute can explicitly refuse low-confidence extraction instead of silently producing noisy candidate values
+
+Phase 16 completion notes:
+
+- Structured evidence now carries resolved `row_path`, `column_path`, and a `structure_confidence` score per value, plus a top-level `structure_confidence_summary`.
+- Predictive evidence checks now emit `low-confidence structure` before deterministic compute when normalized table structure is too weak.
+- Deterministic OfficeQA compute now applies a structure-confidence gate and refuses to compute from low-confidence tables.
+- `point_lookup` scoring now prefers resolved path semantics and explicit leaf-year matches instead of relying mostly on flattened cell text.
+- Low-confidence structure is now visible in curated provenance, traces, regression artifacts, and stop reasons.
+- Fallback behavior is now explicit:
+  - required deterministic tasks stop with bounded insufficiency on low-confidence structure
+  - non-required compute paths can continue through the existing grounded-synthesis fallback path
 
 ## Phase 17: Retrieval Surface And State Deduplication
 

@@ -239,6 +239,43 @@ def _structure_confidence(canonical_table: dict[str, Any]) -> float:
     return max(0.0, min(1.0, sum(values) / len(values)))
 
 
+def _structure_confidence_summary(tables: list[dict[str, Any]], values: list[dict[str, Any]]) -> dict[str, Any]:
+    table_scores: list[float] = []
+    for table in tables:
+        metrics = dict(table.get("normalization_metrics", {}) or {})
+        if metrics:
+            score = _structure_confidence({"normalization_metrics": metrics})
+            table_scores.append(score)
+    value_scores = [
+        float(item.get("structure_confidence", 0.0) or 0.0)
+        for item in values
+        if isinstance(item, dict)
+    ]
+    scores = value_scores or table_scores
+    if not scores:
+        return {
+            "min_confidence": 0.0,
+            "avg_confidence": 0.0,
+            "max_confidence": 0.0,
+            "low_confidence_value_count": 0,
+            "low_confidence_table_count": 0,
+            "table_confidence_gate_passed": False,
+        }
+    min_confidence = min(scores)
+    avg_confidence = sum(scores) / len(scores)
+    max_confidence = max(scores)
+    low_confidence_value_count = sum(1 for score in value_scores if score < 0.6)
+    low_confidence_table_count = sum(1 for score in table_scores if score < 0.6)
+    return {
+        "min_confidence": round(min_confidence, 4),
+        "avg_confidence": round(avg_confidence, 4),
+        "max_confidence": round(max_confidence, 4),
+        "low_confidence_value_count": low_confidence_value_count,
+        "low_confidence_table_count": low_confidence_table_count,
+        "table_confidence_gate_passed": avg_confidence >= 0.6 and max_confidence >= 0.7,
+    }
+
+
 def build_officeqa_structured_evidence(tool_results: list[dict[str, Any]] | None) -> dict[str, Any]:
     merged_records: list[dict[str, Any]] = []
     for raw in tool_results or []:
@@ -365,6 +402,7 @@ def build_officeqa_structured_evidence(tool_results: list[dict[str, Any]] | None
                     values.append(value_record.model_dump())
 
     merged_series, alignment_summary = _merged_series(values)
+    confidence_summary = _structure_confidence_summary(tables, values)
 
     payload = OfficeQAStructuredEvidence(
         document_evidence=[record.model_dump() for record in document_records],
@@ -373,6 +411,7 @@ def build_officeqa_structured_evidence(tool_results: list[dict[str, Any]] | None
         page_chunks=page_chunks,
         merged_series=merged_series,
         alignment_summary=alignment_summary,
+        structure_confidence_summary=confidence_summary,
         units_seen=sorted(units_seen),
         value_count=len(values),
         provenance_complete=provenance_complete and bool(values or tables),
@@ -396,12 +435,21 @@ def compact_officeqa_structured_evidence(payload: dict[str, Any] | None) -> dict
             "aligned_years": list(dict(data.get("alignment_summary", {})).get("aligned_years", []))[:8],
             "unit_consistent": bool(dict(data.get("alignment_summary", {})).get("unit_consistent", True)),
         },
+        "structure_confidence_summary": {
+            "min_confidence": float(dict(data.get("structure_confidence_summary", {})).get("min_confidence", 0.0) or 0.0),
+            "avg_confidence": float(dict(data.get("structure_confidence_summary", {})).get("avg_confidence", 0.0) or 0.0),
+            "max_confidence": float(dict(data.get("structure_confidence_summary", {})).get("max_confidence", 0.0) or 0.0),
+            "low_confidence_value_count": int(dict(data.get("structure_confidence_summary", {})).get("low_confidence_value_count", 0) or 0),
+            "low_confidence_table_count": int(dict(data.get("structure_confidence_summary", {})).get("low_confidence_table_count", 0) or 0),
+            "table_confidence_gate_passed": bool(dict(data.get("structure_confidence_summary", {})).get("table_confidence_gate_passed", False)),
+        },
         "tables": [
             {
                 "document_id": item.get("document_id", ""),
                 "page_locator": item.get("page_locator", ""),
                 "table_locator": item.get("table_locator", ""),
                 "headers": list(item.get("headers", []))[:6],
+                "column_paths": list(item.get("column_paths", []))[:4],
                 "unit": item.get("unit", ""),
                 "row_count": item.get("row_count", 0),
                 "column_count": item.get("column_count", 0),

@@ -223,6 +223,7 @@ class OfficeQAStructuredEvidence(BaseModel):
     page_chunks: list[dict[str, Any]] = Field(default_factory=list)
     merged_series: list[dict[str, Any]] = Field(default_factory=list)
     alignment_summary: dict[str, Any] = Field(default_factory=dict)
+    structure_confidence_summary: dict[str, Any] = Field(default_factory=dict)
     units_seen: list[str] = Field(default_factory=list)
     value_count: int = 0
     provenance_complete: bool = False

@@ -15,14 +15,17 @@ def _monthly_value(year: int, month: str, raw_value: float, *, metric: str = "Ex
         "table_locator": "National Defense",
         "row_index": 0,
         "row_label": month,
+        "row_path": [month],
         "column_index": 1,
         "column_label": metric,
+        "column_path": [metric],
         "raw_value": str(raw_value),
         "numeric_value": raw_value,
         "normalized_value": raw_value * 1_000_000.0,
         "unit": "million",
         "unit_multiplier": 1_000_000.0,
         "unit_kind": "currency",
+        "structure_confidence": 0.95,
     }
 
 
@@ -34,14 +37,17 @@ def _annual_value(year: int, raw_value: float, *, row_label: str, metric: str) -
         "table_locator": "Annual Summary",
         "row_index": 0,
         "row_label": row_label,
+        "row_path": [row_label],
         "column_index": 1,
         "column_label": metric,
+        "column_path": [metric],
         "raw_value": str(raw_value),
         "numeric_value": raw_value,
         "normalized_value": raw_value,
         "unit": "",
         "unit_multiplier": 1.0,
         "unit_kind": "scalar",
+        "structure_confidence": 0.95,
     }
 
 
@@ -51,6 +57,14 @@ def _structured(values: list[dict]) -> dict:
         "tables": [],
         "values": values,
         "page_chunks": [],
+        "structure_confidence_summary": {
+            "min_confidence": 0.95,
+            "avg_confidence": 0.95,
+            "max_confidence": 0.95,
+            "low_confidence_value_count": 0,
+            "low_confidence_table_count": 0,
+            "table_confidence_gate_passed": True,
+        },
         "units_seen": ["million"],
         "value_count": len(values),
         "provenance_complete": True,
@@ -206,14 +220,17 @@ def test_compute_officeqa_point_lookup_selects_best_year_and_metric_match():
             "table_locator": "table 19",
             "row_index": 10,
             "row_label": "Total public debt",
+            "row_path": ["Total public debt outstanding"],
             "column_index": 8,
             "column_label": "Estimated 1/",
+            "column_path": ["End of fiscal years, 1941 to 1945", "1945"],
             "raw_value": "258682",
             "numeric_value": 258682.0,
             "normalized_value": 258682.0,
             "unit": "",
             "unit_multiplier": 1.0,
             "unit_kind": "scalar",
+            "structure_confidence": 0.95,
         },
         {
             "document_id": "treasury_bulletin_1945_01_json",
@@ -222,14 +239,17 @@ def test_compute_officeqa_point_lookup_selects_best_year_and_metric_match():
             "table_locator": "table 19",
             "row_index": 11,
             "row_label": "Total interest-bearing debt",
+            "row_path": ["Total interest-bearing debt"],
             "column_index": 8,
             "column_label": "Estimated 1/",
+            "column_path": ["End of fiscal years, 1941 to 1945", "1945"],
             "raw_value": "258682",
             "numeric_value": 258682.0,
             "normalized_value": 258682.0,
             "unit": "",
             "unit_multiplier": 1.0,
             "unit_kind": "scalar",
+            "structure_confidence": 0.95,
         },
         {
             "document_id": "treasury_bulletin_1945_01_json",
@@ -238,14 +258,17 @@ def test_compute_officeqa_point_lookup_selects_best_year_and_metric_match():
             "table_locator": "table 19",
             "row_index": 10,
             "row_label": "Total public debt",
+            "row_path": ["Total public debt outstanding"],
             "column_index": 7,
             "column_label": "Actual",
+            "column_path": ["End of fiscal years, 1941 to 1945", "1944"],
             "raw_value": "201003",
             "numeric_value": 201003.0,
             "normalized_value": 201003.0,
             "unit": "",
             "unit_multiplier": 1.0,
             "unit_kind": "scalar",
+            "structure_confidence": 0.95,
         },
     ]
     prompt = "According to the Treasury Bulletin, what was total public debt outstanding in 1945?"
@@ -265,6 +288,61 @@ def test_compute_officeqa_point_lookup_selects_best_year_and_metric_match():
     assert result.operation == "point_lookup"
     assert result.display_value == "258682"
     assert result.ledger[0]["operator"] == "point_lookup"
+
+
+def test_compute_officeqa_refuses_low_confidence_structure():
+    values = [
+        {
+            "document_id": "treasury_bulletin_1945_01_json",
+            "citation": "treasury_bulletin_1945_01.json",
+            "page_locator": "page 29",
+            "table_locator": "table 19",
+            "row_index": 10,
+            "row_label": "Total public debt",
+            "row_path": ["Total public debt outstanding"],
+            "column_index": 8,
+            "column_label": "Estimated 1/",
+            "column_path": ["End of fiscal years, 1941 to 1945", "1945"],
+            "raw_value": "258682",
+            "numeric_value": 258682.0,
+            "normalized_value": 258682.0,
+            "unit": "",
+            "unit_multiplier": 1.0,
+            "unit_kind": "scalar",
+            "structure_confidence": 0.42,
+        }
+    ]
+    prompt = "According to the Treasury Bulletin, what was total public debt outstanding in 1945?"
+    retrieval_intent = RetrievalIntent(
+        entity="Public debt",
+        metric="public debt outstanding",
+        period="1945",
+        document_family="treasury_bulletin",
+        aggregation_shape="point_lookup",
+        answer_mode="deterministic_compute",
+        compute_policy="required",
+    )
+
+    result = compute_officeqa_result(
+        prompt,
+        retrieval_intent,
+        {
+            "tables": [],
+            "values": values,
+            "structure_confidence_summary": {
+                "min_confidence": 0.42,
+                "avg_confidence": 0.42,
+                "max_confidence": 0.42,
+                "low_confidence_value_count": 1,
+                "low_confidence_table_count": 1,
+                "table_confidence_gate_passed": False,
+            },
+            "provenance_complete": True,
+        },
+    )
+
+    assert result.status == "insufficient"
+    assert "Low-confidence table structure" in result.validation_errors[0]
 
 
 def test_executor_prefers_deterministic_officeqa_compute_without_llm(monkeypatch):

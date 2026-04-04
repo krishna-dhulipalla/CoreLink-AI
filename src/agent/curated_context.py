@@ -516,6 +516,7 @@ def attach_structured_evidence(
         "units_seen": list(structured.get("units_seen", []))[:8],
         "provenance_complete": bool(structured.get("provenance_complete")),
         "alignment_summary": dict(structured.get("alignment_summary", {})),
+        "structure_confidence_summary": dict(structured.get("structure_confidence_summary", {})),
     }
 
     curated.facts_in_use = _dedupe_facts(facts)

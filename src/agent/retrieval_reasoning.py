@@ -25,6 +25,8 @@ _GENERIC_NUMERIC_SUMMARIES = {
     "column_count",
     "numeric_cell_count",
 }
+_STRUCTURE_CONFIDENCE_AVG_THRESHOLD = 0.6
+_STRUCTURE_CONFIDENCE_MAX_THRESHOLD = 0.7
 
 
 def _normalize_space(text: str) -> str:
@@ -651,6 +653,7 @@ def predictive_evidence_gaps(
     tables = [item for item in list(payload.get("tables", [])) if isinstance(item, dict)]
     page_chunks = [item for item in list(payload.get("page_chunks", [])) if isinstance(item, dict)]
     alignment_summary = dict(payload.get("alignment_summary", {}) or {})
+    confidence_summary = dict(payload.get("structure_confidence_summary", {}) or {})
     gaps: list[str] = []
 
     if plan.requires_table_support and not (tables or values):
@@ -696,6 +699,12 @@ def predictive_evidence_gaps(
         aligned_years = {str(year) for year in list(alignment_summary.get("aligned_years", []))}
         if plan.required_years and set(plan.required_years) - aligned_years:
             gaps.append("cross-document time alignment")
+    has_confidence_signal = bool(confidence_summary) or any("structure_confidence" in value for value in values)
+    avg_confidence = float(confidence_summary.get("avg_confidence", 1.0 if not has_confidence_signal else 0.0) or (1.0 if not has_confidence_signal else 0.0))
+    max_confidence = float(confidence_summary.get("max_confidence", 1.0 if not has_confidence_signal else 0.0) or (1.0 if not has_confidence_signal else 0.0))
+    if (tables or values) and has_confidence_signal:
+        if avg_confidence < _STRUCTURE_CONFIDENCE_AVG_THRESHOLD or max_confidence < _STRUCTURE_CONFIDENCE_MAX_THRESHOLD:
+            gaps.append("low-confidence structure")
     return list(dict.fromkeys(gaps))
 
 

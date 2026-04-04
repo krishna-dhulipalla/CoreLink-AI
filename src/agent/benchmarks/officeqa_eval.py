@@ -243,6 +243,7 @@ def capture_officeqa_artifacts(trace: dict[str, Any] | None) -> dict[str, Any]:
         "extracted_tables": extracted_tables,
         "structured_value_count": int(structured.get("value_count", 0) or 0),
         "alignment_summary": dict(structured.get("alignment_summary", {}) or {}),
+        "structure_confidence_summary": dict(structured.get("structure_confidence_summary", {}) or {}),
         "merged_series_count": len(list(structured.get("merged_series", [])) or []),
         "compute_selection_reasoning": str(compute.get("selection_reasoning", "") or ""),
         "rejected_aggregation_alternatives": list(compute.get("rejected_alternatives", []) or [])[:6],

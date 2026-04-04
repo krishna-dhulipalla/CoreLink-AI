@@ -51,6 +51,8 @@ _STOPWORDS = {
     "what",
     "year",
 }
+_STRUCTURE_CONFIDENCE_AVG_THRESHOLD = 0.6
+_STRUCTURE_CONFIDENCE_MAX_THRESHOLD = 0.7
 
 
 def _normalize_space(text: str) -> str:
@@ -73,7 +75,9 @@ def _cell_text(value: dict[str, Any]) -> str:
     return _normalize_space(
         " ".join(
             [
+                " ".join(str(part) for part in value.get("row_path", []) if str(part).strip()),
                 str(value.get("row_label", "")),
+                " ".join(str(part) for part in value.get("column_path", []) if str(part).strip()),
                 str(value.get("column_label", "")),
                 str(value.get("table_locator", "")),
                 str(value.get("page_locator", "")),
@@ -149,6 +153,39 @@ def _extract_value_years(value: dict[str, Any]) -> list[str]:
     return _extract_years(str(value.get("document_id", "")))
 
 
+def _explicit_value_years(value: dict[str, Any]) -> list[str]:
+    candidate_parts: list[str] = []
+    row_path = [str(part) for part in value.get("row_path", []) if str(part).strip()]
+    column_path = [str(part) for part in value.get("column_path", []) if str(part).strip()]
+    if row_path:
+        candidate_parts.append(row_path[-1])
+    if column_path:
+        candidate_parts.append(column_path[-1])
+    candidate_parts.extend(
+        [
+            str(value.get("row_label", "")),
+            str(value.get("column_label", "")),
+        ]
+    )
+    years = _extract_years(" ".join(candidate_parts))
+    if years:
+        return years
+    path_text = _normalize_space(
+        " ".join(
+            [
+                " ".join(row_path),
+                " ".join(column_path),
+                str(value.get("row_label", "")),
+                str(value.get("column_label", "")),
+            ]
+        )
+    )
+    years = _extract_years(path_text)
+    if years:
+        return years
+    return []
+
+
 def _pick_numeric_value(value: dict[str, Any]) -> float | None:
     normalized = value.get("normalized_value")
     if isinstance(normalized, (int, float)):
@@ -168,20 +205,31 @@ def _point_lookup_score(
     *,
     metric_tokens: set[str],
     target_years: set[str],
-) -> tuple[int, int, int, int, int, int]:
+) -> tuple[int, int, int, int, int, int, int]:
     text = _cell_text(value).lower()
-    years = set(_extract_value_years(value))
+    path_text = _normalize_space(
+        " ".join(
+            [
+                " ".join(str(part) for part in value.get("row_path", []) if str(part).strip()),
+                " ".join(str(part) for part in value.get("column_path", []) if str(part).strip()),
+            ]
+        )
+    ).lower()
+    explicit_years = set(_explicit_value_years(value))
+    years = explicit_years or set(_extract_value_years(value))
     token_hits = len(metric_tokens.intersection(set(re.findall(r"[a-z0-9]+", text))))
+    path_token_hits = len(metric_tokens.intersection(set(re.findall(r"[a-z0-9]+", path_text))))
     year_hits = len(target_years.intersection(years)) if target_years else 0
     has_total = 1 if "total" in text else 0
     row_named = 1 if str(value.get("row_label", "")).strip() else 0
+    confidence_bucket = int(round(float(value.get("structure_confidence", 1.0) or 1.0) * 100))
     column_index = int(value.get("column_index", -1) or -1)
     penalty = 0
     if "interest-bearing" in text and "interest" not in metric_tokens:
         penalty -= 2
     if "table of contents" in text or "contents" in text:
         penalty -= 3
-    return (year_hits, token_hits, has_total, row_named, column_index, penalty)
+    return (year_hits, path_token_hits, token_hits, has_total, row_named, confidence_bucket, penalty - column_index)
 
 
 def _provenance_ref(value: dict[str, Any]) -> dict[str, Any]:
@@ -191,9 +239,23 @@ def _provenance_ref(value: dict[str, Any]) -> dict[str, Any]:
         "page_locator": str(value.get("page_locator", "")),
         "table_locator": str(value.get("table_locator", "")),
         "row_label": str(value.get("row_label", "")),
+        "row_path": list(value.get("row_path", [])),
         "column_label": str(value.get("column_label", "")),
+        "column_path": list(value.get("column_path", [])),
         "raw_value": str(value.get("raw_value", "")),
     }
+
+
+def _structure_gate(evidence: dict[str, Any], values: list[dict[str, Any]]) -> tuple[bool, str]:
+    summary = dict(evidence.get("structure_confidence_summary", {}) or {})
+    avg_confidence = float(summary.get("avg_confidence", 0.0) or 0.0)
+    max_confidence = float(summary.get("max_confidence", 0.0) or 0.0)
+    if avg_confidence >= _STRUCTURE_CONFIDENCE_AVG_THRESHOLD and max_confidence >= _STRUCTURE_CONFIDENCE_MAX_THRESHOLD:
+        return True, ""
+    value_scores = [float(item.get("structure_confidence", 1.0) or 1.0) for item in values if isinstance(item, dict)]
+    if value_scores and max(value_scores) >= _STRUCTURE_CONFIDENCE_MAX_THRESHOLD and (sum(value_scores) / len(value_scores)) >= _STRUCTURE_CONFIDENCE_AVG_THRESHOLD:
+        return True, ""
+    return False, "Low-confidence table structure prevents deterministic compute on the current evidence."
 
 
 def _format_numeric(value: float, task_text: str, *, percent: bool = False) -> str:
@@ -414,6 +476,7 @@ def compute_officeqa_result(
     operation = retrieval_intent.aggregation_shape or "point_lookup"
     years = _operation_years(task_text, retrieval_intent)
     metric_tokens = _metric_tokens(task_text, retrieval_intent)
+    structure_ok, structure_error = _structure_gate(evidence, values)
     monthly, annual = _group_values(values, metric_tokens=metric_tokens, include_cpi=False)
     cpi_monthly, cpi_annual = _group_values(values, metric_tokens=set(), include_cpi=True)
     ledger: list[OfficeQAComputeStep] = []
@@ -428,6 +491,14 @@ def compute_officeqa_result(
                 citations.append(citation)
 
     if operation == "monthly_sum":
+        if not structure_ok:
+            return _result_with_diagnostics(
+                status="insufficient",
+                operation=operation,
+                retrieval_intent=retrieval_intent,
+                years=years,
+                validation_errors=[structure_error],
+            )
         if len(years) != 1:
             return _result_with_diagnostics(
                 status="insufficient",
@@ -469,6 +540,14 @@ def compute_officeqa_result(
         )
 
     if operation == "calendar_year_total":
+        if not structure_ok:
+            return _result_with_diagnostics(
+                status="insufficient",
+                operation=operation,
+                retrieval_intent=retrieval_intent,
+                years=years,
+                validation_errors=[structure_error],
+            )
         if len(years) != 1:
             return _result_with_diagnostics(
                 status="insufficient",
@@ -510,6 +589,14 @@ def compute_officeqa_result(
         )
 
     if operation == "fiscal_year_total":
+        if not structure_ok:
+            return _result_with_diagnostics(
+                status="insufficient",
+                operation=operation,
+                retrieval_intent=retrieval_intent,
+                years=years,
+                validation_errors=[structure_error],
+            )
         if len(years) != 1:
             return _result_with_diagnostics(
                 status="insufficient",
@@ -554,6 +641,14 @@ def compute_officeqa_result(
         "absolute percent change",
         "absolute difference",
     }:
+        if not structure_ok:
+            return _result_with_diagnostics(
+                status="insufficient",
+                operation=operation,
+                retrieval_intent=retrieval_intent,
+                years=years,
+                validation_errors=[structure_error],
+            )
         if len(years) < 2:
             return _result_with_diagnostics(
                 status="insufficient",
@@ -705,6 +800,14 @@ def compute_officeqa_result(
         )
 
     if operation == "point_lookup":
+        if not structure_ok:
+            return _result_with_diagnostics(
+                status="insufficient",
+                operation=operation,
+                retrieval_intent=retrieval_intent,
+                years=years,
+                validation_errors=[structure_error],
+            )
         relevant = [item for item in _dedupe_values(values) if _matches_metric(item, metric_tokens)]
         if relevant:
             target_years = _target_years(task_text, retrieval_intent)

@@ -103,6 +103,14 @@ def test_capture_officeqa_artifacts_collects_tables_and_ledger():
                         "unit": "million dollars",
                     }
                 ],
+                "structure_confidence_summary": {
+                    "min_confidence": 0.82,
+                    "avg_confidence": 0.91,
+                    "max_confidence": 0.97,
+                    "low_confidence_value_count": 0,
+                    "low_confidence_table_count": 0,
+                    "table_confidence_gate_passed": True,
+                },
                 "value_count": 12,
             },
             "provenance_summary": {
@@ -176,6 +184,7 @@ def test_capture_officeqa_artifacts_collects_tables_and_ledger():
     assert artifacts["candidate_sources"]
     assert artifacts["rejected_candidates"]
     assert artifacts["evidence_gaps"] == ["missing month coverage"]
+    assert artifacts["structure_confidence_summary"]["table_confidence_gate_passed"] is True
     assert artifacts["compute_selection_reasoning"]
     assert artifacts["rejected_aggregation_alternatives"]
     assert artifacts["validator_codes"] == ["RETRIEVE_EXACT_PERIOD"]
