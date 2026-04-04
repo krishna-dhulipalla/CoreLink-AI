@@ -6,6 +6,7 @@ Source analysis:
 - `docs/officeqa_integration_plan.md`
 - `docs/v5_runtime_walkthrough.md`
 - 2026-04-02 architecture review follow-up
+- 2026-04-03 smoke-trace retrieval audit follow-up
 
 ## Purpose
 
@@ -98,6 +99,22 @@ Non-goals:
 - Deterministic compute remains the primary numeric path, but mixed evidence tasks need grounded synthesis rather than immediate insufficiency.
 - Validator output should become actionable enough to drive retries automatically.
 - The architecture should stay OfficeQA-native now while leaving a clean adapter seam for similar document-grounded benchmarks later.
+
+## Research-Guided Hardening Principles
+
+These papers do not define the runtime directly, but they do point to the next correct direction for Treasury-table hardening.
+
+- `PubTables-1M` and `Aligning benchmark datasets for TSR` both reinforce the same lesson: canonicalization is not a cleanup detail, it is part of the extraction system. We should not project evidence directly from flattened HTML tables when the representation still contains header oversegmentation or ambiguous span structure.
+- `RealHiTBench` is the closest conceptual match to our Treasury failure mode. Hierarchical headers and implicit joins should be represented as a header tree or resolved path structure before reasoning, not inferred from repeated flat header text after the fact.
+- `TABLET` is useful as a systems reference because it treats structure recovery as `split -> grid -> merge`, which is much closer to what we need for dense Treasury tables than simple DOM flattening.
+- `Uncertainty-Aware Complex Scientific Table Data Extraction` is the main reference for the next safety layer: do not run deterministic compute when table-structure confidence is low. Flag low-confidence extraction and route it to fallback handling instead.
+
+Implication for this plan:
+
+- extraction quality is now a first-class backlog area
+- canonical table normalization must be evaluated independently from retrieval and compute
+- structured evidence should be built from resolved row/column/header paths, not raw flattened cells
+- deterministic compute must become confidence-aware
 
 ## Reusable Components To Keep
 
@@ -668,6 +685,229 @@ Phase 14 completion notes:
 - `src/agent/retrieval_reasoning.py` and `src/agent/benchmarks/officeqa_validator.py` now check cross-document unit and time alignment explicitly when the evidence plan requires cross-source comparison.
 - `src/agent/benchmarks/__init__.py`, `src/agent/curated_context.py`, and `src/agent/nodes/orchestrator.py` now route structured-evidence build, compute, and final validation through benchmark document-adapter hooks rather than hardwiring those interfaces directly into the runtime.
 - OfficeQA remains the default first-class adapter, but tests now prove that a second document benchmark can register retrieval/compute/validate hooks without changing prompt routing or reviving template-based dispatch.
+
+## Phase 15: Canonical Treasury Table Normalization
+
+Objective:
+
+- replace lossy HTML flattening with a canonical table representation that preserves header semantics before evidence projection.
+
+Why now:
+
+- the April 3 smoke traces show retrieval can reach the right Treasury file and table, but structured evidence becomes noisy because repeated multi-row headers and spanning cells are flattened too early.
+- this phase is directly guided by `PubTables-1M`, `Aligning benchmark datasets for TSR`, `TABLET`, and `RealHiTBench`.
+
+Tasks:
+
+- [x] `P15.1` Define a normalized internal table schema for Treasury-style tables that keeps:
+  - row count / column count
+  - explicit spanning-cell relationships
+  - header-vs-data functional labels
+  - row header tree
+  - column header tree
+  - unit metadata
+  - page / table locator provenance
+- [x] `P15.2` Add a header canonicalization pass that collapses repeated header spans and reconstructs hierarchical headers before row/cell projection
+- [x] `P15.3` Add a split/merge-oriented normalization step for parsed HTML tables:
+  - infer the dense grid first
+  - then reconstruct merged cells
+  - then assign content to resolved cells
+- [x] `P15.4` Distinguish structural rows from data rows:
+  - repeated header rows
+  - section divider rows
+  - subtotal / total rows
+  - notes / footnotes
+- [x] `P15.5` Build a normalization regression suite for Treasury-style fixtures with:
+  - merged headers
+  - repeated year bands
+  - fiscal-year comparisons
+  - unit shifts
+  - blank spacer rows
+- [x] `P15.6` Add normalization quality metrics that can be checked before evidence projection:
+  - duplicate-header collapse score
+  - span consistency
+  - header/data separation quality
+  - recovered unit coverage
+
+Suggested code targets:
+
+- `src/agent/retrieval_tools.py`
+- new normalization modules under `src/agent/tools/`
+- `src/agent/tools/normalization.py`
+- new Treasury fixture tests under `tests/`
+
+Exit criteria:
+
+- extracted Treasury tables are represented canonically enough that header trees, spans, and units survive into the next stage
+- evidence projection no longer starts from raw flattened HTML rows
+
+Phase 15 completion notes:
+
+- Added a canonical Treasury-table normalization layer in `src/agent/tools/table_normalization.py`.
+- OfficeQA retrieval tools now normalize parsed HTML and flat tables into a canonical schema before emitting table payloads.
+- Canonical table payloads now carry:
+  - hierarchical column paths
+  - row records
+  - row-header depth
+  - structural row typing
+  - normalization metrics
+- `src/agent/officeqa_structured_evidence.py` now projects value evidence from canonical row/cell records when available, instead of consuming only raw flattened rows.
+- Regression coverage now includes direct normalization tests and retrieval/evidence integration checks for canonical table payloads.
+
+## Phase 16: Confidence-Aware Structured Evidence And Point Lookup
+
+Objective:
+
+- rebuild structured evidence on top of the normalized table schema and prevent deterministic compute from running on low-confidence structure.
+
+Why now:
+
+- Task 1 is failing after the right table is fetched because the evidence layer still turns too many noisy cells into candidate values.
+- this phase is guided mainly by `RealHiTBench` and `Uncertainty-Aware Complex Scientific Table Data Extraction`.
+
+Tasks:
+
+- [ ] `P16.1` Rework structured evidence projection so each value is keyed by resolved:
+  - row path
+  - column path
+  - year or period
+  - unit
+  - table / page provenance
+- [ ] `P16.2` Add confidence fields for:
+  - header reconstruction
+  - row classification
+  - cell assignment
+  - unit assignment
+  - period resolution
+- [ ] `P16.3` Add a confidence gate before deterministic compute:
+  - allow compute on high-confidence evidence
+  - stop or fall back on low-confidence structure
+- [ ] `P16.4` Rewrite `point_lookup` and related selection logic to query against resolved header paths rather than raw row/cell text overlap
+- [ ] `P16.5` Add explicit low-confidence stop reasons and diagnostics to traces and regression reports
+- [ ] `P16.6` Add fallback policy for low-confidence tables:
+  - slower alternate extractor
+  - alternate normalization strategy
+  - or bounded insufficiency when neither path is trustworthy
+
+Suggested code targets:
+
+- `src/agent/officeqa_structured_evidence.py`
+- `src/agent/benchmarks/officeqa_compute.py`
+- `src/agent/retrieval_reasoning.py`
+- `src/agent/benchmarks/officeqa_eval.py`
+
+Exit criteria:
+
+- deterministic point lookup uses resolved structural paths instead of raw flattened labels
+- compute can explicitly refuse low-confidence extraction instead of silently producing noisy candidate values
+
+## Phase 17: Retrieval Surface And State Deduplication
+
+Objective:
+
+- remove duplicate search surfaces and collapse overlapping runtime state so traces and orchestration have one authoritative source for each concept.
+
+Why now:
+
+- the April 3 trace audit showed the retrieval path is harder to debug because the same search results and state fields are repeated in several places.
+
+Tasks:
+
+- [ ] `P17.1` Choose one authoritative OfficeQA local-index search surface for benchmark mode
+- [ ] `P17.2` Keep generic `search_reference_corpus` as a fallback only when OfficeQA-native search is unavailable, not as a parallel duplicate path
+- [ ] `P17.3` Define the authoritative owner for each repeated concept:
+  - source-file expectations
+  - source-file matches
+  - document family
+  - query candidates
+  - retrieval strategy
+  - evidence plan
+- [ ] `P17.4` Remove duplicate propagation of those fields into generic facts when typed state already exists
+- [ ] `P17.5` Simplify trace payloads so `execution_summary` shows the authoritative fields once and raw details stay in the lower-level node payload
+- [ ] `P17.6` Add a node-state audit test that fails when the same benchmark-specific field is redundantly carried across too many layers
+
+Suggested code targets:
+
+- `src/agent/capabilities.py`
+- `src/agent/curated_context.py`
+- `src/agent/retrieval_tools.py`
+- `src/agent/tracer.py`
+- `src/agent/contracts.py`
+
+Exit criteria:
+
+- benchmark mode does not perform duplicate OfficeQA-local searches
+- teammates can identify one authoritative field owner for source and retrieval state
+
+## Phase 18: Planner, Reviewer, And Finalization Alignment
+
+Objective:
+
+- align planner intent, compute policy, reviewer expectations, and final answer requirements with the actual document-grounded numeric runtime.
+
+Why now:
+
+- the latest smoke traces show one path can successfully retrieve and compute a value while downstream reviewer expectations still ask for a richer answer shape than the deterministic path emits.
+
+Tasks:
+
+- [ ] `P18.1` Improve benchmark-mode metric/entity extraction for Treasury-style finance questions without reintroducing hardcoded benchmark-string hacks
+- [ ] `P18.2` Align reviewer requirements with deterministic structured-evidence outputs so successful compute does not fail only because quote-style support text was not emitted
+- [ ] `P18.3` Make the reason an LLM was skipped explicit in traces and regression reports
+- [ ] `P18.4` Separate routing-only regression cases from solvable QA regression cases so smoke results do not conflate activation checks with retrieval/compute quality
+- [ ] `P18.5` Add benchmark go/no-go checks that depend on:
+  - extraction quality
+  - evidence confidence
+  - compute reliability
+  - final-answer contract success
+- [ ] `P18.6` Extend teammate docs with a clear debug ladder for:
+  - retrieval miss
+  - normalization miss
+  - evidence miss
+  - compute miss
+  - reviewer/finalization miss
+
+Suggested code targets:
+
+- `src/agent/context/extraction.py`
+- `src/agent/nodes/orchestrator.py`
+- `src/agent/benchmarks/officeqa_validator.py`
+- `src/agent/benchmarks/officeqa_eval.py`
+- `docs/v5_runtime_walkthrough.md`
+
+Exit criteria:
+
+- a deterministic benchmark answer can pass end to end when evidence and compute are correct
+- traces explain whether failure came from retrieval, normalization, evidence, compute, or review/finalization
+
+## Phase 19: Experimental TSR Fallback Track
+
+Objective:
+
+- evaluate whether a model-assisted table-structure path is needed for the hardest Treasury tables, without immediately replacing the default lightweight pipeline.
+
+Why now:
+
+- the papers suggest our current bottleneck may be representational rather than purely logical, but we should validate that with an isolated experimental track instead of splicing a heavy TSR model into the main runtime too early.
+
+Tasks:
+
+- [ ] `P19.1` Evaluate whether Treasury parsed HTML plus canonical normalization is sufficient for the current regression slice before adding a heavyweight TSR dependency
+- [ ] `P19.2` Prototype a slow-path extractor for hard tables using a model-assisted TSR approach inspired by `Table Transformer` / `TABLET`
+- [ ] `P19.3` Compare:
+  - default parser
+  - canonical normalized parser
+  - slow TSR fallback
+  on a Treasury fixture set with gold-like normalized outputs
+- [ ] `P19.4` Define promotion criteria for any slow-path extractor:
+  - meaningful quality gain
+  - bounded runtime cost
+  - deployable in local and competition modes
+- [ ] `P19.5` Keep the TSR fallback optional until it clearly outperforms the normalized default path on hard cases
+
+Exit criteria:
+
+- the repo has an evidence-based decision on whether canonical normalization alone is enough or whether a slower TSR fallback is justified
 
 ## Optional Backlog: Shared Global Workpad
 

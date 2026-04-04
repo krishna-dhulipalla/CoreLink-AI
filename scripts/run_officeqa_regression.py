@@ -11,9 +11,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-os.environ.setdefault("LANGCHAIN_TRACING_V2", "false")
-os.environ.setdefault("LANGSMITH_TRACING", "false")
-os.environ.setdefault("LANGSMITH_RUNS_ENDPOINTS", "")
+from dotenv import load_dotenv
+
+load_dotenv(override=False)
+
+os.environ.setdefault("LANGCHAIN_TRACING_V2", os.getenv("LANGCHAIN_TRACING_V2", ""))
+os.environ.setdefault("LANGSMITH_TRACING", os.getenv("LANGSMITH_TRACING", ""))
+os.environ.setdefault("LANGSMITH_RUNS_ENDPOINTS", os.getenv("LANGSMITH_RUNS_ENDPOINTS", ""))
 os.environ.setdefault("BENCHMARK_NAME", "officeqa")
 os.environ.setdefault("BENCHMARK_STATELESS", "1")
 
@@ -23,8 +27,11 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from agent import build_agent_graph
+from agent.langsmith_env import normalize_langsmith_env
 from agent.benchmarks.officeqa_eval import build_case_report, load_regression_slice, summarize_regression_report
 from agent.runner import run_agent_trace
+
+normalize_langsmith_env()
 
 DEFAULT_SLICE_PATH = ROOT / "eval" / "officeqa_regression_slice.json"
 DEFAULT_OUTPUT_DIR = ROOT / "Results&traces"

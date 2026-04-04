@@ -142,7 +142,6 @@ def _needs_narrative_support(task_text: str, analysis_modes: list[str]) -> bool:
     if any(
         token in lowered
         for token in (
-            "according to",
             "trend",
             "forecast",
             "project",
@@ -226,6 +225,8 @@ def _classify_answer_mode(
     deterministic_supported = _supports_deterministic_compute(aggregation_shape, analysis_modes)
 
     if aggregation_shape == "point_lookup":
+        if deterministic_supported and numeric_core and not narrative_support:
+            return "deterministic_compute", "required", False
         if narrative_support and numeric_core:
             return "hybrid_grounded", "preferred", True
         if numeric_core:

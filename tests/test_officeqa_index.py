@@ -222,7 +222,7 @@ def test_officeqa_table_and_cell_lookup_tools_extract_structured_values(monkeypa
     )
 
     assert table_result["metadata"]["officeqa_status"] == "ok"
-    assert table_result["tables"][0]["headers"][0] == "Month"
+    assert table_result["tables"][0]["headers"][0] == "Row"
     assert cell_result["metadata"]["officeqa_status"] == "ok"
     assert cell_result["cells"][0]["value"] == "101.5"
 
@@ -262,9 +262,11 @@ def test_officeqa_table_lookup_extracts_html_tables_from_parsed_json(monkeypatch
 
     assert table_result["metadata"]["officeqa_status"] == "ok"
     assert table_result["tables"]
-    assert table_result["tables"][0]["headers"] == ["Year", "Total public debt outstanding"]
+    assert table_result["tables"][0]["headers"] == ["Row", "Total public debt outstanding"]
     assert table_result["tables"][0]["rows"][1] == ["1945", "278,000"]
     assert table_result["tables"][0]["page_locator"] == "page 23"
+    assert table_result["tables"][0]["canonical_table"]["column_paths"][1] == ["Total public debt outstanding"]
+    assert table_result["tables"][0]["canonical_table"]["row_records"][1]["row_path"] == ["1945"]
 
 
 def test_officeqa_tools_accept_relative_corpus_env_paths(monkeypatch, tmp_path):
@@ -288,3 +290,4 @@ def test_officeqa_tools_accept_relative_corpus_env_paths(monkeypatch, tmp_path):
 
     assert table_result["metadata"]["officeqa_status"] == "ok"
     assert table_result["citation"] == "treasury_1940.json"
+    assert "canonical_table" in table_result["tables"][0]

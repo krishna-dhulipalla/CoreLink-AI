@@ -22,6 +22,7 @@ from agent.benchmarks.officeqa_manifest import (
     read_officeqa_document_text,
     resolve_officeqa_corpus_root,
 )
+from agent.tools.table_normalization import normalize_dense_table_grid, normalize_flat_table
 
 _MAX_FILES = 4000
 _MONTH_TOKENS = {
@@ -47,6 +48,7 @@ _HTML_TABLE_RE = re.compile(r"<table\b[^>]*>(.*?)</table>", re.IGNORECASE | re.D
 _HTML_ROW_RE = re.compile(r"<tr\b[^>]*>(.*?)</tr>", re.IGNORECASE | re.DOTALL)
 _HTML_CELL_RE = re.compile(r"<(th|td)\b([^>]*)>(.*?)</t[hd]>", re.IGNORECASE | re.DOTALL)
 _HTML_COLSPAN_RE = re.compile(r'colspan\s*=\s*["\']?(\d+)', re.IGNORECASE)
+_HTML_ROWSPAN_RE = re.compile(r'rowspan\s*=\s*["\']?(\d+)', re.IGNORECASE)
 
 
 def local_corpus_available() -> bool:
@@ -243,6 +245,7 @@ def _coerce_table(
     *,
     page_locator: str = "",
     context_text: str = "",
+    canonical_table: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized_headers = [str(header).strip() for header in headers if str(header).strip()]
     normalized_rows = [[str(cell).strip() for cell in row] for row in rows if any(str(cell).strip() for cell in row)]
@@ -257,6 +260,8 @@ def _coerce_table(
         payload["page_locator"] = page_locator
     if context_text:
         payload["context_text"] = context_text
+    if canonical_table:
+        payload["canonical_table"] = canonical_table
     return payload
 
 
@@ -295,40 +300,77 @@ def _extract_tables_from_html_string(
         row_blocks = _HTML_ROW_RE.findall(match.group(1))
         if len(row_blocks) < 2:
             continue
-        headers: list[str] = []
-        rows: list[list[str]] = []
-        for row_html in row_blocks:
-            cells: list[str] = []
-            is_header_row = False
-            for tag_name, attrs, cell_html in _HTML_CELL_RE.findall(row_html):
+        raw_rows: list[list[dict[str, Any]]] = []
+        pending_rowspans: dict[int, dict[str, Any]] = {}
+        for row_index, row_html in enumerate(row_blocks):
+            raw_cells = list(_HTML_CELL_RE.findall(row_html))
+            row_cells: list[dict[str, Any]] = []
+            col_index = 0
+            cell_index = 0
+            while cell_index < len(raw_cells) or pending_rowspans:
+                if col_index in pending_rowspans:
+                    carried = dict(pending_rowspans[col_index]["cell"])
+                    carried["from_rowspan"] = True
+                    row_cells.append(carried)
+                    pending_rowspans[col_index]["remaining"] -= 1
+                    if pending_rowspans[col_index]["remaining"] <= 0:
+                        pending_rowspans.pop(col_index, None)
+                    col_index += 1
+                    continue
+                if cell_index >= len(raw_cells):
+                    if pending_rowspans:
+                        next_pending = min(pending_rowspans)
+                        while col_index < next_pending:
+                            row_cells.append({"text": "", "is_header": False, "origin_id": ""})
+                            col_index += 1
+                        continue
+                    break
+                tag_name, attrs, cell_html = raw_cells[cell_index]
+                cell_index += 1
                 cell_text = _html_cell_text(cell_html)
-                span_match = _HTML_COLSPAN_RE.search(attrs or "")
-                span = max(1, int(span_match.group(1))) if span_match else 1
-                cells.extend([cell_text] * span)
-                if str(tag_name).lower() == "th":
-                    is_header_row = True
-            if not any(cell.strip() for cell in cells):
-                continue
-            if is_header_row and not headers:
-                headers = cells
-                continue
-            if not headers:
-                headers = cells
-                continue
-            rows.append(cells)
-        if headers and rows:
+                colspan_match = _HTML_COLSPAN_RE.search(attrs or "")
+                rowspan_match = _HTML_ROWSPAN_RE.search(attrs or "")
+                colspan = max(1, int(colspan_match.group(1))) if colspan_match else 1
+                rowspan = max(1, int(rowspan_match.group(1))) if rowspan_match else 1
+                origin_id = f"t{table_index}_r{row_index}_c{col_index}"
+                for offset in range(colspan):
+                    cell = {
+                        "text": cell_text,
+                        "is_header": str(tag_name).lower() == "th",
+                        "origin_id": origin_id,
+                        "colspan": colspan,
+                        "rowspan": rowspan,
+                    }
+                    row_cells.append(cell)
+                    if rowspan > 1:
+                        pending_rowspans[col_index + offset] = {"cell": cell, "remaining": rowspan - 1}
+                col_index += colspan
+            if any(_html_cell_text(cell.get("text", "")) for cell in row_cells):
+                raw_rows.append(row_cells)
+        if raw_rows:
             table_locator = locator if table_index == 1 else f"{locator}#{table_index}"
-            extracted.append(
-                _coerce_table(
-                    headers,
-                    rows,
-                    citation,
-                    locator=table_locator,
-                    unit_hint=unit_hint,
-                    page_locator=page_locator,
-                    context_text=context_text,
-                )
+            canonical_table = normalize_dense_table_grid(
+                raw_rows,
+                locator=table_locator,
+                page_locator=page_locator,
+                unit_hint=unit_hint,
+                context_text=context_text,
             )
+            headers = list(canonical_table.get("display_headers", []))
+            rows = [list(row) for row in canonical_table.get("display_rows", [])]
+            if headers and rows:
+                extracted.append(
+                    _coerce_table(
+                        headers,
+                        rows,
+                        citation,
+                        locator=table_locator,
+                        unit_hint=unit_hint,
+                        page_locator=page_locator,
+                        context_text=context_text,
+                        canonical_table=canonical_table,
+                    )
+                )
     return extracted
 
 
@@ -372,15 +414,24 @@ def _extract_tables_from_json_payload(payload: Any, citation: str, tables: list[
                 elif isinstance(row, dict):
                     normalized_rows.append([str(row.get(str(header), "")).strip() for header in headers])
             if normalized_rows:
+                canonical_table = normalize_flat_table(
+                    [str(header) for header in headers],
+                    normalized_rows,
+                    locator=locator,
+                    page_locator=page_locator,
+                    unit_hint=str(payload.get("unit") or payload.get("units") or ""),
+                    context_text=context_text,
+                )
                 tables.append(
                     _coerce_table(
-                        [str(header) for header in headers],
-                        normalized_rows,
+                        list(canonical_table.get("display_headers", []) or [str(header) for header in headers]),
+                        [list(row) for row in canonical_table.get("display_rows", []) or normalized_rows],
                         citation,
                         locator=locator,
                         unit_hint=str(payload.get("unit") or payload.get("units") or ""),
                         page_locator=page_locator,
                         context_text=context_text,
+                        canonical_table=canonical_table,
                     )
                 )
         for value in payload.values():
@@ -411,7 +462,16 @@ def _extract_tables_from_delimited_text(text: str, citation: str) -> list[dict[s
         parsed_rows.append([str(cell).strip() for cell in parsed])
     headers = parsed_rows[0]
     rows = parsed_rows[1:]
-    return [_coerce_table(headers, rows, citation, locator="table 1")]
+    canonical_table = normalize_flat_table(headers, rows, locator="table 1")
+    return [
+        _coerce_table(
+            list(canonical_table.get("display_headers", []) or headers),
+            [list(row) for row in canonical_table.get("display_rows", []) or rows],
+            citation,
+            locator="table 1",
+            canonical_table=canonical_table,
+        )
+    ]
 
 
 def _extract_tables_from_text_layout(text: str, citation: str) -> list[dict[str, Any]]:
@@ -428,7 +488,16 @@ def _extract_tables_from_text_layout(text: str, citation: str) -> list[dict[str,
         return []
     headers = table_rows[0]
     rows = table_rows[1:]
-    return [_coerce_table(headers, rows, citation, locator="table 1")]
+    canonical_table = normalize_flat_table(headers, rows, locator="table 1")
+    return [
+        _coerce_table(
+            list(canonical_table.get("display_headers", []) or headers),
+            [list(row) for row in canonical_table.get("display_rows", []) or rows],
+            citation,
+            locator="table 1",
+            canonical_table=canonical_table,
+        )
+    ]
 
 
 def _extract_document_tables(target: Path, text: str, citation: str) -> list[dict[str, Any]]:

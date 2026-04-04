@@ -138,6 +138,7 @@ def document_records_from_tool_result(
                 "page_locator": table.get("page_locator", ""),
                 "unit_hint": table.get("unit_hint", ""),
                 "context_text": table.get("context_text", ""),
+                "canonical_table": dict(table.get("canonical_table", {})) if isinstance(table.get("canonical_table"), dict) else {},
             }
         )
     numeric_summaries = _dedupe_dict_rows(

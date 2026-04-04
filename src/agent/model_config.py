@@ -17,7 +17,10 @@ from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI as _BaseChatOpenAI
 from langchain_core.messages import BaseMessage, SystemMessage
 
+from agent.langsmith_env import normalize_langsmith_env
+
 load_dotenv(override=False)
+normalize_langsmith_env()
 
 _ROLE_ALIASES: dict[str, str] = {
     "coordinator": "profiler",

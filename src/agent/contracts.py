@@ -173,11 +173,14 @@ class OfficeQATableEvidence(BaseModel):
     page_locator: str = ""
     table_locator: str = ""
     headers: list[str] = Field(default_factory=list)
+    header_rows: list[list[str]] = Field(default_factory=list)
+    column_paths: list[list[str]] = Field(default_factory=list)
     unit: str = ""
     unit_multiplier: float = 1.0
     unit_kind: str = ""
     row_count: int = 0
     column_count: int = 0
+    normalization_metrics: dict[str, Any] = Field(default_factory=dict)
 
 
 class OfficeQAValueEvidence(BaseModel):
@@ -187,14 +190,17 @@ class OfficeQAValueEvidence(BaseModel):
     table_locator: str = ""
     row_index: int = -1
     row_label: str = ""
+    row_path: list[str] = Field(default_factory=list)
     column_index: int = -1
     column_label: str = ""
+    column_path: list[str] = Field(default_factory=list)
     raw_value: str = ""
     numeric_value: float | None = None
     normalized_value: float | None = None
     unit: str = ""
     unit_multiplier: float = 1.0
     unit_kind: str = ""
+    structure_confidence: float = 1.0
 
 
 class DocumentMergedSeriesEvidence(BaseModel):

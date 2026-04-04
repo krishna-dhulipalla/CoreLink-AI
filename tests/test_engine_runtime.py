@@ -367,6 +367,8 @@ def test_officeqa_structured_evidence_projects_normalized_table_values(monkeypat
     )
     assert february_value["numeric_value"] == 101.5
     assert february_value["normalized_value"] == 101_500_000.0
+    assert february_value["row_path"] == ["February"]
+    assert february_value["column_path"] == ["Expenditures (million dollars)"]
     assert february_value["table_locator"]
     assert february_value["page_locator"]
 
@@ -803,6 +805,8 @@ def test_officeqa_single_year_questions_do_not_force_multi_document_alignment():
 
     assert retrieval_intent.strategy != "multi_document"
     assert retrieval_intent.evidence_plan.requires_cross_source_alignment is False
+    assert retrieval_intent.answer_mode == "deterministic_compute"
+    assert retrieval_intent.compute_policy == "required"
 
 
 def test_officeqa_planner_tries_alternate_table_query_for_multi_table_questions():

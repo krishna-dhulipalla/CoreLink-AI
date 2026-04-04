@@ -10,6 +10,7 @@ from langchain_core.tools import tool
 from langgraph.graph import END, StateGraph
 
 from agent.capabilities import BUILTIN_LEGAL_TOOLS, BUILTIN_RETRIEVAL_TOOLS, build_capability_registry, filter_registry_for_benchmark
+from agent.langsmith_env import normalize_langsmith_env
 from agent.nodes.intake import intake
 from agent.nodes.orchestrator import (
     context_curator,
@@ -30,6 +31,7 @@ from agent.state import AgentState
 from tools import CALCULATOR_TOOL, SEARCH_TOOL
 
 load_dotenv(override=False)
+normalize_langsmith_env()
 
 
 @tool

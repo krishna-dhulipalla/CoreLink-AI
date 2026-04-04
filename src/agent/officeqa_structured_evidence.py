@@ -227,6 +227,18 @@ def _table_page_locator(table: dict[str, Any], chunks: list[dict[str, Any]], met
     return ""
 
 
+def _structure_confidence(canonical_table: dict[str, Any]) -> float:
+    metrics = dict(canonical_table.get("normalization_metrics", {}))
+    if not metrics:
+        return 0.5
+    values = [
+        float(metrics.get("duplicate_header_collapse_score", 0.0) or 0.0),
+        float(metrics.get("header_data_separation_quality", 0.0) or 0.0),
+        float(metrics.get("span_consistency", 0.0) or 0.0),
+    ]
+    return max(0.0, min(1.0, sum(values) / len(values)))
+
+
 def build_officeqa_structured_evidence(tool_results: list[dict[str, Any]] | None) -> dict[str, Any]:
     merged_records: list[dict[str, Any]] = []
     for raw in tool_results or []:
@@ -258,6 +270,7 @@ def build_officeqa_structured_evidence(tool_results: list[dict[str, Any]] | None
         for table in record.tables:
             headers = [str(item) for item in table.get("headers", [])]
             rows = [list(row) for row in table.get("rows", []) if isinstance(row, list)]
+            canonical_table = dict(table.get("canonical_table", {})) if isinstance(table.get("canonical_table"), dict) else {}
             unit_hint = str(table.get("unit_hint", "") or metadata.get("unit_hint", "") or "")
             table_locator = str(table.get("locator", "")).strip()
             page_locator = _table_page_locator(table, record.chunks, metadata)
@@ -270,13 +283,58 @@ def build_officeqa_structured_evidence(tool_results: list[dict[str, Any]] | None
                 page_locator=page_locator,
                 table_locator=table_locator,
                 headers=headers,
+                header_rows=[list(row) for row in canonical_table.get("header_rows", []) if isinstance(row, list)],
+                column_paths=[list(path) for path in canonical_table.get("column_paths", []) if isinstance(path, list)],
                 unit=unit,
                 unit_multiplier=multiplier,
                 unit_kind=unit_kind,
                 row_count=len(rows),
                 column_count=len(headers),
+                normalization_metrics=dict(canonical_table.get("normalization_metrics", {})),
             )
             tables.append(table_record.model_dump())
+            if canonical_table.get("row_records"):
+                confidence = _structure_confidence(canonical_table)
+                for row_record in canonical_table.get("row_records", []):
+                    if not isinstance(row_record, dict):
+                        continue
+                    if str(row_record.get("row_type", "")) == "section_divider":
+                        continue
+                    row_path = [str(item) for item in row_record.get("row_path", []) if str(item).strip()]
+                    row_label = str(row_record.get("row_label", "") or " | ".join(row_path)).strip()
+                    for cell in row_record.get("cells", []):
+                        if not isinstance(cell, dict):
+                            continue
+                        raw_value = str(cell.get("value", ""))
+                        column_path = [str(item) for item in cell.get("column_path", []) if str(item).strip()]
+                        column_label = str(cell.get("column_label", "") or " | ".join(column_path)).strip()
+                        unit_value, unit_multiplier, unit_kind_value = _unit_profile(unit_hint, column_label)
+                        numeric_value = _numeric_value(raw_value)
+                        normalized_value = numeric_value * unit_multiplier if numeric_value is not None else None
+                        value_record = OfficeQAValueEvidence(
+                            document_id=record.document_id,
+                            citation=str(table.get("citation", "") or record.citation),
+                            page_locator=page_locator,
+                            table_locator=table_locator,
+                            row_index=int(row_record.get("row_index", -1)),
+                            row_label=row_label,
+                            row_path=row_path,
+                            column_index=int(cell.get("column_index", -1)),
+                            column_label=column_label,
+                            column_path=column_path,
+                            raw_value=raw_value,
+                            numeric_value=numeric_value,
+                            normalized_value=normalized_value,
+                            unit=unit_value,
+                            unit_multiplier=unit_multiplier,
+                            unit_kind=unit_kind_value,
+                            structure_confidence=confidence,
+                        )
+                        if not value_record.document_id or not value_record.citation or not value_record.table_locator or value_record.column_index < 0:
+                            provenance_complete = False
+                        values.append(value_record.model_dump())
+                continue
+
             for row_index, row in enumerate(rows):
                 row_label = str(row[0]).strip() if row else ""
                 for column_index, raw_value in enumerate(row):
@@ -291,8 +349,10 @@ def build_officeqa_structured_evidence(tool_results: list[dict[str, Any]] | None
                         table_locator=table_locator,
                         row_index=row_index,
                         row_label=row_label,
+                        row_path=[row_label] if row_label else [],
                         column_index=column_index,
                         column_label=column_label,
+                        column_path=[column_label] if column_label else [],
                         raw_value=str(raw_value),
                         numeric_value=numeric_value,
                         normalized_value=normalized_value,

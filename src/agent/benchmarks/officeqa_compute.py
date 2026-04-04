@@ -159,6 +159,31 @@ def _pick_numeric_value(value: dict[str, Any]) -> float | None:
     return None
 
 
+def _target_years(task_text: str, retrieval_intent: RetrievalIntent) -> set[str]:
+    return set(_operation_years(task_text, retrieval_intent))
+
+
+def _point_lookup_score(
+    value: dict[str, Any],
+    *,
+    metric_tokens: set[str],
+    target_years: set[str],
+) -> tuple[int, int, int, int, int, int]:
+    text = _cell_text(value).lower()
+    years = set(_extract_value_years(value))
+    token_hits = len(metric_tokens.intersection(set(re.findall(r"[a-z0-9]+", text))))
+    year_hits = len(target_years.intersection(years)) if target_years else 0
+    has_total = 1 if "total" in text else 0
+    row_named = 1 if str(value.get("row_label", "")).strip() else 0
+    column_index = int(value.get("column_index", -1) or -1)
+    penalty = 0
+    if "interest-bearing" in text and "interest" not in metric_tokens:
+        penalty -= 2
+    if "table of contents" in text or "contents" in text:
+        penalty -= 3
+    return (year_hits, token_hits, has_total, row_named, column_index, penalty)
+
+
 def _provenance_ref(value: dict[str, Any]) -> dict[str, Any]:
     return {
         "document_id": str(value.get("document_id", "")),
@@ -681,16 +706,53 @@ def compute_officeqa_result(
 
     if operation == "point_lookup":
         relevant = [item for item in _dedupe_values(values) if _matches_metric(item, metric_tokens)]
-        if len(relevant) == 1:
-            numeric_value = _pick_numeric_value(relevant[0])
+        if relevant:
+            target_years = _target_years(task_text, retrieval_intent)
+            ranked = sorted(
+                relevant,
+                key=lambda item: (_point_lookup_score(item, metric_tokens=metric_tokens, target_years=target_years), _cell_text(item)),
+                reverse=True,
+            )
+            chosen = ranked[0]
+            chosen_score = _point_lookup_score(chosen, metric_tokens=metric_tokens, target_years=target_years)
+            second_score = (
+                _point_lookup_score(ranked[1], metric_tokens=metric_tokens, target_years=target_years)
+                if len(ranked) > 1
+                else None
+            )
+            if chosen_score[0] <= 0 and target_years:
+                return _result_with_diagnostics(
+                    status="insufficient",
+                    operation=operation,
+                    retrieval_intent=retrieval_intent,
+                    years=years,
+                    validation_errors=["Point lookup could not isolate a value aligned to the requested year."],
+                )
+            if chosen_score[1] <= 0:
+                return _result_with_diagnostics(
+                    status="insufficient",
+                    operation=operation,
+                    retrieval_intent=retrieval_intent,
+                    years=years,
+                    validation_errors=["Point lookup could not isolate a value aligned to the requested metric."],
+                )
+            if second_score is not None and second_score == chosen_score:
+                return _result_with_diagnostics(
+                    status="insufficient",
+                    operation=operation,
+                    retrieval_intent=retrieval_intent,
+                    years=years,
+                    validation_errors=["Point lookup found multiple equally plausible values and could not disambiguate the correct one."],
+                )
+            numeric_value = _pick_numeric_value(chosen)
             if numeric_value is None:
                 return _result_with_diagnostics(status="insufficient", operation=operation, retrieval_intent=retrieval_intent, years=years, validation_errors=["Point lookup value is not numeric."])
-            refs = [_provenance_ref(relevant[0])]
+            refs = [_provenance_ref(chosen)]
             append_step(
                 OfficeQAComputeStep(
                     operator="point_lookup",
                     description=f"Direct point lookup = {format_scalar_number(numeric_value)}.",
-                    inputs={"match_count": 1},
+                    inputs={"match_count": len(relevant)},
                     output={"value": numeric_value},
                     provenance_refs=refs,
                 )

@@ -197,6 +197,76 @@ def test_compute_officeqa_inflation_adjusted_difference_uses_cpi_support():
     assert result.final_value == 960_000_000.0
 
 
+def test_compute_officeqa_point_lookup_selects_best_year_and_metric_match():
+    values = [
+        {
+            "document_id": "treasury_bulletin_1945_01_json",
+            "citation": "treasury_bulletin_1945_01.json",
+            "page_locator": "page 29",
+            "table_locator": "table 19",
+            "row_index": 10,
+            "row_label": "Total public debt",
+            "column_index": 8,
+            "column_label": "Estimated 1/",
+            "raw_value": "258682",
+            "numeric_value": 258682.0,
+            "normalized_value": 258682.0,
+            "unit": "",
+            "unit_multiplier": 1.0,
+            "unit_kind": "scalar",
+        },
+        {
+            "document_id": "treasury_bulletin_1945_01_json",
+            "citation": "treasury_bulletin_1945_01.json",
+            "page_locator": "page 29",
+            "table_locator": "table 19",
+            "row_index": 11,
+            "row_label": "Total interest-bearing debt",
+            "column_index": 8,
+            "column_label": "Estimated 1/",
+            "raw_value": "258682",
+            "numeric_value": 258682.0,
+            "normalized_value": 258682.0,
+            "unit": "",
+            "unit_multiplier": 1.0,
+            "unit_kind": "scalar",
+        },
+        {
+            "document_id": "treasury_bulletin_1945_01_json",
+            "citation": "treasury_bulletin_1945_01.json",
+            "page_locator": "page 29",
+            "table_locator": "table 19",
+            "row_index": 10,
+            "row_label": "Total public debt",
+            "column_index": 7,
+            "column_label": "Actual",
+            "raw_value": "201003",
+            "numeric_value": 201003.0,
+            "normalized_value": 201003.0,
+            "unit": "",
+            "unit_multiplier": 1.0,
+            "unit_kind": "scalar",
+        },
+    ]
+    prompt = "According to the Treasury Bulletin, what was total public debt outstanding in 1945?"
+    retrieval_intent = RetrievalIntent(
+        entity="Public debt",
+        metric="public debt outstanding",
+        period="1945",
+        document_family="treasury_bulletin",
+        aggregation_shape="point_lookup",
+        answer_mode="deterministic_compute",
+        compute_policy="required",
+    )
+
+    result = compute_officeqa_result(prompt, retrieval_intent, _structured(values))
+
+    assert result.status == "ok"
+    assert result.operation == "point_lookup"
+    assert result.display_value == "258682"
+    assert result.ledger[0]["operator"] == "point_lookup"
+
+
 def test_executor_prefers_deterministic_officeqa_compute_without_llm(monkeypatch):
     months = [
         "January",
