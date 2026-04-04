@@ -7,7 +7,13 @@ from agent.benchmarks.officeqa_index import (
     validate_officeqa_index,
 )
 from agent.benchmarks.officeqa_runtime import OfficeQACorpusBootstrapError, verify_officeqa_corpus_bundle
-from agent.retrieval_tools import fetch_officeqa_table, lookup_officeqa_cells, search_reference_corpus
+from agent.retrieval_tools import (
+    _OfficeQATableExtractionTimeout,
+    _extract_tables_from_html_string,
+    fetch_officeqa_table,
+    lookup_officeqa_cells,
+    search_reference_corpus,
+)
 
 
 def test_build_officeqa_index_persists_manifest_and_metadata(tmp_path):
@@ -291,3 +297,41 @@ def test_officeqa_tools_accept_relative_corpus_env_paths(monkeypatch, tmp_path):
     assert table_result["metadata"]["officeqa_status"] == "ok"
     assert table_result["citation"] == "treasury_1940.json"
     assert "canonical_table" in table_result["tables"][0]
+
+
+def test_extract_tables_from_html_string_handles_rowspans_without_hanging():
+    html_table = (
+        "<table>"
+        "<tr><th rowspan='2'>Category</th><th rowspan='3'>Year</th><th>Value</th></tr>"
+        "<tr><td>1945</td></tr>"
+        "<tr><td>Public debt</td><td>278,000</td></tr>"
+        "</table>"
+    )
+
+    extracted = _extract_tables_from_html_string(
+        html_table,
+        "treasury_1945.json",
+        locator="Public debt table",
+    )
+
+    assert extracted
+    assert extracted[0]["headers"][0] == "Row"
+
+
+def test_fetch_officeqa_table_surfaces_timeout_as_structured_status(monkeypatch, tmp_path):
+    corpus_root = tmp_path / "treasury_bulletins_parsed"
+    corpus_root.mkdir(parents=True)
+    source_path = corpus_root / "treasury_1945.json"
+    source_path.write_text(json.dumps({"title": "Treasury Bulletin 1945"}), encoding="utf-8")
+    build_officeqa_index(corpus_root=corpus_root)
+    monkeypatch.setenv("OFFICEQA_CORPUS_DIR", str(corpus_root))
+
+    def _raise_timeout(*args, **kwargs):
+        raise _OfficeQATableExtractionTimeout("simulated extraction timeout")
+
+    monkeypatch.setattr("agent.retrieval_tools._extract_document_tables", _raise_timeout)
+
+    result = fetch_officeqa_table.invoke({"document_id": "treasury_1945_json", "table_query": "public debt"})
+
+    assert result["metadata"]["officeqa_status"] == "table_timeout"
+    assert "simulated extraction timeout" in result["error"]

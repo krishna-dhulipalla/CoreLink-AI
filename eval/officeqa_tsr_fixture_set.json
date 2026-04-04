@@ -1,0 +1,61 @@
+[
+  {
+    "id": "sparse_parent_header_years",
+    "type": "dense_grid",
+    "locator": "fixture_table_1",
+    "unit_hint": "million dollars",
+    "grid": [
+      [
+        {"text": "End of fiscal years, 1941 to 1945", "is_header": true, "origin_id": "h0"},
+        {"text": "", "is_header": true, "origin_id": "h1"},
+        {"text": "", "is_header": true, "origin_id": "h2"}
+      ],
+      [
+        {"text": "", "is_header": true, "origin_id": "h3"},
+        {"text": "1944", "is_header": true, "origin_id": "h4"},
+        {"text": "1945", "is_header": true, "origin_id": "h5"}
+      ],
+      [
+        {"text": "Public debt", "is_header": false, "origin_id": "r0c0"},
+        {"text": "232,000", "is_header": false, "origin_id": "r0c1"},
+        {"text": "278,000", "is_header": false, "origin_id": "r0c2"}
+      ]
+    ],
+    "expectations": {
+      "preferred_mode": "tsr_split_merge_heuristic",
+      "min_column_path_depth": 2,
+      "min_numeric_cells": 2
+    }
+  },
+  {
+    "id": "sparse_month_header_band",
+    "type": "dense_grid",
+    "locator": "fixture_table_2",
+    "unit_hint": "million dollars",
+    "grid": [
+      [
+        {"text": "Expenditures, calendar year 1953", "is_header": true, "origin_id": "h0"},
+        {"text": "", "is_header": true, "origin_id": "h1"},
+        {"text": "", "is_header": true, "origin_id": "h2"},
+        {"text": "", "is_header": true, "origin_id": "h3"}
+      ],
+      [
+        {"text": "", "is_header": true, "origin_id": "h4"},
+        {"text": "January", "is_header": true, "origin_id": "h5"},
+        {"text": "February", "is_header": true, "origin_id": "h6"},
+        {"text": "March", "is_header": true, "origin_id": "h7"}
+      ],
+      [
+        {"text": "National defense", "is_header": false, "origin_id": "r0c0"},
+        {"text": "10.0", "is_header": false, "origin_id": "r0c1"},
+        {"text": "12.0", "is_header": false, "origin_id": "r0c2"},
+        {"text": "14.0", "is_header": false, "origin_id": "r0c3"}
+      ]
+    ],
+    "expectations": {
+      "preferred_mode": "tsr_split_merge_heuristic",
+      "min_column_path_depth": 2,
+      "min_numeric_cells": 3
+    }
+  }
+]

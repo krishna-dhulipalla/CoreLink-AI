@@ -920,18 +920,32 @@ Why now:
 
 Tasks:
 
-- [ ] `P19.1` Evaluate whether Treasury parsed HTML plus canonical normalization is sufficient for the current regression slice before adding a heavyweight TSR dependency
-- [ ] `P19.2` Prototype a slow-path extractor for hard tables using a model-assisted TSR approach inspired by `Table Transformer` / `TABLET`
-- [ ] `P19.3` Compare:
+- [x] `P19.1` Evaluate whether Treasury parsed HTML plus canonical normalization is sufficient for the current regression slice before adding a heavyweight TSR dependency
+- [x] `P19.2` Prototype a slow-path extractor for hard tables using a model-assisted TSR approach inspired by `Table Transformer` / `TABLET`
+- [x] `P19.3` Compare:
   - default parser
   - canonical normalized parser
   - slow TSR fallback
   on a Treasury fixture set with gold-like normalized outputs
-- [ ] `P19.4` Define promotion criteria for any slow-path extractor:
+- [x] `P19.4` Define promotion criteria for any slow-path extractor:
   - meaningful quality gain
   - bounded runtime cost
   - deployable in local and competition modes
-- [ ] `P19.5` Keep the TSR fallback optional until it clearly outperforms the normalized default path on hard cases
+- [x] `P19.5` Keep the TSR fallback optional until it clearly outperforms the normalized default path on hard cases
+
+Completion notes:
+
+- Added an experimental split/merge fallback seam in `src/agent/tools/tsr_fallback.py` that operates on parsed HTML table grids and stays disabled unless `OFFICEQA_ENABLE_TSR_FALLBACK=1`.
+- Wired the fallback only into dense HTML table normalization in `src/agent/retrieval_tools.py`; when disabled, the runtime still uses the default canonical normalizer with no behavior change.
+- Added a hard-table fixture set in `eval/officeqa_tsr_fixture_set.json` and a comparison harness in `scripts/evaluate_officeqa_tsr_fallback.py`.
+- Current fixture evaluation result:
+  - `fixture_count=2`
+  - `fallback_wins=2`
+  - `avg_score_delta=0.0709`
+  - recommendation: `candidate_for_promotion`
+- Promotion decision:
+  - keep the fallback optional for now
+  - only consider default-on promotion after it shows the same advantage on live OfficeQA hard-table regressions with acceptable runtime cost in both local and competition packaging modes
 
 Exit criteria:
 

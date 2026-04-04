@@ -7,6 +7,7 @@ import html
 import json
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,7 @@ from agent.benchmarks.officeqa_manifest import (
     resolve_officeqa_corpus_root,
 )
 from agent.tools.table_normalization import normalize_dense_table_grid, normalize_flat_table
+from agent.tools.tsr_fallback import select_dense_table_normalization
 
 _MAX_FILES = 4000
 _MONTH_TOKENS = {
@@ -49,6 +51,12 @@ _HTML_ROW_RE = re.compile(r"<tr\b[^>]*>(.*?)</tr>", re.IGNORECASE | re.DOTALL)
 _HTML_CELL_RE = re.compile(r"<(th|td)\b([^>]*)>(.*?)</t[hd]>", re.IGNORECASE | re.DOTALL)
 _HTML_COLSPAN_RE = re.compile(r'colspan\s*=\s*["\']?(\d+)', re.IGNORECASE)
 _HTML_ROWSPAN_RE = re.compile(r'rowspan\s*=\s*["\']?(\d+)', re.IGNORECASE)
+_HTML_QUERY_PREVIEW_CHARS = 2500
+_MAX_EXTRACTED_TABLES = 24
+
+
+class _OfficeQATableExtractionTimeout(RuntimeError):
+    """Raised when OfficeQA table extraction exceeds the configured wall-clock budget."""
 
 
 def local_corpus_available() -> bool:
@@ -70,6 +78,23 @@ def _is_within_root(candidate: Path, root: Path) -> bool:
 def _tokenize(text: str) -> list[str]:
     """Tokenize text into lowercase alpha-numeric tokens, filtering stop words."""
     return [t for t in re.findall(r"[a-z0-9]+", (text or "").lower()) if t not in _STOP_WORDS and len(t) > 1]
+
+
+def _table_extraction_timeout_seconds() -> float:
+    raw = os.getenv("OFFICEQA_TABLE_EXTRACTION_TIMEOUT_SECONDS", "20").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        value = 20.0
+    return max(1.0, value)
+
+
+def _ensure_extraction_budget(deadline: float | None, stage: str) -> None:
+    if deadline is not None and time.perf_counter() >= deadline:
+        raise _OfficeQATableExtractionTimeout(
+            f"OfficeQA table extraction exceeded time budget during {stage}. "
+            "Increase OFFICEQA_TABLE_EXTRACTION_TIMEOUT_SECONDS if needed."
+        )
 
 
 def _document_id(path: Path, root: Path) -> str:
@@ -294,20 +319,24 @@ def _extract_tables_from_html_string(
     page_locator: str = "",
     unit_hint: str = "",
     context_text: str = "",
+    deadline: float | None = None,
 ) -> list[dict[str, Any]]:
     extracted: list[dict[str, Any]] = []
     for table_index, match in enumerate(_HTML_TABLE_RE.finditer(html_content or ""), start=1):
+        _ensure_extraction_budget(deadline, "html_table_scan")
         row_blocks = _HTML_ROW_RE.findall(match.group(1))
         if len(row_blocks) < 2:
             continue
         raw_rows: list[list[dict[str, Any]]] = []
         pending_rowspans: dict[int, dict[str, Any]] = {}
         for row_index, row_html in enumerate(row_blocks):
+            _ensure_extraction_budget(deadline, "html_row_scan")
             raw_cells = list(_HTML_CELL_RE.findall(row_html))
             row_cells: list[dict[str, Any]] = []
             col_index = 0
             cell_index = 0
             while cell_index < len(raw_cells) or pending_rowspans:
+                _ensure_extraction_budget(deadline, "html_cell_expand")
                 if col_index in pending_rowspans:
                     carried = dict(pending_rowspans[col_index]["cell"])
                     carried["from_rowspan"] = True
@@ -319,11 +348,17 @@ def _extract_tables_from_html_string(
                     continue
                 if cell_index >= len(raw_cells):
                     if pending_rowspans:
+                        stale_indexes = [idx for idx in pending_rowspans if idx < col_index]
+                        for idx in stale_indexes:
+                            pending_rowspans.pop(idx, None)
+                        if not pending_rowspans:
+                            break
                         next_pending = min(pending_rowspans)
                         while col_index < next_pending:
                             row_cells.append({"text": "", "is_header": False, "origin_id": ""})
                             col_index += 1
-                        continue
+                        if col_index in pending_rowspans:
+                            continue
                     break
                 tag_name, attrs, cell_html = raw_cells[cell_index]
                 cell_index += 1
@@ -348,8 +383,9 @@ def _extract_tables_from_html_string(
             if any(_html_cell_text(cell.get("text", "")) for cell in row_cells):
                 raw_rows.append(row_cells)
         if raw_rows:
+            _ensure_extraction_budget(deadline, "dense_table_normalization")
             table_locator = locator if table_index == 1 else f"{locator}#{table_index}"
-            canonical_table = normalize_dense_table_grid(
+            canonical_table, tsr_diagnostics = select_dense_table_normalization(
                 raw_rows,
                 locator=table_locator,
                 page_locator=page_locator,
@@ -368,13 +404,22 @@ def _extract_tables_from_html_string(
                         unit_hint=unit_hint,
                         page_locator=page_locator,
                         context_text=context_text,
-                        canonical_table=canonical_table,
+                        canonical_table={**canonical_table, "experimental_tsr": tsr_diagnostics},
                     )
                 )
     return extracted
 
 
-def _extract_tables_from_json_payload(payload: Any, citation: str, tables: list[dict[str, Any]], limit: int = 8) -> None:
+def _extract_tables_from_json_payload(
+    payload: Any,
+    citation: str,
+    tables: list[dict[str, Any]],
+    limit: int = 8,
+    *,
+    table_query: str = "",
+    deadline: float | None = None,
+) -> None:
+    _ensure_extraction_budget(deadline, "json_payload_walk")
     if len(tables) >= limit:
         return
     if isinstance(payload, dict):
@@ -391,7 +436,11 @@ def _extract_tables_from_json_payload(payload: Any, citation: str, tables: list[
         )
         locator = str(payload.get("section_title") or payload.get("title") or payload.get("description") or f"table {len(tables) + 1}")
         content = payload.get("content")
-        if isinstance(content, str) and "<table" in content.lower():
+        if (
+            isinstance(content, str)
+            and "<table" in content.lower()
+            and _table_candidate_matches_query(locator, context_text, content, table_query)
+        ):
             html_tables = _extract_tables_from_html_string(
                 content,
                 citation,
@@ -399,6 +448,7 @@ def _extract_tables_from_json_payload(payload: Any, citation: str, tables: list[
                 page_locator=page_locator,
                 unit_hint=str(payload.get("unit") or payload.get("units") or ""),
                 context_text=context_text,
+                deadline=deadline,
             )
             for item in html_tables:
                 tables.append(item)
@@ -437,12 +487,26 @@ def _extract_tables_from_json_payload(payload: Any, citation: str, tables: list[
         for value in payload.values():
             if len(tables) >= limit:
                 return
-            _extract_tables_from_json_payload(value, citation, tables, limit=limit)
+            _extract_tables_from_json_payload(
+                value,
+                citation,
+                tables,
+                limit=limit,
+                table_query=table_query,
+                deadline=deadline,
+            )
     elif isinstance(payload, list):
         for item in payload:
             if len(tables) >= limit:
                 return
-            _extract_tables_from_json_payload(item, citation, tables, limit=limit)
+            _extract_tables_from_json_payload(
+                item,
+                citation,
+                tables,
+                limit=limit,
+                table_query=table_query,
+                deadline=deadline,
+            )
 
 
 def _extract_tables_from_delimited_text(text: str, citation: str) -> list[dict[str, Any]]:
@@ -500,23 +564,41 @@ def _extract_tables_from_text_layout(text: str, citation: str) -> list[dict[str,
     ]
 
 
-def _extract_document_tables(target: Path, text: str, citation: str) -> list[dict[str, Any]]:
+def _table_candidate_matches_query(locator: str, context_text: str, content: str, table_query: str) -> bool:
+    if not (table_query or "").strip():
+        return True
+    preview = f"{locator}\n{context_text}\n{(content or '')[:_HTML_QUERY_PREVIEW_CHARS]}"
+    return _match_score(preview, table_query) > 0.0
+
+
+def _extract_document_tables(target: Path, text: str, citation: str, *, table_query: str = "") -> list[dict[str, Any]]:
     tables: list[dict[str, Any]] = []
     suffix = target.suffix.lower()
+    deadline = time.perf_counter() + _table_extraction_timeout_seconds()
     if suffix == ".json":
         try:
             payload = json.loads(target.read_text(encoding="utf-8", errors="replace"))
         except Exception:
             payload = None
         if payload is not None:
-            _extract_tables_from_json_payload(payload, citation, tables, limit=64)
+            _extract_tables_from_json_payload(
+                payload,
+                citation,
+                tables,
+                limit=_MAX_EXTRACTED_TABLES,
+                table_query=table_query,
+                deadline=deadline,
+            )
     if not tables and suffix in {".csv", ".tsv"}:
+        _ensure_extraction_budget(deadline, "delimited_table_parse")
         tables.extend(_extract_tables_from_delimited_text(text, citation))
     if not tables:
+        _ensure_extraction_budget(deadline, "fallback_delimited_table_parse")
         tables.extend(_extract_tables_from_delimited_text(text, citation))
     if not tables:
+        _ensure_extraction_budget(deadline, "text_layout_table_parse")
         tables.extend(_extract_tables_from_text_layout(text, citation))
-    return tables[:64]
+    return tables[:_MAX_EXTRACTED_TABLES]
 
 
 def _match_score(text: str, query: str) -> float:
@@ -780,7 +862,23 @@ def fetch_officeqa_table(
     text = _read_file_text(target)
     citation = target.relative_to(root).as_posix()
     resolved_document_id = _document_id(target, root)
-    tables = _rank_tables(_extract_document_tables(target, text, citation), table_query)
+    try:
+        tables = _rank_tables(_extract_document_tables(target, text, citation, table_query=table_query), table_query)
+    except _OfficeQATableExtractionTimeout as exc:
+        return _table_payload(
+            document_id=resolved_document_id,
+            citation=citation,
+            file_name=target.name,
+            file_format=target.suffix.lower().lstrip(".") or "text",
+            officeqa_status="table_timeout",
+            tables=[],
+            chunks=[],
+            extra={
+                "row_offset": max(0, row_offset),
+                "row_limit": max(1, row_limit),
+                "error": str(exc),
+            },
+        ) | {"officeqa_stage": "locate_table", "error": str(exc)}
     if not tables:
         return _table_payload(
             document_id=resolved_document_id,
