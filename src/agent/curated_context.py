@@ -87,18 +87,48 @@ def build_source_bundle(task_text: str, benchmark_overrides: dict[str, Any] | No
     inline_facts = extract_inline_facts(task_text, labeled_json_extractor=_extract_labeled_json_block)
     tables = parse_markdown_tables(task_text)
     formulas = extract_formulas(task_text)
+    overrides = dict(benchmark_overrides or {})
     return SourceBundle(
         task_text=task_text,
         focus_query=focus_query,
         target_period=target_period,
         entities=entities,
         urls=urls,
-        source_files_expected=list((benchmark_overrides or {}).get("source_files_expected", [])),
-        source_files_found=list((benchmark_overrides or {}).get("source_files_found", [])),
+        source_files_expected=_dedupe_source_files_expected(list(overrides.get("source_files_expected", []))),
+        source_files_found=_dedupe_source_files_found(list(overrides.get("source_files_found", []))),
         inline_facts=inline_facts,
         tables=tables,
         formulas=formulas,
     )
+
+
+def _dedupe_source_files_expected(values: list[str]) -> list[str]:
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        normalized = str(value or "").strip().lower()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        deduped.append(str(value))
+    return deduped
+
+
+def _dedupe_source_files_found(values: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for value in values:
+        if not isinstance(value, dict):
+            continue
+        signature = (
+            str(value.get("document_id", "") or "").strip().lower(),
+            str(value.get("relative_path", "") or "").strip().lower(),
+        )
+        if signature in seen:
+            continue
+        seen.add(signature)
+        deduped.append(dict(value))
+    return deduped
 
 
 def _dedupe_facts(facts: list[dict[str, Any]]) -> list[dict[str, Any]]:

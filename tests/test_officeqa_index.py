@@ -335,3 +335,51 @@ def test_fetch_officeqa_table_surfaces_timeout_as_structured_status(monkeypatch,
 
     assert result["metadata"]["officeqa_status"] == "table_timeout"
     assert "simulated extraction timeout" in result["error"]
+
+
+def test_fetch_officeqa_table_prefers_analytical_table_over_contents_table(monkeypatch, tmp_path):
+    corpus_root = tmp_path / "treasury_bulletins_parsed"
+    corpus_root.mkdir(parents=True)
+    (corpus_root / "treasury_1945.json").write_text(
+        json.dumps(
+            {
+                "document": {
+                    "elements": [
+                        {
+                            "type": "table",
+                            "description": "Cumulative Table of Contents",
+                            "bbox": [{"page_id": 6}],
+                            "content": (
+                                "<table>"
+                                "<tr><th>Articles</th><th>Issue and page number</th></tr>"
+                                "<tr><td>Public debt and guaranteed obligations outstanding</td><td>3</td></tr>"
+                                "</table>"
+                            ),
+                        },
+                        {
+                            "type": "table",
+                            "description": "Public debt statement",
+                            "bbox": [{"page_id": 29}],
+                            "content": (
+                                "<table>"
+                                "<tr><th>End of fiscal years, 1941 to 1945</th><th>1945</th></tr>"
+                                "<tr><td>Total public debt outstanding</td><td>258682</td></tr>"
+                                "</table>"
+                            ),
+                        },
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    build_officeqa_index(corpus_root=corpus_root)
+    monkeypatch.setenv("OFFICEQA_CORPUS_DIR", str(corpus_root))
+
+    table_result = fetch_officeqa_table.invoke(
+        {"document_id": "treasury_1945_json", "table_query": "total public debt outstanding 1945"}
+    )
+
+    assert table_result["metadata"]["officeqa_status"] == "ok"
+    assert table_result["tables"][0]["page_locator"] == "page 29"
+    assert table_result["tables"][0]["rows"][0][1] == "258682"

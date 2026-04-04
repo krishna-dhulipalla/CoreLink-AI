@@ -53,6 +53,7 @@ _STOPWORDS = {
 }
 _STRUCTURE_CONFIDENCE_AVG_THRESHOLD = 0.6
 _STRUCTURE_CONFIDENCE_MAX_THRESHOLD = 0.7
+_PAGE_REF_RE = re.compile(r"^[A-Z]?-?\d+(?:-\d+)?(?:\s+\d+(?:-\d+)?)*\.?$")
 
 
 def _normalize_space(text: str) -> str:
@@ -153,34 +154,37 @@ def _extract_value_years(value: dict[str, Any]) -> list[str]:
     return _extract_years(str(value.get("document_id", "")))
 
 
+def _is_page_reference_value_text(text: str) -> bool:
+    compact = _normalize_space(text)
+    if not compact:
+        return False
+    return bool(_PAGE_REF_RE.fullmatch(compact))
+
+
+def _looks_navigational_value(value: dict[str, Any]) -> bool:
+    lowered = _cell_text(value).lower()
+    if any(token in lowered for token in ("table of contents", "cumulative table of contents", "issue and page number", "articles")):
+        return True
+    raw_value = str(value.get("raw_value", "") or "")
+    column_label = str(value.get("column_label", "") or "").lower()
+    if "issue and page number" in column_label and _is_page_reference_value_text(raw_value):
+        return True
+    return False
+
+
 def _explicit_value_years(value: dict[str, Any]) -> list[str]:
-    candidate_parts: list[str] = []
     row_path = [str(part) for part in value.get("row_path", []) if str(part).strip()]
     column_path = [str(part) for part in value.get("column_path", []) if str(part).strip()]
+    terminal_parts: list[str] = []
     if row_path:
-        candidate_parts.append(row_path[-1])
+        terminal_parts.append(row_path[-1])
     if column_path:
-        candidate_parts.append(column_path[-1])
-    candidate_parts.extend(
-        [
-            str(value.get("row_label", "")),
-            str(value.get("column_label", "")),
-        ]
-    )
-    years = _extract_years(" ".join(candidate_parts))
+        terminal_parts.append(column_path[-1])
+    years = _extract_years(" ".join(terminal_parts))
     if years:
         return years
-    path_text = _normalize_space(
-        " ".join(
-            [
-                " ".join(row_path),
-                " ".join(column_path),
-                str(value.get("row_label", "")),
-                str(value.get("column_label", "")),
-            ]
-        )
-    )
-    years = _extract_years(path_text)
+    fallback_parts = [str(value.get("row_label", "")), str(value.get("column_label", ""))]
+    years = _extract_years(" ".join(fallback_parts))
     if years:
         return years
     return []
@@ -205,7 +209,7 @@ def _point_lookup_score(
     *,
     metric_tokens: set[str],
     target_years: set[str],
-) -> tuple[int, int, int, int, int, int, int, int]:
+) -> tuple[int, int, int, int, int, int, int, int, int]:
     text = _cell_text(value).lower()
     path_text = _normalize_space(
         " ".join(
@@ -217,6 +221,7 @@ def _point_lookup_score(
     ).lower()
     explicit_years = set(_explicit_value_years(value))
     years = explicit_years or set(_extract_value_years(value))
+    leaf_year_hits = len(target_years.intersection(explicit_years)) if target_years else 0
     token_hits = len(metric_tokens.intersection(set(re.findall(r"[a-z0-9]+", text))))
     path_token_hits = len(metric_tokens.intersection(set(re.findall(r"[a-z0-9]+", path_text))))
     year_hits = len(target_years.intersection(years)) if target_years else 0
@@ -228,9 +233,17 @@ def _point_lookup_score(
     penalty = 0
     if "interest-bearing" in text and "interest" not in metric_tokens:
         penalty -= 2
+    if "guaranteed" in text and "guaranteed" not in metric_tokens:
+        penalty -= 2
+    if "change" in text and not any(token in metric_tokens for token in {"change", "difference"}):
+        penalty -= 2
+    if "first 5 months" in text and "month" not in metric_tokens:
+        penalty -= 2
     if "table of contents" in text or "contents" in text:
         penalty -= 3
-    return (year_hits, numeric_flag, path_token_hits, token_hits, has_total, row_named, confidence_bucket, penalty - column_index)
+    if _looks_navigational_value(value):
+        penalty -= 6
+    return (leaf_year_hits, year_hits, numeric_flag, path_token_hits, token_hits, has_total, row_named, confidence_bucket, penalty - column_index)
 
 
 def _provenance_ref(value: dict[str, Any]) -> dict[str, Any]:
@@ -810,6 +823,15 @@ def compute_officeqa_result(
                 validation_errors=[structure_error],
             )
         relevant = [item for item in _dedupe_values(values) if _matches_metric(item, metric_tokens)]
+        relevant = [item for item in relevant if not _looks_navigational_value(item)]
+        if not relevant:
+            return _result_with_diagnostics(
+                status="insufficient",
+                operation=operation,
+                retrieval_intent=retrieval_intent,
+                years=years,
+                validation_errors=["Point lookup could not isolate a grounded financial value after excluding navigational page-reference cells."],
+            )
         if relevant:
             numeric_relevant = [item for item in relevant if _pick_numeric_value(item) is not None]
             if numeric_relevant:
@@ -850,6 +872,14 @@ def compute_officeqa_result(
                     retrieval_intent=retrieval_intent,
                     years=years,
                     validation_errors=["Point lookup found multiple equally plausible values and could not disambiguate the correct one."],
+                )
+            if _looks_navigational_value(chosen):
+                return _result_with_diagnostics(
+                    status="insufficient",
+                    operation=operation,
+                    retrieval_intent=retrieval_intent,
+                    years=years,
+                    validation_errors=["Point lookup selected a navigational page-reference cell rather than a grounded financial value."],
                 )
             numeric_value = _pick_numeric_value(chosen)
             if numeric_value is None:

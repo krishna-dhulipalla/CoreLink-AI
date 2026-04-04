@@ -45,6 +45,7 @@ _SOFT_SYNTHESIS_MISSING_DIMENSIONS = {
     "missing fiscal month coverage",
     "missing inflation or monthly support",
 }
+_NAVIGATION_FAILURE = "navigational table selection"
 _FAILURE_REMEDIATION_CODES = {
     "structured evidence presence": "RETRIEVE_GROUNDED_EVIDENCE",
     "source family correctness": "RERANK_ALLOWED_SOURCES",
@@ -56,6 +57,7 @@ _FAILURE_REMEDIATION_CODES = {
     "deterministic compute support": "COLLECT_COMPUTE_INPUTS",
     "deterministic compute validation": "REPAIR_COMPUTE_VALIDATION",
     "deterministic compute ledger": "REBUILD_COMPUTE_LEDGER",
+    _NAVIGATION_FAILURE: "RERANK_ANALYTICAL_TABLES",
 }
 
 
@@ -70,6 +72,46 @@ def _append_unique(target: list[str], *items: str) -> None:
         item = str(raw or "").strip()
         if item and item not in target:
             target.append(item)
+
+
+def _looks_navigational_evidence(structured: OfficeQAStructuredEvidence, compute: OfficeQAComputeResult) -> bool:
+    table_markers = {
+        "table of contents",
+        "cumulative table of contents",
+        "issue and page number",
+        "articles",
+    }
+    for table in structured.tables:
+        if not isinstance(table, dict):
+            continue
+        text = " ".join(
+            [
+                str(table.get("table_locator", "") or ""),
+                " ".join(str(item) for item in list(table.get("headers", []))[:8]),
+                " ".join(" ".join(str(cell) for cell in row[:6]) for row in list(table.get("header_rows", []))[:3]),
+            ]
+        ).lower()
+        if any(marker in text for marker in table_markers):
+            return True
+    for step in compute.ledger:
+        if not isinstance(step, dict):
+            continue
+        for ref in list(step.get("provenance_refs", []) or []):
+            if not isinstance(ref, dict):
+                continue
+            ref_text = " ".join(
+                [
+                    str(ref.get("table_locator", "") or ""),
+                    str(ref.get("row_label", "") or ""),
+                    str(ref.get("column_label", "") or ""),
+                    " ".join(str(item) for item in list(ref.get("row_path", []))[:4]),
+                    " ".join(str(item) for item in list(ref.get("column_path", []))[:4]),
+                    str(ref.get("raw_value", "") or ""),
+                ]
+            ).lower()
+            if any(marker in ref_text for marker in table_markers):
+                return True
+    return False
 
 
 def _insufficiency_statement(hard_failures: list[str]) -> str:
@@ -104,6 +146,8 @@ def _remediation_guidance(hard_failures: list[str]) -> list[str]:
             _append_unique(guidance, "Inspect the compute ledger and repair missing inputs or invalid aggregation assumptions before retrying.")
         elif failure == "deterministic compute ledger":
             _append_unique(guidance, "Persist the chosen compute path and ledger before final formatting.")
+        elif failure == _NAVIGATION_FAILURE:
+            _append_unique(guidance, "Reject table-of-contents or page-reference tables and retrieve the analytical data table for the requested metric.")
     return guidance
 
 
@@ -202,6 +246,8 @@ def validate_officeqa_final(
             _append_unique(hard_failures, "time scope correctness")
         if not bool(alignment_summary.get("unit_consistent", True)):
             _append_unique(hard_failures, "unit consistency")
+    if _looks_navigational_evidence(structured, compute):
+        _append_unique(hard_failures, _NAVIGATION_FAILURE)
 
     if _requires_deterministic_compute(retrieval_intent):
         if compute.status != "ok":

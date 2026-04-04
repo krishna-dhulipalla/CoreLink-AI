@@ -53,6 +53,7 @@ _HTML_COLSPAN_RE = re.compile(r'colspan\s*=\s*["\']?(\d+)', re.IGNORECASE)
 _HTML_ROWSPAN_RE = re.compile(r'rowspan\s*=\s*["\']?(\d+)', re.IGNORECASE)
 _HTML_QUERY_PREVIEW_CHARS = 2500
 _MAX_EXTRACTED_TABLES = 24
+_PAGE_REF_RE = re.compile(r"^[A-Z]?-?\d+(?:-\d+)?(?:\s+\d+(?:-\d+)?)*\.?$")
 
 
 class _OfficeQATableExtractionTimeout(RuntimeError):
@@ -571,6 +572,33 @@ def _table_candidate_matches_query(locator: str, context_text: str, content: str
     return _match_score(preview, table_query) > 0.0
 
 
+def _is_page_reference_value(value: Any) -> bool:
+    compact = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not compact:
+        return False
+    return bool(_PAGE_REF_RE.fullmatch(compact))
+
+
+def _is_navigational_table(table: dict[str, Any]) -> bool:
+    locator = str(table.get("locator", "") or "")
+    context = str(table.get("context_text", "") or "")
+    headers = [str(item or "") for item in list(table.get("headers", []))]
+    rows = [list(row) for row in list(table.get("rows", []))[:24]]
+    lowered = " ".join([locator, context, *headers]).lower()
+    if any(token in lowered for token in ("table of contents", "cumulative table of contents", "issue and page number", "articles")):
+        return True
+    page_ref_cells = 0
+    inspected_cells = 0
+    for row in rows:
+        for cell in row[:8]:
+            inspected_cells += 1
+            if _is_page_reference_value(cell):
+                page_ref_cells += 1
+    if inspected_cells >= 8 and (page_ref_cells / max(1, inspected_cells)) >= 0.5:
+        return True
+    return False
+
+
 def _extract_document_tables(target: Path, text: str, citation: str, *, table_query: str = "") -> list[dict[str, Any]]:
     tables: list[dict[str, Any]] = []
     suffix = target.suffix.lower()
@@ -628,6 +656,8 @@ def _rank_tables(tables: list[dict[str, Any]], table_query: str) -> list[dict[st
         lowered = text.lower()
         if "table of contents" in lowered or "cumulative table of contents" in lowered:
             score -= 0.25
+        if _is_navigational_table(table):
+            score -= 0.75
         numeric_cells = sum(
             1
             for row in list(table.get("rows", []))[:24]
@@ -638,11 +668,7 @@ def _rank_tables(tables: list[dict[str, Any]], table_query: str) -> list[dict[st
             score += 0.05
         return score
 
-    return sorted(
-        tables,
-        key=_score,
-        reverse=True,
-    )
+    return sorted(tables, key=_score, reverse=True)
 
 
 def _filter_rows(table: dict[str, Any], row_query: str) -> list[list[str]]:

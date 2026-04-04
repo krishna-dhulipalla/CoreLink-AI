@@ -345,6 +345,45 @@ def test_compute_officeqa_refuses_low_confidence_structure():
     assert "Low-confidence table structure" in result.validation_errors[0]
 
 
+def test_compute_officeqa_point_lookup_rejects_navigational_page_reference_cells():
+    values = [
+        {
+            "document_id": "treasury_bulletin_1945_01_json",
+            "citation": "treasury_bulletin_1945_01.json",
+            "page_locator": "page 6",
+            "table_locator": "table 1",
+            "row_index": 8,
+            "row_label": "Public debt and guaranteed obligations outstanding",
+            "row_path": ["Public debt and guaranteed obligations outstanding"],
+            "column_index": 2,
+            "column_label": "Issue and page number | Jan.",
+            "column_path": ["Issue and page number", "Jan."],
+            "raw_value": "3",
+            "numeric_value": 3.0,
+            "normalized_value": 3.0,
+            "unit": "",
+            "unit_multiplier": 1.0,
+            "unit_kind": "scalar",
+            "structure_confidence": 0.95,
+        }
+    ]
+    prompt = "According to the Treasury Bulletin, what was total public debt outstanding in 1945?"
+    retrieval_intent = RetrievalIntent(
+        entity="Public debt",
+        metric="public debt outstanding",
+        period="1945",
+        document_family="treasury_bulletin",
+        aggregation_shape="point_lookup",
+        answer_mode="deterministic_compute",
+        compute_policy="required",
+    )
+
+    result = compute_officeqa_result(prompt, retrieval_intent, _structured(values))
+
+    assert result.status == "insufficient"
+    assert "navigational" in result.validation_errors[0].lower()
+
+
 def test_executor_prefers_deterministic_officeqa_compute_without_llm(monkeypatch):
     months = [
         "January",

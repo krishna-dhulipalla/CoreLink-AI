@@ -35,7 +35,7 @@ from agent.capabilities import (
     resolve_tool_plan,
 )
 from agent.curated_context import attach_structured_evidence, build_curated_context, build_source_bundle, solver_context_block
-from agent.nodes.orchestrator_retrieval import _plan_retrieval_action
+from agent.nodes.orchestrator_retrieval import _plan_retrieval_action, _search_result_candidates
 from agent.nodes.orchestrator import (
     _MAX_RETRIEVAL_HOPS,
     context_curator,
@@ -107,6 +107,66 @@ def test_engine_exact_quant_fast_path_curates_without_duplicate_solver_payload()
     assert result["workpad"]["task_complexity_tier"] == "simple_exact"
     assert any(fact["type"] == "formula" for fact in result["curated_context"]["facts_in_use"])
     assert any(fact["type"] == "table_rows" for fact in result["curated_context"]["facts_in_use"])
+
+
+def test_build_source_bundle_dedupes_benchmark_source_files():
+    source_bundle = build_source_bundle(
+        "According to the Treasury Bulletin, what was total public debt outstanding in 1945?",
+        {
+            "source_files_expected": [
+                "treasury_bulletin_1945_01.json",
+                "TREASURY_BULLETIN_1945_01.JSON",
+                "treasury_bulletin_1945_02.json",
+            ],
+            "source_files_found": [
+                {"document_id": "treasury_bulletin_1945_01_json", "relative_path": "treasury_bulletin_1945_01.json"},
+                {"document_id": "TREASURY_BULLETIN_1945_01_JSON", "relative_path": "TREASURY_BULLETIN_1945_01.JSON"},
+                {"document_id": "treasury_bulletin_1945_02_json", "relative_path": "treasury_bulletin_1945_02.json"},
+            ],
+        },
+    )
+
+    assert source_bundle.source_files_expected == [
+        "treasury_bulletin_1945_01.json",
+        "treasury_bulletin_1945_02.json",
+    ]
+    assert source_bundle.source_files_found == [
+        {"document_id": "treasury_bulletin_1945_01_json", "relative_path": "treasury_bulletin_1945_01.json"},
+        {"document_id": "treasury_bulletin_1945_02_json", "relative_path": "treasury_bulletin_1945_02.json"},
+    ]
+
+
+def test_search_result_candidates_dedupes_documents_and_results_views():
+    tool_result = {
+        "facts": {
+            "documents": [
+                {
+                    "document_id": "treasury_bulletin_1945_01_json",
+                    "citation": "treasury_bulletin_1945_01.json",
+                    "path": "treasury_bulletin_1945_01.json",
+                    "title": "",
+                    "rank": 999,
+                }
+            ],
+            "results": [
+                {
+                    "document_id": "treasury_bulletin_1945_01_json",
+                    "url": "treasury_bulletin_1945_01.json",
+                    "title": "treasury_bulletin_1945_01.json",
+                    "snippet": "Treasury Bulletin table for public debt outstanding.",
+                    "rank": 1,
+                }
+            ],
+        }
+    }
+
+    candidates = _search_result_candidates(tool_result)
+
+    assert len(candidates) == 1
+    assert candidates[0]["document_id"] == "treasury_bulletin_1945_01_json"
+    assert candidates[0]["citation"] == "treasury_bulletin_1945_01.json"
+    assert candidates[0]["title"] == "treasury_bulletin_1945_01.json"
+    assert candidates[0]["rank"] == 1
 
 
 def test_engine_solver_context_block_removes_redundant_objective_and_tool_query_noise():
@@ -3016,6 +3076,134 @@ def test_officeqa_reviewer_accepts_deterministic_compute_without_inline_quote(mo
     assert result["solver_stage"] == "COMPLETE"
     assert result["quality_report"]["verdict"] == "pass"
     assert result["review_packet"]["validator_result"]["verdict"] == "pass"
+
+
+def test_officeqa_reviewer_rejects_navigational_table_evidence():
+    prompt = "According to the Treasury Bulletin, what was total public debt outstanding in 1945?"
+    state = make_state(
+        prompt,
+        task_profile="document_qa",
+        task_intent={
+            "task_family": "document_qa",
+            "execution_mode": "document_grounded_analysis",
+            "complexity_tier": "structured_analysis",
+            "review_mode": "document_grounded",
+            "planner_source": "heuristic",
+        },
+        benchmark_overrides={"benchmark_adapter": "officeqa", "officeqa_xml_contract": True},
+        answer_contract={"format": "xml", "requires_adapter": True, "xml_root_tag": "FINAL_ANSWER", "value_rules": {"reasoning_tag": "REASONING", "final_answer_tag": "FINAL_ANSWER"}},
+        execution_journal={
+            "events": [],
+            "tool_results": [
+                {
+                    "type": "fetch_officeqa_table",
+                    "facts": {
+                        "document_id": "treasury_bulletin_1945_01_json",
+                        "citation": "treasury_bulletin_1945_01.json#page=6",
+                        "metadata": {"officeqa_status": "ok"},
+                    },
+                }
+            ],
+            "routed_tool_families": [],
+            "revision_count": 0,
+            "self_reflection_count": 0,
+            "retrieval_iterations": 1,
+            "retrieval_queries": [],
+            "retrieved_citations": ["treasury_bulletin_1945_01.json#page=6"],
+            "final_artifact_signature": "sig-toc",
+            "progress_signatures": [],
+            "stop_reason": "",
+            "contract_collapse_attempts": 0,
+        },
+        curated_context={
+            "objective": prompt,
+            "facts_in_use": [],
+            "open_questions": [],
+            "assumptions": [],
+            "requested_output": {"format": "xml"},
+            "provenance_summary": {"source_bundle": {"urls": []}},
+            "structured_evidence": {
+                "tables": [
+                    {
+                        "document_id": "treasury_bulletin_1945_01_json",
+                        "table_locator": "table 1",
+                        "headers": ["Row", "Issue and page number | Jan."],
+                        "header_rows": [["Articles", "Issue and page number"]],
+                    }
+                ],
+                "values": [
+                    {
+                        "document_id": "treasury_bulletin_1945_01_json",
+                        "citation": "treasury_bulletin_1945_01.json#page=6",
+                        "page_locator": "page 6",
+                        "table_locator": "table 1",
+                        "row_label": "Public debt and guaranteed obligations outstanding",
+                        "row_path": ["Public debt and guaranteed obligations outstanding"],
+                        "column_label": "Issue and page number | Jan.",
+                        "column_path": ["Issue and page number", "Jan."],
+                        "raw_value": "3",
+                        "numeric_value": 3.0,
+                    }
+                ],
+                "page_chunks": [],
+                "value_count": 1,
+                "provenance_complete": True,
+            },
+            "compute_result": {
+                "status": "ok",
+                "operation": "point_lookup",
+                "answer_text": "3",
+                "citations": ["treasury_bulletin_1945_01.json#page=6"],
+                "ledger": [
+                    {
+                        "operator": "point_lookup",
+                        "description": "Direct point lookup",
+                        "output": {"value": 3.0},
+                        "provenance_refs": [
+                            {
+                                "table_locator": "table 1",
+                                "row_label": "Public debt and guaranteed obligations outstanding",
+                                "column_label": "Issue and page number | Jan.",
+                                "column_path": ["Issue and page number", "Jan."],
+                                "raw_value": "3",
+                            }
+                        ],
+                    }
+                ],
+                "provenance_complete": True,
+            },
+        },
+        workpad={"events": [], "stage_outputs": {}, "tool_results": [], "review_ready": True},
+    )
+    state["retrieval_intent"] = {
+        "entity": "Public debt",
+        "metric": "total public debt outstanding",
+        "period": "1945",
+        "document_family": "treasury_bulletin",
+        "aggregation_shape": "point_lookup",
+        "answer_mode": "deterministic_compute",
+        "compute_policy": "required",
+        "partial_answer_allowed": False,
+        "strategy": "table_first",
+        "analysis_modes": [],
+        "evidence_plan": {
+            "requires_table_support": True,
+            "requires_text_support": False,
+            "requires_cross_source_alignment": False,
+            "join_keys": [],
+        },
+        "must_include_terms": [],
+        "must_exclude_terms": [],
+        "query_candidates": [],
+    }
+    state["messages"].append(AIMessage(content="3"))
+
+    result = reviewer(state)
+
+    assert result["solver_stage"] in {"REVISE", "COMPLETE"}
+    assert result["review_packet"]["validator_result"]["verdict"] == "revise"
+    assert result["quality_report"]["verdict"] in {"revise", "fail"}
+    assert "navigational table selection" in result["review_packet"]["validator_result"]["missing_dimensions"]
 
 
 def test_engine_reviewer_revises_legal_once_then_stops_cleanly():

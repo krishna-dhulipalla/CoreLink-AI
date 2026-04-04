@@ -609,8 +609,70 @@ def _search_result_candidates(tool_result: dict[str, Any]) -> list[dict[str, Any
                     "snippet": str(item.get("snippet", "")),
                     "rank": int(item.get("rank", 999) or 999),
                 }
-            )
-    return [candidate for candidate in candidates if candidate.get("citation") or candidate.get("document_id") or candidate.get("path")]
+                )
+    return _dedupe_search_candidates(
+        [
+            candidate
+            for candidate in candidates
+            if candidate.get("citation") or candidate.get("document_id") or candidate.get("path")
+        ]
+    )
+
+
+def _candidate_identity(candidate: dict[str, Any]) -> tuple[str, str, str]:
+    return (
+        str(candidate.get("document_id", "") or "").strip().lower(),
+        str(candidate.get("citation", "") or "").strip().lower(),
+        str(candidate.get("path", "") or "").strip().lower(),
+    )
+
+
+def _merge_candidate_records(primary: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(primary)
+    for key in ("document_id", "citation", "path", "title", "snippet"):
+        if not merged.get(key) and incoming.get(key):
+            merged[key] = incoming.get(key)
+    if incoming.get("title"):
+        merged_title = str(merged.get("title", "") or "")
+        merged_document_id = str(merged.get("document_id", "") or "")
+        incoming_title = str(incoming.get("title", "") or "")
+        if merged_title == merged_document_id and incoming_title != merged_document_id:
+            merged["title"] = incoming_title
+    primary_rank = int(merged.get("rank", 999) or 999)
+    incoming_rank = int(incoming.get("rank", 999) or 999)
+    merged["rank"] = min(primary_rank, incoming_rank)
+    return merged
+
+
+def _dedupe_search_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    index_by_identity: dict[tuple[str, str, str], int] = {}
+    index_by_document_id: dict[str, int] = {}
+    index_by_citation: dict[str, int] = {}
+
+    for candidate in candidates:
+        identity = _candidate_identity(candidate)
+        document_id = identity[0]
+        citation = identity[1]
+        existing_index = index_by_identity.get(identity)
+        if existing_index is None and document_id:
+            existing_index = index_by_document_id.get(document_id)
+        if existing_index is None and citation:
+            existing_index = index_by_citation.get(citation)
+        if existing_index is None:
+            deduped.append(dict(candidate))
+            current_index = len(deduped) - 1
+        else:
+            deduped[existing_index] = _merge_candidate_records(deduped[existing_index], candidate)
+            current_index = existing_index
+        merged = deduped[current_index]
+        merged_identity = _candidate_identity(merged)
+        index_by_identity[merged_identity] = current_index
+        if merged_identity[0]:
+            index_by_document_id[merged_identity[0]] = current_index
+        if merged_identity[1]:
+            index_by_citation[merged_identity[1]] = current_index
+    return deduped
 
 
 def _search_candidate_text(candidate: dict[str, Any]) -> str:
@@ -758,11 +820,12 @@ def _candidate_diagnostics(
     source_bundle: SourceBundle,
     benchmark_overrides: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    if not candidates:
+    deduped_candidates = _dedupe_search_candidates(candidates)
+    if not deduped_candidates:
         return [], []
     kept: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
-    for index, candidate in enumerate(candidates):
+    for index, candidate in enumerate(deduped_candidates):
         score = round(_search_candidate_score(candidate, retrieval_intent, source_bundle, benchmark_overrides), 3)
         item = {
             "title": str(candidate.get("title", "") or ""),
@@ -780,6 +843,17 @@ def _candidate_diagnostics(
 
 
 def _source_file_candidate_diagnostics(indexed_source_matches: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    deduped_matches: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in indexed_source_matches:
+        signature = (
+            str(item.get("document_id", "") or "").strip().lower(),
+            str(item.get("relative_path", "") or "").strip().lower(),
+        )
+        if signature in seen:
+            continue
+        seen.add(signature)
+        deduped_matches.append(item)
     kept = [
         {
             "title": str(item.get("relative_path", "") or item.get("document_id", "") or ""),
@@ -788,7 +862,7 @@ def _source_file_candidate_diagnostics(indexed_source_matches: list[dict[str, An
             "rank": index + 1,
             "score": 1.0,
         }
-        for index, item in enumerate(indexed_source_matches[:3])
+        for index, item in enumerate(deduped_matches[:3])
     ]
     rejected = [
         {
@@ -799,7 +873,7 @@ def _source_file_candidate_diagnostics(indexed_source_matches: list[dict[str, An
             "score": 0.95,
             "reason": "benchmark-linked source not selected in this hop",
         }
-        for index, item in enumerate(indexed_source_matches[3:9])
+        for index, item in enumerate(deduped_matches[3:9])
     ]
     return kept, rejected
 

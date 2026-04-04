@@ -37,6 +37,37 @@ DEFAULT_SLICE_PATH = ROOT / "eval" / "officeqa_regression_slice.json"
 DEFAULT_OUTPUT_DIR = ROOT / "Results&traces"
 
 
+def _report_retention_limit() -> int:
+    raw = (
+        os.getenv("OFFICEQA_REGRESSION_MAX_RECENT", "").strip()
+        or os.getenv("TRACE_MAX_RECENT", "5").strip()
+    )
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 5
+    return max(1, value)
+
+
+def _cleanup_old_reports(output_dir: Path) -> None:
+    if not output_dir.exists():
+        return
+    limit = _report_retention_limit()
+    entries = [
+        entry
+        for entry in output_dir.iterdir()
+        if entry.is_file() and entry.name.startswith("officeqa_regression_") and entry.suffix == ".json"
+    ]
+    if len(entries) <= limit:
+        return
+    entries.sort(key=lambda item: item.stat().st_mtime, reverse=True)
+    for stale in entries[limit:]:
+        try:
+            stale.unlink()
+        except FileNotFoundError:
+            continue
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the curated OfficeQA regression slice.")
     parser.add_argument("--slice-path", default=str(DEFAULT_SLICE_PATH), help="Path to the OfficeQA regression slice JSON.")
@@ -127,6 +158,7 @@ async def _main() -> int:
         "cases": case_reports,
     }
     output_path.write_text(json.dumps(payload, indent=2, ensure_ascii=True), encoding="utf-8")
+    _cleanup_old_reports(output_dir)
     print(json.dumps({"saved_path": str(output_path), "summary": summary}, ensure_ascii=True))
     return 0
 
