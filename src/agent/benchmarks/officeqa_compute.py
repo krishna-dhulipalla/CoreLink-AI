@@ -205,7 +205,7 @@ def _point_lookup_score(
     *,
     metric_tokens: set[str],
     target_years: set[str],
-) -> tuple[int, int, int, int, int, int, int]:
+) -> tuple[int, int, int, int, int, int, int, int]:
     text = _cell_text(value).lower()
     path_text = _normalize_space(
         " ".join(
@@ -220,6 +220,7 @@ def _point_lookup_score(
     token_hits = len(metric_tokens.intersection(set(re.findall(r"[a-z0-9]+", text))))
     path_token_hits = len(metric_tokens.intersection(set(re.findall(r"[a-z0-9]+", path_text))))
     year_hits = len(target_years.intersection(years)) if target_years else 0
+    numeric_flag = 1 if _pick_numeric_value(value) is not None else 0
     has_total = 1 if "total" in text else 0
     row_named = 1 if str(value.get("row_label", "")).strip() else 0
     confidence_bucket = int(round(float(value.get("structure_confidence", 1.0) or 1.0) * 100))
@@ -229,7 +230,7 @@ def _point_lookup_score(
         penalty -= 2
     if "table of contents" in text or "contents" in text:
         penalty -= 3
-    return (year_hits, path_token_hits, token_hits, has_total, row_named, confidence_bucket, penalty - column_index)
+    return (year_hits, numeric_flag, path_token_hits, token_hits, has_total, row_named, confidence_bucket, penalty - column_index)
 
 
 def _provenance_ref(value: dict[str, Any]) -> dict[str, Any]:
@@ -810,6 +811,9 @@ def compute_officeqa_result(
             )
         relevant = [item for item in _dedupe_values(values) if _matches_metric(item, metric_tokens)]
         if relevant:
+            numeric_relevant = [item for item in relevant if _pick_numeric_value(item) is not None]
+            if numeric_relevant:
+                relevant = numeric_relevant
             target_years = _target_years(task_text, retrieval_intent)
             ranked = sorted(
                 relevant,

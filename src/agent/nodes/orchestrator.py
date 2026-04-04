@@ -767,12 +767,17 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                 evidence_sufficiency = assess_evidence_sufficiency(task_text, source_bundle, journal.tool_results, benchmark_overrides)
                 should_continue_after_tool = bool(tool_plan.pending_tools) or intent.execution_mode in _RETRIEVAL_EXECUTION_MODES
                 if should_continue_after_tool and intent.execution_mode in {"advisory_analysis", "document_grounded_analysis", "tool_compute", "retrieval_augmented_analysis"}:
+                    workpad["solver_llm_decision"] = {
+                        "used_llm": False,
+                        "reason": "llm_deferred_until_retrieval_complete",
+                    }
                     if tracer:
                         tracer.record(
                             "executor",
                             {
                                 "intent": intent.model_dump(),
                                 "used_llm": False,
+                                "llm_decision_reason": "llm_deferred_until_retrieval_complete",
                                 "tools_ran": tools_ran_this_call,
                                 "tool_results": _compact_tool_findings(journal.tool_results),
                                 "output_preview": "",
@@ -844,6 +849,10 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                             "remediation_codes": list(review_feedback.get("remediation_codes", [])),
                         }
                     workpad = _record_event(workpad, "executor", f"retrieval hop -> {retrieval_action.tool_name}")
+                    workpad["solver_llm_decision"] = {
+                        "used_llm": False,
+                        "reason": "llm_deferred_until_retrieval_complete",
+                    }
                     evidence_sufficiency = assess_evidence_sufficiency(task_text, source_bundle, journal.tool_results, benchmark_overrides)
                     if tracer:
                         tracer.record(
@@ -851,6 +860,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                             {
                                 "intent": intent.model_dump(),
                                 "used_llm": False,
+                                "llm_decision_reason": "llm_deferred_until_retrieval_complete",
                                 "tools_ran": tools_ran_this_call,
                                 "tool_results": _compact_tool_findings(journal.tool_results),
                                 "output_preview": "",
@@ -899,6 +909,10 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                 }
                 curated.provenance_summary = provenance_summary
                 workpad["officeqa_predictive_gaps"] = predictive_gaps
+                workpad["solver_llm_decision"] = {
+                    "used_llm": False,
+                    "reason": "required_compute_blocked_by_predictive_gaps",
+                }
                 workpad = _record_event(
                     workpad,
                     "executor",
@@ -910,6 +924,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                         {
                             "intent": intent.model_dump(),
                             "used_llm": False,
+                            "llm_decision_reason": "required_compute_blocked_by_predictive_gaps",
                             "tools_ran": tools_ran_this_call,
                             "output_preview": "",
                             "completion_budget": 0,
@@ -976,6 +991,10 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                     journal.final_artifact_signature = _artifact_signature(answer)
                     workpad["completion_budget"] = 0
                     workpad["review_ready"] = True
+                    workpad["solver_llm_decision"] = {
+                        "used_llm": False,
+                        "reason": "deterministic_compute_completed",
+                    }
                     workpad = _record_event(workpad, "executor", f"deterministic officeqa compute -> {compute_result.operation or 'answer'}")
                     if tracer:
                         tracer.record(
@@ -983,6 +1002,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                             {
                                 "intent": intent.model_dump(),
                                 "used_llm": False,
+                                "llm_decision_reason": "deterministic_compute_completed",
                                 "tools_ran": tools_ran_this_call,
                                 "tool_results": _compact_tool_findings(journal.tool_results),
                                 "output_preview": answer[:2000],
@@ -1025,6 +1045,10 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                     journal.final_artifact_signature = _artifact_signature(answer)
                     workpad["completion_budget"] = 0
                     workpad["review_ready"] = True
+                    workpad["solver_llm_decision"] = {
+                        "used_llm": False,
+                        "reason": "required_compute_unavailable",
+                    }
                     workpad = _record_event(
                         workpad,
                         "executor",
@@ -1197,6 +1221,10 @@ def make_executor(registry: dict[str, dict[str, Any]]):
         evidence_sufficiency = assess_evidence_sufficiency(task_text, source_bundle, journal.tool_results, benchmark_overrides)
         workpad["completion_budget"] = max_tokens
         workpad["review_ready"] = True
+        workpad["solver_llm_decision"] = {
+            "used_llm": True,
+            "reason": "grounded_synthesis_required",
+        }
         workpad = _record_event(workpad, "executor", "final draft ready")
         if tracer:
             tracer.record(
@@ -1204,6 +1232,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                 {
                     "intent": intent.model_dump(),
                     "used_llm": True,
+                    "llm_decision_reason": "grounded_synthesis_required",
                     "tools_ran": tools_ran_this_call,
                     "tool_results": _compact_tool_findings(journal.tool_results),
                     "prompt": format_messages_for_trace(prompt_messages),
@@ -1296,6 +1325,12 @@ def reviewer(state: RuntimeState) -> dict[str, Any]:
     answer_contract = state.get("answer_contract", {}) or {}
     validator_result: dict[str, Any] = {}
     officeqa_validation = None
+    compute_status = str(dict(curated.compute_result or {}).get("status", "") or "")
+    deterministic_structured_answer = (
+        benchmark_overrides.get("benchmark_adapter") == "officeqa"
+        and retrieval_intent.answer_mode == "deterministic_compute"
+        and compute_status == "ok"
+    )
     if benchmark_overrides.get("benchmark_adapter") == "officeqa" and intent.review_mode == "document_grounded":
         officeqa_validation = benchmark_validate_final(
             task_text=latest_human_text(state["messages"]),
@@ -1420,9 +1455,9 @@ def reviewer(state: RuntimeState) -> dict[str, Any]:
             )
         ):
             missing.append("unsupported inference from indirect evidence")
-        if review_packet.citations and not has_inline_attribution:
+        if review_packet.citations and not has_inline_attribution and not deterministic_structured_answer:
             missing.append("inline source attribution")
-        if review_packet.tool_findings and not has_inline_attribution and "\"" not in answer and "quote" not in answer_lower:
+        if review_packet.tool_findings and not has_inline_attribution and "\"" not in answer and "quote" not in answer_lower and not deterministic_structured_answer:
             missing.append("quoted supporting evidence or extracted table row")
         task_lower = latest_human_text(state["messages"]).lower()
         if "calendar year" in task_lower and "fiscal year" in answer_lower and "calendar year" not in answer_lower:
@@ -1440,6 +1475,8 @@ def reviewer(state: RuntimeState) -> dict[str, Any]:
             missing = _partial_answer_missing_dimensions(missing)
             if not missing:
                 reasoning = "Reviewer accepted a bounded grounded partial answer because the supported portion is explicit and source-backed."
+        elif deterministic_structured_answer and not missing:
+            reasoning = "Reviewer accepted a deterministic structured answer backed by compute provenance and validator-approved evidence."
         if missing:
             verdict = "revise" if journal.revision_count < 1 else "fail"
             reasoning = "Grounded retrieval answer is missing evidence quality, attribution, or semantic alignment with the requested source, period, entity, or aggregation."
@@ -1499,6 +1536,7 @@ def reviewer(state: RuntimeState) -> dict[str, Any]:
                 "answer_mode": retrieval_intent.answer_mode,
                 "compute_policy": retrieval_intent.compute_policy,
                 "used_llm": False,
+                "llm_decision_reason": "rule_based_validator_review",
             },
         )
     logger.info("[Step %s] engine reviewer -> %s", step, verdict.upper())

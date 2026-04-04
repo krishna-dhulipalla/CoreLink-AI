@@ -58,10 +58,22 @@ def _extract_period(task_text: str, source_bundle: SourceBundle) -> str:
 
 
 def _extract_entity(task_text: str, source_bundle: SourceBundle) -> str:
+    generic_source_entities = {
+        "treasury bulletin",
+        "annual report",
+        "narrative discussion",
+        "bulletin",
+        "report",
+        "document",
+    }
     if source_bundle.entities:
-        return source_bundle.entities[0]
+        first = _normalize_space(source_bundle.entities[0]).strip(" ,.")
+        if first.lower() not in generic_source_entities:
+            return first
     lowered = task_text or ""
     for pattern in (
+        r"reason was given for (?:the )?([A-Za-z0-9 .,'\-&]+?)(?:\s+in\s+\b(?:19|20)\d{2}\b|\?)",
+        r"reason was given for (?:the )?([A-Za-z0-9 .,'\-&]+?)(?:,|\.|$)",
         r"for the ([A-Za-z0-9 .,'\-&]+?) in (?:fy|fiscal year|calendar year)\b",
         r"for ([A-Za-z0-9 .,'\-&]+?) in (?:fy|fiscal year|calendar year)\b",
         r"for the ([A-Za-z0-9 .,'\-&]+?)(?:,| specifically| rounded| using| what was| what is|\?)",
@@ -92,6 +104,16 @@ def _extract_metric(task_text: str) -> str:
         return "total expenditures"
     if "expenditures" in lowered:
         return "expenditures"
+    for pattern in (
+        r"reason was given for (?:the )?([a-z0-9 .,'\-&]+?)(?:\s+in\s+\b(?:19|20)\d{2}\b|\?|$)",
+        r"what (?:was|is|were) (?:the )?([a-z0-9 .,'\-&]+?)(?:\s+in\s+(?:fy|fiscal year|calendar year|\b(?:19|20)\d{2}\b)|\?|$)",
+    ):
+        match = re.search(pattern, lowered, re.IGNORECASE)
+        if match:
+            candidate = _normalize_space(match.group(1)).strip(" ,.")
+            candidate = re.sub(r"\baccording to\b.*$", "", candidate, flags=re.IGNORECASE).strip(" ,.")
+            if candidate and candidate not in {"treasury bulletin", "narrative discussion", "report", "document"}:
+                return candidate
     return ""
 
 
@@ -144,6 +166,9 @@ def _needs_narrative_support(task_text: str, analysis_modes: list[str]) -> bool:
     if any(
         token in lowered
         for token in (
+            "narrative",
+            "discussion",
+            "reason was given",
             "trend",
             "forecast",
             "project",

@@ -52,6 +52,10 @@ def _benchmark_overrides(state: dict[str, Any]) -> dict[str, Any]:
     return dict(state.get("benchmark_overrides") or {})
 
 
+def _workpad(state: dict[str, Any]) -> dict[str, Any]:
+    return dict(state.get("workpad") or {})
+
+
 def _retrieval_intent(state: dict[str, Any]) -> dict[str, Any]:
     return dict(state.get("retrieval_intent") or {})
 
@@ -175,6 +179,7 @@ def capture_officeqa_artifacts(trace: dict[str, Any] | None) -> dict[str, Any]:
     retrieval_diagnostics = dict(provenance.get("retrieval_diagnostics") or {})
     validator = _validator_result(state)
     citations = list(dict.fromkeys(str(item).strip() for item in journal.get("retrieved_citations", []) if str(item).strip()))
+    workpad = _workpad(state)
 
     chosen_sources: list[dict[str, Any]] = []
     for result in _tool_results(state):
@@ -248,6 +253,7 @@ def capture_officeqa_artifacts(trace: dict[str, Any] | None) -> dict[str, Any]:
         "compute_selection_reasoning": str(compute.get("selection_reasoning", "") or ""),
         "rejected_aggregation_alternatives": list(compute.get("rejected_alternatives", []) or [])[:6],
         "compute_ledger": compute_ledger,
+        "solver_llm_decision": dict(workpad.get("solver_llm_decision") or {}),
         "validator_remediation": list(validator.get("remediation_guidance", []) or [])[:6],
         "final_answer": answer,
         "final_artifact_signature": str(journal.get("final_artifact_signature", "") or ""),
@@ -262,9 +268,11 @@ def build_case_report(case: dict[str, Any], trace: dict[str, Any] | None) -> dic
     retrieval_intent = _retrieval_intent(state)
     retrieval_strategy = str(case.get("retrieval_strategy", "") or retrieval_intent.get("strategy", "") or "").strip()
     answer_mode = str(case.get("answer_mode", "") or retrieval_intent.get("answer_mode", "") or artifacts.get("answer_mode", "") or "").strip()
+    case_kind = str(case.get("case_kind", "") or "qa").strip() or "qa"
     return {
         "id": str(case.get("id", "") or ""),
         "prompt": str(case.get("prompt", "") or ""),
+        "case_kind": case_kind,
         "focus_subsystem": str(case.get("focus_subsystem", "") or ""),
         "retrieval_strategy": retrieval_strategy,
         "answer_mode": answer_mode,
@@ -281,6 +289,8 @@ def build_case_report(case: dict[str, Any], trace: dict[str, Any] | None) -> dic
             "execution_mode": str(dict(state.get("task_intent") or {}).get("execution_mode", "") or ""),
             "retrieval_strategy": retrieval_strategy,
             "answer_mode": answer_mode,
+            "solver_llm_used": bool(dict(artifacts.get("solver_llm_decision") or {}).get("used_llm")),
+            "solver_llm_decision_reason": str(dict(artifacts.get("solver_llm_decision") or {}).get("reason", "") or ""),
             "retrieval_iterations": int(_journal(state).get("retrieval_iterations", 0) or 0),
             "tool_count": len(_tool_results(state)),
         },
@@ -291,10 +301,18 @@ def summarize_regression_report(case_reports: list[dict[str, Any]]) -> dict[str,
     counts: dict[str, int] = {key: 0 for key in ("pass", "routing", "retrieval", "extraction", "compute", "validation", "formatting")}
     counts_by_strategy: dict[str, int] = {}
     counts_by_answer_mode: dict[str, int] = {}
+    counts_by_case_kind: dict[str, int] = {}
     evidence_ready = 0
+    extraction_ready = 0
+    confidence_ready = 0
+    compute_reliable = 0
+    contract_success = 0
+    qa_total = 0
     for item in case_reports:
         subsystem = str(dict(item.get("classification") or {}).get("subsystem", "") or "pass")
         counts[subsystem] = counts.get(subsystem, 0) + 1
+        case_kind = str(item.get("case_kind", "") or "qa").strip() or "qa"
+        counts_by_case_kind[case_kind] = counts_by_case_kind.get(case_kind, 0) + 1
         strategy = str(item.get("retrieval_strategy", "") or dict(item.get("execution_summary") or {}).get("retrieval_strategy", "") or "").strip()
         if strategy:
             counts_by_strategy[strategy] = counts_by_strategy.get(strategy, 0) + 1
@@ -304,23 +322,58 @@ def summarize_regression_report(case_reports: list[dict[str, Any]]) -> dict[str,
         artifacts = dict(item.get("artifacts") or {})
         if subsystem == "pass" and list(artifacts.get("extracted_tables", [])) and str(artifacts.get("final_answer", "")).strip():
             evidence_ready += 1
+        if case_kind != "qa":
+            continue
+        qa_total += 1
+        if list(artifacts.get("chosen_sources", [])) and (list(artifacts.get("extracted_tables", [])) or str(artifacts.get("final_answer", "")).strip()):
+            extraction_ready += 1
+        confidence_summary = dict(artifacts.get("structure_confidence_summary", {}) or {})
+        if confidence_summary:
+            if bool(confidence_summary.get("table_confidence_gate_passed")):
+                confidence_ready += 1
+        else:
+            confidence_ready += 1
+        if subsystem != "formatting" and str(artifacts.get("final_answer", "")).strip():
+            contract_success += 1
+        compute_policy = str(artifacts.get("compute_policy", "") or "").strip()
+        compute_status = str(dict(item.get("classification") or {}).get("compute_status", "") or "")
+        if compute_policy in {"preferred", "not_applicable", ""} or compute_status == "ok":
+            compute_reliable += 1
 
     total = len(case_reports)
-    critical_failures = counts.get("routing", 0) + counts.get("formatting", 0) + counts.get("validation", 0)
-    required_evidence_ready = math.ceil(total * 0.6) if total else 0
-    go_for_full_benchmark = total > 0 and critical_failures == 0 and evidence_ready >= required_evidence_ready
+    required_qa_threshold = math.ceil(qa_total * 0.6) if qa_total else 0
+    qa_reports = [item for item in case_reports if str(item.get("case_kind", "") or "qa").strip() == "qa"]
+    qa_critical_failures = sum(
+        1
+        for item in qa_reports
+        if str(dict(item.get("classification") or {}).get("subsystem", "") or "") in {"routing", "formatting", "validation"}
+    )
+    go_for_full_benchmark = (
+        qa_total > 0
+        and qa_critical_failures == 0
+        and extraction_ready >= required_qa_threshold
+        and confidence_ready >= required_qa_threshold
+        and compute_reliable >= required_qa_threshold
+        and contract_success == qa_total
+    )
 
     return {
         "total_cases": total,
+        "qa_cases": qa_total,
         "counts_by_subsystem": counts,
+        "counts_by_case_kind": counts_by_case_kind,
         "counts_by_strategy": counts_by_strategy,
         "counts_by_answer_mode": counts_by_answer_mode,
         "evidence_ready_cases": evidence_ready,
-        "required_evidence_ready_cases": required_evidence_ready,
+        "required_evidence_ready_cases": required_qa_threshold,
+        "extraction_ready_cases": extraction_ready,
+        "confidence_ready_cases": confidence_ready,
+        "compute_reliable_cases": compute_reliable,
+        "contract_success_cases": contract_success,
         "go_for_full_benchmark": go_for_full_benchmark,
         "go_no_go_reason": (
-            "No routing, formatting, or validation failures and at least 60% of cases produced table-backed passing final answers."
+            "QA cases meet routing/formatting/validation, extraction, confidence, compute, and final-contract thresholds."
             if go_for_full_benchmark
-            else "Hold full benchmark runs until routing, formatting, and validation failures are zero and at least 60% of cases produce table-backed passing final answers."
+            else "Hold full benchmark runs until QA cases have zero routing/formatting/validation failures and at least 60% satisfy extraction quality, evidence confidence, compute reliability, and final-answer contract success."
         ),
     }

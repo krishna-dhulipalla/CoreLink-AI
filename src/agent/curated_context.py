@@ -192,10 +192,6 @@ def _retrieval_facts_in_use(task_text: str, source_bundle: SourceBundle) -> list
         facts.append({"type": "target_period", "value": source_bundle.target_period})
     if source_bundle.urls:
         facts.append({"type": "reference_urls", "value": source_bundle.urls[:6]})
-    if source_bundle.source_files_expected:
-        facts.append({"type": "source_files_expected", "value": source_bundle.source_files_expected[:8]})
-    if source_bundle.source_files_found:
-        facts.append({"type": "source_files_found", "value": source_bundle.source_files_found[:6]})
     for key, value in list(source_bundle.inline_facts.items())[:8]:
         facts.append({"type": "inline_fact", "key": key, "value": value})
     lowered = (task_text or "").lower()
@@ -221,26 +217,12 @@ def _officeqa_document_facts_in_use(
         facts.append({"type": "retrieval_period", "value": retrieval_intent.period})
     if retrieval_intent.aggregation_shape:
         facts.append({"type": "aggregation_shape", "value": retrieval_intent.aggregation_shape})
-    if retrieval_intent.document_family:
-        facts.append({"type": "document_family", "value": retrieval_intent.document_family})
-    if retrieval_intent.strategy:
-        facts.append({"type": "retrieval_strategy", "value": retrieval_intent.strategy})
     if retrieval_intent.answer_mode:
         facts.append({"type": "answer_mode", "value": retrieval_intent.answer_mode})
     if retrieval_intent.compute_policy:
         facts.append({"type": "compute_policy", "value": retrieval_intent.compute_policy})
     if retrieval_intent.partial_answer_allowed:
         facts.append({"type": "partial_answer_allowed", "value": True})
-    if retrieval_intent.fallback_chain:
-        facts.append({"type": "retrieval_fallback_chain", "value": retrieval_intent.fallback_chain[:4]})
-    if retrieval_intent.evidence_requirements:
-        facts.append({"type": "evidence_requirements", "value": retrieval_intent.evidence_requirements[:5]})
-    if retrieval_intent.evidence_plan.metric_identity:
-        facts.append({"type": "evidence_metric_identity", "value": retrieval_intent.evidence_plan.metric_identity})
-    if retrieval_intent.evidence_plan.required_years:
-        facts.append({"type": "evidence_required_years", "value": retrieval_intent.evidence_plan.required_years[:4]})
-    if retrieval_intent.query_candidates:
-        facts.append({"type": "query_candidates", "value": retrieval_intent.query_candidates[:3]})
 
     open_questions = [
         "Confirm the exact Treasury source, entity, period, aggregation, and unit support before finalizing the answer.",
@@ -318,10 +300,6 @@ def build_curated_context(
             facts_in_use.append({"type": "answer_mode", "value": retrieval_intent_obj.answer_mode})
         if retrieval_intent_obj.compute_policy:
             facts_in_use.append({"type": "compute_policy", "value": retrieval_intent_obj.compute_policy})
-        if retrieval_intent_obj.document_family:
-            facts_in_use.append({"type": "document_family", "value": retrieval_intent_obj.document_family})
-        if retrieval_intent_obj.query_candidates:
-            facts_in_use.append({"type": "query_candidates", "value": retrieval_intent_obj.query_candidates[:3]})
         open_questions = [
             "Find the exact supporting quote, table row, or document window before finalizing the answer.",
         ]
@@ -355,11 +333,18 @@ def build_curated_context(
                 "target_period": source_bundle.target_period,
             },
             "retrieval_plan": {
+                "metric": retrieval_intent_obj.metric if retrieval_intent_obj else "",
+                "entity": retrieval_intent_obj.entity if retrieval_intent_obj else "",
+                "period": retrieval_intent_obj.period if retrieval_intent_obj else "",
+                "aggregation_shape": retrieval_intent_obj.aggregation_shape if retrieval_intent_obj else "",
+                "document_family": retrieval_intent_obj.document_family if retrieval_intent_obj else "",
                 "strategy": retrieval_intent_obj.strategy if retrieval_intent_obj else "",
                 "strategy_confidence": retrieval_intent_obj.strategy_confidence if retrieval_intent_obj else 0.0,
                 "answer_mode": retrieval_intent_obj.answer_mode if retrieval_intent_obj else "",
                 "compute_policy": retrieval_intent_obj.compute_policy if retrieval_intent_obj else "",
                 "partial_answer_allowed": retrieval_intent_obj.partial_answer_allowed if retrieval_intent_obj else False,
+                "analysis_modes": list(retrieval_intent_obj.analysis_modes[:6]) if retrieval_intent_obj else [],
+                "query_candidates": list(retrieval_intent_obj.query_candidates[:4]) if retrieval_intent_obj else [],
                 "fallback_chain": list(retrieval_intent_obj.fallback_chain[:4]) if retrieval_intent_obj else [],
                 "evidence_requirements": list(retrieval_intent_obj.evidence_requirements[:5]) if retrieval_intent_obj else [],
                 "required_years": list(retrieval_intent_obj.evidence_plan.required_years[:4]) if retrieval_intent_obj else [],

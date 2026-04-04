@@ -139,6 +139,7 @@ def test_capture_officeqa_artifacts_collects_tables_and_ledger():
                 ],
             },
         },
+        workpad={"solver_llm_decision": {"used_llm": False, "reason": "deterministic_compute_completed"}},
         execution_journal={
             "events": [],
             "tool_results": [
@@ -193,17 +194,26 @@ def test_capture_officeqa_artifacts_collects_tables_and_ledger():
     assert artifacts["validator_remediation"]
     assert artifacts["extracted_tables"][0]["document_id"] == "treasury_1940_json"
     assert artifacts["compute_ledger"][0]["operator"] == "monthly_sum"
+    assert artifacts["solver_llm_decision"]["reason"] == "deterministic_compute_completed"
     assert artifacts["final_artifact_signature"] == "sig-1"
 
 
 def test_summarize_regression_report_sets_go_no_go_threshold():
     good = {
+        "case_kind": "qa",
         "classification": {"subsystem": "pass"},
         "retrieval_strategy": "table_first",
         "answer_mode": "deterministic_compute",
-        "artifacts": {"extracted_tables": [{"document_id": "x"}], "final_answer": "42"},
+        "artifacts": {
+            "chosen_sources": [{"document_id": "x"}],
+            "extracted_tables": [{"document_id": "x"}],
+            "final_answer": "42",
+            "compute_policy": "required",
+            "structure_confidence_summary": {"table_confidence_gate_passed": True},
+        },
     }
     bad = {
+        "case_kind": "routing_check",
         "classification": {"subsystem": "routing"},
         "retrieval_strategy": "hybrid",
         "answer_mode": "grounded_synthesis",
@@ -215,6 +225,7 @@ def test_summarize_regression_report_sets_go_no_go_threshold():
     assert summary["counts_by_subsystem"]["routing"] == 1
     assert summary["counts_by_strategy"]["table_first"] == 2
     assert summary["counts_by_strategy"]["hybrid"] == 1
+    assert summary["counts_by_case_kind"]["routing_check"] == 1
     assert summary["counts_by_answer_mode"]["deterministic_compute"] == 2
     assert summary["counts_by_answer_mode"]["grounded_synthesis"] == 1
     assert summary["go_for_full_benchmark"] is False
@@ -224,10 +235,17 @@ def test_summarize_regression_report_sets_go_no_go_threshold():
 
 def test_summarize_regression_report_blocks_on_validation_failures():
     validation_fail = {
+        "case_kind": "qa",
         "classification": {"subsystem": "validation"},
         "retrieval_strategy": "table_first",
         "answer_mode": "hybrid_grounded",
-        "artifacts": {"extracted_tables": [{"document_id": "x"}], "final_answer": "<FINAL_ANSWER>42</FINAL_ANSWER>"},
+        "artifacts": {
+            "chosen_sources": [{"document_id": "x"}],
+            "extracted_tables": [{"document_id": "x"}],
+            "final_answer": "<FINAL_ANSWER>42</FINAL_ANSWER>",
+            "compute_policy": "preferred",
+            "structure_confidence_summary": {"table_confidence_gate_passed": True},
+        },
     }
 
     summary = summarize_regression_report([validation_fail, validation_fail])
@@ -263,11 +281,12 @@ def test_build_case_report_includes_classification_and_artifacts():
     state["retrieval_intent"] = {"strategy": "hybrid", "answer_mode": "hybrid_grounded"}
 
     report = build_case_report(
-        {"id": "case_1", "prompt": "OfficeQA task", "focus_subsystem": "routing", "retrieval_strategy": "hybrid", "smoke": True},
+        {"id": "case_1", "prompt": "OfficeQA task", "focus_subsystem": "routing", "retrieval_strategy": "hybrid", "smoke": True, "case_kind": "routing_check"},
         _trace(state, "<REASONING>x</REASONING><FINAL_ANSWER>40.90</FINAL_ANSWER>"),
     )
 
     assert report["id"] == "case_1"
+    assert report["case_kind"] == "routing_check"
     assert report["classification"]["subsystem"] == "pass"
     assert report["execution_summary"]["execution_mode"] == "document_grounded_analysis"
     assert report["execution_summary"]["retrieval_strategy"] == "hybrid"

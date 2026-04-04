@@ -94,6 +94,7 @@ def test_tracer_preserves_structured_diagnostic_artifacts(monkeypatch):
         {
             "intent": {"task_family": "document_qa", "execution_mode": "document_grounded_analysis", "complexity_tier": "structured_analysis"},
             "used_llm": False,
+            "llm_decision_reason": "deterministic_compute_completed",
             "tools_ran": ["fetch_officeqa_table"],
             "retrieval_decision": {"tool_name": "fetch_officeqa_table", "strategy": "table_first"},
             "strategy_reason": "primary metric is expected to be recoverable from structured table evidence",
@@ -127,6 +128,46 @@ def test_tracer_preserves_structured_diagnostic_artifacts(monkeypatch):
     assert node["evidence_gaps"] == ["missing month coverage"]
     execution_summary = captured[0]["execution_summary"]
     assert execution_summary
+    assert execution_summary[0]["llm_decision_reason"] == "deterministic_compute_completed"
     assert execution_summary[0]["retrieval"]["tool_name"] == "fetch_officeqa_table"
     assert execution_summary[0]["evidence_gaps"] == ["missing month coverage"]
     assert execution_summary[0]["tool_results"][0]["tool"] == "fetch_officeqa_table"
+
+
+def test_tracer_execution_summary_compacts_candidate_lists(monkeypatch):
+    monkeypatch.setenv("ENABLE_RUN_TRACER", "1")
+    captured: list[dict] = []
+
+    def _capture(payload, profile, trace_identity):
+        captured.append(payload)
+        return "ok"
+
+    monkeypatch.setattr("agent.tracer._write_trace_file", _capture)
+
+    tracer = start_tracer({"request_id": "diag-compact"})
+    assert tracer is not None
+    tracer.set_task("compact diagnostic task")
+    tracer.record(
+        "executor",
+        {
+            "intent": {"task_family": "document_qa", "execution_mode": "document_grounded_analysis", "complexity_tier": "structured_analysis"},
+            "used_llm": False,
+            "tools_ran": ["search_officeqa_documents"],
+            "retrieval_decision": {"tool_name": "search_officeqa_documents", "strategy": "table_first", "document_id": "treasury_1945_json"},
+            "candidate_sources": [
+                {"title": "Treasury Bulletin Jan 1945", "document_id": "treasury_1945_json", "score": 0.98},
+                {"title": "Treasury Bulletin Feb 1945", "document_id": "treasury_1945_feb_json", "score": 0.87},
+            ],
+            "rejected_candidates": [{"document_id": "treasury_1944_json", "reason": "year mismatch"}],
+            "tool_results": [],
+            "output_preview": "",
+        },
+    )
+    finalize_tracer("answer")
+
+    execution_summary = captured[0]["execution_summary"]
+    assert execution_summary
+    assert execution_summary[0]["candidate_source_count"] == 2
+    assert execution_summary[0]["rejected_candidate_count"] == 1
+    assert execution_summary[0]["top_candidate"]["document_id"] == "treasury_1945_json"
+    assert "candidate_sources" not in execution_summary[0]

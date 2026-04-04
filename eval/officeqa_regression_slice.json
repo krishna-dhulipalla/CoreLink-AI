@@ -22,6 +22,7 @@
   },
   {
     "id": "routing_explicit_officeqa_activation",
+    "case_kind": "routing_check",
     "focus_subsystem": "routing",
     "retrieval_strategy": "table_first",
     "smoke": false,

@@ -824,18 +824,26 @@ Why now:
 
 Tasks:
 
-- [ ] `P17.1` Choose one authoritative OfficeQA local-index search surface for benchmark mode
-- [ ] `P17.2` Keep generic `search_reference_corpus` as a fallback only when OfficeQA-native search is unavailable, not as a parallel duplicate path
-- [ ] `P17.3` Define the authoritative owner for each repeated concept:
+- [x] `P17.1` Choose one authoritative OfficeQA local-index search surface for benchmark mode
+- [x] `P17.2` Keep generic `search_reference_corpus` as a fallback only when OfficeQA-native search is unavailable, not as a parallel duplicate path
+- [x] `P17.3` Define the authoritative owner for each repeated concept:
   - source-file expectations
   - source-file matches
   - document family
   - query candidates
   - retrieval strategy
   - evidence plan
-- [ ] `P17.4` Remove duplicate propagation of those fields into generic facts when typed state already exists
-- [ ] `P17.5` Simplify trace payloads so `execution_summary` shows the authoritative fields once and raw details stay in the lower-level node payload
-- [ ] `P17.6` Add a node-state audit test that fails when the same benchmark-specific field is redundantly carried across too many layers
+- [x] `P17.4` Remove duplicate propagation of those fields into generic facts when typed state already exists
+- [x] `P17.5` Simplify trace payloads so `execution_summary` shows the authoritative fields once and raw details stay in the lower-level node payload
+- [x] `P17.6` Add a node-state audit test that fails when the same benchmark-specific field is redundantly carried across too many layers
+
+Completion notes:
+
+- OfficeQA benchmark mode now chooses `search_officeqa_documents` as the authoritative local-index search surface whenever it is available; `search_reference_corpus` remains as a fallback, not a parallel duplicate path.
+- Curated provenance is now the authoritative owner for source-file expectations/matches and retrieval-plan state such as `document_family`, `query_candidates`, `strategy`, and evidence-plan summaries.
+- Generic `facts_in_use` no longer repeat those benchmark-specific fields when typed provenance already carries them.
+- `execution_summary` now shows a compact authoritative retrieval view with a top candidate and candidate counts, while the raw candidate lists remain only in the lower-level node payload.
+- Added regression coverage for tool-plan deduplication, curated-context state ownership, and compact trace summaries.
 
 Suggested code targets:
 
@@ -862,21 +870,30 @@ Why now:
 
 Tasks:
 
-- [ ] `P18.1` Improve benchmark-mode metric/entity extraction for Treasury-style finance questions without reintroducing hardcoded benchmark-string hacks
-- [ ] `P18.2` Align reviewer requirements with deterministic structured-evidence outputs so successful compute does not fail only because quote-style support text was not emitted
-- [ ] `P18.3` Make the reason an LLM was skipped explicit in traces and regression reports
-- [ ] `P18.4` Separate routing-only regression cases from solvable QA regression cases so smoke results do not conflate activation checks with retrieval/compute quality
-- [ ] `P18.5` Add benchmark go/no-go checks that depend on:
+- [x] `P18.1` Improve benchmark-mode metric/entity extraction for Treasury-style finance questions without reintroducing hardcoded benchmark-string hacks
+- [x] `P18.2` Align reviewer requirements with deterministic structured-evidence outputs so successful compute does not fail only because quote-style support text was not emitted
+- [x] `P18.3` Make the reason an LLM was skipped explicit in traces and regression reports
+- [x] `P18.4` Separate routing-only regression cases from solvable QA regression cases so smoke results do not conflate activation checks with retrieval/compute quality
+- [x] `P18.5` Add benchmark go/no-go checks that depend on:
   - extraction quality
   - evidence confidence
   - compute reliability
   - final-answer contract success
-- [ ] `P18.6` Extend teammate docs with a clear debug ladder for:
+- [x] `P18.6` Extend teammate docs with a clear debug ladder for:
   - retrieval miss
   - normalization miss
   - evidence miss
   - compute miss
   - reviewer/finalization miss
+
+Completion notes:
+
+- Narrative Treasury questions now route into `text_first` or `hybrid` using generic narrative cues like `reason was given`, `narrative`, and `discussion`, while simple numeric extraction questions still remain deterministic.
+- Deterministic point lookup now prefers numeric candidate cells over matching label cells, which closes the remaining simple point-lookup misalignment seen in broader OfficeQA runtime slices.
+- Reviewer requirements are now aligned with deterministic structured answers: a validator-approved deterministic compute result no longer fails only because the public answer text omitted inline quote-style support.
+- Executor and reviewer traces now record explicit `llm_decision_reason` values, and regression reports surface the solver LLM decision for each case.
+- Regression reporting now distinguishes `case_kind`, keeps routing-only checks separate from solvable QA cases, and computes go/no-go readiness from QA-only thresholds for extraction quality, structure confidence, compute reliability, and final-contract success.
+- The broader OfficeQA runtime slice that was still failing after Phase 16 is now green on the targeted suite used to track planner/reviewer alignment.
 
 Suggested code targets:
 

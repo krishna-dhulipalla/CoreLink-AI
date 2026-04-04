@@ -234,6 +234,10 @@ def _execution_summary(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
             tools_ran = [str(tool) for tool in list(entry.get("tools_ran") or [])[:8] if str(tool).strip()]
             if tools_ran:
                 item["tools_ran"] = tools_ran
+            if entry.get("used_llm") is not None:
+                item["used_llm"] = bool(entry.get("used_llm"))
+            if entry.get("llm_decision_reason"):
+                item["llm_decision_reason"] = _short_text(entry.get("llm_decision_reason", ""))
             retrieval = dict(entry.get("retrieval_decision") or entry.get("retrieval_action") or {})
             if retrieval:
                 item["retrieval"] = {
@@ -250,23 +254,23 @@ def _execution_summary(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 }
             if entry.get("strategy_reason"):
                 item["strategy_reason"] = _short_text(entry.get("strategy_reason", ""))
-            candidate_sources = []
-            for source in list(entry.get("candidate_sources") or [])[:4]:
-                if not isinstance(source, dict):
-                    continue
-                candidate_sources.append(
-                    {
-                        key: value
-                        for key, value in {
-                            "title": source.get("title", ""),
-                            "document_id": source.get("document_id", ""),
-                            "score": source.get("score"),
-                        }.items()
-                        if value not in ("", [], {}, None)
-                    }
-                )
+            candidate_sources = [source for source in list(entry.get("candidate_sources") or []) if isinstance(source, dict)]
             if candidate_sources:
-                item["candidate_sources"] = candidate_sources
+                item["candidate_source_count"] = len(candidate_sources)
+                top_candidate = {
+                    key: value
+                    for key, value in {
+                        "title": candidate_sources[0].get("title", ""),
+                        "document_id": candidate_sources[0].get("document_id", ""),
+                        "score": candidate_sources[0].get("score"),
+                    }.items()
+                    if value not in ("", [], {}, None)
+                }
+                if top_candidate:
+                    item["top_candidate"] = top_candidate
+            rejected_candidates = [candidate for candidate in list(entry.get("rejected_candidates") or []) if isinstance(candidate, dict)]
+            if rejected_candidates:
+                item["rejected_candidate_count"] = len(rejected_candidates)
             if entry.get("aggregation_reason"):
                 item["aggregation_reason"] = _short_text(entry.get("aggregation_reason", ""))
             if entry.get("evidence_gaps"):
@@ -275,6 +279,10 @@ def _execution_summary(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
             if tool_summary:
                 item["tool_results"] = tool_summary
         elif node == "reviewer":
+            if entry.get("used_llm") is not None:
+                item["used_llm"] = bool(entry.get("used_llm"))
+            if entry.get("llm_decision_reason"):
+                item["llm_decision_reason"] = _short_text(entry.get("llm_decision_reason", ""))
             validator = dict(entry.get("validator_result") or {})
             if validator:
                 item["validator"] = {

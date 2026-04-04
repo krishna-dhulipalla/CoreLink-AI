@@ -414,6 +414,7 @@ def _ordered_candidates(registry: dict[str, dict[str, Any]], family: str) -> lis
 def _document_retrieval_candidates(
     registry: dict[str, dict[str, Any]],
     source_bundle: SourceBundle,
+    benchmark_overrides: dict[str, Any] | None = None,
 ) -> list[str]:
     candidates = [descriptor for descriptor, _ in _ordered_candidates(registry, "document_retrieval")]
     search_tools = [item["tool_name"] for item in candidates if str(item.get("tool_role", "")) == "search"]
@@ -424,6 +425,12 @@ def _document_retrieval_candidates(
         for item in candidates
         if item["tool_name"] not in {*search_tools, *discover_tools, *fetch_tools}
     ]
+    if str((benchmark_overrides or {}).get("benchmark_adapter", "") or "").strip().lower() == "officeqa":
+        if "search_officeqa_documents" in search_tools:
+            search_tools = ["search_officeqa_documents"]
+        elif "search_reference_corpus" in search_tools:
+            search_tools = ["search_reference_corpus"]
+        other_tools = [tool_name for tool_name in other_tools if tool_name != "search_reference_corpus"]
     selected: list[str] = []
     if source_bundle.urls:
         for tool_name in [*discover_tools, *fetch_tools]:
@@ -474,7 +481,7 @@ def resolve_tool_plan(
 
     for family in widened:
         if family == "document_retrieval":
-            document_tools = _document_retrieval_candidates(mutable_registry, source_bundle)
+            document_tools = _document_retrieval_candidates(mutable_registry, source_bundle, benchmark_overrides)
             if benchmark_policy_active:
                 document_tools = [
                     tool_name
@@ -490,7 +497,7 @@ def resolve_tool_plan(
                         "descriptor": descriptor.model_dump(),
                         "tool": synthesized,
                     }
-                    document_tools = _document_retrieval_candidates(mutable_registry, source_bundle)
+                    document_tools = _document_retrieval_candidates(mutable_registry, source_bundle, benchmark_overrides)
                     if benchmark_policy_active:
                         document_tools = [
                             tool_name
