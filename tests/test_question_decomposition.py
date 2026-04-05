@@ -76,8 +76,6 @@ def test_decomposition_llm_fallback_merges_missing_fields(monkeypatch):
         entities=[],
     )
 
-    monkeypatch.setenv("ENABLE_DECOMPOSITION_LLM_FALLBACK", "1")
-
     monkeypatch.setattr(
         "agent.context.extraction.invoke_structured_output",
         lambda *args, **kwargs: (

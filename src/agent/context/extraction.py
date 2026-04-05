@@ -5,7 +5,6 @@ Prompt extraction helpers used during intake and context assembly.
 from __future__ import annotations
 
 from datetime import datetime
-import os
 import re
 from typing import Any
 
@@ -234,11 +233,6 @@ def _rule_based_decomposition(task_text: str, source_bundle: SourceBundle) -> Qu
         query_plan=QueryPlan(),
     )
 
-
-def _llm_decomposition_enabled() -> bool:
-    return str(os.getenv("ENABLE_DECOMPOSITION_LLM_FALLBACK", "0")).strip().lower() in {"1", "true", "yes", "on"}
-
-
 def _merge_decomposition(primary: QuestionDecomposition, fallback: QuestionDecomposition) -> QuestionDecomposition:
     return QuestionDecomposition(
         entity=primary.entity or fallback.entity,
@@ -291,8 +285,6 @@ def extract_question_decomposition(
     if not allow_llm_fallback:
         return decomposition
     if decomposition.confidence >= 0.58:
-        return decomposition
-    if not _llm_decomposition_enabled():
         return decomposition
     fallback = _fallback_decomposition(task_text, source_bundle)
     if fallback is None:

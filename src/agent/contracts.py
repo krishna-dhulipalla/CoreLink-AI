@@ -510,6 +510,15 @@ class RetrievalIntent(BaseModel):
     query_candidates: list[str] = Field(default_factory=list)
 
 
+class OfficeQALLMRepairDecision(BaseModel):
+    decision: Literal["keep", "rewrite_query", "retune_table_query", "change_strategy"] = "keep"
+    revised_query: str = ""
+    revised_table_query: str = ""
+    preferred_strategy: Literal["table_first", "text_first", "hybrid", "multi_table", "multi_document", ""] = ""
+    rationale: str = ""
+    confidence: float = 0.0
+
+
 class CuratedContext(BaseModel):
     objective: str = ""
     facts_in_use: list[dict[str, Any]] = Field(default_factory=list)

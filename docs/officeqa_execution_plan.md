@@ -1146,20 +1146,20 @@ Why now:
 
 Tasks:
 
-- [ ] `P23.1` Define exact points where LLM use is allowed:
+- [x] `P23.1` Define exact points where LLM use is allowed:
   - low-confidence decomposition
   - low-confidence source ranking
   - ambiguous table family
   - validator-directed repair suggestion
-- [ ] `P23.2` Keep the final numeric answer deterministic when compute is supported; the LLM may help reformulate or review, but not replace compute
-- [ ] `P23.3` Add a retrieval-review microstep inspired by Purple's explicit staged loop:
+- [x] `P23.2` Keep the final numeric answer deterministic when compute is supported; the LLM may help reformulate or review, but not replace compute
+- [x] `P23.3` Add a retrieval-review microstep inspired by Purple's explicit staged loop:
   - retrieve
   - parse
   - review evidence suitability
   - then compute
-- [ ] `P23.4` Add bounded query-rewrite and table-rerank prompts that return structured outputs only
-- [ ] `P23.5` Add stop rules so the LLM cannot create open-ended loops or bypass validator constraints
-- [ ] `P23.6` Add trace artifacts that clearly show:
+- [x] `P23.4` Add bounded query-rewrite and table-rerank prompts that return structured outputs only
+- [x] `P23.5` Add stop rules so the LLM cannot create open-ended loops or bypass validator constraints
+- [x] `P23.6` Add trace artifacts that clearly show:
   - why the LLM was invoked
   - what structured decision it returned
   - whether that changed the retrieval path

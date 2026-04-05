@@ -28,6 +28,12 @@ from agent.contracts import (
 )
 from agent.context.evidence import _extract_policy_context
 from agent.model_config import ChatOpenAI, get_client_kwargs, get_model_name, get_model_name_for_task, get_model_runtime_kwargs, invoke_structured_output
+from agent.llm_repair import (
+    initial_officeqa_llm_repair_state,
+    maybe_repair_from_validator,
+    maybe_rewrite_retrieval_path,
+    officeqa_llm_repair_budget,
+)
 from agent.runtime_clock import increment_runtime_step
 from agent.runtime_support import latest_human_text
 from agent.solver.options import (
@@ -517,6 +523,70 @@ def _apply_review_orchestration(retrieval_intent: RetrievalIntent, review_feedba
     return updated
 
 
+def _record_llm_repair_decision(
+    workpad: dict[str, Any],
+    *,
+    stage: str,
+    trigger: str,
+    decision: dict[str, Any],
+    path_changed: bool,
+) -> dict[str, Any]:
+    updated = dict(workpad)
+    history = list(updated.get("officeqa_llm_repair_history", []))
+    history.append(
+        {
+            "stage": stage,
+            "trigger": trigger,
+            "path_changed": path_changed,
+            "decision": dict(decision or {}),
+        }
+    )
+    updated["officeqa_llm_repair_history"] = history
+    return updated
+
+
+def _apply_officeqa_llm_repair_decision(
+    retrieval_intent: RetrievalIntent,
+    workpad: dict[str, Any],
+    decision: dict[str, Any],
+) -> tuple[RetrievalIntent, dict[str, Any], bool]:
+    updated_intent = retrieval_intent.model_copy(deep=True)
+    updated_workpad = dict(workpad)
+    action = str(decision.get("decision", "") or "").strip()
+    path_changed = False
+
+    if action == "rewrite_query":
+        revised_query = str(decision.get("revised_query", "") or "").strip()
+        if revised_query:
+            prior_primary = str(updated_intent.query_plan.primary_semantic_query or "").strip()
+            updated_intent.query_plan.primary_semantic_query = revised_query
+            updated_intent.query_candidates = [
+                item
+                for item in dict.fromkeys([revised_query, *updated_intent.query_candidates])
+                if str(item).strip()
+            ]
+            updated_workpad["officeqa_override_query"] = revised_query
+            path_changed = revised_query != prior_primary
+    elif action == "retune_table_query":
+        revised_table_query = str(decision.get("revised_table_query", "") or "").strip()
+        if revised_table_query:
+            prior_table_query = str(updated_workpad.get("officeqa_override_table_query", "") or "").strip()
+            updated_workpad["officeqa_override_table_query"] = revised_table_query
+            path_changed = revised_table_query != prior_table_query
+    elif action == "change_strategy":
+        preferred_strategy = str(decision.get("preferred_strategy", "") or "").strip()
+        if preferred_strategy and preferred_strategy != updated_intent.strategy:
+            updated_intent.strategy = preferred_strategy  # type: ignore[assignment]
+            updated_intent.fallback_chain = [
+                item
+                for item in dict.fromkeys([*updated_intent.fallback_chain, retrieval_intent.strategy])
+                if item and item != updated_intent.strategy
+            ]
+            path_changed = True
+
+    return updated_intent, updated_workpad, path_changed
+
+
 def _officeqa_retry_policy(
     officeqa_validation: Any,
     *,
@@ -625,12 +695,26 @@ def make_executor(registry: dict[str, dict[str, Any]]):
         journal = ExecutionJournal.model_validate(state.get("execution_journal") or {})
         workpad = dict(state.get("workpad", {}))
         review_feedback = dict(state.get("review_feedback") or {})
+        officeqa_mode = benchmark_overrides.get("benchmark_adapter") == "officeqa"
         targeted_retrieval_retry = bool(
             review_feedback
             and review_feedback.get("repair_target") == "gather"
             and review_feedback.get("retry_allowed", True)
         )
         active_retrieval_intent = _apply_review_orchestration(retrieval_intent, review_feedback)
+        llm_repair_state = (
+            dict(workpad.get("officeqa_llm_repair_state") or initial_officeqa_llm_repair_state(active_retrieval_intent))
+            if officeqa_mode
+            else {}
+        )
+        llm_repair_budget = (
+            dict(workpad.get("officeqa_llm_repair_budget") or officeqa_llm_repair_budget())
+            if officeqa_mode
+            else {}
+        )
+        if officeqa_mode:
+            workpad["officeqa_llm_repair_state"] = llm_repair_state
+            workpad["officeqa_llm_repair_budget"] = llm_repair_budget
         budget = state.get("budget_tracker")
         tracker = state.get("cost_tracker")
         tracer = get_tracer()
@@ -659,6 +743,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
             return {
                 "messages": [AIMessage(content=content)],
                 "task_intent": intent.model_dump(),
+                "retrieval_intent": active_retrieval_intent.model_dump(),
                 "tool_plan": tool_plan.model_dump(),
                 "execution_journal": journal.model_dump(),
                 "review_packet": build_review_packet(
@@ -688,6 +773,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
             return {
                 "messages": [AIMessage(content=content)],
                 "task_intent": intent.model_dump(),
+                "retrieval_intent": active_retrieval_intent.model_dump(),
                 "tool_plan": tool_plan.model_dump(),
                 "execution_journal": journal.model_dump(),
                 "review_packet": build_review_packet(
@@ -736,8 +822,42 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                     ).model_dump(),
                     "evidence_sufficiency": evidence_sufficiency.model_dump(),
                     "solver_stage": "SYNTHESIZE",
-                    "workpad": workpad,
+                "workpad": workpad,
+            }
+
+        if officeqa_mode and targeted_retrieval_retry and llm_repair_state.get("validator_repair_calls", 0) < llm_repair_budget.get("validator_repair_calls", 0):
+            validator_candidate_sources = list(dict(workpad.get("retrieval_diagnostics") or {}).get("candidate_sources") or [])
+            repair_decision = maybe_repair_from_validator(
+                task_text=task_text,
+                retrieval_intent=active_retrieval_intent,
+                review_feedback=review_feedback,
+                candidate_sources=validator_candidate_sources,
+            )
+            if repair_decision is not None:
+                decision_payload = repair_decision.model_dump()
+                active_retrieval_intent, workpad, path_changed = _apply_officeqa_llm_repair_decision(
+                    active_retrieval_intent,
+                    workpad,
+                    decision_payload,
+                )
+                llm_repair_state["validator_repair_calls"] = int(llm_repair_state.get("validator_repair_calls", 0) or 0) + 1
+                workpad["officeqa_llm_repair_state"] = llm_repair_state
+                workpad["solver_llm_decision"] = {
+                    "used_llm": True,
+                    "reason": "validator_directed_retrieval_repair",
                 }
+                workpad = _record_llm_repair_decision(
+                    workpad,
+                    stage="validator_repair",
+                    trigger=str(review_feedback.get("orchestration_strategy", "") or "gather_retry"),
+                    decision=decision_payload,
+                    path_changed=path_changed,
+                )
+                workpad = _record_event(
+                    workpad,
+                    "executor",
+                    f"structured validator repair -> {decision_payload.get('decision', 'keep')}",
+                )
 
         if tool_plan.pending_tools and (not review_feedback or targeted_retrieval_retry):
             next_tool = tool_plan.pending_tools[0]
@@ -767,26 +887,29 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                 evidence_sufficiency = assess_evidence_sufficiency(task_text, source_bundle, journal.tool_results, benchmark_overrides)
                 should_continue_after_tool = bool(tool_plan.pending_tools) or intent.execution_mode in _RETRIEVAL_EXECUTION_MODES
                 if should_continue_after_tool and intent.execution_mode in {"advisory_analysis", "document_grounded_analysis", "tool_compute", "retrieval_augmented_analysis"}:
-                    workpad["solver_llm_decision"] = {
-                        "used_llm": False,
-                        "reason": "llm_deferred_until_retrieval_complete",
-                    }
+                    if not bool(dict(workpad.get("solver_llm_decision") or {}).get("used_llm")):
+                        workpad["solver_llm_decision"] = {
+                            "used_llm": False,
+                            "reason": "llm_deferred_until_retrieval_complete",
+                        }
                     if tracer:
                         tracer.record(
                             "executor",
                             {
                                 "intent": intent.model_dump(),
-                                "used_llm": False,
-                                "llm_decision_reason": "llm_deferred_until_retrieval_complete",
+                                "used_llm": bool(dict(workpad.get("solver_llm_decision") or {}).get("used_llm")),
+                                "llm_decision_reason": str(dict(workpad.get("solver_llm_decision") or {}).get("reason", "") or "llm_deferred_until_retrieval_complete"),
                                 "tools_ran": tools_ran_this_call,
                                 "tool_results": _compact_tool_findings(journal.tool_results),
                                 "output_preview": "",
                                 "completion_budget": 0,
+                                "llm_repair_history": list(workpad.get("officeqa_llm_repair_history", []) or []),
                             },
                         )
                     return {
                         "last_tool_result": tool_result.model_dump(),
                         "task_intent": intent.model_dump(),
+                        "retrieval_intent": active_retrieval_intent.model_dump(),
                         "tool_plan": tool_plan.model_dump(),
                         "execution_journal": journal.model_dump(),
                         "curated_context": curated.model_dump(),
@@ -809,7 +932,51 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                 if budget and budget.tool_calls_exhausted():
                     budget.log_budget_exit("tool_budget_exhausted", f"Blocked tool '{retrieval_action.tool_name}' after reaching tool-call cap.")
                 else:
+                    if officeqa_mode and llm_repair_state.get("query_rewrite_calls", 0) < llm_repair_budget.get("query_rewrite_calls", 0):
+                        repair_decision = maybe_rewrite_retrieval_path(
+                            task_text=task_text,
+                            retrieval_intent=active_retrieval_intent,
+                            source_bundle=source_bundle,
+                            retrieval_strategy=retrieval_action.strategy,
+                            evidence_gap=retrieval_action.evidence_gap,
+                            current_query=retrieval_action.query,
+                            current_table_query=_officeqa_table_query(active_retrieval_intent, source_bundle) if retrieval_action.tool_name in {"fetch_officeqa_table", "lookup_officeqa_rows", "lookup_officeqa_cells"} else "",
+                            candidate_sources=retrieval_action.candidate_sources,
+                        )
+                        if repair_decision is not None:
+                            decision_payload = repair_decision.model_dump()
+                            active_retrieval_intent, workpad, path_changed = _apply_officeqa_llm_repair_decision(
+                                active_retrieval_intent,
+                                workpad,
+                                decision_payload,
+                            )
+                            llm_repair_state["query_rewrite_calls"] = int(llm_repair_state.get("query_rewrite_calls", 0) or 0) + 1
+                            workpad["officeqa_llm_repair_state"] = llm_repair_state
+                            workpad["solver_llm_decision"] = {
+                                "used_llm": True,
+                                "reason": "structured_retrieval_repair",
+                            }
+                            workpad = _record_llm_repair_decision(
+                                workpad,
+                                stage="retrieval_repair",
+                                trigger=retrieval_action.evidence_gap or retrieval_action.stage or "retrieval_gap",
+                                decision=decision_payload,
+                                path_changed=path_changed,
+                            )
+                            workpad = _record_event(
+                                workpad,
+                                "executor",
+                                f"structured retrieval repair -> {decision_payload.get('decision', 'keep')}",
+                            )
                     tool_args = _tool_args_from_retrieval_action(retrieval_action, source_bundle, registry, active_retrieval_intent)
+                    override_query = str(workpad.get("officeqa_override_query", "") or "").strip()
+                    if override_query and retrieval_action.tool_name in {"search_officeqa_documents", "search_reference_corpus", "internet_search"}:
+                        tool_args["query"] = override_query
+                        workpad.pop("officeqa_override_query", None)
+                    override_table_query = str(workpad.get("officeqa_override_table_query", "") or "").strip()
+                    if override_table_query and retrieval_action.tool_name in {"fetch_officeqa_table", "lookup_officeqa_rows", "lookup_officeqa_cells"}:
+                        tool_args["table_query"] = override_table_query
+                        workpad.pop("officeqa_override_table_query", None)
                     _, tool_result = await _run_tool_step_with_args(state, registry, retrieval_action.tool_name, tool_args)
                     if tracker:
                         tracker.record_mcp_call()
@@ -849,18 +1016,19 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                             "remediation_codes": list(review_feedback.get("remediation_codes", [])),
                         }
                     workpad = _record_event(workpad, "executor", f"retrieval hop -> {retrieval_action.tool_name}")
-                    workpad["solver_llm_decision"] = {
-                        "used_llm": False,
-                        "reason": "llm_deferred_until_retrieval_complete",
-                    }
+                    if not bool(dict(workpad.get("solver_llm_decision") or {}).get("used_llm")):
+                        workpad["solver_llm_decision"] = {
+                            "used_llm": False,
+                            "reason": "llm_deferred_until_retrieval_complete",
+                        }
                     evidence_sufficiency = assess_evidence_sufficiency(task_text, source_bundle, journal.tool_results, benchmark_overrides)
                     if tracer:
                         tracer.record(
                             "executor",
                             {
                                 "intent": intent.model_dump(),
-                                "used_llm": False,
-                                "llm_decision_reason": "llm_deferred_until_retrieval_complete",
+                                "used_llm": bool(dict(workpad.get("solver_llm_decision") or {}).get("used_llm")),
+                                "llm_decision_reason": str(dict(workpad.get("solver_llm_decision") or {}).get("reason", "") or "llm_deferred_until_retrieval_complete"),
                                 "tools_ran": tools_ran_this_call,
                                 "tool_results": _compact_tool_findings(journal.tool_results),
                                 "output_preview": "",
@@ -873,11 +1041,13 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                                 "evidence_gaps": [retrieval_action.evidence_gap] if retrieval_action.evidence_gap else [],
                                 "orchestration_strategy": review_feedback.get("orchestration_strategy", "") if targeted_retrieval_retry else "",
                                 "retry_path": dict(workpad.get("officeqa_retry_path") or {}),
+                                "llm_repair_history": list(workpad.get("officeqa_llm_repair_history", []) or []),
                             },
                         )
                     return {
                         "last_tool_result": tool_result.model_dump(),
                         "task_intent": intent.model_dump(),
+                        "retrieval_intent": active_retrieval_intent.model_dump(),
                         "tool_plan": tool_plan.model_dump(),
                         "execution_journal": journal.model_dump(),
                         "curated_context": curated.model_dump(),
@@ -889,7 +1059,14 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                 workpad = _record_event(workpad, "executor", f"retrieval ready to answer -> {retrieval_action.rationale or 'evidence collected'}")
 
         if benchmark_overrides.get("benchmark_adapter") == "officeqa" and journal.tool_results and curated.structured_evidence:
-            predictive_gaps = predictive_evidence_gaps(retrieval_intent, curated.structured_evidence)
+            predictive_gaps = predictive_evidence_gaps(active_retrieval_intent, curated.structured_evidence)
+            workpad["officeqa_evidence_review"] = {
+                "status": "insufficient" if predictive_gaps else "ready",
+                "predictive_gaps": list(predictive_gaps),
+                "compute_policy": active_retrieval_intent.compute_policy,
+                "answer_mode": active_retrieval_intent.answer_mode,
+                "strategy": active_retrieval_intent.strategy,
+            }
             if predictive_gaps:
                 merged_missing = list(dict.fromkeys([*evidence_sufficiency.missing_dimensions, *predictive_gaps]))
                 evidence_sufficiency = EvidenceSufficiency(
@@ -905,7 +1082,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                 provenance_summary["evidence_plan_check"] = {
                     "status": "insufficient",
                     "predictive_gaps": predictive_gaps,
-                    "strategy": retrieval_intent.strategy,
+                    "strategy": active_retrieval_intent.strategy,
                 }
                 curated.provenance_summary = provenance_summary
                 workpad["officeqa_predictive_gaps"] = predictive_gaps
@@ -929,10 +1106,11 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                             "output_preview": "",
                             "completion_budget": 0,
                             "evidence_gaps": predictive_gaps,
-                            "strategy_reason": retrieval_intent.evidence_plan.objective or retrieval_intent.strategy,
+                            "strategy_reason": active_retrieval_intent.evidence_plan.objective or active_retrieval_intent.strategy,
+                            "evidence_review": dict(workpad.get("officeqa_evidence_review") or {}),
                         },
                     )
-                if retrieval_intent.compute_policy == "required":
+                if active_retrieval_intent.compute_policy == "required":
                     if "low-confidence structure" in predictive_gaps:
                         journal.stop_reason = "officeqa_low_confidence_structure"
                     answer = _officeqa_required_compute_insufficiency_answer(predictive_gaps)
@@ -948,6 +1126,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                         "messages": [AIMessage(content=answer)],
                         "last_tool_result": journal.tool_results[-1] if journal.tool_results else None,
                         "task_intent": intent.model_dump(),
+                        "retrieval_intent": active_retrieval_intent.model_dump(),
                         "tool_plan": tool_plan.model_dump(),
                         "execution_journal": journal.model_dump(),
                         "curated_context": curated.model_dump(),
@@ -977,15 +1156,15 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                 workpad["officeqa_compute"] = compute_result.model_dump()
                 provenance_summary = dict(curated.provenance_summary or {})
                 provenance_summary["answer_strategy"] = {
-                    "answer_mode": retrieval_intent.answer_mode,
-                    "compute_policy": retrieval_intent.compute_policy,
-                    "partial_answer_allowed": retrieval_intent.partial_answer_allowed,
-                    "analysis_modes": list(retrieval_intent.analysis_modes[:6]),
+                    "answer_mode": active_retrieval_intent.answer_mode,
+                    "compute_policy": active_retrieval_intent.compute_policy,
+                    "partial_answer_allowed": active_retrieval_intent.partial_answer_allowed,
+                    "analysis_modes": list(active_retrieval_intent.analysis_modes[:6]),
                     "compute_status": compute_result.status,
                 }
                 curated.provenance_summary = provenance_summary
                 workpad["officeqa_answer_strategy"] = provenance_summary["answer_strategy"]
-                if compute_result.status == "ok" and compute_result.answer_text and retrieval_intent.answer_mode == "deterministic_compute":
+                if compute_result.status == "ok" and compute_result.answer_text and active_retrieval_intent.answer_mode == "deterministic_compute":
                     answer = compute_result.answer_text
                     evidence_sufficiency = assess_evidence_sufficiency(task_text, source_bundle, journal.tool_results, benchmark_overrides)
                     journal.final_artifact_signature = _artifact_signature(answer)
@@ -1010,14 +1189,17 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                                 "officeqa_compute": compute_result.model_dump(),
                                 "aggregation_reason": compute_result.selection_reasoning,
                                 "rejected_aggregation_alternatives": compute_result.rejected_alternatives,
-                                "answer_mode": retrieval_intent.answer_mode,
-                                "compute_policy": retrieval_intent.compute_policy,
+                                "answer_mode": active_retrieval_intent.answer_mode,
+                                "compute_policy": active_retrieval_intent.compute_policy,
+                                "evidence_review": dict(workpad.get("officeqa_evidence_review") or {}),
+                                "llm_repair_history": list(workpad.get("officeqa_llm_repair_history", []) or []),
                             },
                         )
                     return {
                         "messages": [AIMessage(content=answer)],
                         "last_tool_result": journal.tool_results[-1] if journal.tool_results else None,
                         "task_intent": intent.model_dump(),
+                        "retrieval_intent": active_retrieval_intent.model_dump(),
                         "tool_plan": tool_plan.model_dump(),
                         "execution_journal": journal.model_dump(),
                         "curated_context": curated.model_dump(),
@@ -1034,13 +1216,13 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                         "review_feedback": None,
                         "workpad": workpad,
                     }
-                if compute_result.status == "ok" and retrieval_intent.answer_mode == "hybrid_grounded":
+                if compute_result.status == "ok" and active_retrieval_intent.answer_mode == "hybrid_grounded":
                     workpad = _record_event(
                         workpad,
                         "executor",
                         f"hybrid grounded synthesis using deterministic core -> {compute_result.operation or 'answer'}",
                     )
-                elif compute_result.status != "ok" and retrieval_intent.compute_policy == "required":
+                elif compute_result.status != "ok" and active_retrieval_intent.compute_policy == "required":
                     answer = _officeqa_required_compute_insufficiency_answer(list(compute_result.validation_errors))
                     journal.final_artifact_signature = _artifact_signature(answer)
                     workpad["completion_budget"] = 0
@@ -1058,6 +1240,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                         "messages": [AIMessage(content=answer)],
                         "last_tool_result": journal.tool_results[-1] if journal.tool_results else None,
                         "task_intent": intent.model_dump(),
+                        "retrieval_intent": active_retrieval_intent.model_dump(),
                         "tool_plan": tool_plan.model_dump(),
                         "execution_journal": journal.model_dump(),
                         "curated_context": curated.model_dump(),
@@ -1074,7 +1257,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                         "review_feedback": None,
                         "workpad": workpad,
                     }
-                elif compute_result.status != "ok" and retrieval_intent.compute_policy in {"preferred", "not_applicable"}:
+                elif compute_result.status != "ok" and active_retrieval_intent.compute_policy in {"preferred", "not_applicable"}:
                     workpad = _record_event(
                         workpad,
                         "executor",
@@ -1105,6 +1288,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                     "messages": [AIMessage(content=answer)],
                     "last_tool_result": journal.tool_results[-1] if journal.tool_results else None,
                     "task_intent": intent.model_dump(),
+                    "retrieval_intent": active_retrieval_intent.model_dump(),
                     "tool_plan": tool_plan.model_dump(),
                     "execution_journal": journal.model_dump(),
                     "curated_context": curated.model_dump(),
@@ -1131,10 +1315,10 @@ def make_executor(registry: dict[str, dict[str, Any]]):
             intent.execution_mode,
             benchmark_overrides=benchmark_overrides,
             task_text=task_text,
-            answer_mode=retrieval_intent.answer_mode,
-            compute_policy=retrieval_intent.compute_policy,
-            partial_answer_allowed=retrieval_intent.partial_answer_allowed,
-            analysis_modes=retrieval_intent.analysis_modes,
+            answer_mode=active_retrieval_intent.answer_mode,
+            compute_policy=active_retrieval_intent.compute_policy,
+            partial_answer_allowed=active_retrieval_intent.partial_answer_allowed,
+            analysis_modes=active_retrieval_intent.analysis_modes,
             compute_status=str(dict(curated.compute_result or {}).get("status", "") or ""),
         )
         if guidance:
@@ -1186,8 +1370,8 @@ def make_executor(registry: dict[str, dict[str, Any]]):
             execution_mode=intent.execution_mode,
             task_family=intent.task_family,
             prompt_tokens=prompt_tokens,
-            answer_mode=retrieval_intent.answer_mode,
-            analysis_modes=retrieval_intent.analysis_modes,
+            answer_mode=active_retrieval_intent.answer_mode,
+            analysis_modes=active_retrieval_intent.analysis_modes,
         )
         model = ChatOpenAI(
             model=model_name,
@@ -1197,8 +1381,8 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                 execution_mode=intent.execution_mode,
                 task_family=intent.task_family,
                 prompt_tokens=prompt_tokens,
-                answer_mode=retrieval_intent.answer_mode,
-                analysis_modes=retrieval_intent.analysis_modes,
+                answer_mode=active_retrieval_intent.answer_mode,
+                analysis_modes=active_retrieval_intent.analysis_modes,
             ),
             temperature=0,
             max_tokens=max_tokens,
@@ -1238,12 +1422,13 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                     "prompt": format_messages_for_trace(prompt_messages),
                     "output_preview": content[:2000],
                     "completion_budget": max_tokens,
-                    "answer_mode": retrieval_intent.answer_mode,
-                    "compute_policy": retrieval_intent.compute_policy,
+                    "answer_mode": active_retrieval_intent.answer_mode,
+                    "compute_policy": active_retrieval_intent.compute_policy,
                     "tokens": {
                         "prompt": prompt_tokens,
                         "completion": count_tokens([AIMessage(content=content)]),
                     },
+                    "llm_repair_history": list(workpad.get("officeqa_llm_repair_history", []) or []),
                 },
             )
         logger.info("[Step %s] v4 executor -> final draft", step)
@@ -1251,6 +1436,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
             "messages": [AIMessage(content=content)],
             "last_tool_result": journal.tool_results[-1] if journal.tool_results else None,
             "task_intent": intent.model_dump(),
+            "retrieval_intent": active_retrieval_intent.model_dump(),
             "tool_plan": tool_plan.model_dump(),
             "execution_journal": journal.model_dump(),
             "curated_context": curated.model_dump(),

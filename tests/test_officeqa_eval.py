@@ -139,7 +139,24 @@ def test_capture_officeqa_artifacts_collects_tables_and_ledger():
                 ],
             },
         },
-        workpad={"solver_llm_decision": {"used_llm": False, "reason": "deterministic_compute_completed"}},
+        workpad={
+            "solver_llm_decision": {"used_llm": False, "reason": "deterministic_compute_completed"},
+            "officeqa_llm_repair_history": [
+                {
+                    "stage": "validator_repair",
+                    "trigger": "table_compute",
+                    "path_changed": True,
+                    "decision": {"decision": "rewrite_query", "confidence": 0.92},
+                }
+            ],
+            "officeqa_evidence_review": {
+                "status": "ready",
+                "predictive_gaps": [],
+                "compute_policy": "preferred",
+                "answer_mode": "hybrid_grounded",
+                "strategy": "table_first",
+            },
+        },
         execution_journal={
             "events": [],
             "tool_results": [
@@ -195,6 +212,8 @@ def test_capture_officeqa_artifacts_collects_tables_and_ledger():
     assert artifacts["extracted_tables"][0]["document_id"] == "treasury_1940_json"
     assert artifacts["compute_ledger"][0]["operator"] == "monthly_sum"
     assert artifacts["solver_llm_decision"]["reason"] == "deterministic_compute_completed"
+    assert artifacts["llm_repair_history"][0]["stage"] == "validator_repair"
+    assert artifacts["evidence_review"]["status"] == "ready"
     assert artifacts["final_artifact_signature"] == "sig-1"
 
 

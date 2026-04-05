@@ -658,3 +658,40 @@ Rules:
   - `$env:PYTHONPATH='src;tests'; python -m pytest tests/test_officeqa_compute.py tests/test_engine_runtime.py tests/test_officeqa_eval.py -k "wrong_row_family or wrong_period_slice or semantic or false_internal_passes or calendar_year_total_rejects_partial_year_column or validator_rejects_semantically_wrong_but_numeric_compute or point_lookup_rejects_navigational_page_reference_cells" -q -p no:cacheprovider` -> `6 passed, 81 deselected`
 - **Follow-Up Note:** Phase 22 closes the false-pass compute boundary. The next remaining benchmark fault is repair behavior after semantic failure, which is the focus of Phase 23.
 
+### Chat 39: Phase 23 Completed With Explicit Repair Orchestration And Bounded LLM Escalation
+
+- **Role:** Coder
+- **Actions Taken:** Implemented the Phase 23 repair layer so OfficeQA can use typed, bounded LLM assistance at explicit retrieval-repair points without turning the runtime into an ad-hoc prompt loop. The main changes are in [extraction.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\context\extraction.py), [llm_repair.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\llm_repair.py), [prompts.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\prompts.py), [contracts.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\contracts.py), [orchestrator.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\orchestrator.py), [tracer.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\tracer.py), and [officeqa_eval.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\benchmarks\officeqa_eval.py).
+- **Core Runtime Changes:**
+  - removed the old env-gated decomposition fallback and made low-confidence decomposition fallback an explicit typed path in [extraction.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\context\extraction.py)
+  - added [OfficeQALLMRepairDecision](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\contracts.py) plus a structured repair prompt in [prompts.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\prompts.py)
+  - added [llm_repair.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\llm_repair.py) with a fixed repair budget:
+    - `query_rewrite_calls = 1`
+    - `validator_repair_calls = 1`
+  - integrated the repair path into [orchestrator.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\orchestrator.py) at only two executor points:
+    - validator-directed gather repair
+    - retrieval-time rewrite for `wrong document`, `wrong table family`, and `missing month coverage`
+  - kept deterministic compute authoritative: repairs can rewrite the retrieval path, but they never replace compute when compute is available
+  - added an explicit `officeqa_evidence_review` microstep before compute so the runtime now records `retrieve -> parse -> review evidence suitability -> compute`
+  - persisted retrieval repairs in state by updating the active `RetrievalIntent` and carrying it through executor return paths
+- **Trace / Eval Changes:**
+  - added `officeqa_llm_repair_history` to workpad and surfaced it in [tracer.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\tracer.py) as compact `llm_repair` data in `execution_summary`
+  - added `llm_repair_history`, `evidence_review`, and `llm_repair_count` to [officeqa_eval.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\benchmarks\officeqa_eval.py) artifacts and case summaries
+- **Stop Rules / Non-Ad-Hoc Behavior:**
+  - repair decisions are structured-output only
+  - repairs are confidence-gated inside [llm_repair.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\llm_repair.py)
+  - repairs are single-use per category through the explicit fixed budget
+  - no environment flag is needed to activate the decomposition fallback or the retrieval repair policy
+  - no repair path can bypass validator constraints or substitute for deterministic compute
+- **Tests Added/Updated:**
+  - updated [test_question_decomposition.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_question_decomposition.py) to remove the old env requirement for decomposition fallback
+  - added executor regressions in [test_engine_runtime.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_engine_runtime.py) for:
+    - validator-directed retrieval repair
+    - structured query rewrite on a wrong-document gap
+  - updated [test_tracer.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_tracer.py) and [test_officeqa_eval.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_officeqa_eval.py) to cover repair artifacts
+  - updated an older deterministic table-first OfficeQA executor fixture so the mocked table includes a year-aligned column under the stricter admissibility rules
+- **Validation:** Verified with:
+  - `python -m py_compile src/agent/context/extraction.py src/agent/llm_repair.py src/agent/nodes/orchestrator.py src/agent/tracer.py src/agent/benchmarks/officeqa_eval.py tests/test_question_decomposition.py tests/test_engine_runtime.py tests/test_tracer.py tests/test_officeqa_eval.py`
+  - `$env:PYTHONPATH='src;tests'; python -m pytest tests/test_question_decomposition.py tests/test_engine_runtime.py tests/test_tracer.py tests/test_officeqa_eval.py -k "officeqa or decomposition_llm_fallback_merges_missing_fields or tracer" -q -p no:cacheprovider` -> `55 passed, 33 deselected`
+- **Follow-Up Note:** Phase 23 closes the repair-orchestration gap. The next remaining work is simplification and cleanup of overlapping state/trace fields in Phase 24.
+

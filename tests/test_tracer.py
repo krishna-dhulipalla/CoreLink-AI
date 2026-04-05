@@ -95,6 +95,14 @@ def test_tracer_preserves_structured_diagnostic_artifacts(monkeypatch):
             "intent": {"task_family": "document_qa", "execution_mode": "document_grounded_analysis", "complexity_tier": "structured_analysis"},
             "used_llm": False,
             "llm_decision_reason": "deterministic_compute_completed",
+            "llm_repair_history": [
+                {
+                    "stage": "retrieval_repair",
+                    "trigger": "wrong document",
+                    "path_changed": True,
+                    "decision": {"decision": "rewrite_query", "confidence": 0.88},
+                }
+            ],
             "tools_ran": ["fetch_officeqa_table"],
             "retrieval_decision": {"tool_name": "fetch_officeqa_table", "strategy": "table_first"},
             "strategy_reason": "primary metric is expected to be recoverable from structured table evidence",
@@ -129,6 +137,8 @@ def test_tracer_preserves_structured_diagnostic_artifacts(monkeypatch):
     execution_summary = captured[0]["execution_summary"]
     assert execution_summary
     assert execution_summary[0]["llm_decision_reason"] == "deterministic_compute_completed"
+    assert execution_summary[0]["llm_repair"]["count"] == 1
+    assert execution_summary[0]["llm_repair"]["decision"] == "rewrite_query"
     assert execution_summary[0]["retrieval"]["tool_name"] == "fetch_officeqa_table"
     assert execution_summary[0]["evidence_gaps"] == ["missing month coverage"]
     assert execution_summary[0]["tool_results"][0]["tool"] == "fetch_officeqa_table"

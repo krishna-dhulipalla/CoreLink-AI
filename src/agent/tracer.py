@@ -238,6 +238,22 @@ def _execution_summary(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 item["used_llm"] = bool(entry.get("used_llm"))
             if entry.get("llm_decision_reason"):
                 item["llm_decision_reason"] = _short_text(entry.get("llm_decision_reason", ""))
+            repair_history = [repair for repair in list(entry.get("llm_repair_history") or []) if isinstance(repair, dict)]
+            if repair_history:
+                last_repair = dict(repair_history[-1])
+                decision = dict(last_repair.get("decision") or {})
+                item["llm_repair"] = {
+                    key: value
+                    for key, value in {
+                        "count": len(repair_history),
+                        "stage": last_repair.get("stage", ""),
+                        "trigger": last_repair.get("trigger", ""),
+                        "path_changed": bool(last_repair.get("path_changed")),
+                        "decision": decision.get("decision", ""),
+                        "confidence": decision.get("confidence", 0.0),
+                    }.items()
+                    if value not in ("", [], {}, None)
+                }
             retrieval = dict(entry.get("retrieval_decision") or entry.get("retrieval_action") or {})
             if retrieval:
                 item["retrieval"] = {

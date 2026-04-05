@@ -19,7 +19,7 @@ from agent.benchmarks import (
 )
 from agent.benchmarks.officeqa_validator import validate_officeqa_final
 from agent.benchmarks.officeqa_index import build_officeqa_index
-from agent.contracts import EvidenceSufficiency, ExecutionJournal, OfficeQAValidationResult, ProgressSignature, RetrievalIntent, SourceBundle, TaskIntent, ToolPlan
+from agent.contracts import EvidenceSufficiency, ExecutionJournal, OfficeQALLMRepairDecision, OfficeQAValidationResult, ProgressSignature, RetrievalAction, RetrievalIntent, SourceBundle, TaskIntent, ToolPlan
 from agent.officeqa_structured_evidence import build_officeqa_structured_evidence
 from agent.retrieval_tools import fetch_corpus_document as fetch_corpus_document_tool
 from agent.retrieval_tools import fetch_officeqa_table, lookup_officeqa_cells, search_reference_corpus
@@ -1573,22 +1573,22 @@ def test_engine_executor_prefers_officeqa_table_first_retrieval(monkeypatch):
                 "officeqa_status": "ok",
                 "table_count": 1,
             },
-            "chunks": [
-                {
-                    "locator": "table 1",
-                    "kind": "table_preview",
-                    "text": "Category,Amount\nTotal public debt outstanding,258.7",
-                    "citation": path or "treasury_1945.json",
-                }
-            ],
-            "tables": [
-                {
-                    "locator": "table 1",
-                    "headers": ["Category", "Amount"],
-                    "rows": [["Total public debt outstanding", "258.7"]],
-                    "citation": path or "treasury_1945.json",
-                    "unit_hint": "billion dollars",
-                }
+                "chunks": [
+                    {
+                        "locator": "table 1",
+                        "kind": "table_preview",
+                        "text": "Category,1945\nTotal public debt outstanding,258.7",
+                        "citation": path or "treasury_1945.json",
+                    }
+                ],
+                "tables": [
+                    {
+                        "locator": "table 1",
+                        "headers": ["Category", "1945"],
+                        "rows": [["Total public debt outstanding", "258.7"]],
+                        "citation": path or "treasury_1945.json",
+                        "unit_hint": "billion dollars",
+                    }
             ],
             "numeric_summaries": [{"metric": "public_debt_outstanding", "value": 258.7}],
         }
@@ -1930,6 +1930,234 @@ def test_officeqa_executor_honors_validator_directed_gather_retry(monkeypatch):
     assert result["last_tool_result"]["type"] == "search_officeqa_documents"
     assert result["workpad"]["officeqa_retry_path"]["repair_target"] == "gather"
     assert result["workpad"]["officeqa_retry_path"]["orchestration_strategy"] == "table_compute"
+
+
+def test_officeqa_executor_applies_structured_validator_repair_before_gather(monkeypatch):
+    prompt = "According to the Treasury Bulletin, what was total public debt outstanding in 1945?"
+    registry = build_capability_registry([CALCULATOR_TOOL, SEARCH_TOOL, *BUILTIN_RETRIEVAL_TOOLS])
+    executor = make_executor(registry)
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        "agent.nodes.orchestrator._plan_retrieval_action",
+        lambda **kwargs: RetrievalAction(
+            action="tool",
+            tool_name="search_officeqa_documents",
+            stage="identify_source",
+            strategy="table_first",
+            query="public debt outstanding 1945",
+            evidence_gap="wrong document",
+            rationale="Need a stronger source match.",
+        ),
+    )
+    monkeypatch.setattr(
+        "agent.nodes.orchestrator.maybe_repair_from_validator",
+        lambda **kwargs: OfficeQALLMRepairDecision(
+            decision="rewrite_query",
+            revised_query="Treasury Bulletin total public debt outstanding 1945 year-end",
+            rationale="Use an explicit source-grounded query.",
+            confidence=0.91,
+        ),
+    )
+    monkeypatch.setattr("agent.nodes.orchestrator.maybe_rewrite_retrieval_path", lambda **kwargs: None)
+
+    async def _fake_run_tool_step_with_args(state, registry, tool_name, tool_args):
+        captured["tool_name"] = tool_name
+        captured["tool_args"] = dict(tool_args)
+        return tool_args, normalize_tool_output(
+            tool_name,
+            {"results": [], "documents": [], "metadata": {"officeqa_status": "ok"}},
+            tool_args,
+        )
+
+    monkeypatch.setattr("agent.nodes.orchestrator._run_tool_step_with_args", _fake_run_tool_step_with_args)
+
+    state = make_state(
+        prompt,
+        task_profile="document_qa",
+        task_intent={
+            "task_family": "document_qa",
+            "execution_mode": "document_grounded_analysis",
+            "complexity_tier": "structured_analysis",
+            "tool_families_needed": ["document_retrieval", "exact_compute"],
+            "evidence_strategy": "document_first",
+            "review_mode": "document_grounded",
+            "completion_mode": "document_grounded",
+            "planner_source": "heuristic",
+        },
+        benchmark_overrides={"benchmark_adapter": "officeqa"},
+        review_feedback={
+            "verdict": "revise",
+            "repair_target": "gather",
+            "retry_allowed": True,
+            "orchestration_strategy": "table_compute",
+            "missing_dimensions": ["time scope correctness"],
+            "remediation_codes": ["RETRIEVE_EXACT_PERIOD"],
+        },
+        source_bundle={
+            "task_text": prompt,
+            "focus_query": "public debt outstanding 1945",
+            "target_period": "1945",
+            "entities": ["Public debt"],
+            "urls": [],
+            "inline_facts": {},
+            "tables": [],
+            "formulas": [],
+        },
+        tool_plan={
+            "tool_families_needed": ["document_retrieval", "exact_compute"],
+            "widened_families": [],
+            "selected_tools": ["search_officeqa_documents"],
+            "pending_tools": [],
+            "blocked_families": [],
+            "ace_events": [],
+            "notes": [],
+            "stop_reason": "",
+        },
+        curated_context={
+            "objective": "Find the exact public debt value for 1945.",
+            "facts_in_use": [],
+            "open_questions": [],
+            "assumptions": [],
+            "requested_output": {"format": "text"},
+            "provenance_summary": {},
+        },
+    )
+    state["retrieval_intent"] = {
+        "entity": "Public debt",
+        "metric": "public debt outstanding",
+        "period": "1945",
+        "granularity_requirement": "point_lookup",
+        "document_family": "treasury_bulletin",
+        "aggregation_shape": "point_lookup",
+        "answer_mode": "deterministic_compute",
+        "compute_policy": "required",
+        "strategy": "table_first",
+        "strategy_confidence": 0.7,
+        "analysis_modes": [],
+        "query_candidates": ["public debt outstanding 1945"],
+        "query_plan": {"primary_semantic_query": "public debt outstanding 1945"},
+    }
+
+    result = asyncio.run(executor(state))
+
+    assert result["solver_stage"] == "GATHER"
+    assert captured["tool_name"] == "search_officeqa_documents"
+    assert dict(captured["tool_args"])["query"] == "Treasury Bulletin total public debt outstanding 1945 year-end"
+    assert result["workpad"]["solver_llm_decision"]["reason"] == "validator_directed_retrieval_repair"
+    assert result["workpad"]["officeqa_llm_repair_history"][0]["stage"] == "validator_repair"
+    assert result["retrieval_intent"]["query_plan"]["primary_semantic_query"] == "Treasury Bulletin total public debt outstanding 1945 year-end"
+
+
+def test_officeqa_executor_uses_structured_query_rewrite_for_wrong_document_gap(monkeypatch):
+    prompt = "What were the total expenditures of the Veterans Administration in FY 1934?"
+    registry = build_capability_registry([CALCULATOR_TOOL, SEARCH_TOOL, *BUILTIN_RETRIEVAL_TOOLS])
+    executor = make_executor(registry)
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        "agent.nodes.orchestrator._plan_retrieval_action",
+        lambda **kwargs: RetrievalAction(
+            action="tool",
+            tool_name="search_officeqa_documents",
+            stage="identify_source",
+            strategy="table_first",
+            query="Veterans Administration total expenditures 1934",
+            evidence_gap="wrong document",
+            rationale="Current source match is weak.",
+            candidate_sources=[{"document_id": "treasury_bulletin_1959_09_json", "score": 0.58}],
+        ),
+    )
+    monkeypatch.setattr("agent.nodes.orchestrator.maybe_repair_from_validator", lambda **kwargs: None)
+    monkeypatch.setattr(
+        "agent.nodes.orchestrator.maybe_rewrite_retrieval_path",
+        lambda **kwargs: OfficeQALLMRepairDecision(
+            decision="rewrite_query",
+            revised_query="Treasury Bulletin Veterans Administration total expenditures fiscal year 1934 excluding trust accounts",
+            rationale="Clarify entity, year, and exclusion.",
+            confidence=0.88,
+        ),
+    )
+
+    async def _fake_run_tool_step_with_args(state, registry, tool_name, tool_args):
+        captured["tool_name"] = tool_name
+        captured["tool_args"] = dict(tool_args)
+        return tool_args, normalize_tool_output(
+            tool_name,
+            {"results": [], "documents": [], "metadata": {"officeqa_status": "ok"}},
+            tool_args,
+        )
+
+    monkeypatch.setattr("agent.nodes.orchestrator._run_tool_step_with_args", _fake_run_tool_step_with_args)
+
+    state = make_state(
+        prompt,
+        task_profile="document_qa",
+        task_intent={
+            "task_family": "document_qa",
+            "execution_mode": "document_grounded_analysis",
+            "complexity_tier": "structured_analysis",
+            "tool_families_needed": ["document_retrieval", "exact_compute"],
+            "evidence_strategy": "document_first",
+            "review_mode": "document_grounded",
+            "completion_mode": "document_grounded",
+            "planner_source": "heuristic",
+        },
+        benchmark_overrides={"benchmark_adapter": "officeqa"},
+        source_bundle={
+            "task_text": prompt,
+            "focus_query": "Veterans Administration total expenditures 1934",
+            "target_period": "1934",
+            "entities": ["Veterans Administration"],
+            "urls": [],
+            "inline_facts": {},
+            "tables": [],
+            "formulas": [],
+        },
+        tool_plan={
+            "tool_families_needed": ["document_retrieval", "exact_compute"],
+            "widened_families": [],
+            "selected_tools": ["search_officeqa_documents"],
+            "pending_tools": [],
+            "blocked_families": [],
+            "ace_events": [],
+            "notes": [],
+            "stop_reason": "",
+        },
+        curated_context={
+            "objective": "Find the Veterans Administration total expenditures for FY 1934.",
+            "facts_in_use": [],
+            "open_questions": [],
+            "assumptions": [],
+            "requested_output": {"format": "text"},
+            "provenance_summary": {},
+        },
+    )
+    state["retrieval_intent"] = {
+        "entity": "Veterans Administration",
+        "metric": "total expenditures",
+        "period": "1934",
+        "granularity_requirement": "fiscal_year",
+        "document_family": "treasury_bulletin",
+        "aggregation_shape": "point_lookup",
+        "answer_mode": "deterministic_compute",
+        "compute_policy": "required",
+        "strategy": "table_first",
+        "strategy_confidence": 0.61,
+        "analysis_modes": [],
+        "exclude_constraints": ["trust accounts"],
+        "query_candidates": ["Veterans Administration total expenditures 1934"],
+        "query_plan": {"primary_semantic_query": "Veterans Administration total expenditures 1934"},
+    }
+
+    result = asyncio.run(executor(state))
+
+    assert result["solver_stage"] == "GATHER"
+    assert captured["tool_name"] == "search_officeqa_documents"
+    assert dict(captured["tool_args"])["query"] == "Treasury Bulletin Veterans Administration total expenditures fiscal year 1934 excluding trust accounts"
+    assert result["workpad"]["solver_llm_decision"]["reason"] == "structured_retrieval_repair"
+    assert result["workpad"]["officeqa_llm_repair_history"][-1]["stage"] == "retrieval_repair"
+    assert result["retrieval_intent"]["query_candidates"][0] == "Treasury Bulletin Veterans Administration total expenditures fiscal year 1934 excluding trust accounts"
 
 
 def test_officeqa_tool_plan_prefers_native_search_over_generic_reference_search():

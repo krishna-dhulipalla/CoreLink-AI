@@ -48,6 +48,15 @@ RETRIEVAL_PLANNER_SYSTEM = (
     "Return only JSON matching the schema."
 )
 
+OFFICEQA_STRUCTURED_REPAIR_SYSTEM = (
+    "You are a bounded retrieval-repair controller for document-grounded financial reasoning.\n"
+    "Your job is to improve retrieval or table selection without answering the user question.\n"
+    "Return only a structured repair decision.\n"
+    "Allowed actions are: keep, rewrite_query, retune_table_query, change_strategy.\n"
+    "Do not invent facts, numbers, or final answers.\n"
+    "Only change the retrieval path if the current evidence is semantically weak or misaligned."
+)
+
 
 # ---------------------------------------------------------------------------
 # Guidance appended as additional system messages
@@ -169,6 +178,42 @@ def execution_guidance(
     if execution_mode == "document_grounded_analysis":
         return DOCUMENT_GROUNDED_GUIDANCE
     return GENERAL_GUIDANCE
+
+
+def build_officeqa_structured_repair_prompt(
+    *,
+    task_text: str,
+    retrieval_strategy: str,
+    evidence_gap: str,
+    current_query: str = "",
+    current_table_query: str = "",
+    candidate_sources: list[dict[str, Any]] | None = None,
+    review_feedback: dict[str, Any] | None = None,
+) -> str:
+    candidates = []
+    for item in list(candidate_sources or [])[:5]:
+        if not isinstance(item, dict):
+            continue
+        candidates.append(
+            {
+                "document_id": str(item.get("document_id", "") or ""),
+                "title": str(item.get("title", "") or ""),
+                "score": item.get("score", 0.0),
+                "snippet": str(item.get("snippet", "") or "")[:220],
+            }
+        )
+    feedback = dict(review_feedback or {})
+    return (
+        f"TASK={task_text}\n"
+        f"CURRENT_STRATEGY={retrieval_strategy}\n"
+        f"EVIDENCE_GAP={evidence_gap}\n"
+        f"CURRENT_QUERY={current_query}\n"
+        f"CURRENT_TABLE_QUERY={current_table_query}\n"
+        f"REVIEW_REPAIR_TARGET={feedback.get('repair_target', '')}\n"
+        f"REVIEW_ORCHESTRATION={feedback.get('orchestration_strategy', '')}\n"
+        f"REMEDIATION_CODES={list(feedback.get('remediation_codes', []) or [])}\n"
+        f"CANDIDATE_SOURCES={candidates}"
+    )
 
 
 # ---------------------------------------------------------------------------
