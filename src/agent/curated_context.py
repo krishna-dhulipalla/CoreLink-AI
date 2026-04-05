@@ -237,7 +237,7 @@ def _officeqa_document_facts_in_use(
 ) -> tuple[list[dict[str, Any]], list[str]]:
     retrieval_intent = build_retrieval_intent(task_text, source_bundle, benchmark_overrides)
     analysis_modes = officeqa_analysis_modes(task_text)
-    facts = _retrieval_facts_in_use(task_text, source_bundle)
+    facts = [fact for fact in _retrieval_facts_in_use(task_text, source_bundle) if fact.get("type") != "focus_query"]
     facts.append({"type": "officeqa_analysis_modes", "value": analysis_modes})
     if retrieval_intent.metric:
         facts.append({"type": "retrieval_metric", "value": retrieval_intent.metric})
@@ -343,7 +343,7 @@ def build_curated_context(
 
     facts_in_use = _dedupe_facts(facts_in_use)
     curated = CuratedContext(
-        objective=source_bundle.focus_query or _normalize_text(task_text)[:300],
+        objective=_normalize_text(task_text)[:300] or source_bundle.focus_query,
         facts_in_use=facts_in_use,
         open_questions=[item for item in open_questions if item],
         assumptions=[item for item in assumptions if item],
@@ -380,7 +380,9 @@ def build_curated_context(
                 "include_constraints": list(retrieval_intent_obj.include_constraints[:4]) if retrieval_intent_obj else [],
                 "exclude_constraints": list(retrieval_intent_obj.exclude_constraints[:4]) if retrieval_intent_obj else [],
                 "query_plan": retrieval_intent_obj.query_plan.model_dump() if retrieval_intent_obj else {},
-                "query_candidates": list(retrieval_intent_obj.query_candidates[:4]) if retrieval_intent_obj else [],
+                "retrieval_seed": (
+                    str(retrieval_intent_obj.query_plan.primary_semantic_query or "") if retrieval_intent_obj else ""
+                ),
                 "fallback_chain": list(retrieval_intent_obj.fallback_chain[:4]) if retrieval_intent_obj else [],
                 "evidence_requirements": list(retrieval_intent_obj.evidence_requirements[:5]) if retrieval_intent_obj else [],
                 "required_years": list(retrieval_intent_obj.evidence_plan.required_years[:4]) if retrieval_intent_obj else [],

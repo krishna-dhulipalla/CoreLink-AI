@@ -237,7 +237,6 @@ def _template_stub(intent: TaskIntent, allowed_tools: list[str] | None = None) -
         "allowed_tool_names": list(allowed_tools or []),
         "review_stages": review_stages,
         "review_cadence": "milestone_and_final" if intent.execution_mode == "exact_fast_path" else "final_only",
-        "answer_focus": [intent.routing_rationale] if intent.routing_rationale else [],
         "ambiguity_safe": intent.execution_mode == "exact_fast_path",
     }
 

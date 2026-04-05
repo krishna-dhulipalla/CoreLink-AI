@@ -234,7 +234,6 @@ def compact_evidence_block(state: AgentState) -> str:
         "execution_template": {
             "template_id": execution_template.get("template_id"),
             "description": execution_template.get("description", ""),
-            "answer_focus": execution_template.get("answer_focus", []),
         },
         "profile_pack": {
             "domain_summary": profile_pack.get("domain_summary", ""),

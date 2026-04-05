@@ -1193,16 +1193,16 @@ Why now:
 
 Tasks:
 
-- [ ] `P24.1` Define one authoritative owner for:
-  - raw user task text
-  - retrieval seed text
-  - solver objective
-  - routing explanation
-- [ ] `P24.2` Remove `answer_focus` if it remains only a wrapper around `routing_rationale`
-- [ ] `P24.3` Replace free-form `query_candidates` with a typed query-plan payload if Phase 20 lands that structure cleanly
-- [ ] `P24.4` Update traces so repeated raw history remains available but compact summaries show only authoritative fields
-- [ ] `P24.5` Add a schema audit test that fails when the same concept is redundantly serialized through too many layers
-- [ ] `P24.6` Update teammate docs with a field-ownership table for runtime state
+- [x] `P24.1` Define one authoritative owner for:
+    - raw user task text
+    - retrieval seed text
+    - solver objective
+    - routing explanation
+- [x] `P24.2` Remove `answer_focus` if it remains only a wrapper around `routing_rationale`
+- [x] `P24.3` Replace free-form `query_candidates` with a typed query-plan payload if Phase 20 lands that structure cleanly
+- [x] `P24.4` Update traces so repeated raw history remains available but compact summaries show only authoritative fields
+- [x] `P24.5` Add a schema audit test that fails when the same concept is redundantly serialized through too many layers
+- [x] `P24.6` Update teammate docs with a field-ownership table for runtime state
 
 Suggested code targets:
 

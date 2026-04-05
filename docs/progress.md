@@ -695,3 +695,37 @@ Rules:
   - `$env:PYTHONPATH='src;tests'; python -m pytest tests/test_question_decomposition.py tests/test_engine_runtime.py tests/test_tracer.py tests/test_officeqa_eval.py -k "officeqa or decomposition_llm_fallback_merges_missing_fields or tracer" -q -p no:cacheprovider` -> `55 passed, 33 deselected`
 - **Follow-Up Note:** Phase 23 closes the repair-orchestration gap. The next remaining work is simplification and cleanup of overlapping state/trace fields in Phase 24.
 
+### Chat 40: Phase 24 Completed With State Ownership Cleanup And Schema Audit
+
+- **Role:** Coder
+- **Actions Taken:** Implemented Phase 24 so the OfficeQA runtime now has one authoritative owner per major concept and compact runtime summaries stop replaying low-signal duplicates. The main code changes are in [contracts.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\contracts.py), [orchestrator_intent.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\orchestrator_intent.py), [solver/common.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\solver\common.py), [curated_context.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\curated_context.py), [orchestrator_retrieval.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\orchestrator_retrieval.py), and [llm_repair.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\llm_repair.py).
+- **Core Cleanup Changes:**
+  - removed `answer_focus` from [ExecutionTemplate](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\contracts.py) and from template serialization because it was only mirroring `TaskIntent.routing_rationale`
+  - kept `TaskIntent.routing_rationale` as the only routing-explanation owner
+  - changed OfficeQA curated facts so `focus_query` is no longer repeated in `facts_in_use` once the retrieval plan already owns the retrieval seed
+  - changed [CuratedContext.objective](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\contracts.py) construction to use normalized task text as the solver objective owner instead of echoing `focus_query`
+  - changed provenance serialization in [curated_context.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\curated_context.py) to stop exposing `query_candidates`; compact runtime state now exposes:
+    - `query_plan`
+    - `retrieval_seed`
+    - strategy / evidence-plan fields
+  - updated retrieval helpers in [orchestrator_retrieval.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\orchestrator_retrieval.py) to prefer typed `query_plan` fields first and only fall back to internal `query_candidates`
+  - updated [llm_repair.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\llm_repair.py) so repair prompts read the authoritative primary semantic query instead of the free-form retry list
+- **Field Ownership Result:**
+  - raw user task text -> `SourceBundle.task_text`
+  - retrieval seed text -> `RetrievalIntent.query_plan.primary_semantic_query`
+  - solver objective -> `CuratedContext.objective`
+  - routing explanation -> `TaskIntent.routing_rationale`
+  - internal `query_candidates` now remain only as compatibility/retry state, not as the field teammates should read in compact provenance
+- **Tests Added/Updated:**
+  - updated [test_engine_runtime.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_engine_runtime.py) so the provenance assertion now checks `query_plan.primary_semantic_query` and `retrieval_seed` instead of `query_candidates`
+  - added a schema-audit regression in [test_engine_runtime.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_engine_runtime.py) that fails if:
+    - `answer_focus` returns
+    - OfficeQA curated facts re-emit `focus_query`
+    - compact retrieval provenance re-exposes `query_candidates`
+  - updated [test_reflect.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_reflect.py) to remove the obsolete `answer_focus` field from the fixture
+- **Docs Updated:** Updated [v5_runtime_walkthrough.md](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\docs\v5_runtime_walkthrough.md) with a field-ownership section so teammates can see which runtime field is authoritative and which duplicates are only compatibility/history state.
+- **Validation:** Verified with:
+  - `python -m py_compile src/agent/contracts.py src/agent/curated_context.py src/agent/nodes/orchestrator_intent.py src/agent/nodes/orchestrator_retrieval.py src/agent/solver/common.py src/agent/llm_repair.py tests/test_engine_runtime.py tests/test_reflect.py`
+  - `$env:PYTHONPATH='src;tests'; python -m pytest tests/test_engine_runtime.py tests/test_reflect.py -k "authoritative_field_owners or curated_context_moves_retrieval_state_into_provenance_summary or retriever or reflect" -q -p no:cacheprovider` -> `4 passed, 71 deselected`
+- **Follow-Up Note:** Phase 24 closes the state-duplication cleanup for compact runtime summaries. Raw trace nodes still keep historical snapshots by design, but the compact layers now have clear owners. The next remaining work is Phase 25.
+

@@ -2253,7 +2253,58 @@ def test_officeqa_curated_context_keeps_authoritative_retrieval_state_in_provena
     assert "evidence_requirements" not in fact_types
     assert curated.provenance_summary["source_bundle"]["source_files_expected"] == ["treasury_bulletin_1945_01.json"]
     assert curated.provenance_summary["retrieval_plan"]["document_family"] == "treasury_bulletin"
-    assert curated.provenance_summary["retrieval_plan"]["query_candidates"]
+    assert curated.provenance_summary["retrieval_plan"]["query_plan"]["primary_semantic_query"]
+    assert curated.provenance_summary["retrieval_plan"]["retrieval_seed"]
+
+
+def test_officeqa_runtime_schema_uses_authoritative_field_owners():
+    prompt = "According to the Treasury Bulletin, what was total public debt outstanding in 1945?"
+    source_bundle = SourceBundle(
+        task_text=prompt,
+        focus_query="total public debt outstanding 1945",
+        target_period="1945",
+        entities=["Treasury Bulletin"],
+        urls=[],
+        inline_facts={},
+        tables=[],
+        formulas=[],
+        source_files_expected=["treasury_bulletin_1945_01.json"],
+    )
+    intent = TaskIntent(
+        task_family="document_qa",
+        execution_mode="document_grounded_analysis",
+        complexity_tier="structured_analysis",
+        tool_families_needed=["document_retrieval", "exact_compute"],
+        evidence_strategy="document_first",
+        review_mode="document_grounded",
+        completion_mode="document_grounded",
+        routing_rationale="Document questions should ground the answer in retrieved file evidence.",
+        planner_source="heuristic",
+    )
+
+    curated, _ = build_curated_context(
+        prompt,
+        {"format": "xml", "requires_adapter": True, "wrapper_key": None, "section_requirements": ["REASONING", "FINAL_ANSWER"]},
+        intent,
+        source_bundle,
+        {"benchmark_adapter": "officeqa"},
+    )
+    template = task_planner(
+        {
+            **make_state(prompt, task_intent=intent.model_dump(), benchmark_overrides={"benchmark_adapter": "officeqa"}),
+            "task_intent": intent.model_dump(),
+        }
+    )["execution_template"]
+
+    fact_types = {fact.get("type") for fact in curated.facts_in_use}
+    retrieval_plan = curated.provenance_summary["retrieval_plan"]
+
+    assert "focus_query" not in fact_types
+    assert "query_candidates" not in retrieval_plan
+    assert "answer_focus" not in template
+    assert retrieval_plan["query_plan"]["primary_semantic_query"]
+    assert retrieval_plan["retrieval_seed"] == retrieval_plan["query_plan"]["primary_semantic_query"]
+    assert curated.objective == prompt
 
 
 def test_fetch_corpus_document_rejects_paths_outside_corpus_root(monkeypatch):

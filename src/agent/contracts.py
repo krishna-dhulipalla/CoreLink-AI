@@ -113,7 +113,6 @@ class ExecutionTemplate(BaseModel):
     allowed_tool_names: list[str] = Field(default_factory=list)
     review_stages: list[SolverStage] = Field(default_factory=list)
     review_cadence: ReviewCadence = "final_only"
-    answer_focus: list[str] = Field(default_factory=list)
     ambiguity_safe: bool = False
 
 

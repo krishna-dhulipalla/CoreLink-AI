@@ -30,7 +30,6 @@ def test_reflect_persists_run_tool_and_review_memory():
             "allowed_tool_names": ["calculator"],
             "review_stages": ["COMPUTE", "SYNTHESIZE"],
             "review_cadence": "milestone_and_final",
-            "answer_focus": [],
         },
         "answer_contract": {"format": "json", "requires_adapter": True},
         "evidence_pack": {},

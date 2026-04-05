@@ -71,7 +71,7 @@ def _generic_tool_args(
 
     task_text = source_bundle.task_text
     focus_query = (
-        (retrieval_intent.query_candidates[0] if retrieval_intent and retrieval_intent.query_candidates else "")
+        _derive_retrieval_seed_query(source_bundle, retrieval_intent)
         or source_bundle.focus_query
         or task_text[:240]
     )
@@ -128,10 +128,10 @@ def _structured_tool_args(state: RuntimeState, registry: dict[str, dict[str, Any
             "cross_border": bool("eu" in lowered and ("us" in lowered or "united states" in lowered)),
         }
     if tool_name == "internet_search":
-        query = (retrieval_intent.query_candidates[0] if retrieval_intent.query_candidates else "") or source_bundle.focus_query or task_text[:240]
+        query = _derive_retrieval_seed_query(source_bundle, retrieval_intent) or source_bundle.focus_query or task_text[:240]
         return {"query": query}
     if tool_name == "search_reference_corpus":
-        query = (retrieval_intent.query_candidates[0] if retrieval_intent.query_candidates else "") or source_bundle.focus_query or task_text[:240]
+        query = _derive_retrieval_seed_query(source_bundle, retrieval_intent) or source_bundle.focus_query or task_text[:240]
         return {
             "query": query,
             "top_k": 5,
@@ -139,7 +139,7 @@ def _structured_tool_args(state: RuntimeState, registry: dict[str, dict[str, Any
             "source_files": source_bundle.source_files_expected[:8],
         }
     if tool_name == "search_officeqa_documents":
-        query = (retrieval_intent.query_candidates[0] if retrieval_intent.query_candidates else "") or source_bundle.focus_query or task_text[:240]
+        query = _derive_retrieval_seed_query(source_bundle, retrieval_intent) or source_bundle.focus_query or task_text[:240]
         return {
             "query": query,
             "top_k": 5,
@@ -264,9 +264,28 @@ def _retrieval_tools_by_role(
     return grouped
 
 
+def _retrieval_query_candidates(retrieval_intent: RetrievalIntent | None = None) -> list[str]:
+    if retrieval_intent is None:
+        return []
+    query_plan = retrieval_intent.query_plan
+    candidates = [
+        query_plan.primary_semantic_query,
+        query_plan.granularity_query,
+        query_plan.qualifier_query,
+        query_plan.alternate_lexical_query,
+        query_plan.source_file_query,
+        *list(retrieval_intent.query_candidates or []),
+    ]
+    return [
+        item
+        for item in dict.fromkeys(str(candidate).strip()[:280] for candidate in candidates if str(candidate or "").strip())
+    ]
+
+
 def _derive_retrieval_seed_query(source_bundle: SourceBundle, retrieval_intent: RetrievalIntent | None = None) -> str:
-    if retrieval_intent and retrieval_intent.query_candidates:
-        return retrieval_intent.query_candidates[0]
+    candidates = _retrieval_query_candidates(retrieval_intent)
+    if candidates:
+        return candidates[0]
     parts = [source_bundle.focus_query or source_bundle.task_text]
     if source_bundle.entities:
         parts.append(" ".join(source_bundle.entities[:4]))
@@ -278,7 +297,7 @@ def _derive_retrieval_seed_query(source_bundle: SourceBundle, retrieval_intent: 
 
 def _next_retrieval_query(journal: ExecutionJournal, retrieval_intent: RetrievalIntent, source_bundle: SourceBundle) -> str:
     used = {re.sub(r"\s+", " ", query).strip().lower() for query in journal.retrieval_queries}
-    for candidate in retrieval_intent.query_candidates:
+    for candidate in _retrieval_query_candidates(retrieval_intent):
         normalized = re.sub(r"\s+", " ", candidate).strip().lower()
         if normalized and normalized not in used:
             return candidate

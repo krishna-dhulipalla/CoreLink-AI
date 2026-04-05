@@ -92,7 +92,7 @@ def maybe_repair_from_validator(
         task_text=task_text,
         retrieval_strategy=retrieval_intent.strategy,
         evidence_gap=", ".join(str(item) for item in list(review_feedback.get("missing_dimensions", []))[:4]),
-        current_query=(retrieval_intent.query_plan.primary_semantic_query or retrieval_intent.query_candidates[0] if retrieval_intent.query_candidates else ""),
+        current_query=(retrieval_intent.query_plan.primary_semantic_query or ""),
         current_table_query="",
         candidate_sources=candidate_sources,
         review_feedback=review_feedback,
