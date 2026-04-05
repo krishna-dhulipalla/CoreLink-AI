@@ -2157,7 +2157,7 @@ def test_officeqa_executor_uses_structured_query_rewrite_for_wrong_document_gap(
     assert dict(captured["tool_args"])["query"] == "Treasury Bulletin Veterans Administration total expenditures fiscal year 1934 excluding trust accounts"
     assert result["workpad"]["solver_llm_decision"]["reason"] == "structured_retrieval_repair"
     assert result["workpad"]["officeqa_llm_repair_history"][-1]["stage"] == "retrieval_repair"
-    assert result["retrieval_intent"]["query_candidates"][0] == "Treasury Bulletin Veterans Administration total expenditures fiscal year 1934 excluding trust accounts"
+    assert result["retrieval_intent"]["query_plan"]["primary_semantic_query"] == "Treasury Bulletin Veterans Administration total expenditures fiscal year 1934 excluding trust accounts"
 
 
 def test_officeqa_tool_plan_prefers_native_search_over_generic_reference_search():

@@ -1230,20 +1230,20 @@ Why now:
 
 Tasks:
 
-- [ ] `P25.1` Capture anonymized benchmark-failure fixtures as local regression metadata without baking task-specific hacks into runtime logic
-- [ ] `P25.2` Add a benchmark failure taxonomy:
+- [x] `P25.1` Capture anonymized benchmark-failure fixtures as local regression metadata without baking task-specific hacks into runtime logic
+- [x] `P25.2` Add a benchmark failure taxonomy:
   - wrong source
   - wrong table family
   - wrong row or column semantics
   - incomplete evidence
   - false semantic pass
   - repair stall
-- [ ] `P25.3` Extend evaluation reports so they classify both pipeline stage failure and semantic correctness failure
-- [ ] `P25.4` Add go or no-go thresholds that require:
+- [x] `P25.3` Extend evaluation reports so they classify both pipeline stage failure and semantic correctness failure
+- [x] `P25.4` Add go or no-go thresholds that require:
   - no false semantic passes
   - bounded repair-stall rate
   - acceptable source-ranking accuracy on sampled benchmark cases
-- [ ] `P25.5` Keep this harness benchmark-agnostic enough to reuse for future document-grounded financial benchmarks
+- [x] `P25.5` Keep this harness benchmark-agnostic enough to reuse for future document-grounded financial benchmarks
 
 Suggested code targets:
 

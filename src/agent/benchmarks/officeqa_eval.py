@@ -8,6 +8,14 @@ from pathlib import Path
 from typing import Any, Literal
 
 FailureSubsystem = Literal["pass", "routing", "retrieval", "extraction", "compute", "validation", "formatting"]
+BenchmarkFailureTag = Literal[
+    "wrong_source",
+    "wrong_table_family",
+    "wrong_row_or_column_semantics",
+    "incomplete_evidence",
+    "false_semantic_pass",
+    "repair_stall",
+]
 
 _EXTRACTION_STATUSES = {"missing_table", "partial_table", "missing_row", "missing_month_coverage", "unit_ambiguity"}
 _ROUTING_STOP_REASONS = {"unsupported_capability", "no_bindable_capability", "recursion_limit"}
@@ -106,6 +114,170 @@ def _has_required_output_format(answer: str, answer_contract: dict[str, Any]) ->
         compact = answer.strip()
         return compact.startswith("{") and compact.endswith("}")
     return True
+
+
+def _normalized_text(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _normalized_answer_value(answer: str) -> str:
+    compact = answer.strip()
+    upper = compact.upper()
+    start = upper.find("<FINAL_ANSWER>")
+    end = upper.find("</FINAL_ANSWER>")
+    if start != -1 and end != -1 and end > start:
+        start += len("<FINAL_ANSWER>")
+        return compact[start:end].strip()
+    return compact
+
+
+def _looks_navigational_table(table: dict[str, Any]) -> bool:
+    headers = " | ".join(str(item or "") for item in list(table.get("headers", []))[:8]).lower()
+    locators = " | ".join(
+        [
+            str(table.get("table_locator", "") or ""),
+            str(table.get("page_locator", "") or ""),
+            str(table.get("unit", "") or ""),
+        ]
+    ).lower()
+    combined = f"{headers} | {locators}".strip()
+    keywords = (
+        "issue and page number",
+        "page number",
+        "page numbers",
+        "contents",
+        "table of contents",
+        "appendix",
+    )
+    return any(keyword in combined for keyword in keywords)
+
+
+def _source_matches_expectations(chosen_sources: list[dict[str, Any]], expected_files: list[str], expected_patterns: list[str]) -> bool | None:
+    patterns = [_normalized_text(item) for item in [*expected_files, *expected_patterns] if _normalized_text(item)]
+    if not patterns:
+        return None
+    haystacks = [
+        " | ".join(
+            [
+                _normalized_text(entry.get("document_id")),
+                _normalized_text(entry.get("path")),
+                _normalized_text(entry.get("citation")),
+            ]
+        )
+        for entry in chosen_sources
+        if isinstance(entry, dict)
+    ]
+    if not haystacks:
+        return False
+    return any(any(pattern in haystack for haystack in haystacks) for pattern in patterns)
+
+
+def _benchmark_expectations(case: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "expected_source_files": list(case.get("expected_source_files", []) or []),
+        "expected_source_patterns": list(case.get("expected_source_patterns", []) or []),
+        "expected_answer": str(case.get("expected_answer", "") or "").strip(),
+        "expected_failure_taxonomy": list(case.get("expected_failure_taxonomy", []) or []),
+    }
+
+
+def _classify_benchmark_failure(
+    case: dict[str, Any],
+    classification: dict[str, Any],
+    artifacts: dict[str, Any],
+) -> dict[str, Any]:
+    tags: list[BenchmarkFailureTag] = []
+    subsystem = str(classification.get("subsystem", "") or "")
+    compute_status = str(classification.get("compute_status", "") or "")
+    validator_codes = [str(item or "") for item in list(artifacts.get("validator_codes", []) or [])]
+    evidence_gaps = [str(item or "") for item in list(artifacts.get("evidence_gaps", []) or [])]
+    semantic_diagnostics = dict(artifacts.get("semantic_diagnostics", {}) or {})
+    semantic_issues = [str(item or "") for item in list(semantic_diagnostics.get("issues", []) or [])]
+    rejected_alternatives = [str(item or "") for item in list(artifacts.get("rejected_aggregation_alternatives", []) or [])]
+    chosen_sources = list(artifacts.get("chosen_sources", []) or [])
+    extracted_tables = [dict(item) for item in list(artifacts.get("extracted_tables", []) or []) if isinstance(item, dict)]
+    llm_repair_history = list(artifacts.get("llm_repair_history", []) or [])
+    retry_stop_reason = str(artifacts.get("retry_stop_reason", "") or "")
+    final_answer = _normalized_answer_value(str(artifacts.get("final_answer", "") or ""))
+    expectations = _benchmark_expectations(case)
+    expected_answer = _normalized_answer_value(str(expectations.get("expected_answer", "") or ""))
+    source_match = _source_matches_expectations(
+        chosen_sources,
+        list(expectations.get("expected_source_files", []) or []),
+        list(expectations.get("expected_source_patterns", []) or []),
+    )
+
+    combined_signals = " | ".join(
+        [
+            *validator_codes,
+            *evidence_gaps,
+            *semantic_issues,
+            *rejected_alternatives,
+            str(classification.get("rationale", "") or ""),
+            str(artifacts.get("strategy_reason", "") or ""),
+            retry_stop_reason,
+        ]
+    ).lower()
+
+    if source_match is False or "wrong source" in combined_signals or "wrong document" in combined_signals or "source family grounding" in combined_signals:
+        tags.append("wrong_source")
+
+    if (
+        any(_looks_navigational_table(table) for table in extracted_tables)
+        or "wrong table family" in combined_signals
+        or "navigational" in combined_signals
+        or ("missing month coverage" in combined_signals and bool(extracted_tables))
+    ):
+        tags.append("wrong_table_family")
+
+    if (
+        "wrong row family" in combined_signals
+        or "wrong column family" in combined_signals
+        or "wrong period slice" in combined_signals
+        or "wrong metric" in combined_signals
+        or "wrong grain" in combined_signals
+    ):
+        tags.append("wrong_row_or_column_semantics")
+
+    if (
+        subsystem in {"retrieval", "extraction", "compute", "validation"}
+        or compute_status in {"insufficient", "unsupported"}
+    ) and (
+        evidence_gaps
+        or not extracted_tables
+        or "missing" in combined_signals
+        or "incomplete" in combined_signals
+    ):
+        tags.append("incomplete_evidence")
+
+    answer_match: bool | None = None
+    if expected_answer:
+        answer_match = final_answer == expected_answer
+    semantic_ok = bool(semantic_diagnostics.get("admissibility_passed", True))
+    if subsystem == "pass" and ((answer_match is False) or not semantic_ok):
+        tags.append("false_semantic_pass")
+
+    if subsystem != "pass" and (
+        llm_repair_history
+        or retry_stop_reason
+        or ("retry" in combined_signals)
+        or ("repair" in combined_signals)
+    ):
+        tags.append("repair_stall")
+
+    semantic_verdict = "unknown"
+    if answer_match is False or "false_semantic_pass" in tags:
+        semantic_verdict = "fail"
+    elif answer_match is True or (subsystem == "pass" and semantic_ok):
+        semantic_verdict = "pass"
+
+    return {
+        "tags": list(dict.fromkeys(tags)),
+        "semantic_verdict": semantic_verdict,
+        "source_ranking_correct": source_match,
+        "answer_match": answer_match,
+        "expected_failure_taxonomy": list(expectations.get("expected_failure_taxonomy", []) or []),
+    }
 
 
 def classify_officeqa_trace(trace: dict[str, Any] | None) -> dict[str, Any]:
@@ -275,6 +447,7 @@ def build_case_report(case: dict[str, Any], trace: dict[str, Any] | None) -> dic
     retrieval_strategy = str(case.get("retrieval_strategy", "") or retrieval_intent.get("strategy", "") or "").strip()
     answer_mode = str(case.get("answer_mode", "") or retrieval_intent.get("answer_mode", "") or artifacts.get("answer_mode", "") or "").strip()
     case_kind = str(case.get("case_kind", "") or "qa").strip() or "qa"
+    benchmark_analysis = _classify_benchmark_failure(case, classification, artifacts)
     return {
         "id": str(case.get("id", "") or ""),
         "prompt": str(case.get("prompt", "") or ""),
@@ -284,6 +457,8 @@ def build_case_report(case: dict[str, Any], trace: dict[str, Any] | None) -> dic
         "answer_mode": answer_mode,
         "smoke": bool(case.get("smoke")),
         "classification": classification,
+        "benchmark_expectations": _benchmark_expectations(case),
+        "benchmark_analysis": benchmark_analysis,
         "artifacts": artifacts,
         "quality_report": {
             "verdict": str(quality_report.get("verdict", "") or ""),
@@ -298,6 +473,8 @@ def build_case_report(case: dict[str, Any], trace: dict[str, Any] | None) -> dic
             "solver_llm_used": bool(dict(artifacts.get("solver_llm_decision") or {}).get("used_llm")),
             "solver_llm_decision_reason": str(dict(artifacts.get("solver_llm_decision") or {}).get("reason", "") or ""),
             "llm_repair_count": len(list(artifacts.get("llm_repair_history", []) or [])),
+            "semantic_verdict": str(benchmark_analysis.get("semantic_verdict", "") or ""),
+            "benchmark_failure_taxonomy": list(benchmark_analysis.get("tags", []) or []),
             "retrieval_iterations": int(_journal(state).get("retrieval_iterations", 0) or 0),
             "tool_count": len(_tool_results(state)),
         },
@@ -305,7 +482,10 @@ def build_case_report(case: dict[str, Any], trace: dict[str, Any] | None) -> dic
 
 
 def summarize_regression_report(case_reports: list[dict[str, Any]]) -> dict[str, Any]:
+    qa_like_case_kinds = {"qa", "benchmark_regression"}
     counts: dict[str, int] = {key: 0 for key in ("pass", "routing", "retrieval", "extraction", "compute", "validation", "formatting")}
+    counts_by_benchmark_failure: dict[str, int] = {}
+    counts_by_semantic_verdict: dict[str, int] = {}
     counts_by_strategy: dict[str, int] = {}
     counts_by_answer_mode: dict[str, int] = {}
     counts_by_case_kind: dict[str, int] = {}
@@ -315,6 +495,10 @@ def summarize_regression_report(case_reports: list[dict[str, Any]]) -> dict[str,
     compute_reliable = 0
     semantic_compute_passed = 0
     contract_success = 0
+    false_semantic_pass_cases = 0
+    repair_stall_cases = 0
+    source_ranking_evaluable_cases = 0
+    source_ranking_correct_cases = 0
     qa_total = 0
     for item in case_reports:
         subsystem = str(dict(item.get("classification") or {}).get("subsystem", "") or "pass")
@@ -328,9 +512,26 @@ def summarize_regression_report(case_reports: list[dict[str, Any]]) -> dict[str,
         if answer_mode:
             counts_by_answer_mode[answer_mode] = counts_by_answer_mode.get(answer_mode, 0) + 1
         artifacts = dict(item.get("artifacts") or {})
+        benchmark_analysis = dict(item.get("benchmark_analysis") or {})
+        semantic_verdict = str(benchmark_analysis.get("semantic_verdict", "") or "unknown")
+        counts_by_semantic_verdict[semantic_verdict] = counts_by_semantic_verdict.get(semantic_verdict, 0) + 1
+        for tag in list(benchmark_analysis.get("tags", []) or []):
+            key = str(tag or "").strip()
+            if not key:
+                continue
+            counts_by_benchmark_failure[key] = counts_by_benchmark_failure.get(key, 0) + 1
+        if "false_semantic_pass" in list(benchmark_analysis.get("tags", []) or []):
+            false_semantic_pass_cases += 1
+        if "repair_stall" in list(benchmark_analysis.get("tags", []) or []):
+            repair_stall_cases += 1
+        source_ranking_correct = benchmark_analysis.get("source_ranking_correct")
+        if isinstance(source_ranking_correct, bool):
+            source_ranking_evaluable_cases += 1
+            if source_ranking_correct:
+                source_ranking_correct_cases += 1
         if subsystem == "pass" and list(artifacts.get("extracted_tables", [])) and str(artifacts.get("final_answer", "")).strip():
             evidence_ready += 1
-        if case_kind != "qa":
+        if case_kind not in qa_like_case_kinds:
             continue
         qa_total += 1
         if list(artifacts.get("chosen_sources", [])) and (list(artifacts.get("extracted_tables", [])) or str(artifacts.get("final_answer", "")).strip()):
@@ -353,15 +554,24 @@ def summarize_regression_report(case_reports: list[dict[str, Any]]) -> dict[str,
 
     total = len(case_reports)
     required_qa_threshold = math.ceil(qa_total * 0.6) if qa_total else 0
-    qa_reports = [item for item in case_reports if str(item.get("case_kind", "") or "qa").strip() == "qa"]
+    qa_reports = [item for item in case_reports if str(item.get("case_kind", "") or "qa").strip() in qa_like_case_kinds]
     qa_critical_failures = sum(
         1
         for item in qa_reports
         if str(dict(item.get("classification") or {}).get("subsystem", "") or "") in {"routing", "formatting", "validation"}
     )
+    allowed_repair_stalls = math.floor(qa_total * 0.2) if qa_total else 0
+    source_ranking_accuracy = (
+        float(source_ranking_correct_cases) / float(source_ranking_evaluable_cases)
+        if source_ranking_evaluable_cases
+        else None
+    )
     go_for_full_benchmark = (
         qa_total > 0
         and qa_critical_failures == 0
+        and false_semantic_pass_cases == 0
+        and repair_stall_cases <= allowed_repair_stalls
+        and (source_ranking_accuracy is None or source_ranking_accuracy >= 0.6)
         and extraction_ready >= required_qa_threshold
         and confidence_ready >= required_qa_threshold
         and compute_reliable >= required_qa_threshold
@@ -373,6 +583,8 @@ def summarize_regression_report(case_reports: list[dict[str, Any]]) -> dict[str,
         "total_cases": total,
         "qa_cases": qa_total,
         "counts_by_subsystem": counts,
+        "counts_by_benchmark_failure": counts_by_benchmark_failure,
+        "counts_by_semantic_verdict": counts_by_semantic_verdict,
         "counts_by_case_kind": counts_by_case_kind,
         "counts_by_strategy": counts_by_strategy,
         "counts_by_answer_mode": counts_by_answer_mode,
@@ -383,10 +595,16 @@ def summarize_regression_report(case_reports: list[dict[str, Any]]) -> dict[str,
         "compute_reliable_cases": compute_reliable,
         "semantic_compute_pass_cases": semantic_compute_passed,
         "contract_success_cases": contract_success,
+        "false_semantic_pass_cases": false_semantic_pass_cases,
+        "repair_stall_cases": repair_stall_cases,
+        "allowed_repair_stalls": allowed_repair_stalls,
+        "source_ranking_evaluable_cases": source_ranking_evaluable_cases,
+        "source_ranking_correct_cases": source_ranking_correct_cases,
+        "source_ranking_accuracy": source_ranking_accuracy,
         "go_for_full_benchmark": go_for_full_benchmark,
         "go_no_go_reason": (
-            "QA cases meet routing/formatting/validation, extraction, confidence, semantic compute, and final-contract thresholds."
+            "QA and benchmark-regression cases meet routing/formatting/validation, semantic correctness, repair-stall, source-ranking, extraction, confidence, semantic compute, and final-contract thresholds."
             if go_for_full_benchmark
-            else "Hold full benchmark runs until QA cases have zero routing/formatting/validation failures and at least 60% satisfy extraction quality, evidence confidence, semantic compute reliability, and final-answer contract success."
+            else "Hold full benchmark runs until QA and benchmark-regression cases have zero routing/formatting/validation failures, zero false semantic passes, bounded repair stalls, acceptable source-ranking accuracy on sampled benchmark cases, and at least 60% satisfy extraction quality, evidence confidence, semantic compute reliability, and final-answer contract success."
         ),
     }

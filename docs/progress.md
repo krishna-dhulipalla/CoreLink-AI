@@ -729,3 +729,49 @@ Rules:
   - `$env:PYTHONPATH='src;tests'; python -m pytest tests/test_engine_runtime.py tests/test_reflect.py -k "authoritative_field_owners or curated_context_moves_retrieval_state_into_provenance_summary or retriever or reflect" -q -p no:cacheprovider` -> `4 passed, 71 deselected`
 - **Follow-Up Note:** Phase 24 closes the state-duplication cleanup for compact runtime summaries. Raw trace nodes still keep historical snapshots by design, but the compact layers now have clear owners. The next remaining work is Phase 25.
 
+### Chat 41: Phase 25 Completed With Original-Benchmark Failure Taxonomy And Harness Cleanup
+
+- **Role:** Coder
+- **Actions Taken:** Implemented Phase 25 so the local regression harness can now distinguish pipeline-stage failures from benchmark-semantic failures and reuse sampled original-benchmark cases without leaking task-specific hacks into runtime code. The main changes are in [officeqa_eval.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\benchmarks\officeqa_eval.py), [officeqa_original_benchmark_slice.json](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\eval\officeqa_original_benchmark_slice.json), [test_officeqa_eval.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_officeqa_eval.py), and [test_engine_runtime.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_engine_runtime.py).
+- **Core Harness Changes:**
+  - added explicit benchmark failure tags in [officeqa_eval.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\benchmarks\officeqa_eval.py):
+    - `wrong_source`
+    - `wrong_table_family`
+    - `wrong_row_or_column_semantics`
+    - `incomplete_evidence`
+    - `false_semantic_pass`
+    - `repair_stall`
+  - extended `build_case_report()` so each case now carries:
+    - `benchmark_expectations`
+    - `benchmark_analysis`
+    - execution-summary semantic verdict and taxonomy
+  - extended `summarize_regression_report()` so readiness now also tracks:
+    - `counts_by_benchmark_failure`
+    - `counts_by_semantic_verdict`
+    - `false_semantic_pass_cases`
+    - `repair_stall_cases`
+    - `source_ranking_evaluable_cases`
+    - `source_ranking_correct_cases`
+    - `source_ranking_accuracy`
+  - tightened `go_for_full_benchmark` so it now requires:
+    - zero false semantic passes
+    - bounded repair stalls
+    - acceptable source-ranking accuracy on sampled benchmark cases
+    - the previous extraction / confidence / semantic compute / contract thresholds
+  - treated `benchmark_regression` cases as QA-like for readiness math so sampled original-benchmark regressions affect go/no-go instead of only appearing in reports
+- **Regression Metadata Added:**
+  - added [officeqa_original_benchmark_slice.json](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\eval\officeqa_original_benchmark_slice.json) with sampled original-benchmark regressions captured as local metadata:
+    - expected source patterns
+    - expected failure taxonomy
+    - provenance back to the captured trace session
+  - kept this file runtime-agnostic: it is for evaluation and reuse, not for routing behavior
+- **Stale Test Cleanup:**
+  - updated the remaining stale runtime assertion in [test_engine_runtime.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_engine_runtime.py) so it now checks the authoritative `query_plan.primary_semantic_query` instead of the old compatibility `query_candidates[0]`
+  - added eval regressions for:
+    - false semantic pass classification
+    - source-ranking accuracy tracking
+    - repair-stall blocking
+    - benchmark failure taxonomy capture on case reports
+- **Docs Updated:** Updated [officeqa_execution_plan.md](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\docs\officeqa_execution_plan.md) to mark Phase 25 complete and updated [v5_runtime_walkthrough.md](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\docs\v5_runtime_walkthrough.md) with the new benchmark regression harness and readiness gates.
+- **Follow-Up Note:** Phase 25 closes the harness gap for sampled original benchmark failures. The runtime can now report when a run is mechanically successful but still benchmark-wrong, which was the missing signal in earlier smoke and original-benchmark debugging.
+

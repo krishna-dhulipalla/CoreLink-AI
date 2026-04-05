@@ -223,6 +223,7 @@ def test_summarize_regression_report_sets_go_no_go_threshold():
         "classification": {"subsystem": "pass"},
         "retrieval_strategy": "table_first",
         "answer_mode": "deterministic_compute",
+        "benchmark_analysis": {"semantic_verdict": "pass", "tags": [], "source_ranking_correct": True},
         "artifacts": {
             "chosen_sources": [{"document_id": "x"}],
             "extracted_tables": [{"document_id": "x"}],
@@ -236,6 +237,7 @@ def test_summarize_regression_report_sets_go_no_go_threshold():
         "classification": {"subsystem": "routing"},
         "retrieval_strategy": "hybrid",
         "answer_mode": "grounded_synthesis",
+        "benchmark_analysis": {"semantic_verdict": "unknown", "tags": [], "source_ranking_correct": None},
         "artifacts": {"extracted_tables": [], "final_answer": ""},
     }
 
@@ -258,6 +260,7 @@ def test_summarize_regression_report_blocks_on_validation_failures():
         "classification": {"subsystem": "validation"},
         "retrieval_strategy": "table_first",
         "answer_mode": "hybrid_grounded",
+        "benchmark_analysis": {"semantic_verdict": "fail", "tags": ["incomplete_evidence", "repair_stall"], "source_ranking_correct": True},
         "artifacts": {
             "chosen_sources": [{"document_id": "x"}],
             "extracted_tables": [{"document_id": "x"}],
@@ -280,6 +283,7 @@ def test_summarize_regression_report_blocks_false_internal_passes_with_semantic_
         "classification": {"subsystem": "pass", "compute_status": "ok"},
         "retrieval_strategy": "table_first",
         "answer_mode": "deterministic_compute",
+        "benchmark_analysis": {"semantic_verdict": "fail", "tags": ["false_semantic_pass", "wrong_row_or_column_semantics"], "source_ranking_correct": True},
         "artifacts": {
             "chosen_sources": [{"document_id": "x"}],
             "extracted_tables": [{"document_id": "x"}],
@@ -294,6 +298,7 @@ def test_summarize_regression_report_blocks_false_internal_passes_with_semantic_
         "classification": {"subsystem": "pass", "compute_status": "ok"},
         "retrieval_strategy": "table_first",
         "answer_mode": "deterministic_compute",
+        "benchmark_analysis": {"semantic_verdict": "pass", "tags": [], "source_ranking_correct": True},
         "artifacts": {
             "chosen_sources": [{"document_id": "y"}],
             "extracted_tables": [{"document_id": "y"}],
@@ -308,6 +313,122 @@ def test_summarize_regression_report_blocks_false_internal_passes_with_semantic_
 
     assert summary["semantic_compute_pass_cases"] == 1
     assert summary["compute_reliable_cases"] == 1
+    assert summary["false_semantic_pass_cases"] == 1
+    assert summary["counts_by_benchmark_failure"]["false_semantic_pass"] == 1
+    assert summary["go_for_full_benchmark"] is False
+
+
+def test_build_case_report_captures_benchmark_failure_taxonomy_and_source_expectations():
+    state = make_state(
+        "OfficeQA task",
+        benchmark_overrides={"benchmark_adapter": "officeqa"},
+        task_intent={"task_family": "document_qa", "execution_mode": "document_grounded_analysis"},
+        curated_context={
+            "structured_evidence": {
+                "tables": [
+                    {
+                        "document_id": "treasury_1945_json",
+                        "page_locator": "page 3",
+                        "table_locator": "table 1",
+                        "headers": ["Issue and page number", "Description"],
+                        "row_count": 10,
+                        "column_count": 2,
+                        "unit": "",
+                    }
+                ],
+                "values": [{"document_id": "treasury_1945_json"}],
+                "value_count": 1,
+            },
+            "compute_result": {
+                "status": "ok",
+                "semantic_diagnostics": {"admissibility_passed": False, "issues": ["wrong row family"]},
+            },
+            "provenance_summary": {
+                "retrieval_diagnostics": {
+                    "candidate_sources": [{"document_id": "treasury_1945_json", "score": 0.81}],
+                }
+            },
+        },
+        execution_journal={
+            "events": [],
+            "tool_results": [
+                {
+                    "type": "fetch_officeqa_table",
+                    "facts": {
+                        "document_id": "treasury_1945_json",
+                        "citation": "treasury_bulletin_1945_01.json#page=3",
+                        "metadata": {"officeqa_status": "ok", "relative_path": "treasury_bulletin_1945_01.json"},
+                    },
+                }
+            ],
+            "routed_tool_families": [],
+            "revision_count": 0,
+            "self_reflection_count": 0,
+            "retrieval_iterations": 1,
+            "retrieval_queries": [],
+            "retrieved_citations": [],
+            "final_artifact_signature": "",
+            "progress_signatures": [],
+            "stop_reason": "",
+            "contract_collapse_attempts": 0,
+        },
+    )
+
+    report = build_case_report(
+        {
+            "id": "benchmark_case_1",
+            "prompt": "OfficeQA task",
+            "case_kind": "benchmark_regression",
+            "expected_source_files": ["treasury_bulletin_1945_01.json"],
+            "expected_answer": "251286",
+        },
+        _trace(state, "<REASONING>x</REASONING><FINAL_ANSWER>3</FINAL_ANSWER>"),
+    )
+
+    assert report["benchmark_analysis"]["semantic_verdict"] == "fail"
+    assert "wrong_table_family" in report["benchmark_analysis"]["tags"]
+    assert "wrong_row_or_column_semantics" in report["benchmark_analysis"]["tags"]
+    assert report["benchmark_analysis"]["source_ranking_correct"] is True
+
+
+def test_summarize_regression_report_tracks_source_ranking_and_repair_stalls():
+    repair_stall = {
+        "case_kind": "qa",
+        "classification": {"subsystem": "validation", "compute_status": "insufficient"},
+        "retrieval_strategy": "hybrid",
+        "answer_mode": "deterministic_compute",
+        "benchmark_analysis": {"semantic_verdict": "fail", "tags": ["wrong_source", "repair_stall", "incomplete_evidence"], "source_ranking_correct": False},
+        "artifacts": {
+            "chosen_sources": [{"document_id": "wrong"}],
+            "extracted_tables": [{"document_id": "wrong"}],
+            "final_answer": "",
+            "compute_policy": "required",
+            "structure_confidence_summary": {"table_confidence_gate_passed": True},
+        },
+    }
+    good = {
+        "case_kind": "qa",
+        "classification": {"subsystem": "pass", "compute_status": "ok"},
+        "retrieval_strategy": "table_first",
+        "answer_mode": "deterministic_compute",
+        "benchmark_analysis": {"semantic_verdict": "pass", "tags": [], "source_ranking_correct": True},
+        "artifacts": {
+            "chosen_sources": [{"document_id": "correct"}],
+            "extracted_tables": [{"document_id": "correct"}],
+            "final_answer": "42",
+            "compute_policy": "required",
+            "structure_confidence_summary": {"table_confidence_gate_passed": True},
+            "semantic_diagnostics": {"admissibility_passed": True, "issues": []},
+        },
+    }
+
+    summary = summarize_regression_report([good, repair_stall])
+
+    assert summary["counts_by_benchmark_failure"]["wrong_source"] == 1
+    assert summary["repair_stall_cases"] == 1
+    assert summary["source_ranking_evaluable_cases"] == 2
+    assert summary["source_ranking_correct_cases"] == 1
+    assert summary["source_ranking_accuracy"] == 0.5
     assert summary["go_for_full_benchmark"] is False
 
 

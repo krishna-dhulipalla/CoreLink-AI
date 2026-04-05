@@ -1,0 +1,47 @@
+[
+  {
+    "id": "benchmark_regression_001",
+    "prompt": "What were the total expenditures for U.S. national defense in the calendar year 1940?",
+    "case_kind": "benchmark_regression",
+    "focus_subsystem": "semantic_admissibility",
+    "retrieval_strategy": "table_first",
+    "answer_mode": "deterministic_compute",
+    "smoke": false,
+    "expected_source_patterns": ["1940", "national defense"],
+    "expected_failure_taxonomy": ["wrong_row_or_column_semantics", "false_semantic_pass"],
+    "provenance": {
+      "trace_session": "2026-04-05_10-01-41",
+      "trace_id": "task_001__4e0a5b4d-c6ad-463e-abc8-e84fcba2f481"
+    }
+  },
+  {
+    "id": "benchmark_regression_002",
+    "prompt": "Using the Treasury Bulletin, calculate the total monthly expenditures for national defense and related activities in 1953.",
+    "case_kind": "benchmark_regression",
+    "focus_subsystem": "table_family_and_repair",
+    "retrieval_strategy": "table_first",
+    "answer_mode": "deterministic_compute",
+    "smoke": false,
+    "expected_source_patterns": ["1953", "national defense", "monthly"],
+    "expected_failure_taxonomy": ["wrong_table_family", "incomplete_evidence", "repair_stall"],
+    "provenance": {
+      "trace_session": "2026-04-05_10-01-41",
+      "trace_id": "task_002__fd9fcc1a-67b1-4151-ab6d-67566ceee770"
+    }
+  },
+  {
+    "id": "benchmark_regression_003",
+    "prompt": "What were the total expenditures of the Veterans Administration in FY 1934?",
+    "case_kind": "benchmark_regression",
+    "focus_subsystem": "source_ranking_and_repair",
+    "retrieval_strategy": "table_first",
+    "answer_mode": "deterministic_compute",
+    "smoke": false,
+    "expected_source_patterns": ["1934", "veterans administration"],
+    "expected_failure_taxonomy": ["wrong_source", "incomplete_evidence", "repair_stall"],
+    "provenance": {
+      "trace_session": "2026-04-05_10-01-41",
+      "trace_id": "task_003__0e1796a0-5d3a-4a81-817e-d14ddb8a807a"
+    }
+  }
+]
