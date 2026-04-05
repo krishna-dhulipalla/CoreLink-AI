@@ -54,6 +54,7 @@ _HTML_ROWSPAN_RE = re.compile(r'rowspan\s*=\s*["\']?(\d+)', re.IGNORECASE)
 _HTML_QUERY_PREVIEW_CHARS = 2500
 _MAX_EXTRACTED_TABLES = 24
 _PAGE_REF_RE = re.compile(r"^[A-Z]?-?\d+(?:-\d+)?(?:\s+\d+(?:-\d+)?)*\.?$")
+_YEAR_RE = re.compile(r"\b((?:19|20)\d{2})\b")
 
 
 class _OfficeQATableExtractionTimeout(RuntimeError):
@@ -275,12 +276,24 @@ def _coerce_table(
 ) -> dict[str, Any]:
     normalized_headers = [str(header).strip() for header in headers if str(header).strip()]
     normalized_rows = [[str(cell).strip() for cell in row] for row in rows if any(str(cell).strip() for cell in row)]
+    provisional_payload = {
+        "locator": locator,
+        "headers": normalized_headers,
+        "rows": normalized_rows,
+        "citation": citation,
+        "unit_hint": unit_hint,
+        "page_locator": page_locator,
+        "context_text": context_text,
+    }
+    table_family, family_confidence = _classify_table_family(provisional_payload)
     payload = {
         "locator": locator,
         "headers": normalized_headers,
         "rows": normalized_rows,
         "citation": citation,
         "unit_hint": unit_hint,
+        "table_family": table_family,
+        "table_family_confidence": round(family_confidence, 3),
     }
     if page_locator:
         payload["page_locator"] = page_locator
@@ -569,7 +582,15 @@ def _table_candidate_matches_query(locator: str, context_text: str, content: str
     if not (table_query or "").strip():
         return True
     preview = f"{locator}\n{context_text}\n{(content or '')[:_HTML_QUERY_PREVIEW_CHARS]}"
-    return _match_score(preview, table_query) > 0.0
+    if _match_score(preview, table_query) > 0.0:
+        return True
+
+    lowered_query = (table_query or "").lower()
+    lowered_preview = preview.lower()
+    if any(token in lowered_query for token in ("monthly", "all individual calendar months", "calendar months", "monthly series")):
+        if "month" in lowered_preview or any(month in lowered_preview for month in _MONTH_TOKENS):
+            return True
+    return False
 
 
 def _is_page_reference_value(value: Any) -> bool:
@@ -585,6 +606,8 @@ def _is_navigational_table(table: dict[str, Any]) -> bool:
     headers = [str(item or "") for item in list(table.get("headers", []))]
     rows = [list(row) for row in list(table.get("rows", []))[:24]]
     lowered = " ".join([locator, context, *headers]).lower()
+    if any(token in lowered for token in ("month", "monthly", "expenditures", "receipts", "outlays", "balance", "debt", "securities", "activities")):
+        return False
     if any(token in lowered for token in ("table of contents", "cumulative table of contents", "issue and page number", "articles")):
         return True
     page_ref_cells = 0
@@ -597,6 +620,99 @@ def _is_navigational_table(table: dict[str, Any]) -> bool:
     if inspected_cells >= 8 and (page_ref_cells / max(1, inspected_cells)) >= 0.5:
         return True
     return False
+
+
+def _table_text(table: dict[str, Any]) -> str:
+    return " ".join(
+        [
+            str(table.get("locator", "") or ""),
+            str(table.get("context_text", "") or ""),
+            str(table.get("page_locator", "") or ""),
+            " ".join(str(item or "") for item in list(table.get("headers", []))),
+            " ".join(" ".join(str(cell or "") for cell in row[:8]) for row in list(table.get("rows", []))[:24]),
+            str(table.get("unit_hint", "") or ""),
+        ]
+    ).strip()
+
+
+def _query_years(query: str) -> set[str]:
+    return set(_YEAR_RE.findall(query or ""))
+
+
+def _classify_table_family(table: dict[str, Any]) -> tuple[str, float]:
+    if _is_navigational_table(table):
+        return "navigation_or_contents", 0.98
+
+    text = _table_text(table).lower()
+    rows = [list(row) for row in list(table.get("rows", []))[:40]]
+    headers = [str(item or "") for item in list(table.get("headers", []))]
+    headers_lower = " ".join(headers).lower()
+    row_text = " ".join(" ".join(str(cell or "") for cell in row[:8]) for row in rows).lower()
+    month_hits = sum(1 for month in _MONTH_TOKENS if month in row_text or month in " ".join(headers).lower())
+    year_hits = len(set(_YEAR_RE.findall(text)))
+    category_terms = (
+        "national defense",
+        "veterans",
+        "veterans administration",
+        "agriculture",
+        "receipts",
+        "expenditures",
+        "outlays",
+        "department",
+        "activities",
+    )
+    debt_terms = ("public debt", "debt outstanding", "guaranteed obligations", "balance sheet", "assets", "liabilities", "securities")
+
+    if any(token in text for token in debt_terms):
+        return "debt_or_balance_sheet", 0.9
+    if "fiscal year" in text or "fy " in text or "end of fiscal years" in text:
+        return "fiscal_year_comparison", 0.88
+    if "month" in headers_lower and len(rows) >= 3:
+        return "monthly_series", min(0.92, 0.62 + 0.04 * len(rows))
+    if month_hits >= 4:
+        return "monthly_series", min(0.95, 0.55 + 0.06 * month_hits)
+    if any(token in text for token in category_terms) and year_hits >= 1:
+        return "category_breakdown", 0.8
+    if any(token in text for token in ("actual", "estimate", "calendar year", "total", "summary")) and year_hits >= 1:
+        return "annual_summary", 0.72
+    if any(token in text for token in category_terms):
+        return "category_breakdown", 0.65
+    return "generic_financial_table", 0.45
+
+
+def _required_table_family(table_query: str) -> str:
+    lowered = (table_query or "").lower()
+    if any(token in lowered for token in ("monthly", "all individual calendar months", "calendar months", "monthly series")):
+        return "monthly_series"
+    if "fiscal year" in lowered or re.search(r"\bfy\s+\d{4}\b", lowered):
+        return "fiscal_year_comparison"
+    if any(token in lowered for token in ("public debt", "debt outstanding", "balance sheet", "guaranteed obligations")):
+        return "debt_or_balance_sheet"
+    if any(token in lowered for token in ("total expenditures", "receipts", "national defense", "veterans administration", "veterans")):
+        return "category_breakdown"
+    return ""
+
+
+def _table_family_score(table: dict[str, Any], table_query: str) -> float:
+    family, confidence = _classify_table_family(table)
+    required_family = _required_table_family(table_query)
+    score = 0.0
+    if family == "navigation_or_contents":
+        score -= 1.4
+    if required_family:
+        if family == required_family:
+            score += 0.75 * confidence
+        elif required_family == "category_breakdown" and family in {"annual_summary", "fiscal_year_comparison"}:
+            score += 0.18
+        elif required_family == "monthly_series" and family in {"annual_summary", "category_breakdown"}:
+            score -= 0.45
+        else:
+            score -= 0.2
+    if required_family == "monthly_series":
+        text = _table_text(table).lower()
+        if "actual 6 months" in text or "total 9/" in text:
+            score -= 0.35
+    return score
 
 
 def _extract_document_tables(target: Path, text: str, citation: str, *, table_query: str = "") -> list[dict[str, Any]]:
@@ -643,21 +759,10 @@ def _rank_tables(tables: list[dict[str, Any]], table_query: str) -> list[dict[st
         return tables
 
     def _score(table: dict[str, Any]) -> float:
-        text = " ".join(
-            [
-                str(table.get("locator", "")),
-                str(table.get("context_text", "")),
-                " ".join(str(item) for item in table.get("headers", [])),
-                " ".join(" ".join(str(cell) for cell in row) for row in table.get("rows", [])[:12]),
-                str(table.get("unit_hint", "")),
-            ]
-        )
+        text = _table_text(table)
         score = _match_score(text, table_query)
+        score += _table_family_score(table, table_query)
         lowered = text.lower()
-        if "table of contents" in lowered or "cumulative table of contents" in lowered:
-            score -= 0.25
-        if _is_navigational_table(table):
-            score -= 0.75
         numeric_cells = sum(
             1
             for row in list(table.get("rows", []))[:24]
@@ -666,6 +771,13 @@ def _rank_tables(tables: list[dict[str, Any]], table_query: str) -> list[dict[st
         )
         if numeric_cells >= 8:
             score += 0.05
+        query_years = _query_years(table_query)
+        if query_years:
+            table_years = _query_years(text)
+            if query_years & table_years:
+                score += 0.18
+            elif table_years:
+                score -= 0.22
         return score
 
     return sorted(tables, key=_score, reverse=True)
@@ -719,6 +831,7 @@ def _table_payload(
         "table_count": len(tables),
         "row_count": len(rows),
         "column_count": len(headers),
+        "table_family": str(primary.get("table_family", "") or ""),
     }
     if extra:
         metadata.update(extra)

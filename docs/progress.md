@@ -580,3 +580,46 @@ Rules:
   - `$env:PYTHONPATH='src;tests'; python -m pytest tests/test_question_decomposition.py tests/test_engine_runtime.py -k "question_decomposition or retrieval_intent or retrieval_plan_summary" -q -p no:cacheprovider` -> `9 passed, 61 deselected`
 - **Follow-Up Note:** Phase 20 upgrades decomposition and query planning only. It should improve later retrieval behavior, but it does not yet fix semantic ranking or repair execution by itself. Those remain the focus of Phase 21 and later phases.
 
+### Chat 37: Phase 21 Completed With Semantic Ranking, Table-Family Selection, And Retrieval Repair
+
+- **Role:** Coder
+- **Actions Taken:** Implemented Phase 21 so the runtime no longer treats source search and table selection as mostly lexical ranking plus one-shot fetch. The main code changes are in [orchestrator_retrieval.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\orchestrator_retrieval.py) and [retrieval_tools.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\retrieval_tools.py).
+- **Core Runtime Changes:**
+  - extended search-candidate ingestion to preserve manifest metadata and native index score, then rank with semantic features instead of only lexical overlap
+  - added ranking features for:
+    - year proximity
+    - granularity fit
+    - category/entity fit
+    - exclusion fit
+    - historical family fit for older fiscal-year style questions
+  - added ranking-confidence evaluation and weak-top-candidate rejection so the planner can re-search instead of immediately committing to a bad first document
+  - added source-reopen repair after `missing_row` and wrong-table-family outcomes, using the next ranked source candidate when the current source is semantically weak
+  - added table-family classification on extracted tables with explicit families:
+    - `monthly_series`
+    - `annual_summary`
+    - `fiscal_year_comparison`
+    - `category_breakdown`
+    - `debt_or_balance_sheet`
+    - `navigation_or_contents`
+    - `generic_financial_table`
+  - used table-family fit during table ranking so monthly questions prefer monthly tables over annual summaries and navigational tables are penalized before compute
+- **Important Retrieval Fixes:**
+  - fixed candidate merge in [orchestrator_retrieval.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\nodes\orchestrator_retrieval.py) so deduped candidates retain the best rank, max score, and merged metadata instead of dropping useful signals
+  - fixed HTML table pre-filtering in [retrieval_tools.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\retrieval_tools.py) so monthly tables are not discarded just because the query contains a year token that is absent from the table preview
+  - fixed navigational-table detection so dense financial tables with integer values like `100`, `101`, `102` are not misclassified as page-reference tables just because the values look like page numbers
+- **Behavioral Result:** The planner can now:
+  - reject weak source commitments for semantically mismatched documents
+  - reopen source search when row lookup fails in the wrong document
+  - retry table extraction when a monthly question lands on an annual summary
+  - preserve the right monthly series through extraction instead of pre-filtering it away or mislabeling it as navigational content
+- **Tests Added/Updated:** Updated [test_engine_runtime.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_engine_runtime.py) and [test_officeqa_index.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_officeqa_index.py) with regressions for:
+  - semantically relevant source ranking over lexical noise
+  - re-query when top-candidate confidence is weak
+  - source reopen after `missing_row` in a wrong document
+  - table retry when a monthly query hits an annual-summary table
+  - preferring a monthly series over an annual summary in the same document
+- **Validation:** Verified with:
+  - `python -m py_compile src/agent/retrieval_tools.py src/agent/nodes/orchestrator_retrieval.py tests/test_officeqa_index.py tests/test_engine_runtime.py`
+  - `$env:PYTHONPATH='src;tests'; python -m pytest tests/test_officeqa_index.py tests/test_engine_runtime.py -k "search_ranking_prefers_semantically_relevant_sources or requeries_when_top_candidate_confidence_is_weak or reopens_source_search_after_missing_row_in_wrong_document or retries_table_extraction_when_monthly_question_hits_annual_summary or prefers_monthly_series_over_annual_summary or prefers_analytical_table_over_contents_table" -q -p no:cacheprovider` -> `6 passed, 78 deselected`
+- **Follow-Up Note:** Phase 21 fixes semantic source ranking and repair policy, but it does not yet decide whether retrieved evidence is admissible for deterministic compute. That next boundary remains the focus of Phase 22.
+

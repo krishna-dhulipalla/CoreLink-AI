@@ -373,6 +373,7 @@ def test_officeqa_search_ranking_prefers_semantically_relevant_sources():
                 "path": "",
                 "document_id": "",
                 "rank": 1,
+                "metadata": {"years": ["1959"], "section_titles": ["Public debt"], "table_headers": ["Total Federal securities"], "row_labels": []},
             },
             {
                 "title": "[PDF] annual report - administrator of veterans' affairs",
@@ -381,6 +382,7 @@ def test_officeqa_search_ranking_prefers_semantically_relevant_sources():
                 "path": "",
                 "document_id": "",
                 "rank": 3,
+                "metadata": {"years": ["1934"], "section_titles": ["Veterans Administration"], "table_headers": ["Fiscal year 1934"], "row_labels": ["Total expenditures"]},
             },
         ],
         retrieval_intent,
@@ -390,6 +392,140 @@ def test_officeqa_search_ranking_prefers_semantically_relevant_sources():
 
     assert "veterans" in ranked[0]["title"].lower()
     assert "depository invoice" in ranked[-1]["title"].lower()
+
+
+def test_officeqa_search_requeries_when_top_candidate_confidence_is_weak():
+    prompt = "What were the total expenditures of the Veterans Administration in FY 1934?"
+    source_bundle = SourceBundle(
+        task_text=prompt,
+        focus_query="Veterans Administration total expenditures 1934",
+        target_period="1934",
+        entities=["Veterans Administration"],
+        urls=[],
+        inline_facts={},
+        tables=[],
+        formulas=[],
+    )
+    retrieval_intent = build_retrieval_intent(prompt, source_bundle, {"benchmark_adapter": "officeqa"})
+    registry = build_capability_registry([CALCULATOR_TOOL, *BUILTIN_RETRIEVAL_TOOLS])
+    tool_plan = ToolPlan(
+        tool_families_needed=["document_retrieval"],
+        selected_tools=["search_officeqa_documents", "fetch_officeqa_table", "fetch_officeqa_pages"],
+    )
+    journal = ExecutionJournal(
+        tool_results=[
+            {
+                "type": "search_officeqa_documents",
+                "retrieval_status": "ok",
+                "facts": {
+                    "results": [
+                        {
+                            "document_id": "treasury_bulletin_1959_09_json",
+                            "title": "treasury_bulletin_1959_09.json",
+                            "snippet": "Public debt and budget receipts",
+                            "citation": "treasury_bulletin_1959_09.json",
+                            "rank": 1,
+                            "score": 0.58,
+                            "metadata": {"years": ["1959"], "section_titles": ["Public debt"], "table_headers": ["Budget receipts"], "row_labels": []},
+                        }
+                    ]
+                },
+            }
+        ],
+        retrieval_iterations=1,
+        retrieval_queries=["Veterans Administration total expenditures 1934"],
+    )
+
+    action = _plan_retrieval_action(
+        execution_mode="document_grounded_analysis",
+        source_bundle=source_bundle,
+        retrieval_intent=retrieval_intent,
+        tool_plan=tool_plan,
+        journal=journal,
+        registry=registry,
+        benchmark_overrides={"benchmark_adapter": "officeqa"},
+    )
+
+    assert action.tool_name == "search_officeqa_documents"
+    assert action.stage == "identify_source"
+    assert action.evidence_gap == "wrong document"
+
+
+def test_officeqa_planner_reopens_source_search_after_missing_row_in_wrong_document():
+    prompt = "What were the total expenditures of the Veterans Administration in FY 1934?"
+    source_bundle = SourceBundle(
+        task_text=prompt,
+        focus_query="Veterans Administration total expenditures 1934",
+        target_period="1934",
+        entities=["Veterans Administration"],
+        urls=[],
+        inline_facts={},
+        tables=[],
+        formulas=[],
+    )
+    retrieval_intent = build_retrieval_intent(prompt, source_bundle, {"benchmark_adapter": "officeqa"})
+    registry = build_capability_registry([CALCULATOR_TOOL, *BUILTIN_RETRIEVAL_TOOLS])
+    tool_plan = ToolPlan(
+        tool_families_needed=["document_retrieval"],
+        selected_tools=["search_officeqa_documents", "fetch_officeqa_table", "lookup_officeqa_rows", "fetch_officeqa_pages"],
+    )
+    journal = ExecutionJournal(
+        tool_results=[
+            {
+                "type": "search_officeqa_documents",
+                "retrieval_status": "ok",
+                "facts": {
+                    "results": [
+                        {
+                            "document_id": "treasury_bulletin_1959_09_json",
+                            "title": "treasury_bulletin_1959_09.json",
+                            "snippet": "Public debt and budget receipts",
+                            "citation": "treasury_bulletin_1959_09.json",
+                            "rank": 1,
+                            "score": 0.58,
+                            "metadata": {"years": ["1959"], "section_titles": ["Public debt"], "table_headers": ["Budget receipts"], "row_labels": []},
+                        },
+                        {
+                            "document_id": "treasury_bulletin_1939_01_json",
+                            "title": "treasury_bulletin_1939_01.json",
+                            "snippet": "Veterans Administration expenditures statement",
+                            "citation": "treasury_bulletin_1939_01.json",
+                            "rank": 2,
+                            "score": 1.41,
+                            "metadata": {"years": ["1934", "1939"], "section_titles": ["Veterans Administration"], "table_headers": ["Fiscal year 1934"], "row_labels": ["Total expenditures"]},
+                        },
+                    ]
+                },
+            },
+            {
+                "type": "lookup_officeqa_rows",
+                "retrieval_status": "ok",
+                "assumptions": {"document_id": "treasury_bulletin_1959_09_json", "path": "treasury_bulletin_1959_09.json", "table_query": "Veterans Administration total expenditures 1934"},
+                "facts": {
+                    "document_id": "treasury_bulletin_1959_09_json",
+                    "citation": "treasury_bulletin_1959_09.json",
+                    "metadata": {"officeqa_status": "missing_row"},
+                    "tables": [{"locator": "table 2", "table_family": "debt_or_balance_sheet", "headers": ["Budget receipts"], "rows": []}],
+                },
+            },
+        ],
+        retrieval_iterations=2,
+        retrieval_queries=["Veterans Administration total expenditures 1934"],
+    )
+
+    action = _plan_retrieval_action(
+        execution_mode="document_grounded_analysis",
+        source_bundle=source_bundle,
+        retrieval_intent=retrieval_intent,
+        tool_plan=tool_plan,
+        journal=journal,
+        registry=registry,
+        benchmark_overrides={"benchmark_adapter": "officeqa"},
+    )
+
+    assert action.tool_name == "fetch_officeqa_table"
+    assert action.document_id == "treasury_bulletin_1939_01_json"
+    assert action.evidence_gap == "wrong document"
 
 
 def test_officeqa_structured_evidence_projects_normalized_table_values(monkeypatch, tmp_path):
@@ -927,6 +1063,58 @@ def test_officeqa_planner_tries_alternate_table_query_for_multi_table_questions(
     assert action.query
     assert action.query.lower() != "treasury bulletin expenditures 1953"
     assert action.strategy_reason
+
+
+def test_officeqa_planner_retries_table_extraction_when_monthly_question_hits_annual_summary():
+    prompt = "Using specifically only the reported values for all individual calendar months in 1953, what was the total sum of these values?"
+    source_bundle = SourceBundle(
+        task_text=prompt,
+        focus_query="monthly expenditures 1953",
+        target_period="1953",
+        entities=["Treasury Bulletin"],
+        urls=[],
+        source_files_found=[{"document_id": "treasury_1953_json", "relative_path": "treasury_1953.json"}],
+        inline_facts={},
+        tables=[],
+        formulas=[],
+    )
+    retrieval_intent = build_retrieval_intent(prompt, source_bundle, {"benchmark_adapter": "officeqa"})
+    registry = build_capability_registry([CALCULATOR_TOOL, *BUILTIN_RETRIEVAL_TOOLS])
+    tool_plan = ToolPlan(
+        tool_families_needed=["document_retrieval", "exact_compute"],
+        selected_tools=["fetch_officeqa_table", "fetch_officeqa_pages", "lookup_officeqa_rows", "lookup_officeqa_cells"],
+    )
+    journal = ExecutionJournal(
+        tool_results=[
+            {
+                "type": "fetch_officeqa_table",
+                "retrieval_status": "ok",
+                "assumptions": {"document_id": "treasury_1953_json", "path": "treasury_1953.json", "table_query": "Treasury Bulletin expenditures 1953"},
+                "facts": {
+                    "document_id": "treasury_1953_json",
+                    "citation": "treasury_1953.json",
+                    "metadata": {"officeqa_status": "ok"},
+                    "tables": [{"locator": "table 4", "table_family": "annual_summary", "headers": ["Total 9/", "National defense and related activities"], "rows": [["1953", "900"]]}],
+                },
+            }
+        ],
+        retrieval_iterations=1,
+    )
+
+    action = _plan_retrieval_action(
+        execution_mode="document_grounded_analysis",
+        source_bundle=source_bundle,
+        retrieval_intent=retrieval_intent,
+        tool_plan=tool_plan,
+        journal=journal,
+        registry=registry,
+        benchmark_overrides={"benchmark_adapter": "officeqa"},
+    )
+
+    assert action.tool_name == "fetch_officeqa_table"
+    assert action.document_id == "treasury_1953_json"
+    assert action.evidence_gap == "wrong table family"
+    assert "monthly" in action.query.lower()
 
 
 def test_officeqa_predictive_evidence_gaps_require_month_coverage_before_compute(monkeypatch):

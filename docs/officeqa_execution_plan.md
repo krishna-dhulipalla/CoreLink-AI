@@ -1048,28 +1048,28 @@ Why now:
 
 Tasks:
 
-- [ ] `P21.1` Add document-ranking features for:
+- [x] `P21.1` Add document-ranking features for:
   - year proximity
   - granularity fit
   - category fit
   - exclusion fit
   - historical table-family fit
-- [ ] `P21.2` Add table-family classification before compute:
+- [x] `P21.2` Add table-family classification before compute:
   - monthly series
   - annual summary
   - fiscal-year comparison
   - category breakdown
   - debt or balance sheet
   - navigation or contents
-- [ ] `P21.3` Reject weak top candidates when ranking confidence is below threshold and continue re-query instead of immediately fetching the first document
-- [ ] `P21.4` On `missing_row`, `missing month coverage`, or category mismatch:
+- [x] `P21.3` Reject weak top candidates when ranking confidence is below threshold and continue re-query instead of immediately fetching the first document
+- [x] `P21.4` On `missing_row`, `missing month coverage`, or category mismatch:
   - reopen source search when needed
   - do not stay pinned to the same document by default
-- [ ] `P21.5` Add retrieval repair policies that distinguish:
+- [x] `P21.5` Add retrieval repair policies that distinguish:
   - wrong document
   - wrong table family
   - right table family but incomplete row set
-- [ ] `P21.6` Add benchmark regressions that fail if the runtime answers from:
+- [x] `P21.6` Add benchmark regressions that fail if the runtime answers from:
   - wrong time slice
   - wrong category row
   - annual summary when monthly support is required

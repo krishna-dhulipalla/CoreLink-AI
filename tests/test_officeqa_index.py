@@ -383,3 +383,55 @@ def test_fetch_officeqa_table_prefers_analytical_table_over_contents_table(monke
     assert table_result["metadata"]["officeqa_status"] == "ok"
     assert table_result["tables"][0]["page_locator"] == "page 29"
     assert table_result["tables"][0]["rows"][0][1] == "258682"
+
+
+def test_fetch_officeqa_table_prefers_monthly_series_over_annual_summary(monkeypatch, tmp_path):
+    corpus_root = tmp_path / "treasury_bulletins_parsed"
+    corpus_root.mkdir(parents=True)
+    (corpus_root / "treasury_1953.json").write_text(
+        json.dumps(
+            {
+                "document": {
+                    "elements": [
+                        {
+                            "type": "table",
+                            "description": "Annual summary",
+                            "bbox": [{"page_id": 4}],
+                            "content": (
+                                "<table>"
+                                "<tr><th>Total 9/</th><th>National defense and related activities</th></tr>"
+                                "<tr><td>1953</td><td>900</td></tr>"
+                                "</table>"
+                            ),
+                        },
+                        {
+                            "type": "table",
+                            "description": "Receipts, expenditures, and balances by month",
+                            "bbox": [{"page_id": 18}],
+                            "content": (
+                                "<table>"
+                                "<tr><th>Month</th><th>Expenditures</th></tr>"
+                                "<tr><td>January</td><td>100</td></tr>"
+                                "<tr><td>February</td><td>101</td></tr>"
+                                "<tr><td>March</td><td>102</td></tr>"
+                                "<tr><td>April</td><td>103</td></tr>"
+                                "</table>"
+                            ),
+                        },
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    build_officeqa_index(corpus_root=corpus_root)
+    monkeypatch.setenv("OFFICEQA_CORPUS_DIR", str(corpus_root))
+
+    table_result = fetch_officeqa_table.invoke(
+        {"document_id": "treasury_1953_json", "table_query": "monthly expenditures 1953"}
+    )
+
+    assert table_result["metadata"]["officeqa_status"] == "ok"
+    assert table_result["tables"][0]["table_family"] == "monthly_series"
+    assert table_result["tables"][0]["page_locator"] == "page 18"
+    assert table_result["tables"][0]["rows"][0][0] == "January"
