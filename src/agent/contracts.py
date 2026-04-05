@@ -459,10 +459,32 @@ class EvidencePlan(BaseModel):
     requirements: list[EvidenceRequirement] = Field(default_factory=list)
 
 
+class QueryPlan(BaseModel):
+    primary_semantic_query: str = ""
+    alternate_lexical_query: str = ""
+    granularity_query: str = ""
+    qualifier_query: str = ""
+    source_file_query: str = ""
+
+
+class QuestionDecomposition(BaseModel):
+    entity: str = ""
+    metric: str = ""
+    period: str = ""
+    granularity_requirement: str = ""
+    include_constraints: list[str] = Field(default_factory=list)
+    exclude_constraints: list[str] = Field(default_factory=list)
+    qualifier_terms: list[str] = Field(default_factory=list)
+    confidence: float = 0.0
+    used_llm_fallback: bool = False
+    query_plan: QueryPlan = Field(default_factory=QueryPlan)
+
+
 class RetrievalIntent(BaseModel):
     entity: str = ""
     metric: str = ""
     period: str = ""
+    granularity_requirement: str = ""
     document_family: str = ""
     aggregation_shape: str = ""
     analysis_modes: list[str] = Field(default_factory=list)
@@ -475,6 +497,11 @@ class RetrievalIntent(BaseModel):
     fallback_chain: list[RetrievalStrategy] = Field(default_factory=list)
     join_requirements: list[str] = Field(default_factory=list)
     evidence_plan: EvidencePlan = Field(default_factory=EvidencePlan)
+    include_constraints: list[str] = Field(default_factory=list)
+    exclude_constraints: list[str] = Field(default_factory=list)
+    decomposition_confidence: float = 0.0
+    decomposition_used_llm_fallback: bool = False
+    query_plan: QueryPlan = Field(default_factory=QueryPlan)
     must_include_terms: list[str] = Field(default_factory=list)
     must_exclude_terms: list[str] = Field(default_factory=list)
     query_candidates: list[str] = Field(default_factory=list)

@@ -4,7 +4,8 @@ import re
 from typing import Any
 
 from agent.benchmarks.officeqa import officeqa_analysis_modes
-from agent.contracts import EvidencePlan, EvidenceRequirement, EvidenceSufficiency, RetrievalIntent, SourceBundle
+from agent.context.extraction import extract_question_decomposition
+from agent.contracts import EvidencePlan, EvidenceRequirement, EvidenceSufficiency, QueryPlan, RetrievalIntent, SourceBundle
 
 _MONTH_NAMES = (
     "january",
@@ -340,9 +341,12 @@ def _build_evidence_plan(
     metric: str,
     period: str,
     aggregation_shape: str,
+    granularity_requirement: str,
     strategy: str,
     analysis_modes: list[str],
     join_requirements: list[str],
+    include_constraints: list[str],
+    exclude_constraints: list[str],
 ) -> EvidencePlan:
     years = _period_years(period, task_text)
     metric_identity = _primary_retrieval_metric(metric, aggregation_shape) or "document-grounded financial value"
@@ -419,6 +423,30 @@ def _build_evidence_plan(
                 rationale="Multi-table and multi-document questions require aligned keys before deterministic compute.",
             )
         )
+    if include_constraints:
+        requirements.append(
+            EvidenceRequirement(
+                kind="include_constraints",
+                label=f"Respect explicit question qualifiers: {', '.join(include_constraints[:3])}.",
+                target_count=1,
+                metric=metric_identity,
+                years=years,
+                support_mode="table_or_text",
+                rationale="User-provided qualifiers should become retrieval constraints, not be buried inside entity text.",
+            )
+        )
+    if exclude_constraints:
+        requirements.append(
+            EvidenceRequirement(
+                kind="exclude_constraints",
+                label=f"Avoid excluded scopes or evidence: {', '.join(exclude_constraints[:3])}.",
+                target_count=1,
+                metric=metric_identity,
+                years=years,
+                support_mode="table_or_text",
+                rationale="Negative constraints should stay explicit so ranking and validation can reject mismatched evidence.",
+            )
+        )
 
     required_series = [f"{metric_identity} {year}".strip() for year in years] if years else [metric_identity]
     return EvidencePlan(
@@ -487,19 +515,113 @@ def _source_file_query_terms(source_bundle: SourceBundle) -> list[str]:
     return list(dict.fromkeys(terms))
 
 
+def _build_query_plan(
+    *,
+    document_family: str,
+    entity: str,
+    metric: str,
+    retrieval_metric: str,
+    period: str,
+    granularity_requirement: str,
+    include_constraints: list[str],
+    exclude_constraints: list[str],
+    source_bundle: SourceBundle,
+) -> QueryPlan:
+    source_hint = ""
+    if document_family == "treasury_bulletin":
+        source_hint = "Treasury Bulletin"
+    elif document_family == "official_government_finance":
+        source_hint = "official government finance"
+    elif document_family:
+        source_hint = document_family.replace("_", " ")
+
+    monthly_hint = "monthly" if granularity_requirement == "monthly_series" else ""
+    annual_hint = ""
+    if granularity_requirement == "calendar_year":
+        annual_hint = "calendar year"
+    elif granularity_requirement == "fiscal_year":
+        annual_hint = "fiscal year"
+    elif granularity_requirement == "narrative_support":
+        annual_hint = "narrative discussion"
+
+    source_file_terms = _source_file_query_terms(source_bundle)
+    source_file_query = _normalize_space(" ".join(source_file_terms[:2]))[:280] if source_file_terms else ""
+    primary_semantic_query = _normalize_space(
+        " ".join(
+            part
+            for part in (
+                source_hint,
+                entity,
+                retrieval_metric or metric,
+                period,
+                monthly_hint or annual_hint,
+            )
+            if part
+        )
+    )[:280]
+    alternate_lexical_query = _normalize_space(
+        " ".join(
+            part
+            for part in (
+                f'"{entity}"' if entity else "",
+                f'"{period}"' if period else "",
+                f'"{retrieval_metric or metric}"' if (retrieval_metric or metric) else "",
+                f'"{source_hint}"' if source_hint else "",
+            )
+            if part
+        )
+    )[:280]
+    granularity_query = _normalize_space(
+        " ".join(
+            part
+            for part in (
+                source_hint,
+                retrieval_metric or metric or source_bundle.focus_query,
+                period,
+                monthly_hint,
+                annual_hint,
+                "reported values" if "specifically only the reported values" in {item.lower() for item in include_constraints} else "",
+            )
+            if part
+        )
+    )[:280]
+    qualifier_terms = [*include_constraints[:2], *[f"excluding {item}" for item in exclude_constraints[:2]]]
+    qualifier_query = _normalize_space(
+        " ".join(
+            part
+            for part in (
+                source_hint,
+                entity or retrieval_metric or metric,
+                period,
+                " ".join(qualifier_terms),
+            )
+            if part
+        )
+    )[:280]
+    return QueryPlan(
+        primary_semantic_query=primary_semantic_query,
+        alternate_lexical_query=alternate_lexical_query,
+        granularity_query=granularity_query,
+        qualifier_query=qualifier_query,
+        source_file_query=source_file_query,
+    )
+
+
 def build_retrieval_intent(
     task_text: str,
     source_bundle: SourceBundle,
     benchmark_overrides: dict[str, Any] | None = None,
 ) -> RetrievalIntent:
-    entity = _extract_entity(task_text, source_bundle)
-    metric = _extract_metric(task_text)
-    period = _extract_period(task_text, source_bundle)
+    decomposition = extract_question_decomposition(task_text, source_bundle, allow_llm_fallback=True)
+    entity = decomposition.entity
+    metric = decomposition.metric
+    period = decomposition.period
+    granularity_requirement = decomposition.granularity_requirement
     document_family = _document_family(task_text, source_bundle, benchmark_overrides)
     aggregation_shape = _aggregation_shape(task_text)
     years = _period_years(period, task_text)
     retrieval_metric = _primary_retrieval_metric(metric, aggregation_shape)
-    qualifier_terms = _extract_qualifier_terms(task_text)
+    qualifier_terms = list(decomposition.qualifier_terms)
     analysis_modes = _task_analysis_modes(task_text, benchmark_overrides)
     answer_mode, compute_policy, partial_answer_allowed = _classify_answer_mode(
         task_text,
@@ -520,9 +642,23 @@ def build_retrieval_intent(
         metric,
         period,
         aggregation_shape,
+        granularity_requirement,
         strategy,
         analysis_modes,
         join_requirements,
+        decomposition.include_constraints,
+        decomposition.exclude_constraints,
+    )
+    query_plan = _build_query_plan(
+        document_family=document_family,
+        entity=entity,
+        metric=metric,
+        retrieval_metric=retrieval_metric,
+        period=period,
+        granularity_requirement=granularity_requirement,
+        include_constraints=decomposition.include_constraints,
+        exclude_constraints=decomposition.exclude_constraints,
+        source_bundle=source_bundle,
     )
 
     must_include_terms: list[str] = []
@@ -544,85 +680,27 @@ def build_retrieval_intent(
         must_include_terms.extend(["monthly", "month"])
     if aggregation_shape == "inflation_adjusted_monthly_difference":
         must_include_terms.extend(["cpi", "inflation"])
-    must_include_terms.extend(qualifier_terms)
+    must_include_terms.extend(decomposition.include_constraints)
     must_include_terms.extend(_source_file_query_terms(source_bundle))
     must_include_terms = list(dict.fromkeys([item for item in must_include_terms if item]))
 
     policy = _benchmark_policy(benchmark_overrides)
     must_exclude_terms = list(policy.get("excluded_retrieval_terms", [])) if _officeqa_active(benchmark_overrides) else []
+    must_exclude_terms.extend(decomposition.exclude_constraints)
+    must_exclude_terms = list(dict.fromkeys([item for item in must_exclude_terms if item]))
 
-    base_terms = [term for term in [document_family.replace("_", " "), entity, retrieval_metric, period] if term]
-    base_query = _normalize_space(" ".join(base_terms))
-    query_candidates: list[str] = []
-    source_file_terms = _source_file_query_terms(source_bundle)
-    if source_file_terms:
-        query_candidates.append(_normalize_space(" ".join(source_file_terms[:2])))
-    if document_family in {"treasury_bulletin", "official_government_finance"}:
-        source_hint = "Treasury Bulletin" if document_family == "treasury_bulletin" else "official government finance"
-        focused_terms = [source_hint, entity, retrieval_metric, period]
-        query_candidates.append(_normalize_space(" ".join(term for term in focused_terms if term)))
-        if entity or retrieval_metric or period:
-            query_candidates.append(
-                _normalize_space(
-                    " ".join(
-                        term
-                        for term in (
-                            f'"{entity}"' if entity else "",
-                            f'"{period}"' if period else "",
-                            f'"{retrieval_metric}"' if retrieval_metric else "",
-                            f'"{source_hint}"',
-                        )
-                        if term
-                    )
-                )
-            )
-        if aggregation_shape.startswith("monthly"):
-            monthly_terms = [source_hint, entity, retrieval_metric or "expenditures", period, "monthly"]
-            query_candidates.append(_normalize_space(" ".join(term for term in monthly_terms if term)))
-            for year in years[:2]:
-                query_candidates.append(
-                    _normalize_space(
-                        " ".join(
-                            term
-                            for term in (
-                                f'"{entity}"' if entity else "",
-                                f'"{year}"',
-                                '"monthly"',
-                                f'"{source_hint}"',
-                            )
-                            if term
-                        )
-                    )
-                )
-        if aggregation_shape == "inflation_adjusted_monthly_difference":
-            inflation_terms = [source_hint, entity, retrieval_metric or "expenditures", "CPI inflation", " ".join(years[:2])]
-            query_candidates.append(_normalize_space(" ".join(term for term in inflation_terms if term)))
-        for qualifier in qualifier_terms[:2]:
-            query_candidates.append(
-                _normalize_space(
-                    " ".join(
-                        term
-                        for term in (
-                            f'"{entity or retrieval_metric}"' if (entity or retrieval_metric) else "",
-                            f'"{period}"' if period else "",
-                            f'"{qualifier}"',
-                            f'"{source_hint}"',
-                        )
-                        if term
-                    )
-                )
-            )
-    elif base_query:
-        query_candidates.append(base_query)
-        query_candidates.append(_normalize_space(f'"{base_query}" source document'))
-    else:
-        query_candidates.append(_normalize_space(source_bundle.focus_query or task_text))
-
+    query_candidates = [
+        query_plan.source_file_query,
+        query_plan.primary_semantic_query,
+        query_plan.granularity_query,
+        query_plan.qualifier_query or query_plan.alternate_lexical_query,
+    ]
     query_candidates = list(dict.fromkeys([query[:280] for query in query_candidates if query]))[:4]
     return RetrievalIntent(
         entity=entity,
         metric=metric,
         period=period,
+        granularity_requirement=granularity_requirement,
         document_family=document_family,
         aggregation_shape=aggregation_shape,
         analysis_modes=analysis_modes,
@@ -635,6 +713,11 @@ def build_retrieval_intent(
         fallback_chain=fallback_chain,
         join_requirements=join_requirements,
         evidence_plan=evidence_plan,
+        include_constraints=decomposition.include_constraints,
+        exclude_constraints=decomposition.exclude_constraints,
+        decomposition_confidence=decomposition.confidence,
+        decomposition_used_llm_fallback=decomposition.used_llm_fallback,
+        query_plan=query_plan,
         must_include_terms=must_include_terms,
         must_exclude_terms=must_exclude_terms,
         query_candidates=query_candidates,

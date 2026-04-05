@@ -999,7 +999,7 @@ Why now:
 
 Tasks:
 
-- [ ] `P20.1` Split question decomposition into typed slots:
+- [x] `P20.1` Split question decomposition into typed slots:
   - target entity or program
   - metric identity
   - period scope
@@ -1007,20 +1007,20 @@ Tasks:
   - include constraints
   - exclude constraints
   - unit expectation
-- [ ] `P20.2` Convert question qualifiers into explicit evidence-plan constraints rather than folding them into the entity string
-- [ ] `P20.3` Replace low-signal query variants with a typed query-plan object:
+- [x] `P20.2` Convert question qualifiers into explicit evidence-plan constraints rather than folding them into the entity string
+- [x] `P20.3` Replace low-signal query variants with a typed query-plan object:
   - primary semantic query
   - alternate lexical query
   - granularity query
   - qualifier query
-- [ ] `P20.4` Add targeted decomposition regressions from benchmark traces:
+- [x] `P20.4` Add targeted decomposition regressions from benchmark traces:
   - category-specific annual value
   - monthly-series aggregation
   - historical fiscal-year category extraction with exclusions
-- [ ] `P20.5` Add a bounded LLM-assisted decomposition fallback:
+- [x] `P20.5` Add a bounded LLM-assisted decomposition fallback:
   - only when rule-based decomposition confidence is low
   - outputs typed retrieval fields, not free-form reasoning
-- [ ] `P20.6` Ensure the decomposition layer remains benchmark-agnostic and reusable for similar financial document tasks
+- [x] `P20.6` Ensure the decomposition layer remains benchmark-agnostic and reusable for similar financial document tasks
 
 Suggested code targets:
 

@@ -543,3 +543,40 @@ Rules:
 - **Research Basis:** The new phases continue the earlier research-backed direction from the table-structure papers and preserve the Purple-agent lesson that retrieval, parsing, validation, compute, and completion should stay explicit stages. The new work is framed as system hardening, not as benchmark-string special-casing.
 - **Next Recommended Step:** Start Phase 20 first. The benchmark traces show the current runtime is still decomposing question semantics too weakly, which poisons later retrieval and validator decisions.
 
+### Chat 36: Phase 20 Completed With Typed Decomposition And Query Planning
+
+- **Role:** Coder
+- **Actions Taken:** Implemented the full Phase 20 decomposition layer so retrieval intent is no longer assembled from a small set of regex outputs plus lexical query variants. Added new typed models in [contracts.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\contracts.py):
+  - `QuestionDecomposition`
+  - `QueryPlan`
+  - extended `RetrievalIntent` with `granularity_requirement`, `include_constraints`, `exclude_constraints`, `decomposition_confidence`, `decomposition_used_llm_fallback`, and `query_plan`
+- **Core Runtime Changes:**
+  - added benchmark-agnostic financial-document decomposition helpers in [context/extraction.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\context\extraction.py) to extract:
+    - target entity/program
+    - metric identity
+    - period scope
+    - granularity requirement
+    - include constraints
+    - exclude constraints
+    - decomposition confidence
+  - rewired [retrieval_reasoning.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\retrieval_reasoning.py) so `build_retrieval_intent()` now starts from the typed decomposition result and builds a typed `QueryPlan` instead of generating ad hoc low-signal variants
+  - moved question qualifiers into the evidence plan as explicit `include_constraints` / `exclude_constraints` requirements instead of silently folding them into the entity string
+  - updated [curated_context.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\curated_context.py) so retrieval-plan provenance now exposes the new decomposition fields and query plan directly in traces and summaries
+- **LLM Fallback:** Added a bounded structured fallback in [context/extraction.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\context\extraction.py) using `invoke_structured_output(...)`, but kept it opt-in behind `ENABLE_DECOMPOSITION_LLM_FALLBACK=1`. It only runs when rule-based decomposition confidence is low and only returns typed fields, not free-form reasoning.
+- **Behavioral Result:** The runtime can now explicitly distinguish:
+  - annual category/value questions
+  - monthly-series aggregation questions
+  - fiscal-year category questions
+  - inclusion constraints such as `specifically only the reported values`
+  - exclusion constraints such as `excluding trust accounts`
+  This closes the first upstream fault from the original benchmark traces: weak question decomposition contaminating retrieval and validation.
+- **Tests Added/Updated:** Added [test_question_decomposition.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_question_decomposition.py) with regressions for:
+  - category-specific calendar-year extraction
+  - monthly aggregation constraint extraction
+  - fiscal-year entity extraction with exclusions
+  - low-confidence LLM decomposition fallback merge
+- **Validation:** Verified with:
+  - `python -m py_compile src/agent/contracts.py src/agent/context/extraction.py src/agent/retrieval_reasoning.py src/agent/curated_context.py tests/test_question_decomposition.py`
+  - `$env:PYTHONPATH='src;tests'; python -m pytest tests/test_question_decomposition.py tests/test_engine_runtime.py -k "question_decomposition or retrieval_intent or retrieval_plan_summary" -q -p no:cacheprovider` -> `9 passed, 61 deselected`
+- **Follow-Up Note:** Phase 20 upgrades decomposition and query planning only. It should improve later retrieval behavior, but it does not yet fix semantic ranking or repair execution by itself. Those remain the focus of Phase 21 and later phases.
+

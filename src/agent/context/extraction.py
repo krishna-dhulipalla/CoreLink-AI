@@ -5,8 +5,14 @@ Prompt extraction helpers used during intake and context assembly.
 from __future__ import annotations
 
 from datetime import datetime
+import os
 import re
 from typing import Any
+
+from langchain_core.messages import HumanMessage, SystemMessage
+
+from agent.contracts import QueryPlan, QuestionDecomposition, SourceBundle
+from agent.model_config import invoke_structured_output
 
 _URL_RE = re.compile(r"https?://[^\s\)\]\"',]+")
 _TITLE_ENTITY_RE = re.compile(
@@ -18,6 +24,280 @@ _MONTH_NAME_DATE_RE = re.compile(
     re.IGNORECASE,
 )
 _ISO_DATE_RE = re.compile(r"\b(?:as of|on|dated?|for)\s+(\d{4}-\d{2}-\d{2})\b", re.IGNORECASE)
+_YEAR_RE = re.compile(r"\b((?:19|20)\d{2})\b")
+_GENERIC_SOURCE_ENTITIES = {
+    "annual report",
+    "bulletin",
+    "document",
+    "narrative discussion",
+    "official report",
+    "report",
+    "treasury bulletin",
+}
+_ENTITY_TEXT_PATTERN = r"[A-Za-z0-9 .,'&/\-]+?"
+_INCLUSION_PATTERNS = (
+    r"(specifically only the reported values)",
+    r"(all individual calendar months)",
+    r"(monthly series)",
+    r"(narrative discussion)",
+    r"(reported values only)",
+)
+_EXCLUSION_PATTERNS = (
+    r"excluding\s+(.+?)(?:,| and | but |\.|$)",
+    r"except\s+(.+?)(?:,| and | but |\.|$)",
+    r"not including\s+(.+?)(?:,| and | but |\.|$)",
+    r"without\s+(.+?)(?:,| and | but |\.|$)",
+)
+
+
+def _normalize_space(value: str) -> str:
+    return re.sub(r"\s+", " ", value or "").strip()
+
+
+def _dedupe_strings(values: list[str], *, limit: int | None = None) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        value = _normalize_space(raw).strip(" ,.;:!?")
+        if not value:
+            continue
+        key = value.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(value)
+        if limit is not None and len(ordered) >= limit:
+            break
+    return ordered
+
+
+def _normalize_financial_phrase(value: str) -> str:
+    cleaned = _normalize_space(value).strip(" ,.;:!?")
+    cleaned = re.sub(r"^(?:the|a|an)\s+", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\baccording to\b.*$", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\b(?:using|based on)\b.*$", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(
+        r"\s+in\s+(?:fy|fiscal year|calendar year)\b.*$",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"\s+\b(?:19|20)\d{2}\b.*$", "", cleaned, flags=re.IGNORECASE)
+    return cleaned.strip(" ,.;:!?")
+
+
+def _extract_year_scope(task_text: str, source_bundle: SourceBundle) -> str:
+    if source_bundle.target_period:
+        return _normalize_space(source_bundle.target_period)
+    years = _YEAR_RE.findall(task_text or "")
+    return " ".join(dict.fromkeys(years[:4]))
+
+
+def _extract_granularity_requirement(task_text: str) -> str:
+    lowered = _normalize_space(task_text).lower()
+    if "all individual calendar months" in lowered or "monthly series" in lowered or "calendar months" in lowered:
+        return "monthly_series"
+    if "calendar year" in lowered:
+        return "calendar_year"
+    if "fiscal year" in lowered or re.search(r"\bfy\s+\d{4}\b", lowered):
+        return "fiscal_year"
+    if "narrative discussion" in lowered or "reason was given" in lowered:
+        return "narrative_support"
+    return "point_lookup"
+
+
+def _extract_include_constraints(task_text: str) -> list[str]:
+    found: list[str] = []
+    for pattern in _INCLUSION_PATTERNS:
+        for match in re.finditer(pattern, task_text or "", re.IGNORECASE):
+            found.append(match.group(1))
+    if "according to the treasury bulletin" in (task_text or "").lower():
+        found.append("according to the Treasury Bulletin")
+    return _dedupe_strings(found, limit=6)
+
+
+def _extract_exclude_constraints(task_text: str) -> list[str]:
+    found: list[str] = []
+    for pattern in _EXCLUSION_PATTERNS:
+        for match in re.finditer(pattern, task_text or "", re.IGNORECASE):
+            found.append(match.group(1))
+    return _dedupe_strings(found, limit=6)
+
+
+def _extract_metric_identity(task_text: str) -> str:
+    lowered = _normalize_space(task_text).lower()
+    ordered_checks = (
+        ("absolute percent change", "absolute percent change"),
+        ("absolute difference", "absolute difference"),
+        ("inflation-adjusted weighted average", "weighted average expenditures"),
+        ("weighted average expenditures", "weighted average expenditures"),
+        ("weighted average", "weighted average"),
+        ("standard deviation", "standard deviation"),
+        ("regression trend", "regression trend"),
+        ("forecast", "forecast"),
+        ("value at risk", "value at risk"),
+        ("public debt outstanding", "public debt outstanding"),
+        ("total expenditures", "total expenditures"),
+        ("expenditures", "expenditures"),
+        ("receipts", "receipts"),
+        ("debt outlook", "debt outlook"),
+    )
+    for needle, label in ordered_checks:
+        if needle in lowered:
+            return label
+
+    for pattern in (
+        rf"what (?:was|is|were) (?:the )?({_ENTITY_TEXT_PATTERN})(?:\s+in\s+(?:fy|fiscal year|calendar year|\b(?:19|20)\d{{2}}\b)|\?|$)",
+        rf"what were the ({_ENTITY_TEXT_PATTERN}) of {_ENTITY_TEXT_PATTERN}(?:\s+in\s+(?:fy|fiscal year|calendar year|\b(?:19|20)\d{{2}}\b)|\?|$)",
+        rf"reason was given for (?:the )?({_ENTITY_TEXT_PATTERN})(?:\s+in\s+\b(?:19|20)\d{{2}}\b|\?|$)",
+    ):
+        match = re.search(pattern, lowered, re.IGNORECASE)
+        if match:
+            return _normalize_financial_phrase(match.group(1))
+    return ""
+
+
+def _entity_from_source_bundle(source_bundle: SourceBundle) -> str:
+    for raw in source_bundle.entities:
+        entity = _normalize_financial_phrase(raw)
+        if entity and entity.lower() not in _GENERIC_SOURCE_ENTITIES:
+            return entity
+    return ""
+
+
+def _extract_entity_identity(task_text: str, source_bundle: SourceBundle, metric: str) -> str:
+    bundled = _entity_from_source_bundle(source_bundle)
+    if bundled:
+        return bundled
+
+    patterns = [
+        rf"{re.escape(metric)}\s+(?:for|of)\s+({_ENTITY_TEXT_PATTERN})(?:\s+in\s+(?:fy|fiscal year|calendar year|\b(?:19|20)\d{{2}}\b)|\?|$)"
+        for metric in (
+            "total expenditures",
+            "expenditures",
+            "receipts",
+            "public debt outstanding",
+        )
+    ]
+    patterns.extend(
+        (
+            rf"(?:weighted average|regression trend|forecast)(?:\s+the)?\s+({_ENTITY_TEXT_PATTERN})\s+series(?:\s+for\s+\b(?:19|20)\d{{2}}\b|\?|$)",
+            rf"for the ({_ENTITY_TEXT_PATTERN})(?:\s+in\s+(?:fy|fiscal year|calendar year|\b(?:19|20)\d{{2}}\b)|\?|$)",
+            rf"of the ({_ENTITY_TEXT_PATTERN})(?:\s+in\s+(?:fy|fiscal year|calendar year|\b(?:19|20)\d{{2}}\b)|\?|$)",
+        )
+    )
+    for pattern in patterns:
+        match = re.search(pattern, task_text or "", re.IGNORECASE)
+        if match:
+            entity = _normalize_financial_phrase(match.group(1))
+            if entity and entity.lower() not in _GENERIC_SOURCE_ENTITIES:
+                return entity
+
+    if metric == "debt outlook":
+        return "debt outlook"
+    return ""
+
+
+def _rule_based_decomposition(task_text: str, source_bundle: SourceBundle) -> QuestionDecomposition:
+    metric = _extract_metric_identity(task_text)
+    period = _extract_year_scope(task_text, source_bundle)
+    granularity_requirement = _extract_granularity_requirement(task_text)
+    include_constraints = _extract_include_constraints(task_text)
+    exclude_constraints = _extract_exclude_constraints(task_text)
+    qualifier_terms = _dedupe_strings([*include_constraints, *exclude_constraints], limit=6)
+    entity = _extract_entity_identity(task_text, source_bundle, metric)
+
+    confidence = 0.2
+    if metric:
+        confidence += 0.28
+    if period:
+        confidence += 0.22
+    if entity or metric in {"public debt outstanding", "absolute percent change", "absolute difference"}:
+        confidence += 0.18
+    if granularity_requirement != "point_lookup":
+        confidence += 0.12
+    if include_constraints or exclude_constraints:
+        confidence += 0.08
+    if metric and entity and metric.lower() in entity.lower():
+        confidence -= 0.08
+    confidence = max(0.0, min(0.95, confidence))
+
+    return QuestionDecomposition(
+        entity=entity,
+        metric=metric,
+        period=period,
+        granularity_requirement=granularity_requirement,
+        include_constraints=include_constraints,
+        exclude_constraints=exclude_constraints,
+        qualifier_terms=qualifier_terms,
+        confidence=confidence,
+        query_plan=QueryPlan(),
+    )
+
+
+def _llm_decomposition_enabled() -> bool:
+    return str(os.getenv("ENABLE_DECOMPOSITION_LLM_FALLBACK", "0")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _merge_decomposition(primary: QuestionDecomposition, fallback: QuestionDecomposition) -> QuestionDecomposition:
+    return QuestionDecomposition(
+        entity=primary.entity or fallback.entity,
+        metric=primary.metric or fallback.metric,
+        period=primary.period or fallback.period,
+        granularity_requirement=primary.granularity_requirement or fallback.granularity_requirement,
+        include_constraints=_dedupe_strings([*primary.include_constraints, *fallback.include_constraints], limit=6),
+        exclude_constraints=_dedupe_strings([*primary.exclude_constraints, *fallback.exclude_constraints], limit=6),
+        qualifier_terms=_dedupe_strings([*primary.qualifier_terms, *fallback.qualifier_terms], limit=6),
+        confidence=max(primary.confidence, min(0.9, fallback.confidence)),
+        used_llm_fallback=bool(fallback.used_llm_fallback),
+        query_plan=fallback.query_plan if any(fallback.query_plan.model_dump().values()) else primary.query_plan,
+    )
+
+
+def _fallback_decomposition(task_text: str, source_bundle: SourceBundle) -> QuestionDecomposition | None:
+    schema = QuestionDecomposition
+    messages = [
+        SystemMessage(
+            content=(
+                "Extract a typed financial-document question decomposition. "
+                "Return only the target entity or program, metric identity, period, granularity requirement, "
+                "include constraints, exclude constraints, qualifier terms, and confidence. "
+                "Do not provide reasoning."
+            )
+        ),
+        HumanMessage(
+            content=_normalize_space(
+                f"TASK={task_text}\nFOCUS_QUERY={source_bundle.focus_query}\nTARGET_PERIOD={source_bundle.target_period}\n"
+                f"ENTITIES={source_bundle.entities}\nSOURCE_FILES={source_bundle.source_files_expected[:8]}"
+            )
+        ),
+    ]
+    try:
+        parsed, _ = invoke_structured_output("profiler", schema, messages, temperature=0, max_tokens=240)
+        candidate = schema.model_validate(parsed)
+        candidate.used_llm_fallback = True
+        return candidate
+    except Exception:
+        return None
+
+
+def extract_question_decomposition(
+    task_text: str,
+    source_bundle: SourceBundle,
+    *,
+    allow_llm_fallback: bool = False,
+) -> QuestionDecomposition:
+    decomposition = _rule_based_decomposition(task_text, source_bundle)
+    if not allow_llm_fallback:
+        return decomposition
+    if decomposition.confidence >= 0.58:
+        return decomposition
+    if not _llm_decomposition_enabled():
+        return decomposition
+    fallback = _fallback_decomposition(task_text, source_bundle)
+    if fallback is None:
+        return decomposition
+    return _merge_decomposition(decomposition, fallback)
 
 
 def extract_urls(text: str) -> list[str]:
