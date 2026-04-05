@@ -1,6 +1,8 @@
 """CoreLink AI A2A server."""
 
 import argparse
+import sys
+from pathlib import Path
 
 import uvicorn
 from a2a.server.apps import A2AStarletteApplication
@@ -8,7 +10,14 @@ from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.tasks import InMemoryTaskStore
 from a2a.types import AgentCapabilities, AgentCard, AgentSkill
 
-from executor import Executor
+_SRC_DIR = Path(__file__).resolve().parent
+if str(_SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(_SRC_DIR))
+
+try:
+    from .executor import Executor
+except ImportError:  # pragma: no cover - compatibility for direct script execution
+    from executor import Executor
 
 
 def main() -> None:

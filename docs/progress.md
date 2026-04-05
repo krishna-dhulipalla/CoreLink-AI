@@ -524,3 +524,22 @@ Rules:
   - `$env:PYTHONPATH='src;tests'; python -m pytest tests/test_engine_runtime.py -k "dedupes_benchmark_source_files or dedupes_documents_and_results_views or prefers_native_search_over_generic_reference_search" -q -p no:cacheprovider` -> `3 passed, 63 deselected`
   - `$env:LANGSMITH_TRACING='false'; $env:LANGCHAIN_TRACING_V2='false'; uv run python scripts/run_officeqa_regression.py --smoke --limit 1` -> saved [officeqa_regression_smoke_20260404T185154Z.json](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\Results&traces\officeqa_regression_smoke_20260404T185154Z.json) with the 1945 retrieval case still passing on the deduped path
 
+### Chat 35: Original Benchmark Trace Audit Reopened The Plan
+
+- **Role:** Analyst
+- **Actions Taken:** Audited the three original-benchmark traces in [traces/2026-04-05_10-01-41](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\traces\2026-04-05_10-01-41) and converted the findings into a new post-benchmark hardening track in [officeqa_execution_plan.md](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\docs\officeqa_execution_plan.md). The new phases are system-fault based rather than task-specific:
+  - `Phase 20`: semantic question decomposition and query planning
+  - `Phase 21`: source ranking, table-family selection, and semantic retrieval repair
+  - `Phase 22`: evidence suitability and compute-admissibility guards
+  - `Phase 23`: repair orchestration and bounded LLM escalation
+  - `Phase 24`: state model simplification and trace semantics cleanup
+  - `Phase 25`: original-benchmark regression harness and failure taxonomy
+- **Behavioral Findings Captured In The Plan:**
+  - Task 1 is a false semantic pass: the system computes from a 6-month total-government expenditures row instead of the requested national-defense annual value.
+  - Task 2 finds a plausible 1953 Treasury file but selects an annual summary table instead of a monthly series, then stalls on `missing month coverage`.
+  - Task 3 commits to the wrong 1959 source with a weak score, reroutes only within that source, and never reopens source search after `missing_row`.
+  - All three traces stay on the deterministic path with `total_llm_calls = 0`; that is current policy, not a tracer bug.
+  - Some repeated trace fields are intentional history snapshots, but `answer_focus` vs `routing_rationale` and parts of the `task_text` / `focus_query` / `objective` / `query_candidates` surface are now explicitly tracked as schema-cleanup work.
+- **Research Basis:** The new phases continue the earlier research-backed direction from the table-structure papers and preserve the Purple-agent lesson that retrieval, parsing, validation, compute, and completion should stay explicit stages. The new work is framed as system hardening, not as benchmark-string special-casing.
+- **Next Recommended Step:** Start Phase 20 first. The benchmark traces show the current runtime is still decomposing question semantics too weakly, which poisons later retrieval and validator decisions.
+

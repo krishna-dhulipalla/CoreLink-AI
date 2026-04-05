@@ -951,6 +951,311 @@ Exit criteria:
 
 - the repo has an evidence-based decision on whether canonical normalization alone is enough or whether a slower TSR fallback is justified
 
+## Post-Benchmark Hardening Track: 2026-04-05 Trace Audit
+
+Context:
+
+- The first original-benchmark local run exposed a different class of failures than the earlier smoke slice.
+- The main failures are now system faults, not single-case bugs:
+  - false semantic passes
+  - wrong document or wrong table-family selection
+  - weak repair behavior after predictive evidence gaps
+  - deterministic-only routing that never escalates to bounded LLM-assisted reformulation or review
+  - overlapping state fields that make traces harder to reason about than they need to be
+- These phases must not hardcode for the three failed benchmark questions.
+- The fixes should generalize to similar document-grounded financial reasoning tasks.
+
+Reference frame for this track:
+
+- keep using the earlier table-structure guidance already captured in this plan:
+  - `PubTables-1M`
+  - `Aligning benchmark datasets for TSR`
+  - `RealHiTBench`
+  - `TABLET`
+  - `Uncertainty-Aware Complex Scientific Table Data Extraction`
+- keep using the Purple-agent lesson that the runtime should stay explicitly staged:
+  - retrieve
+  - parse
+  - analyze
+  - validate
+  - compute
+  - complete
+- do not use benchmark-string hacks or task-specific allowlists as a substitute for fixing the runtime.
+
+## Phase 20: Semantic Question Decomposition And Query Planning
+
+Objective:
+
+- rebuild the prompt-to-intent layer so the system extracts the right entity, metric, scope, qualifiers, and exclusions before retrieval starts.
+
+Why now:
+
+- Task 1 turns the entity into `U.S national defense in the calendar year of 1940` instead of separating:
+  - entity
+  - metric
+  - time scope
+- Task 2 turns `all individual calendar months in 1953` into the entity rather than a monthly-coverage constraint.
+- Task 3 partially extracts the entity correctly, but still under-specifies exclusion and inclusion constraints for the target evidence.
+
+Tasks:
+
+- [ ] `P20.1` Split question decomposition into typed slots:
+  - target entity or program
+  - metric identity
+  - period scope
+  - granularity requirement
+  - include constraints
+  - exclude constraints
+  - unit expectation
+- [ ] `P20.2` Convert question qualifiers into explicit evidence-plan constraints rather than folding them into the entity string
+- [ ] `P20.3` Replace low-signal query variants with a typed query-plan object:
+  - primary semantic query
+  - alternate lexical query
+  - granularity query
+  - qualifier query
+- [ ] `P20.4` Add targeted decomposition regressions from benchmark traces:
+  - category-specific annual value
+  - monthly-series aggregation
+  - historical fiscal-year category extraction with exclusions
+- [ ] `P20.5` Add a bounded LLM-assisted decomposition fallback:
+  - only when rule-based decomposition confidence is low
+  - outputs typed retrieval fields, not free-form reasoning
+- [ ] `P20.6` Ensure the decomposition layer remains benchmark-agnostic and reusable for similar financial document tasks
+
+Suggested code targets:
+
+- `src/agent/retrieval_reasoning.py`
+- `src/agent/context/extraction.py`
+- `src/agent/contracts.py`
+- `tests/test_engine_runtime.py`
+
+Exit criteria:
+
+- entity, metric, period, and granularity are no longer collapsed into one string
+- query planning exposes semantically distinct candidates instead of near-duplicate lexical variants
+
+## Phase 21: Source Ranking, Table-Family Selection, And Semantic Retrieval Repair
+
+Objective:
+
+- make retrieval choose the right document family and table family, and reopen source search when the first document is clearly wrong.
+
+Why now:
+
+- Task 2 finds a plausible 1953 Treasury file, but selects an annual summary table when the task requires monthly values.
+- Task 3 commits to `treasury_bulletin_1959_09.json` with a weak score and never truly recovers after `missing_row`.
+- Task 1 finds a usable 1940 document but still permits the wrong row and period slice to satisfy the request.
+
+Tasks:
+
+- [ ] `P21.1` Add document-ranking features for:
+  - year proximity
+  - granularity fit
+  - category fit
+  - exclusion fit
+  - historical table-family fit
+- [ ] `P21.2` Add table-family classification before compute:
+  - monthly series
+  - annual summary
+  - fiscal-year comparison
+  - category breakdown
+  - debt or balance sheet
+  - navigation or contents
+- [ ] `P21.3` Reject weak top candidates when ranking confidence is below threshold and continue re-query instead of immediately fetching the first document
+- [ ] `P21.4` On `missing_row`, `missing month coverage`, or category mismatch:
+  - reopen source search when needed
+  - do not stay pinned to the same document by default
+- [ ] `P21.5` Add retrieval repair policies that distinguish:
+  - wrong document
+  - wrong table family
+  - right table family but incomplete row set
+- [ ] `P21.6` Add benchmark regressions that fail if the runtime answers from:
+  - wrong time slice
+  - wrong category row
+  - annual summary when monthly support is required
+
+Suggested code targets:
+
+- `src/agent/nodes/orchestrator_retrieval.py`
+- `src/agent/retrieval_tools.py`
+- `src/agent/retrieval_reasoning.py`
+- `src/agent/benchmarks/officeqa_validator.py`
+
+Exit criteria:
+
+- the runtime can abandon a bad source instead of looping on it
+- table-family and granularity mismatches are caught before deterministic compute
+
+## Phase 22: Evidence Suitability And Compute-Admissibility Guards
+
+Objective:
+
+- prevent compute from succeeding on semantically wrong evidence and make the validator enforce task-level suitability, not just structural completeness.
+
+Why now:
+
+- Task 1 currently passes internally even though it uses the wrong row and a 6-month column for a different semantic target.
+- The current validator is strong on missing evidence but still too weak on semantically wrong evidence that looks numerically clean.
+
+Tasks:
+
+- [ ] `P22.1` Add table-suitability checks before compute:
+  - row-category fit
+  - period-scope fit
+  - aggregation-fit
+  - granularity-fit
+- [ ] `P22.2` Add compute-admissibility rules so:
+  - annual totals do not compute from partial-year columns
+  - category-specific answers do not compute from all-government total rows
+  - monthly-sum tasks do not compute from annual summary tables
+- [ ] `P22.3` Add a second semantic validator pass after compute that can reject a numerically clean but semantically wrong answer
+- [ ] `P22.4` Add explicit diagnostics for:
+  - wrong row family
+  - wrong column family
+  - wrong period slice
+  - wrong aggregation grain
+- [ ] `P22.5` Update regression scoring so local benchmark dry runs can detect false internal passes, not just pipeline completion
+- [ ] `P22.6` Add benchmark fixtures where the wrong table yields a plausible number and ensure the runtime still fails safely
+
+Suggested code targets:
+
+- `src/agent/benchmarks/officeqa_compute.py`
+- `src/agent/benchmarks/officeqa_validator.py`
+- `src/agent/benchmarks/officeqa_eval.py`
+- `tests/test_officeqa_compute.py`
+- `tests/test_officeqa_eval.py`
+
+Exit criteria:
+
+- semantically wrong evidence cannot pass deterministic compute and reviewer together
+- local benchmark validation can detect false positives, not just hard failures
+
+## Phase 23: Repair Orchestration And Bounded LLM Escalation
+
+Objective:
+
+- introduce a bounded semantic-repair path so the runtime can recover from retrieval ambiguity without abandoning the deterministic OfficeQA architecture.
+
+Why now:
+
+- All three benchmark traces show `total_llm_calls = 0`.
+- That is correct under the current policy, but it also means:
+  - there is no semantic query rewrite when source ranking is weak
+  - there is no table-suitability review when several plausible tables exist
+  - there is no bounded disambiguation pass after validator-guided repair
+
+Tasks:
+
+- [ ] `P23.1` Define exact points where LLM use is allowed:
+  - low-confidence decomposition
+  - low-confidence source ranking
+  - ambiguous table family
+  - validator-directed repair suggestion
+- [ ] `P23.2` Keep the final numeric answer deterministic when compute is supported; the LLM may help reformulate or review, but not replace compute
+- [ ] `P23.3` Add a retrieval-review microstep inspired by Purple's explicit staged loop:
+  - retrieve
+  - parse
+  - review evidence suitability
+  - then compute
+- [ ] `P23.4` Add bounded query-rewrite and table-rerank prompts that return structured outputs only
+- [ ] `P23.5` Add stop rules so the LLM cannot create open-ended loops or bypass validator constraints
+- [ ] `P23.6` Add trace artifacts that clearly show:
+  - why the LLM was invoked
+  - what structured decision it returned
+  - whether that changed the retrieval path
+
+Suggested code targets:
+
+- `src/agent/nodes/orchestrator.py`
+- `src/agent/nodes/orchestrator_retrieval.py`
+- `src/agent/prompts.py`
+- `src/agent/tracer.py`
+- `tests/test_engine_runtime.py`
+
+Exit criteria:
+
+- the runtime can perform bounded semantic repair when deterministic retrieval stalls
+- LLM use remains explicit, typed, and non-ad hoc
+
+## Phase 24: State Model Simplification And Trace Semantics Cleanup
+
+Objective:
+
+- remove overlapping fields that confuse teammates and traces while keeping the minimum state needed for retrieval, compute, and review.
+
+Why now:
+
+- the trace audit shows several fields overlap or differ only by audience:
+  - `answer_focus` vs `routing_rationale`
+  - `task_text` vs `focus_query` vs `objective`
+  - repeated low-signal `query_candidates`
+- some repetition is intentional history, but some is schema debt.
+
+Tasks:
+
+- [ ] `P24.1` Define one authoritative owner for:
+  - raw user task text
+  - retrieval seed text
+  - solver objective
+  - routing explanation
+- [ ] `P24.2` Remove `answer_focus` if it remains only a wrapper around `routing_rationale`
+- [ ] `P24.3` Replace free-form `query_candidates` with a typed query-plan payload if Phase 20 lands that structure cleanly
+- [ ] `P24.4` Update traces so repeated raw history remains available but compact summaries show only authoritative fields
+- [ ] `P24.5` Add a schema audit test that fails when the same concept is redundantly serialized through too many layers
+- [ ] `P24.6` Update teammate docs with a field-ownership table for runtime state
+
+Suggested code targets:
+
+- `src/agent/contracts.py`
+- `src/agent/curated_context.py`
+- `src/agent/nodes/orchestrator_intent.py`
+- `src/agent/tracer.py`
+- `docs/v5_runtime_walkthrough.md`
+
+Exit criteria:
+
+- teammates can explain why each top-level state field exists
+- compact traces stop repeating equivalent intent and objective fields
+
+## Phase 25: Original Benchmark Regression Harness And Failure Taxonomy
+
+Objective:
+
+- convert original-benchmark failures into a repeatable local harness so future fixes are measured against real benchmark behavior, not only the curated smoke slice.
+
+Why now:
+
+- the three April 5 traces exposed failure classes that the earlier smoke slice did not cover.
+- we need a stable way to prevent regressions once Phases 20-24 begin.
+
+Tasks:
+
+- [ ] `P25.1` Capture anonymized benchmark-failure fixtures as local regression metadata without baking task-specific hacks into runtime logic
+- [ ] `P25.2` Add a benchmark failure taxonomy:
+  - wrong source
+  - wrong table family
+  - wrong row or column semantics
+  - incomplete evidence
+  - false semantic pass
+  - repair stall
+- [ ] `P25.3` Extend evaluation reports so they classify both pipeline stage failure and semantic correctness failure
+- [ ] `P25.4` Add go or no-go thresholds that require:
+  - no false semantic passes
+  - bounded repair-stall rate
+  - acceptable source-ranking accuracy on sampled benchmark cases
+- [ ] `P25.5` Keep this harness benchmark-agnostic enough to reuse for future document-grounded financial benchmarks
+
+Suggested code targets:
+
+- `src/agent/benchmarks/officeqa_eval.py`
+- `scripts/run_officeqa_regression.py`
+- `eval/`
+- `tests/test_officeqa_eval.py`
+
+Exit criteria:
+
+- the team can measure progress on real benchmark-like failures without relying only on manual trace review
+
 ## Optional Backlog: Shared Global Workpad
 
 Recommendation:

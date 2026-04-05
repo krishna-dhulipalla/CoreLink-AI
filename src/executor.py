@@ -30,13 +30,22 @@ from a2a.utils import (
     new_task,
 )
 
-from agent import build_agent_graph, run_agent
-from agent.benchmarks import verify_officeqa_competition_bootstrap
-from agent.model_config import startup_compatibility_warnings, startup_model_summary
-from agent.tracer import write_preflight_failure_trace
-from conversation_store import ConversationStore
-from judge_mcp_bridge import JudgeMcpConnectionError, load_judge_tools_for_session
-from mcp_client import judge_mcp_discovery_enabled, load_mcp_tools_from_env
+try:
+    from .agent import build_agent_graph, run_agent
+    from .agent.benchmarks import verify_officeqa_competition_bootstrap
+    from .agent.model_config import startup_compatibility_warnings, startup_model_summary
+    from .agent.tracer import write_preflight_failure_trace
+    from .conversation_store import ConversationStore
+    from .judge_mcp_bridge import JudgeMcpConnectionError, load_judge_tools_for_session
+    from .mcp_client import judge_mcp_discovery_enabled, load_mcp_tools_from_env
+except ImportError:  # pragma: no cover - compatibility for direct script execution
+    from agent import build_agent_graph, run_agent
+    from agent.benchmarks import verify_officeqa_competition_bootstrap
+    from agent.model_config import startup_compatibility_warnings, startup_model_summary
+    from agent.tracer import write_preflight_failure_trace
+    from conversation_store import ConversationStore
+    from judge_mcp_bridge import JudgeMcpConnectionError, load_judge_tools_for_session
+    from mcp_client import judge_mcp_discovery_enabled, load_mcp_tools_from_env
 
 logger = logging.getLogger(__name__)
 
