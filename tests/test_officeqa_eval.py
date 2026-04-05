@@ -255,6 +255,43 @@ def test_summarize_regression_report_blocks_on_validation_failures():
     assert summary["go_for_full_benchmark"] is False
 
 
+def test_summarize_regression_report_blocks_false_internal_passes_with_semantic_issues():
+    false_pass = {
+        "case_kind": "qa",
+        "classification": {"subsystem": "pass", "compute_status": "ok"},
+        "retrieval_strategy": "table_first",
+        "answer_mode": "deterministic_compute",
+        "artifacts": {
+            "chosen_sources": [{"document_id": "x"}],
+            "extracted_tables": [{"document_id": "x"}],
+            "final_answer": "4748",
+            "compute_policy": "required",
+            "structure_confidence_summary": {"table_confidence_gate_passed": True},
+            "semantic_diagnostics": {"admissibility_passed": False, "issues": ["wrong row family"]},
+        },
+    }
+    good = {
+        "case_kind": "qa",
+        "classification": {"subsystem": "pass", "compute_status": "ok"},
+        "retrieval_strategy": "table_first",
+        "answer_mode": "deterministic_compute",
+        "artifacts": {
+            "chosen_sources": [{"document_id": "y"}],
+            "extracted_tables": [{"document_id": "y"}],
+            "final_answer": "251286",
+            "compute_policy": "required",
+            "structure_confidence_summary": {"table_confidence_gate_passed": True},
+            "semantic_diagnostics": {"admissibility_passed": True, "issues": []},
+        },
+    }
+
+    summary = summarize_regression_report([good, false_pass])
+
+    assert summary["semantic_compute_pass_cases"] == 1
+    assert summary["compute_reliable_cases"] == 1
+    assert summary["go_for_full_benchmark"] is False
+
+
 def test_build_case_report_includes_classification_and_artifacts():
     state = make_state(
         "OfficeQA task",

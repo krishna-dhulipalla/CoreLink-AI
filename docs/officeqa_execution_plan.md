@@ -1099,23 +1099,23 @@ Why now:
 
 Tasks:
 
-- [ ] `P22.1` Add table-suitability checks before compute:
+- [x] `P22.1` Add table-suitability checks before compute:
   - row-category fit
   - period-scope fit
   - aggregation-fit
   - granularity-fit
-- [ ] `P22.2` Add compute-admissibility rules so:
+- [x] `P22.2` Add compute-admissibility rules so:
   - annual totals do not compute from partial-year columns
   - category-specific answers do not compute from all-government total rows
   - monthly-sum tasks do not compute from annual summary tables
-- [ ] `P22.3` Add a second semantic validator pass after compute that can reject a numerically clean but semantically wrong answer
-- [ ] `P22.4` Add explicit diagnostics for:
+- [x] `P22.3` Add a second semantic validator pass after compute that can reject a numerically clean but semantically wrong answer
+- [x] `P22.4` Add explicit diagnostics for:
   - wrong row family
   - wrong column family
   - wrong period slice
   - wrong aggregation grain
-- [ ] `P22.5` Update regression scoring so local benchmark dry runs can detect false internal passes, not just pipeline completion
-- [ ] `P22.6` Add benchmark fixtures where the wrong table yields a plausible number and ensure the runtime still fails safely
+- [x] `P22.5` Update regression scoring so local benchmark dry runs can detect false internal passes, not just pipeline completion
+- [x] `P22.6` Add benchmark fixtures where the wrong table yields a plausible number and ensure the runtime still fails safely
 
 Suggested code targets:
 

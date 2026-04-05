@@ -59,6 +59,12 @@ _FAILURE_REMEDIATION_CODES = {
     "deterministic compute ledger": "REBUILD_COMPUTE_LEDGER",
     _NAVIGATION_FAILURE: "RERANK_ANALYTICAL_TABLES",
 }
+_SEMANTIC_COMPUTE_FAILURES = {
+    "wrong row family": "entity/category correctness",
+    "wrong column family": "aggregation correctness",
+    "wrong period slice": "time scope correctness",
+    "wrong aggregation grain": "aggregation correctness",
+}
 
 
 def _requires_deterministic_compute(retrieval_intent: RetrievalIntent) -> bool:
@@ -254,6 +260,13 @@ def validate_officeqa_final(
             _append_unique(hard_failures, "deterministic compute support")
         if compute.validation_errors:
             _append_unique(hard_failures, "deterministic compute validation")
+        semantic = dict(compute.semantic_diagnostics or {})
+        if semantic and not bool(semantic.get("admissibility_passed", True)):
+            _append_unique(hard_failures, "deterministic compute validation")
+            for issue in list(semantic.get("issues", []) or []):
+                mapped = _SEMANTIC_COMPUTE_FAILURES.get(str(issue), "")
+                if mapped:
+                    _append_unique(hard_failures, mapped)
         if compute.status == "ok" and not compute.provenance_complete:
             _append_unique(hard_failures, "provenance presence")
         if compute.status == "ok" and not compute.ledger:
@@ -261,6 +274,13 @@ def validate_officeqa_final(
     elif compute.status == "ok":
         if compute.validation_errors:
             _append_unique(hard_failures, "deterministic compute validation")
+        semantic = dict(compute.semantic_diagnostics or {})
+        if semantic and not bool(semantic.get("admissibility_passed", True)):
+            _append_unique(hard_failures, "deterministic compute validation")
+            for issue in list(semantic.get("issues", []) or []):
+                mapped = _SEMANTIC_COMPUTE_FAILURES.get(str(issue), "")
+                if mapped:
+                    _append_unique(hard_failures, mapped)
         if not compute.provenance_complete:
             _append_unique(hard_failures, "provenance presence")
 

@@ -17,8 +17,9 @@ from agent.benchmarks import (
     benchmark_validate_final,
     register_benchmark_document_adapter,
 )
+from agent.benchmarks.officeqa_validator import validate_officeqa_final
 from agent.benchmarks.officeqa_index import build_officeqa_index
-from agent.contracts import EvidenceSufficiency, ExecutionJournal, OfficeQAValidationResult, ProgressSignature, SourceBundle, TaskIntent, ToolPlan
+from agent.contracts import EvidenceSufficiency, ExecutionJournal, OfficeQAValidationResult, ProgressSignature, RetrievalIntent, SourceBundle, TaskIntent, ToolPlan
 from agent.officeqa_structured_evidence import build_officeqa_structured_evidence
 from agent.retrieval_tools import fetch_corpus_document as fetch_corpus_document_tool
 from agent.retrieval_tools import fetch_officeqa_table, lookup_officeqa_cells, search_reference_corpus
@@ -3392,6 +3393,73 @@ def test_officeqa_reviewer_rejects_navigational_table_evidence():
     assert result["review_packet"]["validator_result"]["verdict"] == "revise"
     assert result["quality_report"]["verdict"] in {"revise", "fail"}
     assert "navigational table selection" in result["review_packet"]["validator_result"]["missing_dimensions"]
+
+
+def test_officeqa_validator_rejects_semantically_wrong_but_numeric_compute():
+    result = validate_officeqa_final(
+        task_text="What were the total expenditures for U.S. national defense in the calendar year 1940?",
+        retrieval_intent=RetrievalIntent(
+            entity="National defense",
+            metric="total expenditures",
+            period="1940",
+            granularity_requirement="calendar_year",
+            document_family="treasury_bulletin",
+            aggregation_shape="calendar_year_total",
+            answer_mode="deterministic_compute",
+            compute_policy="required",
+            strategy="table_first",
+            analysis_modes=[],
+            evidence_plan={
+                "requires_table_support": True,
+                "requires_text_support": False,
+                "requires_cross_source_alignment": False,
+                "join_keys": [],
+            },
+        ),
+        curated_context={
+            "objective": "What were the total expenditures for U.S. national defense in the calendar year 1940?",
+            "facts_in_use": [],
+            "open_questions": [],
+            "assumptions": [],
+            "requested_output": {"format": "xml"},
+            "structured_evidence": {
+                "tables": [{"document_id": "treasury_1940_json", "table_locator": "Summary of expenditures", "headers": ["Calendar year 1940"], "header_rows": []}],
+                "values": [{"document_id": "treasury_1940_json"}],
+                "page_chunks": [],
+                "provenance_complete": True,
+                "units_seen": ["million dollars"],
+            },
+            "compute_result": {
+                "status": "ok",
+                "operation": "calendar_year_total",
+                "display_value": "4748",
+                "provenance_complete": True,
+                "ledger": [{"operator": "calendar_year_total", "description": "1940 calendar-year total", "provenance_refs": [{"citation": "treasury_1940.json"}]}],
+                "semantic_diagnostics": {
+                    "admissibility_passed": False,
+                    "issues": ["wrong row family", "wrong period slice"],
+                    "row_family_status": "wrong row family",
+                    "period_slice_status": "wrong period slice",
+                    "column_family_status": "matched",
+                    "aggregation_grain_status": "matched",
+                },
+            },
+        },
+        evidence_sufficiency={
+            "source_family": "official_government_finance",
+            "period_scope": "matched",
+            "aggregation_type": "matched",
+            "entity_scope": "matched",
+            "is_sufficient": True,
+            "missing_dimensions": [],
+            "rationale": "Looks structurally sufficient.",
+        },
+        citations=["treasury_1940.json"],
+    )
+
+    assert result.verdict == "revise"
+    assert "entity/category correctness" in result.hard_failures
+    assert "time scope correctness" in result.hard_failures
 
 
 def test_engine_reviewer_revises_legal_once_then_stops_cleanly():

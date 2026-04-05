@@ -623,3 +623,38 @@ Rules:
   - `$env:PYTHONPATH='src;tests'; python -m pytest tests/test_officeqa_index.py tests/test_engine_runtime.py -k "search_ranking_prefers_semantically_relevant_sources or requeries_when_top_candidate_confidence_is_weak or reopens_source_search_after_missing_row_in_wrong_document or retries_table_extraction_when_monthly_question_hits_annual_summary or prefers_monthly_series_over_annual_summary or prefers_analytical_table_over_contents_table" -q -p no:cacheprovider` -> `6 passed, 78 deselected`
 - **Follow-Up Note:** Phase 21 fixes semantic source ranking and repair policy, but it does not yet decide whether retrieved evidence is admissible for deterministic compute. That next boundary remains the focus of Phase 22.
 
+### Chat 38: Phase 22 Completed With Evidence Suitability And Compute-Admissibility Guards
+
+- **Role:** Coder
+- **Actions Taken:** Implemented the Phase 22 semantic-admissibility layer so deterministic OfficeQA compute can no longer succeed on structurally clean but semantically wrong evidence. The main code changes are in [officeqa_compute.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\benchmarks\officeqa_compute.py), [officeqa_validator.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\benchmarks\officeqa_validator.py), [officeqa_eval.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\benchmarks\officeqa_eval.py), [contracts.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\contracts.py), and [officeqa_structured_evidence.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\src\agent\officeqa_structured_evidence.py).
+- **Core Runtime Changes:**
+  - extended OfficeQA table/value evidence with `table_family`, and added `semantic_diagnostics` to `OfficeQAComputeResult`
+  - added pre-compute semantic admissibility checks for:
+    - row-category fit
+    - metric/column fit
+    - period-slice fit
+    - aggregation-grain fit
+  - added explicit compute blocking so the runtime now refuses deterministic answers when:
+    - a calendar-year answer is sourced from partial-year columns like `Actual 6 months 1940`
+    - a category-specific question is sourced from a generic all-government total row
+    - a value comes from the wrong table/aggregation grain
+  - added a second semantic validator pass after compute, so a numerically clean compute result can still be rejected when `semantic_diagnostics.admissibility_passed == false`
+  - updated local regression reporting so benchmark dry runs no longer count semantically inadmissible internal passes as compute-reliable or benchmark-ready
+- **Behavioral Result:** The old false-pass boundary is now closed:
+  - deterministic compute can no longer return `ok` on the wrong row family or wrong period slice
+  - validator maps semantic compute issues back into task-level failures like `entity/category correctness` and `time scope correctness`
+  - local regression summaries now block `go_for_full_benchmark` if semantically bad compute survives classification as a nominal `pass`
+- **Tests Added/Updated:** Updated:
+  - [test_officeqa_compute.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_officeqa_compute.py)
+  - [test_engine_runtime.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_engine_runtime.py)
+  - [test_officeqa_eval.py](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\tests\test_officeqa_eval.py)
+  with regressions for:
+  - rejecting partial-year annual columns for calendar-year totals
+  - rejecting wrong row family even when the value is plausible
+  - validator rejection of semantically wrong but numeric compute results
+  - regression summary blocking false internal passes with semantic issues
+- **Validation:** Verified with:
+  - `python -m py_compile src/agent/contracts.py src/agent/officeqa_structured_evidence.py src/agent/benchmarks/officeqa_compute.py src/agent/benchmarks/officeqa_validator.py src/agent/benchmarks/officeqa_eval.py tests/test_officeqa_compute.py tests/test_engine_runtime.py tests/test_officeqa_eval.py`
+  - `$env:PYTHONPATH='src;tests'; python -m pytest tests/test_officeqa_compute.py tests/test_engine_runtime.py tests/test_officeqa_eval.py -k "wrong_row_family or wrong_period_slice or semantic or false_internal_passes or calendar_year_total_rejects_partial_year_column or validator_rejects_semantically_wrong_but_numeric_compute or point_lookup_rejects_navigational_page_reference_cells" -q -p no:cacheprovider` -> `6 passed, 81 deselected`
+- **Follow-Up Note:** Phase 22 closes the false-pass compute boundary. The next remaining benchmark fault is repair behavior after semantic failure, which is the focus of Phase 23.
+

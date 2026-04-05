@@ -172,6 +172,7 @@ class OfficeQATableEvidence(BaseModel):
     citation: str = ""
     page_locator: str = ""
     table_locator: str = ""
+    table_family: str = ""
     headers: list[str] = Field(default_factory=list)
     header_rows: list[list[str]] = Field(default_factory=list)
     column_paths: list[list[str]] = Field(default_factory=list)
@@ -188,6 +189,7 @@ class OfficeQAValueEvidence(BaseModel):
     citation: str = ""
     page_locator: str = ""
     table_locator: str = ""
+    table_family: str = ""
     row_index: int = -1
     row_label: str = ""
     row_path: list[str] = Field(default_factory=list)
@@ -247,6 +249,7 @@ class OfficeQAComputeResult(BaseModel):
     selection_reasoning: str = ""
     rejected_alternatives: list[str] = Field(default_factory=list)
     validation_errors: list[str] = Field(default_factory=list)
+    semantic_diagnostics: dict[str, Any] = Field(default_factory=dict)
     citations: list[str] = Field(default_factory=list)
     ledger: list[dict[str, Any]] = Field(default_factory=list)
     provenance_complete: bool = False

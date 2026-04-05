@@ -7,12 +7,22 @@ from agent.retrieval_reasoning import build_retrieval_intent
 from test_utils import make_state
 
 
-def _monthly_value(year: int, month: str, raw_value: float, *, metric: str = "Expenditures (million dollars)", citation: str | None = None) -> dict:
+def _monthly_value(
+    year: int,
+    month: str,
+    raw_value: float,
+    *,
+    metric: str = "Expenditures (million dollars)",
+    citation: str | None = None,
+    table_family: str = "monthly_series",
+    table_locator: str = "National Defense",
+) -> dict:
     return {
         "document_id": f"treasury_{year}_json",
         "citation": citation or f"treasury_{year}.json",
         "page_locator": "page 1",
-        "table_locator": "National Defense",
+        "table_locator": table_locator,
+        "table_family": table_family,
         "row_index": 0,
         "row_label": month,
         "row_path": [month],
@@ -29,18 +39,28 @@ def _monthly_value(year: int, month: str, raw_value: float, *, metric: str = "Ex
     }
 
 
-def _annual_value(year: int, raw_value: float, *, row_label: str, metric: str) -> dict:
+def _annual_value(
+    year: int,
+    raw_value: float,
+    *,
+    row_label: str,
+    metric: str,
+    table_family: str = "category_breakdown",
+    table_locator: str = "Annual Summary",
+    column_path: list[str] | None = None,
+) -> dict:
     return {
         "document_id": f"treasury_{year}_json",
         "citation": f"treasury_{year}.json",
         "page_locator": "page 1",
-        "table_locator": "Annual Summary",
+        "table_locator": table_locator,
+        "table_family": table_family,
         "row_index": 0,
         "row_label": row_label,
         "row_path": [row_label],
         "column_index": 1,
         "column_label": metric,
-        "column_path": [metric],
+        "column_path": column_path or [metric],
         "raw_value": str(raw_value),
         "numeric_value": raw_value,
         "normalized_value": raw_value,
@@ -382,6 +402,68 @@ def test_compute_officeqa_point_lookup_rejects_navigational_page_reference_cells
 
     assert result.status == "insufficient"
     assert "navigational" in result.validation_errors[0].lower()
+
+
+def test_compute_officeqa_calendar_year_total_rejects_partial_year_column():
+    values = [
+        _annual_value(
+            1940,
+            4748.0,
+            row_label="National defense and related activities",
+            metric="Actual 6 months 1940",
+            table_family="annual_summary",
+            table_locator="Summary of expenditures",
+            column_path=["Actual 6 months 1940"],
+        )
+    ]
+    prompt = "What were the total expenditures for U.S. national defense in the calendar year 1940?"
+    retrieval_intent = RetrievalIntent(
+        entity="National defense",
+        metric="total expenditures",
+        period="1940",
+        granularity_requirement="calendar_year",
+        document_family="treasury_bulletin",
+        aggregation_shape="calendar_year_total",
+        answer_mode="deterministic_compute",
+        compute_policy="required",
+    )
+
+    result = compute_officeqa_result(prompt, retrieval_intent, _structured(values))
+
+    assert result.status == "insufficient"
+    assert any("wrong period slice" in item.lower() for item in result.validation_errors)
+    assert result.semantic_diagnostics["period_slice_status"] == "wrong period slice"
+
+
+def test_compute_officeqa_calendar_year_total_rejects_wrong_row_family():
+    values = [
+        _annual_value(
+            1940,
+            4748.0,
+            row_label="Total Expenditures",
+            metric="Calendar year 1940",
+            table_family="category_breakdown",
+            table_locator="Summary of budget receipts and expenditures",
+            column_path=["Calendar year 1940"],
+        )
+    ]
+    prompt = "What were the total expenditures for U.S. national defense in the calendar year 1940?"
+    retrieval_intent = RetrievalIntent(
+        entity="National defense",
+        metric="total expenditures",
+        period="1940",
+        granularity_requirement="calendar_year",
+        document_family="treasury_bulletin",
+        aggregation_shape="calendar_year_total",
+        answer_mode="deterministic_compute",
+        compute_policy="required",
+    )
+
+    result = compute_officeqa_result(prompt, retrieval_intent, _structured(values))
+
+    assert result.status == "insufficient"
+    assert any("wrong row family" in item.lower() for item in result.validation_errors)
+    assert result.semantic_diagnostics["row_family_status"] == "wrong row family"
 
 
 def test_executor_prefers_deterministic_officeqa_compute_without_llm(monkeypatch):

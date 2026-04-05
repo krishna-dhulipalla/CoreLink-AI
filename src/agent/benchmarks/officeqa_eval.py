@@ -137,6 +137,9 @@ def classify_officeqa_trace(trace: dict[str, Any] | None) -> dict[str, Any]:
     elif list(compute.get("validation_errors") or []):
         subsystem = "compute"
         rationale = "Deterministic compute emitted validation errors."
+    elif not bool(dict(compute.get("semantic_diagnostics", {}) or {}).get("admissibility_passed", True)):
+        subsystem = "compute"
+        rationale = "Deterministic compute selected semantically inadmissible evidence."
     else:
         statuses = {
             str(dict(result.get("facts") or {}).get("metadata", {}).get("officeqa_status", "") or "").strip().lower()
@@ -252,6 +255,7 @@ def capture_officeqa_artifacts(trace: dict[str, Any] | None) -> dict[str, Any]:
         "merged_series_count": len(list(structured.get("merged_series", [])) or []),
         "compute_selection_reasoning": str(compute.get("selection_reasoning", "") or ""),
         "rejected_aggregation_alternatives": list(compute.get("rejected_alternatives", []) or [])[:6],
+        "semantic_diagnostics": dict(compute.get("semantic_diagnostics", {}) or {}),
         "compute_ledger": compute_ledger,
         "solver_llm_decision": dict(workpad.get("solver_llm_decision") or {}),
         "validator_remediation": list(validator.get("remediation_guidance", []) or [])[:6],
@@ -306,6 +310,7 @@ def summarize_regression_report(case_reports: list[dict[str, Any]]) -> dict[str,
     extraction_ready = 0
     confidence_ready = 0
     compute_reliable = 0
+    semantic_compute_passed = 0
     contract_success = 0
     qa_total = 0
     for item in case_reports:
@@ -337,7 +342,10 @@ def summarize_regression_report(case_reports: list[dict[str, Any]]) -> dict[str,
             contract_success += 1
         compute_policy = str(artifacts.get("compute_policy", "") or "").strip()
         compute_status = str(dict(item.get("classification") or {}).get("compute_status", "") or "")
-        if compute_policy in {"preferred", "not_applicable", ""} or compute_status == "ok":
+        semantic_ok = bool(dict(artifacts.get("semantic_diagnostics", {}) or {}).get("admissibility_passed", True))
+        if semantic_ok:
+            semantic_compute_passed += 1
+        if (compute_policy in {"preferred", "not_applicable", ""} or compute_status == "ok") and semantic_ok:
             compute_reliable += 1
 
     total = len(case_reports)
@@ -354,6 +362,7 @@ def summarize_regression_report(case_reports: list[dict[str, Any]]) -> dict[str,
         and extraction_ready >= required_qa_threshold
         and confidence_ready >= required_qa_threshold
         and compute_reliable >= required_qa_threshold
+        and semantic_compute_passed >= required_qa_threshold
         and contract_success == qa_total
     )
 
@@ -369,11 +378,12 @@ def summarize_regression_report(case_reports: list[dict[str, Any]]) -> dict[str,
         "extraction_ready_cases": extraction_ready,
         "confidence_ready_cases": confidence_ready,
         "compute_reliable_cases": compute_reliable,
+        "semantic_compute_pass_cases": semantic_compute_passed,
         "contract_success_cases": contract_success,
         "go_for_full_benchmark": go_for_full_benchmark,
         "go_no_go_reason": (
-            "QA cases meet routing/formatting/validation, extraction, confidence, compute, and final-contract thresholds."
+            "QA cases meet routing/formatting/validation, extraction, confidence, semantic compute, and final-contract thresholds."
             if go_for_full_benchmark
-            else "Hold full benchmark runs until QA cases have zero routing/formatting/validation failures and at least 60% satisfy extraction quality, evidence confidence, compute reliability, and final-answer contract success."
+            else "Hold full benchmark runs until QA cases have zero routing/formatting/validation failures and at least 60% satisfy extraction quality, evidence confidence, semantic compute reliability, and final-answer contract success."
         ),
     }

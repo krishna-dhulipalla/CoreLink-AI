@@ -51,9 +51,17 @@ _STOPWORDS = {
     "what",
     "year",
 }
+_ENTITY_STOPWORDS = _STOPWORDS | {"u", "s", "us", "adm", "administration", "related"}
 _STRUCTURE_CONFIDENCE_AVG_THRESHOLD = 0.6
 _STRUCTURE_CONFIDENCE_MAX_THRESHOLD = 0.7
 _PAGE_REF_RE = re.compile(r"^[A-Z]?-?\d+(?:-\d+)?(?:\s+\d+(?:-\d+)?)*\.?$")
+_PARTIAL_PERIOD_PATTERNS = (
+    r"\bactual\s+\d+\s+months?\b",
+    r"\bfirst\s+\d+\s+months?\b",
+    r"\blast\s+\d+\s+months?\b",
+    r"\b\d+\s+months?\b",
+    r"\btotal\s+\d+/\b",
+)
 
 
 def _normalize_space(text: str) -> str:
@@ -135,6 +143,14 @@ def _metric_tokens(task_text: str, retrieval_intent: RetrievalIntent) -> set[str
     }
 
 
+def _entity_tokens(retrieval_intent: RetrievalIntent) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[a-z0-9]+", (retrieval_intent.entity or "").lower())
+        if len(token) > 2 and token not in _ENTITY_STOPWORDS
+    }
+
+
 def _matches_metric(value: dict[str, Any], metric_tokens: set[str]) -> bool:
     if not metric_tokens:
         return True
@@ -170,6 +186,11 @@ def _looks_navigational_value(value: dict[str, Any]) -> bool:
     if "issue and page number" in column_label and _is_page_reference_value_text(raw_value):
         return True
     return False
+
+
+def _has_partial_period_marker(text: str) -> bool:
+    lowered = _normalize_space(text).lower()
+    return any(re.search(pattern, lowered) for pattern in _PARTIAL_PERIOD_PATTERNS)
 
 
 def _explicit_value_years(value: dict[str, Any]) -> list[str]:
@@ -252,12 +273,113 @@ def _provenance_ref(value: dict[str, Any]) -> dict[str, Any]:
         "citation": str(value.get("citation", "")),
         "page_locator": str(value.get("page_locator", "")),
         "table_locator": str(value.get("table_locator", "")),
+        "table_family": str(value.get("table_family", "")),
         "row_label": str(value.get("row_label", "")),
         "row_path": list(value.get("row_path", [])),
         "column_label": str(value.get("column_label", "")),
         "column_path": list(value.get("column_path", [])),
         "raw_value": str(value.get("raw_value", "")),
     }
+
+
+def _semantic_status(issues: list[str], issue_name: str) -> str:
+    return issue_name if issue_name in issues else "matched"
+
+
+def _semantic_admissibility(
+    values: list[dict[str, Any]],
+    *,
+    retrieval_intent: RetrievalIntent,
+    task_text: str,
+    operation: str,
+    target_years: set[str],
+    metric_tokens: set[str],
+) -> dict[str, Any]:
+    deduped = [item for item in _dedupe_values(values) if isinstance(item, dict)]
+    if not deduped:
+        return {
+            "admissibility_passed": False,
+            "issues": ["missing semantic support"],
+            "row_family_status": "unknown",
+            "column_family_status": "unknown",
+            "period_slice_status": "unknown",
+            "aggregation_grain_status": "unknown",
+        }
+
+    entity_tokens = _entity_tokens(retrieval_intent)
+    issue_set: set[str] = set()
+    value_texts = [_cell_text(item).lower() for item in deduped]
+    families = {
+        str(item.get("table_family", "") or "").strip().lower()
+        for item in deduped
+        if str(item.get("table_family", "") or "").strip()
+    }
+
+    if entity_tokens:
+        entity_matched = False
+        for text in value_texts:
+            tokens = set(re.findall(r"[a-z0-9]+", text))
+            overlap = entity_tokens.intersection(tokens)
+            if len(overlap) >= min(2, len(entity_tokens)) or (len(entity_tokens) == 1 and bool(overlap)):
+                entity_matched = True
+                break
+        if not entity_matched:
+            issue_set.add("wrong row family")
+
+    if metric_tokens and not any(_matches_metric(item, metric_tokens) for item in deduped):
+        issue_set.add("wrong column family")
+
+    if operation in {"calendar_year_total", "point_lookup"} or "calendar year" in (task_text or "").lower():
+        if any(_has_partial_period_marker(text) for text in value_texts):
+            issue_set.add("wrong period slice")
+
+    if operation == "monthly_sum":
+        if families and families != {"monthly_series"}:
+            issue_set.add("wrong aggregation grain")
+    elif operation in {"monthly_sum_percent_change", "inflation_adjusted_monthly_difference"}:
+        if families and any(family != "monthly_series" for family in families):
+            issue_set.add("wrong aggregation grain")
+    elif operation in {"calendar_year_total", "point_lookup"} and families and "navigation_or_contents" in families:
+        issue_set.add("wrong aggregation grain")
+
+    if target_years:
+        year_supported = False
+        for item in deduped:
+            explicit_years = set(_explicit_value_years(item))
+            years = explicit_years or set(_extract_value_years(item))
+            if target_years.intersection(years):
+                year_supported = True
+                break
+        if not year_supported:
+            issue_set.add("wrong period slice")
+
+    issues = sorted(issue_set)
+    return {
+        "admissibility_passed": not issues,
+        "issues": issues,
+        "row_family_status": _semantic_status(issues, "wrong row family"),
+        "column_family_status": _semantic_status(issues, "wrong column family"),
+        "period_slice_status": _semantic_status(issues, "wrong period slice"),
+        "aggregation_grain_status": _semantic_status(issues, "wrong aggregation grain"),
+        "table_families": sorted(families),
+        "value_count": len(deduped),
+    }
+
+
+def _semantic_validation_errors(semantic_diagnostics: dict[str, Any]) -> list[str]:
+    messages: list[str] = []
+    for issue in list(semantic_diagnostics.get("issues", []) or []):
+        if issue == "wrong row family":
+            messages.append("Wrong row family: selected evidence does not match the requested entity or category.")
+        elif issue == "wrong column family":
+            messages.append("Wrong column family: selected evidence does not match the requested metric column.")
+        elif issue == "wrong period slice":
+            messages.append("Wrong period slice: selected evidence reflects a partial or mismatched time scope.")
+        elif issue == "wrong aggregation grain":
+            messages.append("Wrong aggregation grain: selected evidence uses the wrong table or aggregation grain for the task.")
+        elif issue == "missing semantic support":
+            messages.append("Missing semantic support: no candidate values were available for admissibility checks.")
+    return messages
 
 
 def _structure_gate(evidence: dict[str, Any], values: list[dict[str, Any]]) -> tuple[bool, str]:
@@ -324,12 +446,12 @@ def _series_total_for_calendar_year(
         chosen = annual_candidates[0]
         total = _pick_numeric_value(chosen)
         if total is not None:
-            return total, [_provenance_ref(chosen)], "annual_row"
+            return total, [chosen], "annual_row"
     monthly_values = monthly.get(year, {})
     if len(monthly_values) >= 12:
         ordered = [monthly_values[index] for index in sorted(monthly_values)[:12]]
         total = sum(_pick_numeric_value(item) or 0.0 for item in ordered)
-        return total, [_provenance_ref(item) for item in ordered], "monthly_sum"
+        return total, ordered, "monthly_sum"
     return None, [], "missing_year_support"
 
 
@@ -354,7 +476,7 @@ def _series_total_for_fiscal_year(
         chosen = annual_candidates[0]
         total = _pick_numeric_value(chosen)
         if total is not None:
-            return total, [_provenance_ref(chosen)], "fiscal_annual_row"
+            return total, [chosen], "fiscal_annual_row"
     month_keys = _fiscal_month_keys(int(year))
     values: list[dict[str, Any]] = []
     for year_key, month in month_keys:
@@ -363,7 +485,7 @@ def _series_total_for_fiscal_year(
             return None, [], "missing_fiscal_month_coverage"
         values.append(item)
     total = sum(_pick_numeric_value(item) or 0.0 for item in values)
-    return total, [_provenance_ref(item) for item in values], "fiscal_month_sum"
+    return total, values, "fiscal_month_sum"
 
 
 def _series_average_for_year(
@@ -377,12 +499,12 @@ def _series_average_for_year(
         chosen = annual_candidates[0]
         value = _pick_numeric_value(chosen)
         if value is not None:
-            return value, [_provenance_ref(chosen)], "annual_average"
+            return value, [chosen], "annual_average"
     monthly_values = monthly.get(year, {})
     if len(monthly_values) >= 12:
         ordered = [monthly_values[index] for index in sorted(monthly_values)[:12]]
         average = sum(_pick_numeric_value(item) or 0.0 for item in ordered) / len(ordered)
-        return average, [_provenance_ref(item) for item in ordered], "monthly_average"
+        return average, ordered, "monthly_average"
     return None, [], "missing_cpi_support"
 
 
@@ -458,6 +580,10 @@ def compact_officeqa_compute_result(payload: dict[str, Any] | None) -> dict[str,
         "selection_reasoning": str(data.get("selection_reasoning", "")),
         "rejected_alternative_count": len(list(data.get("rejected_alternatives", []))),
         "validation_errors": list(data.get("validation_errors", []))[:6],
+        "semantic_diagnostics": {
+            "admissibility_passed": bool(dict(data.get("semantic_diagnostics", {}) or {}).get("admissibility_passed", False)),
+            "issues": list(dict(data.get("semantic_diagnostics", {}) or {}).get("issues", []))[:6],
+        },
         "provenance_complete": bool(data.get("provenance_complete")),
         "ledger": [
             {
@@ -521,7 +647,7 @@ def compute_officeqa_result(
                 years=years,
                 validation_errors=["Monthly sum compute requires exactly one target year."],
             )
-        total, refs, mode = _series_total_for_calendar_year(years[0], monthly=monthly, annual={})
+        total, selected_values, mode = _series_total_for_calendar_year(years[0], monthly=monthly, annual={})
         if total is None:
             return _result_with_diagnostics(
                 status="insufficient",
@@ -530,6 +656,25 @@ def compute_officeqa_result(
                 years=years,
                 validation_errors=[f"Missing complete monthly coverage for calendar year {years[0]}."],
             )
+        semantic_diagnostics = _semantic_admissibility(
+            selected_values,
+            retrieval_intent=retrieval_intent,
+            task_text=task_text,
+            operation=operation,
+            target_years=set(years),
+            metric_tokens=metric_tokens,
+        )
+        semantic_errors = _semantic_validation_errors(semantic_diagnostics)
+        if semantic_errors:
+            return _result_with_diagnostics(
+                status="insufficient",
+                operation=operation,
+                retrieval_intent=retrieval_intent,
+                years=years,
+                validation_errors=semantic_errors,
+                semantic_diagnostics=semantic_diagnostics,
+            )
+        refs = [_provenance_ref(item) for item in selected_values]
         append_step(
             OfficeQAComputeStep(
                 operator="monthly_sum",
@@ -550,6 +695,7 @@ def compute_officeqa_result(
             answer_text=_build_answer_text(operation, display_value, ledger),
             citations=citations,
             ledger=[step.model_dump() for step in ledger],
+            semantic_diagnostics=semantic_diagnostics,
             provenance_complete=provenance_complete and bool(refs),
         )
 
@@ -570,7 +716,7 @@ def compute_officeqa_result(
                 years=years,
                 validation_errors=["Calendar year total compute requires exactly one target year."],
             )
-        total, refs, mode = _series_total_for_calendar_year(years[0], monthly=monthly, annual=annual)
+        total, selected_values, mode = _series_total_for_calendar_year(years[0], monthly=monthly, annual=annual)
         if total is None:
             return _result_with_diagnostics(
                 status="insufficient",
@@ -579,6 +725,25 @@ def compute_officeqa_result(
                 years=years,
                 validation_errors=[f"Missing calendar-year support for {years[0]}."],
             )
+        semantic_diagnostics = _semantic_admissibility(
+            selected_values,
+            retrieval_intent=retrieval_intent,
+            task_text=task_text,
+            operation=operation,
+            target_years=set(years),
+            metric_tokens=metric_tokens,
+        )
+        semantic_errors = _semantic_validation_errors(semantic_diagnostics)
+        if semantic_errors:
+            return _result_with_diagnostics(
+                status="insufficient",
+                operation=operation,
+                retrieval_intent=retrieval_intent,
+                years=years,
+                validation_errors=semantic_errors,
+                semantic_diagnostics=semantic_diagnostics,
+            )
+        refs = [_provenance_ref(item) for item in selected_values]
         append_step(
             OfficeQAComputeStep(
                 operator="calendar_year_total",
@@ -599,6 +764,7 @@ def compute_officeqa_result(
             answer_text=_build_answer_text(operation, display_value, ledger),
             citations=citations,
             ledger=[step.model_dump() for step in ledger],
+            semantic_diagnostics=semantic_diagnostics,
             provenance_complete=provenance_complete and bool(refs),
         )
 
@@ -619,7 +785,7 @@ def compute_officeqa_result(
                 years=years,
                 validation_errors=["Fiscal year total compute requires exactly one target year."],
             )
-        total, refs, mode = _series_total_for_fiscal_year(years[0], monthly=monthly, annual=annual)
+        total, selected_values, mode = _series_total_for_fiscal_year(years[0], monthly=monthly, annual=annual)
         if total is None:
             return _result_with_diagnostics(
                 status="insufficient",
@@ -628,6 +794,25 @@ def compute_officeqa_result(
                 years=years,
                 validation_errors=[f"Missing fiscal-year support for {years[0]}."],
             )
+        semantic_diagnostics = _semantic_admissibility(
+            selected_values,
+            retrieval_intent=retrieval_intent,
+            task_text=task_text,
+            operation=operation,
+            target_years=set(years),
+            metric_tokens=metric_tokens,
+        )
+        semantic_errors = _semantic_validation_errors(semantic_diagnostics)
+        if semantic_errors:
+            return _result_with_diagnostics(
+                status="insufficient",
+                operation=operation,
+                retrieval_intent=retrieval_intent,
+                years=years,
+                validation_errors=semantic_errors,
+                semantic_diagnostics=semantic_diagnostics,
+            )
+        refs = [_provenance_ref(item) for item in selected_values]
         append_step(
             OfficeQAComputeStep(
                 operator="fiscal_year_total",
@@ -648,6 +833,7 @@ def compute_officeqa_result(
             answer_text=_build_answer_text(operation, display_value, ledger),
             citations=citations,
             ledger=[step.model_dump() for step in ledger],
+            semantic_diagnostics=semantic_diagnostics,
             provenance_complete=provenance_complete and bool(refs),
         )
 
@@ -672,8 +858,8 @@ def compute_officeqa_result(
                 validation_errors=["Comparison compute requires two target years."],
             )
         base_year, target_year = years[0], years[-1]
-        base_total, base_refs, base_mode = _series_total_for_calendar_year(base_year, monthly=monthly, annual=annual)
-        target_total, target_refs, target_mode = _series_total_for_calendar_year(target_year, monthly=monthly, annual=annual)
+        base_total, base_values, base_mode = _series_total_for_calendar_year(base_year, monthly=monthly, annual=annual)
+        target_total, target_values, target_mode = _series_total_for_calendar_year(target_year, monthly=monthly, annual=annual)
         if base_total is None or target_total is None:
             return _result_with_diagnostics(
                 status="insufficient",
@@ -682,6 +868,26 @@ def compute_officeqa_result(
                 years=years,
                 validation_errors=[f"Missing comparable period totals for {base_year} and {target_year}."],
             )
+        semantic_diagnostics = _semantic_admissibility(
+            [*base_values, *target_values],
+            retrieval_intent=retrieval_intent,
+            task_text=task_text,
+            operation=operation,
+            target_years=set(years),
+            metric_tokens=metric_tokens,
+        )
+        semantic_errors = _semantic_validation_errors(semantic_diagnostics)
+        if semantic_errors:
+            return _result_with_diagnostics(
+                status="insufficient",
+                operation=operation,
+                retrieval_intent=retrieval_intent,
+                years=years,
+                validation_errors=semantic_errors,
+                semantic_diagnostics=semantic_diagnostics,
+            )
+        base_refs = [_provenance_ref(item) for item in base_values]
+        target_refs = [_provenance_ref(item) for item in target_values]
         append_step(
             OfficeQAComputeStep(
                 operator="calendar_year_total",
@@ -701,8 +907,8 @@ def compute_officeqa_result(
             )
         )
         if operation == "inflation_adjusted_monthly_difference":
-            base_cpi, base_cpi_refs, base_cpi_mode = _series_average_for_year(base_year, monthly=cpi_monthly, annual=cpi_annual)
-            target_cpi, target_cpi_refs, target_cpi_mode = _series_average_for_year(target_year, monthly=cpi_monthly, annual=cpi_annual)
+            base_cpi, base_cpi_values, base_cpi_mode = _series_average_for_year(base_year, monthly=cpi_monthly, annual=cpi_annual)
+            target_cpi, target_cpi_values, target_cpi_mode = _series_average_for_year(target_year, monthly=cpi_monthly, annual=cpi_annual)
             if base_cpi is None or target_cpi is None:
                 return _result_with_diagnostics(
                     status="insufficient",
@@ -711,6 +917,8 @@ def compute_officeqa_result(
                     years=years,
                     validation_errors=["Inflation-adjusted compute requires CPI support for both comparison years."],
                 )
+            base_cpi_refs = [_provenance_ref(item) for item in base_cpi_values]
+            target_cpi_refs = [_provenance_ref(item) for item in target_cpi_values]
             adjusted_base = base_total * (target_cpi / base_cpi)
             final_value = abs(target_total - adjusted_base)
             append_step(
@@ -752,6 +960,7 @@ def compute_officeqa_result(
                 answer_text=_build_answer_text(operation, display_value, ledger),
                 citations=citations,
                 ledger=[step.model_dump() for step in ledger],
+                semantic_diagnostics=semantic_diagnostics,
                 provenance_complete=provenance_complete and bool(base_refs and target_refs),
             )
 
@@ -786,6 +995,7 @@ def compute_officeqa_result(
                 unit="percent",
                 citations=citations,
                 ledger=[step.model_dump() for step in ledger],
+                semantic_diagnostics=semantic_diagnostics,
                 provenance_complete=provenance_complete and bool(base_refs and target_refs),
             )
 
@@ -810,6 +1020,7 @@ def compute_officeqa_result(
             answer_text=_build_answer_text(operation or "absolute_difference", display_value, ledger),
             citations=citations,
             ledger=[step.model_dump() for step in ledger],
+            semantic_diagnostics=semantic_diagnostics,
             provenance_complete=provenance_complete and bool(base_refs and target_refs),
         )
 
@@ -881,6 +1092,24 @@ def compute_officeqa_result(
                     years=years,
                     validation_errors=["Point lookup selected a navigational page-reference cell rather than a grounded financial value."],
                 )
+            semantic_diagnostics = _semantic_admissibility(
+                [chosen],
+                retrieval_intent=retrieval_intent,
+                task_text=task_text,
+                operation=operation,
+                target_years=target_years,
+                metric_tokens=metric_tokens,
+            )
+            semantic_errors = _semantic_validation_errors(semantic_diagnostics)
+            if semantic_errors:
+                return _result_with_diagnostics(
+                    status="insufficient",
+                    operation=operation,
+                    retrieval_intent=retrieval_intent,
+                    years=years,
+                    validation_errors=semantic_errors,
+                    semantic_diagnostics=semantic_diagnostics,
+                )
             numeric_value = _pick_numeric_value(chosen)
             if numeric_value is None:
                 return _result_with_diagnostics(status="insufficient", operation=operation, retrieval_intent=retrieval_intent, years=years, validation_errors=["Point lookup value is not numeric."])
@@ -905,6 +1134,7 @@ def compute_officeqa_result(
                 answer_text=_build_answer_text(operation, display_value, ledger),
                 citations=citations,
                 ledger=[step.model_dump() for step in ledger],
+                semantic_diagnostics=semantic_diagnostics,
                 provenance_complete=provenance_complete and bool(refs),
             )
 
