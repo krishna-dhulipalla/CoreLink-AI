@@ -181,3 +181,26 @@ def test_output_adapter_does_not_extract_year_from_insufficient_officeqa_reasoni
 
     assert "1953" != final_block
     assert "Insufficient data" in final_block
+
+
+def test_output_adapter_preserves_simple_comparator_in_final_answer_block():
+    state = make_state(
+        "OfficeQA comparator answer.",
+        answer_contract={
+            "format": "xml",
+            "requires_adapter": True,
+            "xml_root_tag": "FINAL_ANSWER",
+            "value_rules": {
+                "reasoning_tag": "REASONING",
+                "final_answer_tag": "FINAL_ANSWER",
+                "final_answer_only": True,
+            },
+        },
+    )
+    state["messages"].append(AIMessage(content="<REASONING>Bounded threshold.</REASONING>\n<FINAL_ANSWER>< 5%</FINAL_ANSWER>"))
+
+    result = output_adapter(state)
+    content = result["messages"][0].content
+    final_block = content.split("<FINAL_ANSWER>", 1)[1].split("</FINAL_ANSWER>", 1)[0].strip()
+
+    assert final_block == "< 5%"

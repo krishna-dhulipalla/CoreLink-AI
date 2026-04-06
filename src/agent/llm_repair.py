@@ -8,8 +8,20 @@ from agent.contracts import OfficeQALLMRepairDecision, RetrievalIntent, SourceBu
 from agent.model_config import invoke_structured_output
 from agent.prompts import OFFICEQA_STRUCTURED_REPAIR_SYSTEM, build_officeqa_structured_repair_prompt
 
-_MAX_QUERY_REWRITE_CALLS = 1
-_MAX_VALIDATOR_REPAIR_CALLS = 1
+_MAX_QUERY_REWRITE_CALLS = 2
+_MAX_VALIDATOR_REPAIR_CALLS = 2
+_SUPPORTED_RETRIEVAL_GAPS = {
+    "wrong document",
+    "wrong table family",
+    "missing month coverage",
+    "year coverage",
+    "narrative support",
+    "inflation support",
+    "join-ready evidence",
+    "incomplete evidence",
+    "wrong row or column semantics",
+    "wrong period slice",
+}
 
 
 def officeqa_llm_repair_budget() -> dict[str, int]:
@@ -25,6 +37,15 @@ def initial_officeqa_llm_repair_state(retrieval_intent: RetrievalIntent) -> dict
         "query_rewrite_calls": 0,
         "validator_repair_calls": 0,
     }
+
+
+def _repairable_gap(evidence_gap: str) -> bool:
+    normalized = str(evidence_gap or "").strip().lower()
+    if not normalized:
+        return False
+    if normalized in _SUPPORTED_RETRIEVAL_GAPS:
+        return True
+    return any(fragment in normalized for fragment in _SUPPORTED_RETRIEVAL_GAPS)
 
 
 def _invoke_repair_decision(prompt: str) -> OfficeQALLMRepairDecision | None:
@@ -65,7 +86,7 @@ def maybe_rewrite_retrieval_path(
     current_table_query: str = "",
     candidate_sources: list[dict[str, Any]] | None = None,
 ) -> OfficeQALLMRepairDecision | None:
-    if evidence_gap not in {"wrong document", "wrong table family", "missing month coverage"}:
+    if not _repairable_gap(evidence_gap):
         return None
     prompt = build_officeqa_structured_repair_prompt(
         task_text=task_text,
@@ -86,12 +107,15 @@ def maybe_repair_from_validator(
     review_feedback: dict[str, Any],
     candidate_sources: list[dict[str, Any]] | None = None,
 ) -> OfficeQALLMRepairDecision | None:
-    if str(review_feedback.get("repair_target", "") or "") != "gather":
+    repair_target = str(review_feedback.get("repair_target", "") or "")
+    if repair_target not in {"gather", "compute"}:
         return None
+    missing_dimensions = [str(item or "") for item in list(review_feedback.get("missing_dimensions", []) or [])]
+    evidence_gap = ", ".join(missing_dimensions[:4]) or ", ".join(str(item or "") for item in list(review_feedback.get("remediation_codes", []) or [])[:4])
     prompt = build_officeqa_structured_repair_prompt(
         task_text=task_text,
         retrieval_strategy=retrieval_intent.strategy,
-        evidence_gap=", ".join(str(item) for item in list(review_feedback.get("missing_dimensions", []))[:4]),
+        evidence_gap=evidence_gap,
         current_query=(retrieval_intent.query_plan.primary_semantic_query or ""),
         current_table_query="",
         candidate_sources=candidate_sources,

@@ -125,6 +125,7 @@ class RunTracer:
 
     def finalize(self, final_answer: str = "", cost_summary: dict | None = None, budget_summary: dict | None = None) -> str | None:
         duration = round(time.monotonic() - self._start_time, 2)
+        summary = dict(cost_summary or {})
         total_prompt = 0
         total_completion = 0
         llm_calls = 0
@@ -144,6 +145,11 @@ class RunTracer:
                 tools_ran = entry.get("tools_ran")
                 if isinstance(tools_ran, list):
                     tool_calls += len(tools_ran)
+
+        if isinstance(summary.get("llm_calls"), int):
+            llm_calls = int(summary.get("llm_calls", 0) or 0)
+        if isinstance(summary.get("mcp_calls"), int):
+            tool_calls = int(summary.get("mcp_calls", 0) or 0)
 
         payload: dict[str, Any] = {
             "run_id": self._run_id,
@@ -166,7 +172,7 @@ class RunTracer:
                 "total": total_prompt + total_completion,
             },
             "final_answer_preview": (final_answer or "")[:4000],
-            "cost_summary": cost_summary or {},
+            "cost_summary": summary,
             "budget_summary": budget_summary or {},
             "execution_summary": _make_readable(_execution_summary(self._nodes)),
             "nodes": _make_readable(self._nodes),

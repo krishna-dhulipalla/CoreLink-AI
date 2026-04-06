@@ -10,7 +10,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMe
 from langgraph.errors import GraphRecursionError
 
 from agent.budget import BudgetTracker
-from agent.cost import CostTracker
+from agent.cost import CostTracker, reset_active_cost_tracker, set_active_cost_tracker
 from agent.runtime_clock import reset_runtime_steps
 from agent.state import AgentState
 from agent.tracer import finalize_tracer, start_tracer
@@ -117,6 +117,7 @@ async def run_agent_trace(
     reset_runtime_steps()
     tracker = CostTracker()
     budget = BudgetTracker()
+    cost_tracker_token = set_active_cost_tracker(tracker)
 
     # ── Start RunTracer if enabled ──
     tracer = start_tracer(trace_identity=trace_identity)
@@ -205,6 +206,7 @@ async def run_agent_trace(
         if not partial_answer:
             partial_answer = "I was unable to complete this task within the step limit."
         finalize_tracer(partial_answer, tracker.summary(), budget.summary())
+        reset_active_cost_tracker(cost_tracker_token)
         return {
             "answer": partial_answer,
             "steps": _extract_steps(final_state, final_state.get("cost_tracker", tracker), budget),
@@ -232,6 +234,7 @@ async def run_agent_trace(
         if isinstance(msg, AIMessage) and msg.content and not msg.tool_calls:
             answer = _extract_final_answer(str(msg.content))
             finalize_tracer(answer, tracker.summary(), budget.summary())
+            reset_active_cost_tracker(cost_tracker_token)
             return {
                 "answer": answer,
                 "steps": steps,
@@ -240,6 +243,7 @@ async def run_agent_trace(
             }
 
     finalize_tracer("I was unable to generate a response.", tracker.summary(), budget.summary())
+    reset_active_cost_tracker(cost_tracker_token)
     return {
         "answer": "I was unable to generate a response.",
         "steps": steps,

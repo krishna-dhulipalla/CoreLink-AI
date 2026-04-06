@@ -25,6 +25,20 @@ def test_decomposition_extracts_calendar_year_category_slots():
     assert "calendar year" in retrieval_intent.query_plan.granularity_query.lower()
 
 
+def test_decomposition_strips_period_qualifier_from_entity_phrase():
+    prompt = "What were the total expenditures for U.S. national defense in the calendar year 1940?"
+    source_bundle = SourceBundle(
+        task_text=prompt,
+        focus_query=prompt,
+        target_period="1940",
+        entities=[],
+    )
+
+    decomposition = extract_question_decomposition(prompt, source_bundle, allow_llm_fallback=False)
+
+    assert decomposition.entity == "U.S. national defense"
+
+
 def test_decomposition_promotes_monthly_constraints_into_evidence_and_query_plan():
     prompt = (
         "Using specifically only the reported values for all individual calendar months in 1953 and "
@@ -45,6 +59,23 @@ def test_decomposition_promotes_monthly_constraints_into_evidence_and_query_plan
     assert retrieval_intent.evidence_plan.required_month_coverage is True
     assert retrieval_intent.evidence_plan.required_month_count == 12
     assert any(requirement.kind == "include_constraints" for requirement in retrieval_intent.evidence_plan.requirements)
+    assert "monthly" in retrieval_intent.query_plan.granularity_query.lower()
+
+
+def test_decomposition_detects_total_monthly_expenditures_as_monthly_series():
+    prompt = "Using the Treasury Bulletin, calculate the total monthly expenditures for national defense and related activities in 1953."
+    source_bundle = SourceBundle(
+        task_text=prompt,
+        focus_query="national defense related activities monthly expenditures 1953",
+        target_period="1953",
+        entities=["national defense and related activities"],
+    )
+
+    retrieval_intent = build_retrieval_intent(prompt, source_bundle, {"benchmark_adapter": "officeqa"})
+
+    assert retrieval_intent.granularity_requirement == "monthly_series"
+    assert retrieval_intent.aggregation_shape == "monthly_sum"
+    assert retrieval_intent.query_plan.primary_semantic_query
     assert "monthly" in retrieval_intent.query_plan.granularity_query.lower()
 
 

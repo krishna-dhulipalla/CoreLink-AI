@@ -76,7 +76,7 @@ def _normalize_financial_phrase(value: str) -> str:
     cleaned = re.sub(r"\baccording to\b.*$", "", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\b(?:using|based on)\b.*$", "", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(
-        r"\s+in\s+(?:fy|fiscal year|calendar year)\b.*$",
+        r"\s+in\s+(?:the\s+)?(?:fy|fiscal year|calendar year)\b.*$",
         "",
         cleaned,
         flags=re.IGNORECASE,
@@ -94,7 +94,17 @@ def _extract_year_scope(task_text: str, source_bundle: SourceBundle) -> str:
 
 def _extract_granularity_requirement(task_text: str) -> str:
     lowered = _normalize_space(task_text).lower()
-    if "all individual calendar months" in lowered or "monthly series" in lowered or "calendar months" in lowered:
+    if (
+        "all individual calendar months" in lowered
+        or "monthly series" in lowered
+        or "calendar months" in lowered
+        or "monthly expenditures" in lowered
+        or "monthly receipts" in lowered
+        or "monthly outlays" in lowered
+        or "each month" in lowered
+        or "for each month" in lowered
+        or ("monthly" in lowered and re.search(r"\b(?:19|20)\d{2}\b", lowered))
+    ):
         return "monthly_series"
     if "calendar year" in lowered:
         return "calendar_year"
@@ -136,6 +146,9 @@ def _extract_metric_identity(task_text: str) -> str:
         ("forecast", "forecast"),
         ("value at risk", "value at risk"),
         ("public debt outstanding", "public debt outstanding"),
+        ("total monthly expenditures", "total expenditures"),
+        ("monthly expenditures", "expenditures"),
+        ("total monthly receipts", "total receipts"),
         ("total expenditures", "total expenditures"),
         ("expenditures", "expenditures"),
         ("receipts", "receipts"),

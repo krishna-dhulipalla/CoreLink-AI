@@ -1256,6 +1256,110 @@ Exit criteria:
 
 - the team can measure progress on real benchmark-like failures without relying only on manual trace review
 
+## Phase 26: Benchmark Output Hardening And Trace Alignment
+
+Objective:
+
+- make benchmark-facing output safer and make local trace accounting align with actual LLM and tool usage.
+
+Why now:
+
+- sampled benchmark traces showed all-local `total_llm_calls = 0` even when structured LLM repair ran.
+- LangSmith and local traces are currently describing different layers of the run, and local count summaries were not using the real cost tracker.
+- benchmark scoring depends on exact `<FINAL_ANSWER>` extraction, so final-value normalization must not silently corrupt simple comparator answers.
+
+Tasks:
+
+- [x] `P26.1` Add a benchmark-safe final-answer rendering path that preserves simple scalar or comparator answers inside `<FINAL_ANSWER>` without over-escaping them
+- [x] `P26.2` Make structured-output LLM calls count toward the request-scoped cost tracker instead of only free-form solver calls
+- [x] `P26.3` Make local `RunTracer` prefer tracker-backed LLM/tool totals over heuristic node counting
+- [x] `P26.4` Document the local-trace vs LangSmith boundary clearly so teammates know which view is raw graph state and which is the compact runtime narrative
+- [x] `P26.5` Add regressions for comparator-safe final answers and tracker-backed trace totals
+
+Suggested code targets:
+
+- `src/agent/nodes/output_adapter.py`
+- `src/agent/cost.py`
+- `src/agent/model_config.py`
+- `src/agent/runner.py`
+- `src/agent/tracer.py`
+- `tests/test_output_adapter.py`
+- `tests/test_tracer.py`
+
+Exit criteria:
+
+- benchmark XML answers preserve exact scalar content when safe
+- local traces report real LLM/tool counts consistent with the active request-scoped tracker
+
+## Phase 27: Decomposition And Source/Document Ranking Hardening
+
+Objective:
+
+- improve question decomposition and source/table selection so benchmark failures are addressed at the semantic-planning layer, not via task-specific hacks.
+
+Why now:
+
+- task 1 showed the runtime landing in the right year family but choosing the wrong table inside the document
+- task 2 misclassified a monthly-sum question as point lookup
+- task 3 over-ranked a later bulletin because historical mentions were scoring too well
+
+Tasks:
+
+- [x] `P27.1` Expand decomposition so monthly-series questions are detected from natural phrasing like "total monthly expenditures", not only one benchmark wording
+- [x] `P27.2` Strip trailing period qualifiers from extracted entity strings so entity and period do not contaminate each other
+- [x] `P27.3` Make OfficeQA table-query construction prefer the typed semantic query plan instead of re-injecting the full prompt as noise
+- [x] `P27.4` Strengthen source ranking with publication/path-year priors so later historical retrospectives do not outrank direct year-scoped sources
+- [x] `P27.5` Strengthen table ranking with row/header semantic match so correct-document wrong-table cases are less likely
+- [x] `P27.6` Add regressions for monthly decomposition and historical-source reranking
+
+Suggested code targets:
+
+- `src/agent/context/extraction.py`
+- `src/agent/retrieval_reasoning.py`
+- `src/agent/nodes/orchestrator_retrieval.py`
+- `src/agent/retrieval_tools.py`
+- `tests/test_question_decomposition.py`
+- `tests/test_engine_runtime.py`
+
+Exit criteria:
+
+- monthly Treasury questions produce monthly retrieval plans without prompt hacks
+- direct year-scoped benchmark questions prefer year-matching publication sources over later retrospective mentions
+
+## Phase 28: Actionable Table Fallback And Deeper Repair Control
+
+Objective:
+
+- turn low-confidence structure and shallow repair into explicit runtime behavior rather than passive diagnostics or environment-only toggles.
+
+Why now:
+
+- table interpretation is still the highest-risk failure surface
+- the old TSR fallback only changed behavior when an env flag was set
+- repair was too shallow: one rewrite, one validator repair, and no compute-side reselection path
+
+Tasks:
+
+- [x] `P28.1` Auto-promote TSR-style fallback when default normalization quality is poor enough that structured compute should not trust it
+- [x] `P28.2` Expand repair triggers beyond `wrong document`, `wrong table family`, and `missing month coverage` to include broader incomplete-evidence and semantic-mismatch gaps
+- [x] `P28.3` Raise repair budgets explicitly in code, not through environment flags, while keeping them bounded
+- [x] `P28.4` Add a deterministic compute-side evidence reselection pass for validator-targeted compute repair before giving up
+- [x] `P28.5` Keep the final numeric answer deterministic when compute is supported; repair may redirect retrieval or reselection, but not replace compute with unconstrained synthesis
+- [x] `P28.6` Add targeted regressions for TSR auto-promotion and compute-target repair eligibility
+
+Suggested code targets:
+
+- `src/agent/tools/tsr_fallback.py`
+- `src/agent/llm_repair.py`
+- `src/agent/nodes/orchestrator.py`
+- `tests/test_llm_repair.py`
+- `tests/test_table_normalization.py`
+
+Exit criteria:
+
+- low-quality normalized tables can trigger a stronger fallback path without env-only activation
+- repair remains bounded but is deep enough to address benchmark-style wrong-table and incomplete-evidence stalls
+
 ## Optional Backlog: Shared Global Workpad
 
 Recommendation:

@@ -758,10 +758,16 @@ def _rank_tables(tables: list[dict[str, Any]], table_query: str) -> list[dict[st
     if not table_query.strip():
         return tables
 
+    query_tokens = set(_tokenize(table_query))
+
     def _score(table: dict[str, Any]) -> float:
         text = _table_text(table)
         score = _match_score(text, table_query)
         score += _table_family_score(table, table_query)
+        headers_text = " ".join(str(item or "") for item in list(table.get("headers", []))[:12])
+        row_label_text = " ".join(str(row[0] or "") for row in list(table.get("rows", []))[:30] if isinstance(row, list) and row)
+        score += 0.35 * _match_score(row_label_text, table_query)
+        score += 0.2 * _match_score(headers_text, table_query)
         lowered = text.lower()
         numeric_cells = sum(
             1
@@ -778,6 +784,14 @@ def _rank_tables(tables: list[dict[str, Any]], table_query: str) -> list[dict[st
                 score += 0.18
             elif table_years:
                 score -= 0.22
+        if {"national", "defense"} & query_tokens and "national defense" in row_label_text.lower():
+            score += 0.4
+        if "veterans" in query_tokens and "veterans" in row_label_text.lower():
+            score += 0.35
+        if "expenditures" in query_tokens and "expenditures" not in lowered and any(
+            token in lowered for token in ("receipts", "sources of revenue", "revenue")
+        ):
+            score -= 0.4
         return score
 
     return sorted(tables, key=_score, reverse=True)

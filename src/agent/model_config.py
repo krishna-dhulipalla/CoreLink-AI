@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import json
 import re
+import time
 from urllib.parse import urlparse
 from typing import Any
 
@@ -18,6 +19,7 @@ from langchain_openai import ChatOpenAI as _BaseChatOpenAI
 from langchain_core.messages import BaseMessage, SystemMessage
 
 from agent.langsmith_env import normalize_langsmith_env
+from agent.cost import get_active_cost_tracker
 
 load_dotenv(override=False)
 normalize_langsmith_env()
@@ -584,9 +586,37 @@ def invoke_structured_output(
         **kwargs,
     }
 
+    tracker = get_active_cost_tracker()
+
+    def _usage_from_response(response: Any) -> tuple[int, int]:
+        usage_metadata = dict(getattr(response, "usage_metadata", {}) or {})
+        if usage_metadata:
+            return int(usage_metadata.get("input_tokens", 0) or 0), int(usage_metadata.get("output_tokens", 0) or 0)
+        response_metadata = dict(getattr(response, "response_metadata", {}) or {})
+        token_usage = dict(response_metadata.get("token_usage", {}) or {})
+        if token_usage:
+            return int(token_usage.get("prompt_tokens", 0) or 0), int(token_usage.get("completion_tokens", 0) or 0)
+        return 0, 0
+
     if _structured_output_mode(role) == "native":
         llm = ChatOpenAI(**model_init_kwargs)
-        parsed = llm.with_structured_output(schema).invoke(messages)
+        t0 = time.monotonic()
+        success = True
+        try:
+            parsed = llm.with_structured_output(schema).invoke(messages)
+        except Exception:
+            success = False
+            raise
+        finally:
+            if tracker is not None:
+                tracker.record(
+                    operator=f"{role}_structured_output",
+                    model_name=model_name,
+                    tokens_in=0,
+                    tokens_out=0,
+                    latency_ms=(time.monotonic() - t0) * 1000.0,
+                    success=success,
+                )
         return parsed, model_name
 
     schema_json = json.dumps(schema.model_json_schema(), ensure_ascii=True)
@@ -605,9 +635,35 @@ def invoke_structured_output(
             },
         )
     llm = ChatOpenAI(**model_init_kwargs)
-    response = llm.invoke(fallback_messages)
+    t0 = time.monotonic()
+    success = True
+    try:
+        response = llm.invoke(fallback_messages)
+    except Exception:
+        success = False
+        raise
+    finally:
+        if tracker is not None and not success:
+            tracker.record(
+                operator=f"{role}_structured_output",
+                model_name=model_name,
+                tokens_in=0,
+                tokens_out=0,
+                latency_ms=(time.monotonic() - t0) * 1000.0,
+                success=False,
+            )
     payload = _extract_json_payload(str(response.content or ""))
     parsed = schema.model_validate_json(payload)
+    if tracker is not None and success:
+        tokens_in, tokens_out = _usage_from_response(response)
+        tracker.record(
+            operator=f"{role}_structured_output",
+            model_name=model_name,
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
+            latency_ms=(time.monotonic() - t0) * 1000.0,
+            success=True,
+        )
     return parsed, model_name
 
 

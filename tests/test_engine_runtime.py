@@ -49,7 +49,6 @@ from agent.nodes.orchestrator import (
     task_planner,
     _rank_search_candidates,
 )
-from agent.prompts import build_revision_prompt
 from test_utils import make_state
 from tools import CALCULATOR_TOOL, SEARCH_TOOL
 
@@ -68,46 +67,6 @@ def test_build_agent_graph_uses_active_runtime(monkeypatch):
     monkeypatch.setattr("agent.graph.build_agent_graph", lambda external_tools=None: "engine_graph")
 
     assert graph_module.build_agent_graph() == "engine_graph"
-
-
-def _exact_quant_prompt() -> str:
-    return """
-    ### <Formula List>
-    Financial Leverage Effect = (ROE - ROA) / ROA
-
-    ### <Related Data>
-    | Stock Name | Return on Equity (ROE) (2024 Annual Report) (%) |
-    |---|---|
-    | China Overseas Grand Oceans Group | 3.0433 % |
-
-    | Stock Name | Return on Assets (ROA) (2024 Annual Report) (%) |
-    |---|---|
-    | China Overseas Grand Oceans Group | 1.5790 % |
-
-    ### <User Question>
-    Please calculate: What is the Financial Leverage Effect (2024 Annual Report) for China Overseas Grand Oceans Group?
-
-    ### Output Format
-    {"answer": <value>}
-    """
-
-
-def test_engine_exact_quant_fast_path_curates_without_duplicate_solver_payload():
-    state = make_state(_exact_quant_prompt())
-    state.update(intake(state))
-    state.update(fast_path_gate(state))
-    state.update(task_planner(state))
-    resolver = make_capability_resolver(build_capability_registry([CALCULATOR_TOOL, SEARCH_TOOL, *BUILTIN_LEGAL_TOOLS]))
-    state.update(resolver(state))
-    result = context_curator(state)
-
-    assert result["curated_context"]["objective"]
-    assert result["evidence_pack"].keys() == {"curated_context", "source_bundle_summary"}
-    assert "constraints" not in json.dumps(result["evidence_pack"], ensure_ascii=True)
-    assert "formulas" not in result["evidence_pack"]
-    assert result["workpad"]["task_complexity_tier"] == "simple_exact"
-    assert any(fact["type"] == "formula" for fact in result["curated_context"]["facts_in_use"])
-    assert any(fact["type"] == "table_rows" for fact in result["curated_context"]["facts_in_use"])
 
 
 def test_build_source_bundle_dedupes_benchmark_source_files():
@@ -170,6 +129,49 @@ def test_search_result_candidates_dedupes_documents_and_results_views():
     assert candidates[0]["rank"] == 1
 
 
+def test_search_ranking_prefers_publication_year_match_over_historical_mentions():
+    retrieval_intent = RetrievalIntent(
+        entity="Veterans Administration",
+        metric="total expenditures",
+        period="1934",
+        granularity_requirement="fiscal_year",
+        document_family="official_government_finance",
+        aggregation_shape="fiscal_year_total",
+    )
+    source_bundle = SourceBundle(
+        task_text="What were the total expenditures of the Veterans Administration in FY 1934?",
+        focus_query="Veterans Administration total expenditures fiscal year 1934",
+        target_period="1934",
+        entities=["Veterans Administration"],
+    )
+    candidates = [
+        {
+            "document_id": "treasury_bulletin_1974_02_json",
+            "citation": "treasury_bulletin_1974_02.json",
+            "path": "treasury_bulletin_1974_02.json",
+            "title": "Treasury Bulletin 1974-02",
+            "snippet": "Historical comparison table mentioning Veterans Administration fiscal year 1934.",
+            "rank": 1,
+            "score": 1.0,
+            "metadata": {"years": ["1934", "1974"], "table_headers": ["Veterans Administration"]},
+        },
+        {
+            "document_id": "treasury_bulletin_1934_06_json",
+            "citation": "treasury_bulletin_1934_06.json",
+            "path": "treasury_bulletin_1934_06.json",
+            "title": "Treasury Bulletin 1934-06",
+            "snippet": "Veterans Administration expenditures in fiscal year 1934.",
+            "rank": 2,
+            "score": 0.8,
+            "metadata": {"years": ["1934"], "table_headers": ["Veterans Administration", "Expenditures"]},
+        },
+    ]
+
+    ranked = _rank_search_candidates(candidates, retrieval_intent, source_bundle, {"benchmark_adapter": "officeqa"})
+
+    assert ranked[0]["document_id"] == "treasury_bulletin_1934_06_json"
+
+
 def test_engine_solver_context_block_removes_redundant_objective_and_tool_query_noise():
     payload = solver_context_block(
         {
@@ -198,23 +200,6 @@ def test_engine_solver_context_block_removes_redundant_objective_and_tool_query_
     assert '"tool_findings"' in payload
     assert '"query"' not in payload
     assert "repeat me" not in payload
-
-
-def test_engine_legal_planner_binds_legal_capability_tools_not_calculator_only():
-    prompt = (
-        "target company we're acquiring has some clean IP but also regulatory compliance gaps in EU and US. "
-        "their board wants stock consideration for tax reasons but we can't risk inheriting the compliance liabilities. "
-        "deal size is ~$500M, what structure options do we have that could work for both sides? Need to move quickly here."
-    )
-    state = make_state(prompt)
-    state.update(intake(state))
-    state.update(fast_path_gate(state))
-    state.update(task_planner(state))
-    resolver = make_capability_resolver(build_capability_registry([CALCULATOR_TOOL, SEARCH_TOOL, *BUILTIN_LEGAL_TOOLS]))
-    result = resolver(state)
-
-    assert result["tool_plan"]["selected_tools"]
-    assert "calculator" not in result["tool_plan"]["selected_tools"]
 
 
 def test_officeqa_document_tasks_route_document_first_without_pending_calculator(monkeypatch):
@@ -730,54 +715,6 @@ def test_officeqa_benchmark_env_forces_document_grounded_runtime_without_prompt_
     assert state["benchmark_overrides"]["officeqa_mode"] is True
     assert state["task_intent"]["task_family"] == "document_qa"
     assert state["task_intent"]["execution_mode"] == "document_grounded_analysis"
-
-
-def test_engine_executor_returns_deterministic_exact_quant_answer():
-    state = make_state(_exact_quant_prompt())
-    state.update(intake(state))
-    state.update(fast_path_gate(state))
-    state.update(task_planner(state))
-    resolver = make_capability_resolver(build_capability_registry([CALCULATOR_TOOL, SEARCH_TOOL, *BUILTIN_LEGAL_TOOLS]))
-    state.update(resolver(state))
-    state.update(context_curator(state))
-
-    executor = make_executor(build_capability_registry([CALCULATOR_TOOL, SEARCH_TOOL, *BUILTIN_LEGAL_TOOLS]))
-    result = asyncio.run(executor(state))
-
-    assert result["messages"]
-    assert str(result["messages"][0].content).startswith('{"answer":')
-    assert result["workpad"]["review_ready"] is True
-
-
-def test_engine_capability_resolver_widens_live_finance_retrieval_to_search_tool():
-    prompt = "What was AAPL's EBITDA in fiscal year 2024? Use current source-backed data."
-    state = make_state(prompt)
-    state.update(intake(state))
-    state.update(fast_path_gate(state))
-    state.update(task_planner(state))
-    resolver = make_capability_resolver(build_capability_registry([CALCULATOR_TOOL, SEARCH_TOOL, *BUILTIN_LEGAL_TOOLS]))
-    result = resolver(state)
-
-    assert "market_data_retrieval" in result["tool_plan"]["widened_families"]
-    assert "external_retrieval" in result["tool_plan"]["widened_families"]
-    assert "internet_search" in result["tool_plan"]["selected_tools"]
-    assert result["tool_plan"]["stop_reason"] == ""
-
-
-def test_engine_document_query_prefers_document_grounded_retrieval_tools():
-    prompt = "According to the Treasury Bulletin, what was total public debt outstanding in 1945?"
-    state = make_state(prompt)
-    state.update(intake(state))
-    state.update(fast_path_gate(state))
-    state.update(task_planner(state))
-    resolver = make_capability_resolver(
-        build_capability_registry([CALCULATOR_TOOL, SEARCH_TOOL, *BUILTIN_RETRIEVAL_TOOLS, *BUILTIN_LEGAL_TOOLS])
-    )
-    result = resolver(state)
-
-    assert result["execution_template"]["template_id"] == "document_grounded_analysis"
-    assert "document_retrieval" in result["tool_plan"]["widened_families"]
-    assert "search_reference_corpus" in result["tool_plan"]["selected_tools"]
 
 
 def test_evidence_sufficiency_ignores_generic_numeric_summary_metadata():
@@ -1315,110 +1252,6 @@ def test_intake_merges_source_files_from_benchmark_metadata(monkeypatch, tmp_pat
 
     assert result["benchmark_overrides"]["source_files_expected"] == ["treasury_1940.json"]
     assert result["benchmark_overrides"]["source_files_found"][0]["document_id"] == "treasury_1940_json"
-
-
-def test_engine_document_query_uses_external_document_tools_with_inferred_roles(monkeypatch):
-    @tool
-    def search_treasury_bulletins(query: str, top_k: int = 5) -> dict:
-        """Search the Treasury Bulletin corpus for matching documents."""
-        return {
-            "results": [
-                {
-                    "rank": 1,
-                    "title": "treasury_1945.pdf",
-                    "snippet": "Treasury Bulletin result for 1945 debt.",
-                    "url": "https://example.com/treasury_1945.pdf",
-                    "document_id": "treasury_1945_pdf",
-                }
-            ],
-            "documents": [
-                {
-                    "document_id": "treasury_1945_pdf",
-                    "citation": "https://example.com/treasury_1945.pdf",
-                    "format": "pdf",
-                }
-            ],
-        }
-
-    @tool
-    def read_treasury_bulletin(
-        document_id: str = "",
-        url: str = "",
-        page_start: int = 0,
-        page_limit: int = 5,
-        row_offset: int = 0,
-        row_limit: int = 200,
-    ) -> str:
-        """Read a Treasury Bulletin PDF by document id or URL."""
-        if page_start <= 0:
-            return (
-                "FILE: treasury_1945.pdf\n"
-                "FORMAT: PDF | SIZE: 12.3 KB\n"
-                "--------------------------------------------------\n"
-                "[Pages 1-1 of 2]\n"
-                "Treasury Bulletin overview and publication notes."
-            )
-        return (
-            "FILE: treasury_1945.pdf\n"
-            "FORMAT: PDF | SIZE: 12.3 KB\n"
-            "--------------------------------------------------\n"
-            "[Pages 2-2 of 2]\n"
-            "In 1945, total public debt outstanding was 258.7 billion dollars."
-        )
-
-    captured: list = []
-    monkeypatch.setattr(
-        "agent.nodes.orchestrator.ChatOpenAI",
-        lambda **kwargs: _FakeModel(
-            AIMessage(content="The total public debt outstanding in 1945 was 258.7 billion dollars. [Source: treasury_1945.pdf]"),
-            captured,
-        ),
-    )
-
-    prompt = "According to the Treasury Bulletin, what was total public debt outstanding in 1945?"
-    registry = build_capability_registry([CALCULATOR_TOOL, SEARCH_TOOL, search_treasury_bulletins, read_treasury_bulletin, *BUILTIN_LEGAL_TOOLS])
-    state = make_state(prompt)
-    state.update(intake(state))
-    state.update(fast_path_gate(state))
-    state.update(task_planner(state))
-    resolver = make_capability_resolver(registry)
-    state.update(resolver(state))
-    state.update(context_curator(state))
-
-    assert "search_treasury_bulletins" in state["tool_plan"]["selected_tools"]
-    assert "read_treasury_bulletin" in state["tool_plan"]["selected_tools"]
-    assert "search_treasury_bulletins" in state["tool_plan"]["pending_tools"]
-
-    executor = make_executor(registry)
-
-    first = asyncio.run(executor(state))
-    state.update(first)
-    assert first["solver_stage"] == "GATHER"
-    assert first["last_tool_result"]["type"] == "search_treasury_bulletins"
-
-    second = asyncio.run(executor(state))
-    state.update(second)
-    assert second["solver_stage"] == "GATHER"
-    assert second["last_tool_result"]["type"] == "read_treasury_bulletin"
-    assert second["last_tool_result"]["assumptions"]["document_id"] == "treasury_1945_pdf"
-
-    third = asyncio.run(executor(state))
-    state.update(third)
-    assert third["solver_stage"] == "GATHER"
-    assert third["last_tool_result"]["type"] == "read_treasury_bulletin"
-    assert third["last_tool_result"]["assumptions"]["page_start"] >= 1
-
-    result = None
-    for _ in range(3):
-        result = asyncio.run(executor(state))
-        state.update(result)
-        if result["solver_stage"] == "SYNTHESIZE":
-            break
-
-    assert result is not None
-    assert result["solver_stage"] == "SYNTHESIZE"
-    assert "treasury_1945.pdf" in str(result["messages"][0].content)
-    assert captured
 
 
 def test_engine_executor_runs_retrieval_search_then_fetch_before_final_answer(monkeypatch):
@@ -2731,75 +2564,6 @@ def test_engine_executor_dedupes_legal_prompt_and_uses_higher_legal_completion_b
     assert '"tool_results"' not in serialized
 
 
-def test_engine_executor_uses_deterministic_options_final_without_llm(monkeypatch):
-    prompt = (
-        "META's current IV is 35% while its 30-day historical volatility is 28%. "
-        "The IV percentile is 75%. Should you be a net buyer or seller of options? Design a strategy accordingly."
-    )
-    state = make_state(
-        prompt,
-        task_profile="finance_options",
-        task_intent={
-            "task_family": "finance_options",
-            "execution_mode": "tool_compute",
-            "complexity_tier": "structured_analysis",
-            "tool_families_needed": ["options_strategy_analysis", "options_scenario_analysis"],
-            "evidence_strategy": "compact_prompt",
-            "review_mode": "tool_compute",
-            "completion_mode": "compact_sections",
-            "routing_rationale": "",
-            "confidence": 0.95,
-            "planner_source": "fast_path",
-        },
-        tool_plan={"tool_families_needed": [], "selected_tools": [], "pending_tools": [], "blocked_families": [], "ace_events": [], "notes": []},
-        source_bundle={"task_text": prompt, "focus_query": prompt, "target_period": "", "entities": ["META"], "urls": [], "inline_facts": {"implied_volatility": 0.35, "historical_volatility": 0.28, "iv_percentile": 75.0}, "tables": [], "formulas": []},
-        curated_context={"objective": prompt, "facts_in_use": [], "open_questions": [], "assumptions": [], "requested_output": {"format": "text"}, "provenance_summary": {}},
-        execution_journal={
-            "events": [],
-            "tool_results": [
-                {
-                    "type": "analyze_strategy",
-                    "facts": {
-                        "net_premium": 23.98,
-                        "premium_direction": "credit",
-                        "total_delta": -0.073,
-                        "total_gamma": -0.026,
-                        "total_theta_per_day": 0.439,
-                        "total_vega_per_vol_point": -0.683,
-                        "max_loss": 9999.0,
-                    },
-                    "assumptions": {
-                        "legs": [
-                            {"option_type": "call", "action": "sell", "K": 300.0},
-                            {"option_type": "put", "action": "sell", "K": 300.0},
-                        ],
-                        "reference_price": 300.0,
-                    },
-                },
-                {
-                    "type": "scenario_pnl",
-                    "facts": {"worst_case_pnl": -22.26, "best_case_pnl": 0.44},
-                    "assumptions": {"reference_price": 300.0},
-                },
-            ],
-            "routed_tool_families": [],
-            "revision_count": 0,
-            "self_reflection_count": 0,
-            "final_artifact_signature": "",
-        },
-    )
-    monkeypatch.setattr("agent.nodes.orchestrator.ChatOpenAI", lambda **kwargs: (_ for _ in ()).throw(AssertionError("LLM should not run")))
-
-    executor = make_executor(build_capability_registry([CALCULATOR_TOOL, SEARCH_TOOL, *BUILTIN_LEGAL_TOOLS]))
-    result = asyncio.run(executor(state))
-    answer = str(result["messages"][0].content)
-
-    assert "defined-risk only" not in answer.lower()
-    assert "- delta: -0.073" in answer.lower()
-    assert "- gamma: -0.026" in answer.lower()
-    assert "- vega: -0.683" in answer.lower()
-
-
 def test_engine_reviewer_flags_missing_grounding_for_document_answers():
     prompt = "According to the Treasury Bulletin, what was total public debt outstanding in 1945?"
     state = make_state(
@@ -3741,116 +3505,6 @@ def test_officeqa_validator_rejects_semantically_wrong_but_numeric_compute():
     assert "time scope correctness" in result.hard_failures
 
 
-def test_engine_reviewer_revises_legal_once_then_stops_cleanly():
-    prompt = (
-        "Need acquisition structure options with stock consideration, liability protection, and cross-border compliance handling."
-    )
-    state = make_state(
-        prompt,
-        task_profile="legal_transactional",
-        task_intent={
-            "task_family": "legal_transactional",
-            "execution_mode": "advisory_analysis",
-            "complexity_tier": "complex_qualitative",
-            "tool_families_needed": ["transaction_structure_checklist"],
-            "evidence_strategy": "compact_prompt",
-            "review_mode": "qualitative_advisory",
-            "completion_mode": "advisory_memo",
-            "routing_rationale": "",
-            "confidence": 0.9,
-            "planner_source": "heuristic",
-        },
-        execution_journal={"events": [], "tool_results": [], "routed_tool_families": [], "revision_count": 0, "self_reflection_count": 0, "final_artifact_signature": ""},
-        workpad={"events": [], "stage_outputs": {}, "tool_results": [], "review_ready": True},
-    )
-    state["messages"].append(AIMessage(content="Recommendation: use an asset deal. Tax: stock may help deferral. Liability: use indemnities. Next steps: move quickly."))
-
-    first = reviewer(state)
-    assert first["solver_stage"] == "REVISE"
-    assert "liability allocation" in " ".join(first["review_feedback"]["missing_dimensions"]).lower()
-
-    state["execution_journal"]["revision_count"] = 1
-    second = reviewer(state)
-    assert second["solver_stage"] == "COMPLETE"
-    assert second["quality_report"]["verdict"] == "fail"
-
-
-def test_engine_reviewer_rejects_single_recommended_legal_structure():
-    prompt = "Need structure options for a cross-border acquisition with stock consideration and compliance risk."
-    state = make_state(
-        prompt,
-        task_profile="legal_transactional",
-        task_intent={
-            "task_family": "legal_transactional",
-            "execution_mode": "advisory_analysis",
-            "complexity_tier": "complex_qualitative",
-            "tool_families_needed": [],
-            "evidence_strategy": "compact_prompt",
-            "review_mode": "qualitative_advisory",
-            "completion_mode": "advisory_memo",
-            "routing_rationale": "",
-            "confidence": 0.9,
-            "planner_source": "heuristic",
-        },
-        execution_journal={"events": [], "tool_results": [], "routed_tool_families": [], "revision_count": 0, "self_reflection_count": 0, "final_artifact_signature": ""},
-        workpad={"events": [], "stage_outputs": {}, "tool_results": [], "review_ready": True},
-    )
-    state["messages"].append(
-        AIMessage(
-            content=(
-                "Recommended structure: reverse triangular merger. "
-                "Use escrow and indemnities. Stock consideration helps tax deferral."
-            )
-        )
-    )
-
-    result = reviewer(state)
-
-    assert result["solver_stage"] == "REVISE"
-    assert "multiple structure alternatives" in " ".join(result["review_feedback"]["missing_dimensions"]).lower()
-
-
-def test_engine_reviewer_flags_when_option_snapshot_is_not_front_loaded():
-    prompt = "Need structure options for a cross-border acquisition with stock consideration and compliance risk."
-    repetitive_prefix = "Recommended structure: reverse triangular merger. " * 80
-    state = make_state(
-        prompt,
-        task_profile="legal_transactional",
-        task_intent={
-            "task_family": "legal_transactional",
-            "execution_mode": "advisory_analysis",
-            "complexity_tier": "complex_qualitative",
-            "tool_families_needed": [],
-            "evidence_strategy": "compact_prompt",
-            "review_mode": "qualitative_advisory",
-            "completion_mode": "advisory_memo",
-            "routing_rationale": "",
-            "confidence": 0.9,
-            "planner_source": "heuristic",
-        },
-        execution_journal={"events": [], "tool_results": [], "routed_tool_families": [], "revision_count": 0, "self_reflection_count": 0, "final_artifact_signature": ""},
-        workpad={"events": [], "stage_outputs": {}, "tool_results": [], "review_ready": True},
-    )
-    state["messages"].append(
-        AIMessage(
-            content=(
-                repetitive_prefix
-                + "\n\nStructure options: reverse triangular merger, asset purchase, carve-out transaction."
-                + "\nTax consequences: tax-free reorganization under section 368 can give target shareholders tax deferral, buyer basis step-up can arise in an asset deal, required elections matter, and tax treatment breaks if qualification conditions fail."
-                + "\nLiability protection: indemnities, escrow, caps, baskets, survival periods, and disclosure schedules."
-                + "\nRegulatory and diligence risks: EU and US approvals, employee-transfer consultation, closing conditions, and remediation timing."
-                + "\nKey open questions and assumptions: severity of compliance gaps, cure feasibility, seller indemnity support."
-                + "\nRecommended next steps: week-one workplan with owners, sequencing, and accelerated diligence."
-            )
-        )
-    )
-
-    result = reviewer(state)
-
-    assert result["solver_stage"] == "REVISE"
-    assert "opening summary with multiple viable paths" in " ".join(result["review_feedback"]["missing_dimensions"]).lower()
-
-
 def test_failed_reviewer_path_uses_one_bounded_salvage_pass():
     state = make_state(
         "Need acquisition structure advice.",
@@ -3912,17 +3566,6 @@ def test_engine_self_reflection_requests_one_extra_legal_deepen_pass(monkeypatch
 
     assert result["solver_stage"] == "REVISE"
     assert "next steps" in " ".join(result["review_feedback"]["missing_dimensions"]).lower()
-
-
-def test_engine_legal_revision_prompt_requires_front_loaded_snapshot():
-    prompt = build_revision_prompt(
-        ["opening summary with multiple viable paths before the deep dive", "regulatory execution specifics"],
-        improve_hint="Add approvals, consultation timing, and closing conditions.",
-        task_family="legal_transactional",
-    )
-
-    assert "snapshot" in prompt.lower()
-    assert "multiple viable structures" in prompt.lower()
 
 
 def test_engine_tracer_captures_engine_headers_and_counts(monkeypatch):

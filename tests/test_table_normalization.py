@@ -1,4 +1,5 @@
 from agent.tools.table_normalization import normalize_dense_table_grid, normalize_flat_table
+from agent.tools.tsr_fallback import select_dense_table_normalization
 
 
 def test_normalize_flat_table_builds_column_and_row_paths():
@@ -42,3 +43,27 @@ def test_normalize_dense_table_grid_collapses_repeated_hierarchical_headers():
     assert normalized["row_records"][0]["row_path"] == ["Public debt"]
     assert normalized["display_headers"][1] == "End of fiscal years, 1941 to 1945 | 1944"
     assert normalized["normalization_metrics"]["duplicate_header_collapse_score"] <= 1.0
+
+
+def test_tsr_fallback_auto_promotes_when_default_header_quality_is_low(monkeypatch):
+    monkeypatch.setattr(
+        "agent.tools.tsr_fallback.compare_dense_table_normalizers",
+        lambda *args, **kwargs: {
+            "default": {"normalization_metrics": {"header_data_separation_quality": 0.32}},
+            "fallback": {"normalization_metrics": {"header_data_separation_quality": 0.74}},
+            "selected": {"normalization_metrics": {"header_data_separation_quality": 0.74}},
+            "diagnostics": {
+                "enabled": False,
+                "default_score": 0.42,
+                "fallback_score": 0.58,
+                "score_delta": 0.16,
+                "header_rows_considered": 2,
+            },
+        },
+    )
+
+    selected, diagnostics = select_dense_table_normalization([[{"text": "x", "is_header": True}]])
+
+    assert diagnostics["auto_promoted"] is True
+    assert diagnostics["selection_mode"] == "fallback_selected"
+    assert selected["experimental_tsr"]["auto_promoted"] is True

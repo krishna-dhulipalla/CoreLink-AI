@@ -325,11 +325,13 @@ def _retrieval_focus_tokens(source_bundle: SourceBundle) -> list[str]:
 
 
 def _officeqa_table_query(retrieval_intent: RetrievalIntent, source_bundle: SourceBundle) -> str:
+    query_plan = retrieval_intent.query_plan
     parts = [
+        query_plan.primary_semantic_query,
+        query_plan.granularity_query,
         retrieval_intent.entity,
         retrieval_intent.metric,
         retrieval_intent.period,
-        source_bundle.focus_query,
     ]
     return re.sub(r"\s+", " ", " ".join(part for part in parts if part)).strip()[:280]
 
@@ -729,6 +731,18 @@ def _query_years(retrieval_intent: RetrievalIntent) -> set[str]:
     return {token for token in re.findall(r"\b((?:19|20)\d{2})\b", retrieval_intent.period or "")}
 
 
+def _candidate_publication_years(candidate: dict[str, Any]) -> set[str]:
+    return set(
+        re.findall(
+            r"\b((?:19|20)\d{2})\b",
+            " ".join(
+                str(candidate.get(key, "") or "")
+                for key in ("title", "citation", "path", "document_id")
+            ),
+        )
+    )
+
+
 def _query_entity_tokens(retrieval_intent: RetrievalIntent) -> set[str]:
     return {token for token in _retrieval_tokens(retrieval_intent.entity) if token not in {"u", "s", "us"}}
 
@@ -781,8 +795,19 @@ def _year_fit_score(candidate: dict[str, Any], retrieval_intent: RetrievalIntent
     metadata = dict(candidate.get("metadata", {}) or {})
     candidate_years = {str(item) for item in list(metadata.get("years", [])) if str(item)}
     required_years = _query_years(retrieval_intent)
+    publication_years = _candidate_publication_years(candidate)
     if not required_years:
         return 0.0
+    single_direct_year = len(required_years) == 1 and retrieval_intent.granularity_requirement in {
+        "point_lookup",
+        "calendar_year",
+        "fiscal_year",
+        "monthly_series",
+    }
+    if publication_years and required_years & publication_years:
+        return 1.2
+    if single_direct_year and publication_years and not (required_years & publication_years):
+        return -1.15
     if candidate_years and required_years & candidate_years:
         return 0.95
     if candidate_years and not (required_years & candidate_years):
@@ -790,6 +815,8 @@ def _year_fit_score(candidate: dict[str, Any], retrieval_intent: RetrievalIntent
     text = f"{_search_candidate_text(candidate)} {_candidate_metadata_text(candidate)}"
     text_years = set(re.findall(r"\b((?:19|20)\d{2})\b", text))
     if required_years & text_years:
+        if single_direct_year and publication_years and not (required_years & publication_years):
+            return -0.25
         return 0.55
     if text_years:
         return -0.2

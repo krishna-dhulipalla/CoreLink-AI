@@ -181,3 +181,34 @@ def test_tracer_execution_summary_compacts_candidate_lists(monkeypatch):
     assert execution_summary[0]["rejected_candidate_count"] == 1
     assert execution_summary[0]["top_candidate"]["document_id"] == "treasury_1945_json"
     assert "candidate_sources" not in execution_summary[0]
+
+
+def test_tracer_prefers_cost_tracker_counts_for_llm_and_tool_totals(monkeypatch):
+    monkeypatch.setenv("ENABLE_RUN_TRACER", "1")
+    captured: list[dict] = []
+
+    def _capture(payload, profile, trace_identity):
+        captured.append(payload)
+        return "ok"
+
+    monkeypatch.setattr("agent.tracer._write_trace_file", _capture)
+
+    tracer = start_tracer({"request_id": "count-sync"})
+    assert tracer is not None
+    tracer.set_task("count sync task")
+    tracer.record(
+        "executor",
+        {
+            "used_llm": True,
+            "tools_ran": ["search_officeqa_documents", "fetch_officeqa_table"],
+            "output_preview": "",
+        },
+    )
+    finalize_tracer(
+        "answer",
+        cost_summary={"llm_calls": 1, "mcp_calls": 2},
+        budget_summary={},
+    )
+
+    assert captured[0]["total_llm_calls"] == 1
+    assert captured[0]["total_tool_calls"] == 2

@@ -154,8 +154,27 @@ def select_dense_table_normalization(
     )
     selected = comparison["default"]
     diagnostics = dict(comparison["diagnostics"] or {})
-    if experimental_tsr_fallback_enabled():
+    default_metrics = dict(comparison["default"].get("normalization_metrics", {}) or {})
+    default_separation = float(default_metrics.get("header_data_separation_quality", 0.0) or 0.0)
+    default_score = float(diagnostics.get("default_score", 0.0) or 0.0)
+    fallback_score = float(diagnostics.get("fallback_score", 0.0) or 0.0)
+    auto_promote = (
+        fallback_score > default_score + 0.04
+        or (
+            default_separation < 0.5
+            and fallback_score >= default_score + 0.01
+        )
+        or (
+            default_score < 0.58
+            and fallback_score >= default_score
+        )
+    )
+    diagnostics["auto_promoted"] = auto_promote
+    if experimental_tsr_fallback_enabled() or auto_promote:
         selected = comparison["selected"]
+        diagnostics["selection_mode"] = "fallback_selected"
+    else:
+        diagnostics["selection_mode"] = "default_selected"
     selected = dict(selected or {})
     selected["experimental_tsr"] = diagnostics
     return selected, diagnostics
@@ -192,4 +211,3 @@ def compare_flat_table_normalizers(
     )
     compared["default"] = default
     return compared
-

@@ -18,6 +18,7 @@ from agent.state import AgentState
 logger = logging.getLogger(__name__)
 _NUMERIC_TOKEN_RE = re.compile(r"[-+]?\d[\d,]*(?:\.\d+)?%?")
 _TAG_BLOCK_RE = re.compile(r"<(?P<tag>[A-Za-z][A-Za-z0-9_\-]*)>.*?</(?P=tag)>\s*", re.DOTALL)
+_XMLISH_RE = re.compile(r"<[/!?]?[A-Za-z]")
 _INSUFFICIENCY_RE = re.compile(
     r"\b(?:insufficient data|insufficient evidence|cannot determine|cannot calculate|cannot compute|cannot answer|not present in the provided evidence|not available in the provided evidence|data is insufficient)\b",
     re.IGNORECASE,
@@ -64,6 +65,16 @@ def _escape_xml(text: str) -> str:
         .replace("<", "&lt;")
         .replace(">", "&gt;")
     )
+
+
+def _render_final_answer_xml_value(text: str) -> str:
+    value = str(text or "")
+    if not value:
+        return ""
+    escaped = value.replace("&", "&amp;")
+    if _XMLISH_RE.search(escaped):
+        escaped = escaped.replace("<", "&lt;").replace(">", "&gt;")
+    return escaped
 
 
 def _strip_xml_blocks(text: str) -> str:
@@ -152,7 +163,7 @@ def _final_answer_needs_normalization(text: str) -> bool:
     lowered = candidate.lower()
     if any(marker in lowered for marker in ("thus,", "therefore", "final answer", "reasoning", "<final_answer>", "&lt;final_answer&gt;")):
         return True
-    if "<" in candidate or ">" in candidate:
+    if _XMLISH_RE.search(candidate):
         return True
     return False
 
@@ -178,7 +189,7 @@ def _adapt_final_answer_tags(source_text: str, contract: dict) -> str:
 
     return (
         f"<{reasoning_tag}>\n{_escape_xml(reasoning_text)}\n</{reasoning_tag}>\n"
-        f"<{final_answer_tag}>\n{_escape_xml(final_value)}\n</{final_answer_tag}>"
+        f"<{final_answer_tag}>\n{_render_final_answer_xml_value(final_value)}\n</{final_answer_tag}>"
     )
 
 

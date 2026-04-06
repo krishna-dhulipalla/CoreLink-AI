@@ -27,6 +27,7 @@ from agent.contracts import (
     UnsupportedCapabilityReport,
 )
 from agent.context.evidence import _extract_policy_context
+from agent.context.extraction import derive_market_snapshot
 from agent.model_config import ChatOpenAI, get_client_kwargs, get_model_name, get_model_name_for_task, get_model_runtime_kwargs, invoke_structured_output
 from agent.llm_repair import (
     initial_officeqa_llm_repair_state,
@@ -523,6 +524,150 @@ def _apply_review_orchestration(retrieval_intent: RetrievalIntent, review_feedba
     return updated
 
 
+def _officeqa_structured_value_text(value: dict[str, Any]) -> str:
+    return " ".join(
+        [
+            " ".join(str(part) for part in list(value.get("row_path", []) or []) if str(part).strip()),
+            str(value.get("row_label", "") or ""),
+            " ".join(str(part) for part in list(value.get("column_path", []) or []) if str(part).strip()),
+            str(value.get("column_label", "") or ""),
+            str(value.get("table_locator", "") or ""),
+            str(value.get("page_locator", "") or ""),
+            str(value.get("document_id", "") or ""),
+        ]
+    ).strip()
+
+
+def _officeqa_value_years(value: dict[str, Any]) -> set[str]:
+    return set(re.findall(r"\b((?:19|20)\d{2})\b", _officeqa_structured_value_text(value)))
+
+
+def _officeqa_value_has_month(value: dict[str, Any]) -> bool:
+    lowered = _officeqa_structured_value_text(value).lower()
+    return any(
+        month in lowered
+        for month in (
+            "january",
+            "february",
+            "march",
+            "april",
+            "may",
+            "june",
+            "july",
+            "august",
+            "september",
+            "october",
+            "november",
+            "december",
+        )
+    )
+
+
+def _officeqa_value_semantic_score(value: dict[str, Any], retrieval_intent: RetrievalIntent) -> float:
+    text = _officeqa_structured_value_text(value).lower()
+    tokens = set(_retrieval_tokens(text))
+    entity_tokens = {
+        token
+        for token in _retrieval_tokens(retrieval_intent.entity)
+        if token not in {"u", "s", "us"}
+    }
+    metric_basis = retrieval_intent.metric
+    if retrieval_intent.metric in {"absolute percent change", "absolute difference"}:
+        metric_basis = retrieval_intent.evidence_plan.metric_identity or "value"
+    metric_tokens = set(_retrieval_tokens(metric_basis))
+    required_years = set(re.findall(r"\b((?:19|20)\d{2})\b", retrieval_intent.period or ""))
+    explicit_years = _officeqa_value_years(value)
+    score = 0.0
+    score += 0.45 * len(entity_tokens & tokens)
+    score += 0.4 * len(metric_tokens & tokens)
+    if required_years:
+        if explicit_years & required_years:
+            score += 0.7
+        elif explicit_years:
+            score -= 0.55
+    if retrieval_intent.granularity_requirement == "monthly_series":
+        score += 0.25 if _officeqa_value_has_month(value) else -0.4
+    family = str(value.get("table_family", "") or "").lower()
+    if family == "navigation_or_contents":
+        score -= 2.0
+    elif retrieval_intent.granularity_requirement == "monthly_series" and family == "monthly_series":
+        score += 0.35
+    elif retrieval_intent.granularity_requirement in {"calendar_year", "fiscal_year"} and family in {
+        "category_breakdown",
+        "annual_summary",
+        "fiscal_year_comparison",
+        "debt_or_balance_sheet",
+    }:
+        score += 0.2
+    raw_value = str(value.get("raw_value", "") or "").strip().lower()
+    column_label = str(value.get("column_label", "") or "").lower()
+    if "issue and page number" in column_label and re.fullmatch(r"[a-z]?-?\d+(?:-\d+)?(?:\s+\d+(?:-\d+)?)*\.?", raw_value):
+        score -= 2.0
+    return score
+
+
+def _reselect_officeqa_structured_evidence(
+    structured_evidence: dict[str, Any] | None,
+    retrieval_intent: RetrievalIntent,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    payload = dict(structured_evidence or {})
+    values = [item for item in list(payload.get("values", []) or []) if isinstance(item, dict)]
+    if len(values) < 2:
+        return None, {}
+
+    scored = sorted(
+        (
+            (_officeqa_value_semantic_score(value, retrieval_intent), value)
+            for value in values
+        ),
+        key=lambda item: item[0],
+        reverse=True,
+    )
+    best_score = scored[0][0]
+    if best_score <= 0.15:
+        return None, {}
+
+    retained = [
+        value
+        for score, value in scored
+        if score >= max(0.25, best_score - 0.75)
+    ]
+    if len(retained) == len(values):
+        return None, {}
+
+    retained_keys = {
+        (
+            str(item.get("document_id", "") or ""),
+            str(item.get("citation", "") or ""),
+            str(item.get("table_locator", "") or ""),
+            str(item.get("page_locator", "") or ""),
+        )
+        for item in retained
+    }
+    filtered = dict(payload)
+    filtered["values"] = retained
+    filtered["value_count"] = len(retained)
+    filtered["tables"] = [
+        table
+        for table in list(payload.get("tables", []) or [])
+        if (
+            str(table.get("document_id", "") or ""),
+            str(table.get("citation", "") or ""),
+            str(table.get("table_locator", table.get("locator", "")) or ""),
+            str(table.get("page_locator", "") or ""),
+        )
+        in retained_keys
+    ] or list(payload.get("tables", []) or [])
+    diagnostics = {
+        "attempted": True,
+        "input_value_count": len(values),
+        "retained_value_count": len(retained),
+        "best_score": round(best_score, 4),
+        "retention_threshold": round(max(0.25, best_score - 0.75), 4),
+    }
+    return filtered, diagnostics
+
+
 def _record_llm_repair_decision(
     workpad: dict[str, Any],
     *,
@@ -542,6 +687,7 @@ def _record_llm_repair_decision(
         }
     )
     updated["officeqa_llm_repair_history"] = history
+    updated["officeqa_latest_llm_repair"] = history[-1]
     return updated
 
 
@@ -701,6 +847,11 @@ def make_executor(registry: dict[str, dict[str, Any]]):
             and review_feedback.get("repair_target") == "gather"
             and review_feedback.get("retry_allowed", True)
         )
+        targeted_compute_retry = bool(
+            review_feedback
+            and review_feedback.get("repair_target") == "compute"
+            and review_feedback.get("retry_allowed", True)
+        )
         active_retrieval_intent = _apply_review_orchestration(retrieval_intent, review_feedback)
         llm_repair_state = (
             dict(workpad.get("officeqa_llm_repair_state") or initial_officeqa_llm_repair_state(active_retrieval_intent))
@@ -825,7 +976,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                 "workpad": workpad,
             }
 
-        if officeqa_mode and targeted_retrieval_retry and llm_repair_state.get("validator_repair_calls", 0) < llm_repair_budget.get("validator_repair_calls", 0):
+        if officeqa_mode and (targeted_retrieval_retry or targeted_compute_retry) and llm_repair_state.get("validator_repair_calls", 0) < llm_repair_budget.get("validator_repair_calls", 0):
             validator_candidate_sources = list(dict(workpad.get("retrieval_diagnostics") or {}).get("candidate_sources") or [])
             repair_decision = maybe_repair_from_validator(
                 task_text=task_text,
@@ -849,7 +1000,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                 workpad = _record_llm_repair_decision(
                     workpad,
                     stage="validator_repair",
-                    trigger=str(review_feedback.get("orchestration_strategy", "") or "gather_retry"),
+                    trigger=str(review_feedback.get("orchestration_strategy", "") or review_feedback.get("repair_target", "") or "validator_retry"),
                     decision=decision_payload,
                     path_changed=path_changed,
                 )
@@ -1144,10 +1295,23 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                         "workpad": workpad,
                     }
             else:
+                structured_for_compute = dict(curated.structured_evidence or {})
+                if officeqa_mode and targeted_compute_retry and not bool(workpad.get("officeqa_compute_reselection_attempted")):
+                    reselected_structured, reselection_diagnostics = _reselect_officeqa_structured_evidence(
+                        structured_for_compute,
+                        active_retrieval_intent,
+                    )
+                    workpad["officeqa_compute_reselection_attempted"] = True
+                    if reselected_structured is not None:
+                        structured_for_compute = reselected_structured
+                        workpad["officeqa_compute_reselection"] = reselection_diagnostics
+                        provenance_summary = dict(curated.provenance_summary or {})
+                        provenance_summary["compute_reselection"] = reselection_diagnostics
+                        curated.provenance_summary = provenance_summary
                 compute_result = benchmark_compute_result(
                     task_text,
-                    retrieval_intent,
-                    curated.structured_evidence,
+                    active_retrieval_intent,
+                    structured_for_compute,
                     benchmark_overrides,
                 )
                 if compute_result is None:
@@ -1189,6 +1353,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                                 "officeqa_compute": compute_result.model_dump(),
                                 "aggregation_reason": compute_result.selection_reasoning,
                                 "rejected_aggregation_alternatives": compute_result.rejected_alternatives,
+                                "compute_reselection": dict(workpad.get("officeqa_compute_reselection") or {}),
                                 "answer_mode": active_retrieval_intent.answer_mode,
                                 "compute_policy": active_retrieval_intent.compute_policy,
                                 "evidence_review": dict(workpad.get("officeqa_evidence_review") or {}),

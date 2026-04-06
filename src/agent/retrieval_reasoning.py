@@ -137,7 +137,15 @@ def _aggregation_shape(task_text: str) -> str:
         return "monthly_sum_percent_change"
     if "all individual calendar months" in lowered and "absolute difference" in lowered and "inflation" in lowered:
         return "inflation_adjusted_monthly_difference"
-    if "all individual calendar months" in lowered or "total sum of these values" in lowered:
+    if (
+        "all individual calendar months" in lowered
+        or "total sum of these values" in lowered
+        or "total monthly expenditures" in lowered
+        or "total monthly receipts" in lowered
+        or "monthly expenditures" in lowered
+        or "monthly receipts" in lowered
+        or ("monthly" in lowered and any(token in lowered for token in ("total", "sum", "series", "values")))
+    ):
         return "monthly_sum"
     if "calendar year" in lowered:
         return "calendar_year_total"
@@ -358,7 +366,17 @@ def _build_evidence_plan(
     requires_statistical_series = "statistical_analysis" in analysis_modes
     requires_forecast_support = "time_series_forecasting" in analysis_modes
     requires_cross_source_alignment = strategy == "multi_document"
-    requires_text_support = strategy in {"text_first", "hybrid", "multi_document"} or _needs_narrative_support(task_text, analysis_modes)
+    implicit_metric = _metric_is_implicit(metric, aggregation_shape)
+    narrative_support = _needs_narrative_support(task_text, analysis_modes)
+    advanced_reasoning = any(
+        mode in analysis_modes for mode in ("statistical_analysis", "time_series_forecasting", "risk_metric")
+    )
+    requires_text_support = (
+        strategy in {"text_first", "hybrid"}
+        or narrative_support
+        or (strategy == "multi_document" and advanced_reasoning)
+        or (strategy == "multi_document" and aggregation_shape == "point_lookup" and implicit_metric)
+    )
     requires_table_support = strategy in {"table_first", "hybrid", "multi_table", "multi_document"} or aggregation_shape != "point_lookup"
     expected_value_count = max(1, len(years) or 1)
     if required_month_coverage:
@@ -536,6 +554,8 @@ def _build_query_plan(
         source_hint = document_family.replace("_", " ")
 
     monthly_hint = "monthly" if granularity_requirement == "monthly_series" else ""
+    if granularity_requirement == "monthly_series" and "series" not in monthly_hint:
+        monthly_hint = "monthly series"
     annual_hint = ""
     if granularity_requirement == "calendar_year":
         annual_hint = "calendar year"

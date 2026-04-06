@@ -6,10 +6,12 @@ Tracks every LLM call and MCP tool invocation during a graph run.
 
 import logging
 import time
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
 
 logger = logging.getLogger(__name__)
+_active_cost_tracker_var: ContextVar["CostTracker | None"] = ContextVar("active_cost_tracker", default=None)
 
 # ---------------------------------------------------------------------------
 # Cost table: estimated $/1K tokens per model
@@ -169,4 +171,16 @@ class CostTracker:
         )
 
     __str__ = __repr__
+
+
+def set_active_cost_tracker(tracker: CostTracker | None):
+    return _active_cost_tracker_var.set(tracker)
+
+
+def get_active_cost_tracker() -> CostTracker | None:
+    return _active_cost_tracker_var.get()
+
+
+def reset_active_cost_tracker(token) -> None:
+    _active_cost_tracker_var.reset(token)
 
