@@ -1360,6 +1360,197 @@ Exit criteria:
 - low-quality normalized tables can trigger a stronger fallback path without env-only activation
 - repair remains bounded but is deep enough to address benchmark-style wrong-table and incomplete-evidence stalls
 
+## Phase 29: Repair-State Invalidation And True Reroute Execution
+
+Objective:
+
+- make every repair decision invalidate stale evidence and drive a real new retrieval action instead of revalidating the same failed state.
+
+Why now:
+
+- the April 6 sampled benchmark run showed repeated `repair_stall` even when validator or retrieval repair produced a changed query
+- task 1 retuned the table query but never re-opened search or table fetch
+- task 2 detected `missing month coverage` correctly but reused stale evidence after repair
+- task 3 rewrote the query but stayed on the same bad source document
+
+Tasks:
+
+- [ ] `P29.1` Make repair decisions first-class state transitions with explicit invalidation of stale `structured_evidence`, `compute_result`, and retrieval summaries
+- [ ] `P29.2` Distinguish `query rewrite`, `table query rewrite`, `source rerank`, `strategy shift`, and `unit repair` as separate reroute actions instead of generic repair flags
+- [ ] `P29.3` Require a fresh retrieval hop after any repair that changes query, table query, source selection, or retrieval strategy
+- [ ] `P29.4` Prevent validator repair from repeating if no retrieval input changed since the previous repair
+- [ ] `P29.5` Add explicit `repair_applied_but_no_new_evidence` and `repair_reused_stale_state` trace/report failures
+- [ ] `P29.6` Add regressions for:
+  - task-1 style `retune_table_query` that must trigger a new table fetch
+  - task-2 style `missing month coverage` that must reopen retrieval
+  - task-3 style wrong-source repair that must rerank or re-search before page fetch
+
+Suggested code targets:
+
+- `src/agent/nodes/orchestrator.py`
+- `src/agent/llm_repair.py`
+- `src/agent/nodes/orchestrator_retrieval.py`
+- `src/agent/benchmarks/officeqa_eval.py`
+- `tests/test_engine_runtime.py`
+- `tests/test_officeqa_eval.py`
+
+Exit criteria:
+
+- any repair that changes the retrieval path produces a fresh retrieval action, not a repeated insufficiency answer over the same evidence
+- `repair_stall` becomes a genuine exhaustion signal instead of a state-invalidation bug
+
+## Phase 30: Table-Family And Evidence Admissibility Before Compute
+
+Objective:
+
+- stop wrong-family tables from reaching deterministic compute by enforcing semantic admissibility earlier and more explicitly.
+
+Why now:
+
+- task 1 selected the right year/source but a receipts table instead of an expenditures table
+- task 2 selected the right year/source but an annual/category summary instead of a monthly series
+- current extraction confidence was high in both cases, which means structure quality alone is not the right gate
+
+Tasks:
+
+- [ ] `P30.1` Introduce explicit Treasury table-family taxonomy:
+  - expenditures
+  - receipts
+  - debt
+  - loan / lending
+  - summary / contents / navigational
+  - cross-program category summary
+- [ ] `P30.2` Build a question-level admissibility contract from the decomposition layer:
+  - expected metric family
+  - allowed aggregation grains
+  - required period slice
+  - required entity/category family
+- [ ] `P30.3` Reject extracted tables before compute when table family, row family, or column period slice violates the contract
+- [ ] `P30.4` Add a second-stage semantic row/column selector that uses the admissibility contract rather than only lexical overlap
+- [ ] `P30.5` Surface `wrong_table_family`, `wrong_row_family`, and `wrong_period_slice` as retrieval-stage failures, not only validator-stage failures
+- [ ] `P30.6` Add regressions for:
+  - 1940 national-defense expenditures vs receipts-table confusion
+  - 1953 monthly-series vs annual summary confusion
+
+Suggested code targets:
+
+- `src/agent/retrieval_tools.py`
+- `src/agent/officeqa_structured_evidence.py`
+- `src/agent/benchmarks/officeqa_compute.py`
+- `src/agent/benchmarks/officeqa_validator.py`
+- `tests/test_officeqa_compute.py`
+- `tests/test_engine_runtime.py`
+
+Exit criteria:
+
+- wrong-family or wrong-grain tables are rejected before deterministic compute
+- tasks like the April 6 task 1 and task 2 fail early as retrieval/admissibility errors, not late validation stalls
+
+## Phase 31: Explicit LLM Control Plane For Hard Financial Document Questions
+
+Objective:
+
+- stop relying on regex and heuristics alone for hard benchmark questions by making LLM use explicit, typed, and bounded where semantic interpretation matters.
+
+Why now:
+
+- the sampled original benchmark cases are already exposing the ceiling of a mostly heuristic controller
+- the judge budget allows materially more reasoning than the runtime is currently spending
+- deterministic compute remains necessary, but semantic planning, source choice, table-family choice, and repair supervision are currently underpowered
+
+Design direction:
+
+- keep numeric answers deterministic whenever the evidence contract is satisfied
+- use LLMs explicitly for semantic planning and evidence selection, not as an uncontrolled end-stage fallback
+- follow the Purple-style staged loop:
+  - retrieve
+  - parse
+  - analyze
+  - validate
+  - compute
+  - complete
+
+Tasks:
+
+- [ ] `P31.1` Add a typed `question_semantic_plan` LLM step for medium/high-complexity document questions:
+  - target metric family
+  - entity/category family
+  - period interpretation
+  - likely table families
+  - likely evidence mode (`table`, `text`, `hybrid`)
+- [ ] `P31.2` Add top-k source reranking with an LLM over manifest/document summaries when heuristic ranking confidence is weak or historically ambiguous
+- [ ] `P31.3` Add table-family reranking / admissibility review with an LLM over normalized table metadata when multiple extracted tables are plausible
+- [ ] `P31.4` Add explicit budget partitioning per question:
+  - decomposition / planning budget
+  - retrieval-rerank budget
+  - repair budget
+  - final synthesis budget
+- [ ] `P31.5` Make solver LLM usage visible as separate categories:
+  - `semantic_plan_llm`
+  - `retrieval_rerank_llm`
+  - `repair_llm`
+  - `final_synthesis_llm`
+- [ ] `P31.6` Add original-benchmark regressions showing that complex sampled questions can use bounded LLM planning while still keeping final numeric compute deterministic
+
+Suggested code targets:
+
+- `src/agent/context/extraction.py`
+- `src/agent/retrieval_reasoning.py`
+- `src/agent/nodes/orchestrator_retrieval.py`
+- `src/agent/llm_repair.py`
+- `src/agent/nodes/orchestrator.py`
+- `src/agent/model_config.py`
+- `tests/test_question_decomposition.py`
+- `tests/test_engine_runtime.py`
+
+Exit criteria:
+
+- complex document-finance questions are no longer controlled almost entirely by regex and heuristics
+- LLM use is explicit, bounded, typed, and traceable
+- deterministic compute remains the final authority for supported numeric tasks
+
+## Phase 32: Trace Semantics And Cross-Trace Mapping Cleanup
+
+Objective:
+
+- make local traces, LangSmith exports, and regression reports easy to align during benchmark debugging.
+
+Why now:
+
+- the April 6 debugging pass showed real confusion:
+  - local benchmark case ids did not line up with `task1.json`, `task2.json`, `task3.json` in exported LangSmith files
+  - `used_llm: false` coexisted with `total_llm_calls: 1` because support-LLM calls were not represented as solver usage
+  - LangSmith exported repeated AI messages that looked like duplicate work but were actually successive state outputs
+
+Tasks:
+
+- [ ] `P32.1` Add stable case id / prompt hash / run id mapping into both local traces and exported LangSmith metadata
+- [ ] `P32.2` Split local LLM accounting into:
+  - `solver_llm_calls`
+  - `support_llm_calls`
+  - `repair_llm_calls`
+- [ ] `P32.3` Record repeated final-ish AI messages as `state snapshots`, not independent answer attempts
+- [ ] `P32.4` Add a lightweight trace diff/view command that aligns one local trace with one LangSmith export
+- [ ] `P32.5` Add report fields for:
+  - `first_wrong_commitment_stage`
+  - `stale_repair_reuse`
+  - `support_llm_used`
+- [ ] `P32.6` Document the mapping rules in the walkthrough and keep them stable
+
+Suggested code targets:
+
+- `src/agent/tracer.py`
+- `src/agent/benchmarks/officeqa_eval.py`
+- `scripts/run_officeqa_regression.py`
+- `docs/v5_runtime_walkthrough.md`
+- `tests/test_tracer.py`
+- `tests/test_officeqa_eval.py`
+
+Exit criteria:
+
+- local and LangSmith traces are explainably different rather than confusingly different
+- debugging a failed benchmark case no longer requires manual guesswork about task numbering or hidden LLM calls
+
 ## Optional Backlog: Shared Global Workpad
 
 Recommendation:

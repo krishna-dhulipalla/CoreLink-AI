@@ -808,3 +808,35 @@ Rules:
     - `124 passed`
 - **Follow-Up Note:** At this point the benchmark-hardening changes are validated against both the OfficeQA-specific runtime and the shared runtime tests that still matter. Remaining failures in future runs should be benchmark-behavior issues, not stale test debt from older domains.
 
+### Chat 44: April 6 Benchmark Regression Audit Documented Without Code Changes
+
+- **Role:** Analyst
+- **Actions Taken:** Audited the new sampled benchmark run from [officeqa_regression_full_20260406T015410Z.json](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\Results&traces\officeqa_regression_full_20260406T015410Z.json), the local traces under [2026-04-05_19-53-55](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\traces\2026-04-05_19-53-55), and the exported LangSmith traces under `langsmith_traces/`.
+- **Observed Failure Pattern:** All three cases still failed in validation, but for different system reasons:
+  - benchmark case 001: right source family, wrong table family (`receipts` table selected for an `expenditures` question)
+  - benchmark case 002: right source family, wrong grain (`summary/category table` selected for a required monthly series)
+  - benchmark case 003: wrong source commitment (1974 bulletin selected for FY 1934 Veterans Administration expenditures)
+- **Observed Orchestration Failure:** Repair logic is still stalling on real benchmark cases because state invalidation is incomplete:
+  - task 1 retuned the table query but did not trigger a fresh retrieval hop
+  - task 2 detected `missing month coverage` correctly but reused stale evidence after repair
+  - task 3 rewrote the query twice but stayed committed to the same bad source
+- **Observed Trace-Semantics Confusion:**
+  - exported LangSmith `task1.json`, `task2.json`, and `task3.json` did not align with local `task_001`, `task_002`, and `task_003` by filename
+  - local `used_llm: false` still coexisted with nonzero `total_llm_calls` because support/repair LLM calls are not the same thing as solver LLM use
+  - repeated AI messages in LangSmith exports were successive state snapshots, not necessarily repeated solver attempts
+- **Architecture Readout:** The benchmark failures are no longer primarily OCR/normalization failures. The active system bottlenecks are now:
+  - semantic source commitment
+  - table-family admissibility before compute
+  - stale-state reuse after repair
+  - too little explicit LLM control on semantically hard questions
+- **Plan Update:** Added new system phases in [officeqa_execution_plan.md](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\docs\officeqa_execution_plan.md):
+  - `Phase 29`: repair-state invalidation and true reroute execution
+  - `Phase 30`: table-family and evidence admissibility before compute
+  - `Phase 31`: explicit LLM control plane for hard financial document questions
+  - `Phase 32`: trace semantics and cross-trace mapping cleanup
+- **Docs Updated:** Extended [v5_runtime_walkthrough.md](c:\Users\vamsi\OneDrive\Desktop\Gtihub_repos\Project-Pulse-Generalist-A2A-Reasoning-Engine\docs\v5_runtime_walkthrough.md) with:
+  - an April 6 benchmark failure readout
+  - explicit local-trace vs LangSmith interpretation rules
+  - the explanation for why support LLM calls can exist when solver LLM is still `false`
+- **No Code Changes:** This pass was documentation-only by request.
+
