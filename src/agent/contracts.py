@@ -447,7 +447,10 @@ class EvidencePlan(BaseModel):
     metric_identity: str = ""
     expected_unit_kind: str = ""
     expected_value_count: int = 1
+    period_type: str = ""
     required_years: list[str] = Field(default_factory=list)
+    publication_year_window: list[str] = Field(default_factory=list)
+    preferred_publication_years: list[str] = Field(default_factory=list)
     required_month_coverage: bool = False
     required_month_count: int = 0
     requires_table_support: bool = False
@@ -463,6 +466,7 @@ class EvidencePlan(BaseModel):
 
 class QueryPlan(BaseModel):
     primary_semantic_query: str = ""
+    temporal_query: str = ""
     alternate_lexical_query: str = ""
     granularity_query: str = ""
     qualifier_query: str = ""
@@ -473,6 +477,10 @@ class QuestionDecomposition(BaseModel):
     entity: str = ""
     metric: str = ""
     period: str = ""
+    period_type: str = ""
+    target_years: list[str] = Field(default_factory=list)
+    publication_year_window: list[str] = Field(default_factory=list)
+    preferred_publication_years: list[str] = Field(default_factory=list)
     granularity_requirement: str = ""
     include_constraints: list[str] = Field(default_factory=list)
     exclude_constraints: list[str] = Field(default_factory=list)
@@ -486,6 +494,10 @@ class RetrievalIntent(BaseModel):
     entity: str = ""
     metric: str = ""
     period: str = ""
+    period_type: str = ""
+    target_years: list[str] = Field(default_factory=list)
+    publication_year_window: list[str] = Field(default_factory=list)
+    preferred_publication_years: list[str] = Field(default_factory=list)
     granularity_requirement: str = ""
     document_family: str = ""
     aggregation_shape: str = ""

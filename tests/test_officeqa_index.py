@@ -156,6 +156,74 @@ def test_search_officeqa_corpus_index_ranks_metadata_backed_match_first(tmp_path
     assert result["results"][0]["document_id"] == "treasury_1940_json"
 
 
+def test_search_officeqa_corpus_index_prefers_temporal_neighbor_publication_with_stronger_table_unit(tmp_path):
+    corpus_root = tmp_path / "treasury_bulletins_parsed"
+    corpus_root.mkdir(parents=True)
+    (corpus_root / "treasury_bulletin_1940_01.json").write_text(
+        json.dumps(
+            {
+                "document": {
+                    "elements": [
+                        {
+                            "type": "table",
+                            "description": "Current monthly statement",
+                            "bbox": [{"page_id": 7}],
+                            "content": (
+                                "<table>"
+                                "<tr><th>Month</th><th>Receipts</th></tr>"
+                                "<tr><td>January</td><td>10</td></tr>"
+                                "<tr><td>February</td><td>11</td></tr>"
+                                "</table>"
+                            ),
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (corpus_root / "treasury_bulletin_1941_11.json").write_text(
+        json.dumps(
+            {
+                "document": {
+                    "elements": [
+                        {
+                            "type": "table",
+                            "description": "Summary of expenditures for calendar year 1940",
+                            "bbox": [{"page_id": 29}],
+                            "content": (
+                                "<table>"
+                                "<tr><th>Category</th><th>Calendar year 1940</th></tr>"
+                                "<tr><td>U.S. national defense</td><td>4748</td></tr>"
+                                "</table>"
+                            ),
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    build_officeqa_index(corpus_root=corpus_root)
+
+    result = search_officeqa_corpus_index(
+        "What were the total expenditures for U.S. national defense in the calendar year 1940?",
+        corpus_root=corpus_root,
+        target_years=["1940"],
+        publication_year_window=["1939", "1940", "1941"],
+        preferred_publication_years=["1941", "1940", "1939"],
+        period_type="calendar_year",
+        granularity_requirement="calendar_year",
+        entity="U.S. national defense",
+        metric="total expenditures",
+        top_k=2,
+    )
+
+    assert result["results"][0]["document_id"] == "treasury_bulletin_1941_11_json"
+    assert result["results"][0]["metadata"]["publication_year"] == "1941"
+    assert result["results"][0]["metadata"]["best_evidence_unit"]["table_family"] in {"category_breakdown", "annual_summary"}
+
+
 def test_validate_officeqa_index_reports_partially_parsed_documents(tmp_path):
     corpus_root = tmp_path / "treasury_bulletins_parsed"
     corpus_root.mkdir(parents=True)
@@ -180,7 +248,7 @@ def test_verify_officeqa_corpus_bundle_succeeds_with_built_index(tmp_path):
     summary = verify_officeqa_corpus_bundle(corpus_root=corpus_root)
 
     assert summary["document_count"] == 1
-    assert summary["index_schema_version"] == 1
+    assert summary["index_schema_version"] == 2
 
 
 def test_verify_officeqa_corpus_bundle_requires_manifest_metadata(tmp_path):

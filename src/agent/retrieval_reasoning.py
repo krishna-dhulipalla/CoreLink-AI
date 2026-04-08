@@ -348,6 +348,10 @@ def _build_evidence_plan(
     source_bundle: SourceBundle,
     metric: str,
     period: str,
+    period_type: str,
+    target_years: list[str],
+    publication_year_window: list[str],
+    preferred_publication_years: list[str],
     aggregation_shape: str,
     granularity_requirement: str,
     strategy: str,
@@ -356,7 +360,7 @@ def _build_evidence_plan(
     include_constraints: list[str],
     exclude_constraints: list[str],
 ) -> EvidencePlan:
-    years = _period_years(period, task_text)
+    years = list(target_years) or _period_years(period, task_text)
     metric_identity = _primary_retrieval_metric(metric, aggregation_shape) or "document-grounded financial value"
     required_month_coverage = aggregation_shape.startswith("monthly") or any(
         mode in analysis_modes for mode in ("statistical_analysis", "time_series_forecasting")
@@ -472,7 +476,10 @@ def _build_evidence_plan(
         metric_identity=metric_identity,
         expected_unit_kind=_expected_unit_kind(task_text, metric_identity, analysis_modes),
         expected_value_count=expected_value_count,
+        period_type=period_type,
         required_years=years,
+        publication_year_window=publication_year_window,
+        preferred_publication_years=preferred_publication_years,
         required_month_coverage=required_month_coverage,
         required_month_count=required_month_count,
         requires_table_support=requires_table_support,
@@ -540,6 +547,9 @@ def _build_query_plan(
     metric: str,
     retrieval_metric: str,
     period: str,
+    period_type: str,
+    publication_year_window: list[str],
+    preferred_publication_years: list[str],
     granularity_requirement: str,
     include_constraints: list[str],
     exclude_constraints: list[str],
@@ -591,6 +601,21 @@ def _build_query_plan(
             if part
         )
     )[:280]
+    temporal_query = _normalize_space(
+        " ".join(
+            part
+            for part in (
+                source_hint,
+                entity,
+                retrieval_metric or metric,
+                " ".join(preferred_publication_years[:2]),
+                period,
+                period_type.replace("_", " ") if period_type else "",
+                monthly_hint or annual_hint,
+            )
+            if part
+        )
+    )[:280]
     granularity_query = _normalize_space(
         " ".join(
             part
@@ -598,6 +623,7 @@ def _build_query_plan(
                 source_hint,
                 retrieval_metric or metric or source_bundle.focus_query,
                 period,
+                " ".join(publication_year_window[:3]) if publication_year_window else "",
                 monthly_hint,
                 annual_hint,
                 "reported values" if "specifically only the reported values" in {item.lower() for item in include_constraints} else "",
@@ -620,6 +646,7 @@ def _build_query_plan(
     )[:280]
     return QueryPlan(
         primary_semantic_query=primary_semantic_query,
+        temporal_query=temporal_query,
         alternate_lexical_query=alternate_lexical_query,
         granularity_query=granularity_query,
         qualifier_query=qualifier_query,
@@ -636,10 +663,14 @@ def build_retrieval_intent(
     entity = decomposition.entity
     metric = decomposition.metric
     period = decomposition.period
+    period_type = decomposition.period_type
+    target_years = list(decomposition.target_years)
+    publication_year_window = list(decomposition.publication_year_window)
+    preferred_publication_years = list(decomposition.preferred_publication_years)
     granularity_requirement = decomposition.granularity_requirement
     document_family = _document_family(task_text, source_bundle, benchmark_overrides)
     aggregation_shape = _aggregation_shape(task_text)
-    years = _period_years(period, task_text)
+    years = list(target_years) or _period_years(period, task_text)
     retrieval_metric = _primary_retrieval_metric(metric, aggregation_shape)
     qualifier_terms = list(decomposition.qualifier_terms)
     analysis_modes = _task_analysis_modes(task_text, benchmark_overrides)
@@ -661,6 +692,10 @@ def build_retrieval_intent(
         source_bundle,
         metric,
         period,
+        period_type,
+        target_years,
+        publication_year_window,
+        preferred_publication_years,
         aggregation_shape,
         granularity_requirement,
         strategy,
@@ -675,6 +710,9 @@ def build_retrieval_intent(
         metric=metric,
         retrieval_metric=retrieval_metric,
         period=period,
+        period_type=period_type,
+        publication_year_window=publication_year_window,
+        preferred_publication_years=preferred_publication_years,
         granularity_requirement=granularity_requirement,
         include_constraints=decomposition.include_constraints,
         exclude_constraints=decomposition.exclude_constraints,
@@ -711,6 +749,7 @@ def build_retrieval_intent(
 
     query_candidates = [
         query_plan.source_file_query,
+        query_plan.temporal_query,
         query_plan.primary_semantic_query,
         query_plan.granularity_query,
         query_plan.qualifier_query or query_plan.alternate_lexical_query,
@@ -720,6 +759,10 @@ def build_retrieval_intent(
         entity=entity,
         metric=metric,
         period=period,
+        period_type=period_type,
+        target_years=target_years,
+        publication_year_window=publication_year_window,
+        preferred_publication_years=preferred_publication_years,
         granularity_requirement=granularity_requirement,
         document_family=document_family,
         aggregation_shape=aggregation_shape,

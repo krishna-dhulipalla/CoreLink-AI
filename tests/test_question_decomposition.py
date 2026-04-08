@@ -20,8 +20,13 @@ def test_decomposition_extracts_calendar_year_category_slots():
     assert retrieval_intent.metric == "total expenditures"
     assert retrieval_intent.period == "1940"
     assert retrieval_intent.granularity_requirement == "calendar_year"
+    assert retrieval_intent.period_type == "calendar_year"
+    assert retrieval_intent.target_years == ["1940"]
+    assert retrieval_intent.preferred_publication_years[:2] == ["1941", "1940"]
+    assert retrieval_intent.publication_year_window == ["1939", "1940", "1941"]
     assert retrieval_intent.decomposition_confidence >= 0.7
     assert retrieval_intent.query_plan.primary_semantic_query.startswith(("Treasury Bulletin", "official government finance"))
+    assert "1941" in retrieval_intent.query_plan.temporal_query
     assert "calendar year" in retrieval_intent.query_plan.granularity_query.lower()
 
 
@@ -75,6 +80,7 @@ def test_decomposition_detects_total_monthly_expenditures_as_monthly_series():
 
     assert retrieval_intent.granularity_requirement == "monthly_series"
     assert retrieval_intent.aggregation_shape == "monthly_sum"
+    assert retrieval_intent.preferred_publication_years[0] == "1953"
     assert retrieval_intent.query_plan.primary_semantic_query
     assert "monthly" in retrieval_intent.query_plan.granularity_query.lower()
 

@@ -115,6 +115,49 @@ def _extract_granularity_requirement(task_text: str) -> str:
     return "point_lookup"
 
 
+def _period_type(task_text: str, granularity_requirement: str) -> str:
+    lowered = _normalize_space(task_text).lower()
+    if granularity_requirement == "monthly_series":
+        return "monthly_series"
+    if granularity_requirement == "calendar_year":
+        return "calendar_year"
+    if granularity_requirement == "fiscal_year":
+        return "fiscal_year"
+    if granularity_requirement == "narrative_support":
+        return "narrative_support"
+    if re.search(r"\b(?:jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|aug|august|sep|sept|september|oct|october|nov|november|dec|december)\b", lowered):
+        return "point_in_time"
+    return "point_lookup"
+
+
+def _target_years(period: str, task_text: str, source_bundle: SourceBundle) -> list[str]:
+    years = _YEAR_RE.findall(" ".join([period or "", task_text or "", source_bundle.target_period or ""]))
+    return list(dict.fromkeys(years[:4]))
+
+
+def _publication_year_preferences(target_years: list[str], granularity_requirement: str, period_type: str) -> tuple[list[str], list[str]]:
+    if not target_years:
+        return [], []
+    years = []
+    for year in target_years:
+        try:
+            years.append(int(year))
+        except ValueError:
+            continue
+    if not years:
+        return [], []
+
+    if granularity_requirement in {"calendar_year", "fiscal_year"} or period_type in {"calendar_year", "fiscal_year"}:
+        preferred = [str(year + 1) for year in years] + [str(year) for year in years] + [str(year - 1) for year in years]
+    elif granularity_requirement == "monthly_series" or period_type == "monthly_series":
+        preferred = [str(year) for year in years] + [str(year + 1) for year in years] + [str(year - 1) for year in years]
+    else:
+        preferred = [str(year) for year in years] + [str(year + 1) for year in years] + [str(year - 1) for year in years]
+
+    window = [str(year - 1) for year in years] + [str(year) for year in years] + [str(year + 1) for year in years]
+    return _dedupe_strings(preferred, limit=12), _dedupe_strings(window, limit=12)
+
+
 def _extract_include_constraints(task_text: str) -> list[str]:
     found: list[str] = []
     for pattern in _INCLUSION_PATTERNS:
@@ -214,6 +257,13 @@ def _rule_based_decomposition(task_text: str, source_bundle: SourceBundle) -> Qu
     metric = _extract_metric_identity(task_text)
     period = _extract_year_scope(task_text, source_bundle)
     granularity_requirement = _extract_granularity_requirement(task_text)
+    period_type = _period_type(task_text, granularity_requirement)
+    target_years = _target_years(period, task_text, source_bundle)
+    preferred_publication_years, publication_year_window = _publication_year_preferences(
+        target_years,
+        granularity_requirement,
+        period_type,
+    )
     include_constraints = _extract_include_constraints(task_text)
     exclude_constraints = _extract_exclude_constraints(task_text)
     qualifier_terms = _dedupe_strings([*include_constraints, *exclude_constraints], limit=6)
@@ -238,6 +288,10 @@ def _rule_based_decomposition(task_text: str, source_bundle: SourceBundle) -> Qu
         entity=entity,
         metric=metric,
         period=period,
+        period_type=period_type,
+        target_years=target_years,
+        publication_year_window=publication_year_window,
+        preferred_publication_years=preferred_publication_years,
         granularity_requirement=granularity_requirement,
         include_constraints=include_constraints,
         exclude_constraints=exclude_constraints,
@@ -251,6 +305,10 @@ def _merge_decomposition(primary: QuestionDecomposition, fallback: QuestionDecom
         entity=primary.entity or fallback.entity,
         metric=primary.metric or fallback.metric,
         period=primary.period or fallback.period,
+        period_type=primary.period_type or fallback.period_type,
+        target_years=list(dict.fromkeys([*primary.target_years, *fallback.target_years]))[:4],
+        publication_year_window=list(dict.fromkeys([*primary.publication_year_window, *fallback.publication_year_window]))[:12],
+        preferred_publication_years=list(dict.fromkeys([*primary.preferred_publication_years, *fallback.preferred_publication_years]))[:12],
         granularity_requirement=primary.granularity_requirement or fallback.granularity_requirement,
         include_constraints=_dedupe_strings([*primary.include_constraints, *fallback.include_constraints], limit=6),
         exclude_constraints=_dedupe_strings([*primary.exclude_constraints, *fallback.exclude_constraints], limit=6),

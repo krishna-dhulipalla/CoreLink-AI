@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import csv
+import html
 import json
 import os
 import re
 from pathlib import Path
 from typing import Any
+
+from agent.tools.table_normalization import normalize_dense_table_grid, normalize_flat_table
 
 _CORPUS_ENV_NAMES = (
     "OFFICEQA_CORPUS_DIR",
@@ -27,7 +30,7 @@ _SUPPORTED_EXTENSIONS = {".txt", ".md", ".json", ".csv", ".html", ".xml", ".tsv"
 _INDEX_DIR_NAME = ".officeqa_index"
 _MANIFEST_FILENAME = "manifest.jsonl"
 _METADATA_FILENAME = "index_metadata.json"
-_INDEX_SCHEMA_VERSION = 1
+_INDEX_SCHEMA_VERSION = 2
 _MAX_FILES = 4000
 _MONTHS = (
     "january",
@@ -44,6 +47,12 @@ _MONTHS = (
     "december",
 )
 _UNIT_HINTS = ("thousand", "million", "billion", "percent", "dollars", "cents", "nominal")
+_PUBLICATION_STAMP_RE = re.compile(r"(?<!\d)((?:19|20)\d{2})(?:[_/-](0[1-9]|1[0-2]))?")
+_HTML_TABLE_RE = re.compile(r"<table\b[^>]*>(.*?)</table>", re.IGNORECASE | re.DOTALL)
+_HTML_ROW_RE = re.compile(r"<tr\b[^>]*>(.*?)</tr>", re.IGNORECASE | re.DOTALL)
+_HTML_CELL_RE = re.compile(r"<(th|td)\b([^>]*)>(.*?)</t[hd]>", re.IGNORECASE | re.DOTALL)
+_HTML_COLSPAN_RE = re.compile(r'colspan\s*=\s*["\']?(\d+)', re.IGNORECASE)
+_HTML_ROWSPAN_RE = re.compile(r'rowspan\s*=\s*["\']?(\d+)', re.IGNORECASE)
 
 
 def normalize_source_name(value: str) -> str:
@@ -215,6 +224,279 @@ def _extract_json_metadata(payload: Any) -> dict[str, list[str]]:
     }
 
 
+def _publication_stamp(path: Path) -> tuple[str, str]:
+    match = _PUBLICATION_STAMP_RE.search(path.as_posix().lower())
+    if not match:
+        return "", ""
+    return str(match.group(1) or ""), str(match.group(2) or "")
+
+
+def _month_coverage_from_text(text: str) -> list[str]:
+    lowered = (text or "").lower()
+    return [month for month in _MONTHS if month in lowered]
+
+
+def _period_type_for_table(text: str, month_coverage: list[str], years: list[str]) -> str:
+    lowered = (text or "").lower()
+    if len(month_coverage) >= 4 or "monthly series" in lowered or "receipts expenditures and balances" in lowered:
+        return "monthly_series"
+    if "fiscal year" in lowered or "fy " in lowered or "end of fiscal years" in lowered:
+        return "fiscal_year"
+    if "calendar year" in lowered or "actual 6 months" in lowered or "estimate" in lowered or (years and len(years) >= 1 and "summary" in lowered):
+        return "calendar_year"
+    if "discussion" in lowered or "statement" in lowered or "commentary" in lowered:
+        return "narrative_support"
+    return "point_lookup"
+
+
+def _table_family_for_text(text: str, headers: list[str], row_labels: list[str], month_coverage: list[str], years: list[str]) -> tuple[str, float]:
+    lowered = (text or "").lower()
+    headers_text = " ".join(headers).lower()
+    row_text = " ".join(row_labels).lower()
+    if any(token in lowered for token in ("table of contents", "issue and page number", "contents", "page number", "index")):
+        return "navigation_or_contents", 0.98
+    if any(token in lowered for token in ("public debt", "debt outstanding", "guaranteed obligations", "assets", "liabilities", "securities")):
+        return "debt_or_balance_sheet", 0.9
+    if "fiscal year" in lowered or "end of fiscal years" in lowered:
+        return "fiscal_year_comparison", 0.88
+    if len(month_coverage) >= 4 or "month" in headers_text:
+        return "monthly_series", min(0.95, 0.55 + 0.04 * len(month_coverage))
+    if any(token in lowered for token in ("national defense", "veterans", "veterans administration", "agriculture", "receipts", "expenditures", "outlays", "department", "activities")) and years:
+        return "category_breakdown", 0.8
+    if any(token in lowered for token in ("actual", "estimate", "calendar year", "summary", "total 9/")) and years:
+        return "annual_summary", 0.74
+    if any(token in headers_text or token in row_text for token in ("expenditures", "receipts", "outlays", "veterans", "defense")):
+        return "category_breakdown", 0.62
+    return "generic_financial_table", 0.45
+
+
+def _table_confidence(canonical_table: dict[str, Any], family_confidence: float) -> float:
+    metrics = dict(canonical_table.get("normalization_metrics", {}) or {})
+    structure_score = (
+        float(metrics.get("duplicate_header_collapse_score", 0.0) or 0.0)
+        + float(metrics.get("header_data_separation_quality", 0.0) or 0.0)
+        + float(metrics.get("span_consistency", 0.0) or 0.0)
+    ) / 3.0
+    confidence = (0.65 * structure_score) + (0.35 * family_confidence)
+    return round(max(0.05, min(1.0, confidence)), 4)
+
+
+def _html_cell_text(fragment: str) -> str:
+    cleaned = re.sub(r"<br\s*/?>", "\n", fragment or "", flags=re.IGNORECASE)
+    cleaned = re.sub(r"</p\s*>", "\n", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"<[^>]+>", " ", cleaned)
+    cleaned = html.unescape(cleaned)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _html_table_to_grid(table_html: str) -> list[list[dict[str, Any]]]:
+    grid: list[list[dict[str, Any]]] = []
+    pending_rowspans: dict[int, dict[str, Any]] = {}
+    for row_index, row_html in enumerate(_HTML_ROW_RE.findall(table_html or "")):
+        raw_cells = list(_HTML_CELL_RE.findall(row_html))
+        if not raw_cells and not pending_rowspans:
+            continue
+        row: list[dict[str, Any]] = []
+        col_index = 0
+        cell_index = 0
+        while cell_index < len(raw_cells) or pending_rowspans:
+            while col_index in pending_rowspans:
+                carried = dict(pending_rowspans[col_index]["cell"])
+                row.append(carried)
+                pending_rowspans[col_index]["remaining"] -= 1
+                if pending_rowspans[col_index]["remaining"] <= 0:
+                    pending_rowspans.pop(col_index, None)
+                col_index += 1
+            if cell_index >= len(raw_cells):
+                remaining = sorted(index for index in pending_rowspans if index >= col_index)
+                if not remaining:
+                    break
+                col_index = remaining[0]
+                continue
+            tag, attrs, inner = raw_cells[cell_index]
+            cell_index += 1
+            text = _html_cell_text(inner)
+            colspan_match = _HTML_COLSPAN_RE.search(attrs or "")
+            rowspan_match = _HTML_ROWSPAN_RE.search(attrs or "")
+            colspan = max(1, int(colspan_match.group(1))) if colspan_match else 1
+            rowspan = max(1, int(rowspan_match.group(1))) if rowspan_match else 1
+            origin_id = f"t{row_index}_{col_index}_{cell_index}"
+            for span_offset in range(colspan):
+                cell = {
+                    "text": text,
+                    "is_header": tag.lower() == "th",
+                    "origin_id": origin_id,
+                }
+                row.append(cell)
+                if rowspan > 1:
+                    pending_rowspans[col_index + span_offset] = {
+                        "remaining": rowspan - 1,
+                        "cell": dict(cell),
+                    }
+            col_index += colspan
+        if row:
+            grid.append(row)
+    return grid
+
+
+def _table_unit_from_canonical(
+    canonical_table: dict[str, Any],
+    *,
+    locator: str,
+    page_locator: str,
+    unit_hint: str,
+    publication_year: str,
+    publication_month: str,
+) -> dict[str, Any]:
+    display_headers = [str(item or "") for item in list(canonical_table.get("display_headers", []))]
+    row_records = [item for item in list(canonical_table.get("row_records", [])) if isinstance(item, dict)]
+    row_labels = [str(item.get("row_label", "") or "") for item in row_records if str(item.get("row_label", "") or "").strip()]
+    column_paths = [" | ".join(path) for path in list(canonical_table.get("column_paths", [])) if path]
+    preview_text = " ".join(
+        [
+            locator,
+            page_locator,
+            " ".join(display_headers[:8]),
+            " ".join(row_labels[:12]),
+            unit_hint,
+        ]
+    ).strip()
+    year_refs = list(dict.fromkeys(re.findall(r"\b((?:19|20)\d{2})\b", preview_text)[:8]))
+    month_coverage = _month_coverage_from_text(preview_text)
+    table_family, family_confidence = _table_family_for_text(preview_text, display_headers, row_labels, month_coverage, year_refs)
+    return {
+        "locator": locator,
+        "page_locator": page_locator,
+        "table_family": table_family,
+        "table_family_confidence": round(family_confidence, 4),
+        "period_type": _period_type_for_table(preview_text, month_coverage, year_refs),
+        "publication_year": publication_year,
+        "publication_month": publication_month,
+        "year_refs": year_refs,
+        "month_coverage": month_coverage,
+        "headers": display_headers[:8],
+        "row_labels": row_labels[:12],
+        "column_paths": column_paths[:8],
+        "unit_hints": [unit_hint] if unit_hint else [],
+        "table_confidence": _table_confidence(canonical_table, family_confidence),
+        "preview_text": preview_text[:900],
+    }
+
+
+def _table_unit_from_headers_and_rows(
+    headers: list[str],
+    rows: list[list[str]],
+    *,
+    locator: str,
+    page_locator: str,
+    unit_hint: str,
+    publication_year: str,
+    publication_month: str,
+) -> dict[str, Any]:
+    canonical_table = normalize_flat_table(
+        headers,
+        rows,
+        locator=locator,
+        page_locator=page_locator,
+        unit_hint=unit_hint,
+    )
+    return _table_unit_from_canonical(
+        canonical_table,
+        locator=locator,
+        page_locator=page_locator,
+        unit_hint=unit_hint,
+        publication_year=publication_year,
+        publication_month=publication_month,
+    )
+
+
+def _table_units_from_payload(payload: Any, *, path: Path) -> list[dict[str, Any]]:
+    publication_year, publication_month = _publication_stamp(path)
+    units: list[dict[str, Any]] = []
+
+    def visit(node: Any, *, locator_hint: str = "", page_hint: str = "", unit_hint: str = "") -> None:
+        if len(units) >= 32:
+            return
+        if isinstance(node, dict):
+            locator = str(
+                node.get("description")
+                or node.get("section_title")
+                or node.get("title")
+                or node.get("heading")
+                or locator_hint
+                or ""
+            ).strip()
+            page_locator = page_hint
+            for page_key in ("page", "page_number", "page_num"):
+                if isinstance(node.get(page_key), (int, float, str)) and str(node.get(page_key)).strip():
+                    page_locator = f"page {node.get(page_key)}"
+                    break
+            if not page_locator:
+                bbox = node.get("bbox")
+                if isinstance(bbox, list):
+                    for entry in bbox[:4]:
+                        if isinstance(entry, dict) and entry.get("page_id"):
+                            page_locator = f"page {entry.get('page_id')}"
+                            break
+            resolved_unit_hint = str(node.get("unit") or node.get("units") or unit_hint or "").strip()
+            headers = list(node.get("headers", []) or node.get("columns", []) or node.get("column_headers", []) or [])
+            rows = list(node.get("rows", []) or [])
+            if headers and rows:
+                normalized_rows = []
+                for row in rows[:40]:
+                    if isinstance(row, list):
+                        normalized_rows.append([str(cell or "") for cell in row[:16]])
+                    elif isinstance(row, dict):
+                        normalized_rows.append([str(value or "") for value in list(row.values())[:16]])
+                if normalized_rows:
+                    units.append(
+                        _table_unit_from_headers_and_rows(
+                            [str(header or "") for header in headers[:16]],
+                            normalized_rows,
+                            locator=locator or "table",
+                            page_locator=page_locator,
+                            unit_hint=resolved_unit_hint,
+                            publication_year=publication_year,
+                            publication_month=publication_month,
+                        )
+                    )
+            content = str(node.get("content") or "")
+            if "<table" in content.lower():
+                for table_index, table_match in enumerate(_HTML_TABLE_RE.finditer(content), start=1):
+                    grid = _html_table_to_grid(table_match.group(0))
+                    if len(grid) < 2:
+                        continue
+                    canonical_table = normalize_dense_table_grid(
+                        grid,
+                        locator=(locator or "table") if table_index == 1 else f"{locator or 'table'}#{table_index}",
+                        page_locator=page_locator,
+                        unit_hint=resolved_unit_hint,
+                    )
+                    units.append(
+                        _table_unit_from_canonical(
+                            canonical_table,
+                            locator=str(canonical_table.get("locator", "") or locator or "table"),
+                            page_locator=page_locator,
+                            unit_hint=resolved_unit_hint,
+                            publication_year=publication_year,
+                            publication_month=publication_month,
+                        )
+                    )
+                    if len(units) >= 32:
+                        return
+            for key, value in node.items():
+                if key in {"headers", "rows", "content", "unit", "units", "bbox", "page", "page_number", "page_num"}:
+                    continue
+                visit(value, locator_hint=locator, page_hint=page_locator, unit_hint=resolved_unit_hint)
+            return
+        if isinstance(node, list):
+            for item in node[:240]:
+                visit(item, locator_hint=locator_hint, page_hint=page_hint, unit_hint=unit_hint)
+
+    visit(payload)
+    return units[:24]
+
+
 def _extract_text_metadata(text: str, path: Path) -> dict[str, Any]:
     lowered_text = (text or "").lower()
     lowered_path = path.as_posix().lower()
@@ -302,7 +584,7 @@ def _validation_flags(entry: dict[str, Any]) -> list[str]:
         flags.append("empty_text")
     if entry.get("file_format") == "pdf" and not entry.get("preview_text"):
         flags.append("pdf_extract_failed")
-    if entry.get("file_format") == "json" and not entry.get("table_headers") and not entry.get("row_labels"):
+    if entry.get("file_format") == "json" and not entry.get("table_headers") and not entry.get("row_labels") and not entry.get("table_units"):
         flags.append("structured_json_without_tables")
     if entry.get("is_treasury_bulletin") and not entry.get("years"):
         flags.append("missing_years")
@@ -318,6 +600,7 @@ def build_manifest_entry(path: Path, corpus_root: Path) -> dict[str, Any]:
     text = read_officeqa_document_text(path)
     preview = _preview_text(text)
     payload = _json_payload(path)
+    publication_year, publication_month = _publication_stamp(path)
     text_metadata = _extract_text_metadata(text, path)
     json_metadata = _extract_json_metadata(payload) if payload is not None else {
         "page_markers": [],
@@ -326,6 +609,7 @@ def build_manifest_entry(path: Path, corpus_root: Path) -> dict[str, Any]:
         "row_labels": [],
         "unit_hints": [],
     }
+    table_units = _table_units_from_payload(payload, path=path) if payload is not None else []
     source_aliases = sorted({
         normalize_source_name(relative_path),
         normalize_source_name(path.name),
@@ -339,6 +623,8 @@ def build_manifest_entry(path: Path, corpus_root: Path) -> dict[str, Any]:
         "file_name": path.name,
         "file_format": path.suffix.lower().lstrip(".") or "text",
         "size_bytes": path.stat().st_size,
+        "publication_year": publication_year,
+        "publication_month": publication_month,
         "years": text_metadata["years"],
         "month_coverage": text_metadata["month_coverage"],
         "page_markers": list(dict.fromkeys([*json_metadata["page_markers"], *text_metadata["page_markers"]]))[:40],
@@ -346,6 +632,14 @@ def build_manifest_entry(path: Path, corpus_root: Path) -> dict[str, Any]:
         "table_headers": list(dict.fromkeys([*json_metadata["table_headers"], *text_metadata["table_headers"]]))[:60],
         "row_labels": list(dict.fromkeys([*json_metadata["row_labels"], *text_metadata["row_labels"]]))[:80],
         "unit_hints": list(dict.fromkeys([*json_metadata["unit_hints"], *text_metadata["unit_hints"]]))[:20],
+        "period_types": list(
+            dict.fromkeys(
+                [
+                    *(item.get("period_type", "") for item in table_units if str(item.get("period_type", "")).strip()),
+                ]
+            )
+        )[:8],
+        "table_units": table_units,
         "is_treasury_bulletin": bool(text_metadata["is_treasury_bulletin"]),
         "has_month_names": bool(text_metadata["has_month_names"]),
         "has_table_like_rows": bool(text_metadata["has_table_like_rows"]),

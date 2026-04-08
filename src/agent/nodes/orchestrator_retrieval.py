@@ -57,6 +57,14 @@ def _tool_role(registry: dict[str, dict[str, Any]], tool_name: str) -> str:
     return str(_tool_descriptor(registry, tool_name).get("tool_role", "") or "")
 
 
+def _filter_args_for_tool(registry: dict[str, dict[str, Any]], tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
+    tool_obj = _tool_lookup(registry, tool_name)
+    arg_schema = dict(getattr(tool_obj, "args", {}) or {})
+    if not arg_schema:
+        return dict(args)
+    return {key: value for key, value in dict(args).items() if key in arg_schema}
+
+
 def _generic_tool_args(
     registry: dict[str, dict[str, Any]],
     tool_name: str,
@@ -137,14 +145,28 @@ def _structured_tool_args(state: RuntimeState, registry: dict[str, dict[str, Any
             "top_k": 5,
             "snippet_chars": 700,
             "source_files": source_bundle.source_files_expected[:8],
+            "target_years": list(retrieval_intent.target_years),
+            "publication_year_window": list(retrieval_intent.publication_year_window),
+            "preferred_publication_years": list(retrieval_intent.preferred_publication_years),
+            "period_type": retrieval_intent.period_type,
+            "granularity_requirement": retrieval_intent.granularity_requirement,
+            "entity": retrieval_intent.entity,
+            "metric": retrieval_intent.metric,
         }
     if tool_name == "search_officeqa_documents":
         query = _derive_retrieval_seed_query(source_bundle, retrieval_intent) or source_bundle.focus_query or task_text[:240]
         return {
             "query": query,
-            "top_k": 5,
+            "top_k": 8,
             "snippet_chars": 700,
             "source_files": source_bundle.source_files_expected[:8],
+            "target_years": list(retrieval_intent.target_years),
+            "publication_year_window": list(retrieval_intent.publication_year_window),
+            "preferred_publication_years": list(retrieval_intent.preferred_publication_years),
+            "period_type": retrieval_intent.period_type,
+            "granularity_requirement": retrieval_intent.granularity_requirement,
+            "entity": retrieval_intent.entity,
+            "metric": retrieval_intent.metric,
         }
     if tool_name == "fetch_reference_file":
         if source_bundle.urls:
@@ -214,7 +236,7 @@ async def _invoke_tool(tool_obj: Any, args: dict[str, Any]) -> Any:
 
 async def _run_tool_step(state: RuntimeState, registry: dict[str, dict[str, Any]], tool_name: str) -> tuple[dict[str, Any], Any]:
     tool_obj = _tool_lookup(registry, tool_name)
-    args = _structured_tool_args(state, registry, tool_name)
+    args = _filter_args_for_tool(registry, tool_name, _structured_tool_args(state, registry, tool_name))
     if tool_obj is None:
         return args, normalize_tool_output(tool_name, {"error": f"Tool '{tool_name}' is not registered."}, args)
     try:
@@ -231,6 +253,7 @@ async def _run_tool_step_with_args(
     args_override: dict[str, Any],
 ) -> tuple[dict[str, Any], Any]:
     tool_obj = _tool_lookup(registry, tool_name)
+    args_override = _filter_args_for_tool(registry, tool_name, args_override)
     if tool_obj is None:
         return args_override, normalize_tool_output(tool_name, {"error": f"Tool '{tool_name}' is not registered."}, args_override)
     try:
@@ -270,6 +293,7 @@ def _retrieval_query_candidates(retrieval_intent: RetrievalIntent | None = None)
     query_plan = retrieval_intent.query_plan
     candidates = [
         query_plan.primary_semantic_query,
+        query_plan.temporal_query,
         query_plan.granularity_query,
         query_plan.qualifier_query,
         query_plan.alternate_lexical_query,
@@ -415,6 +439,31 @@ def _officeqa_table_query_variants(retrieval_intent: RetrievalIntent, source_bun
     if plan.requires_inflation_support:
         queries.append(_normalize_query(f"{retrieval_intent.period} CPI inflation price index"))
     return [query for query in dict.fromkeys(query for query in queries if query)]
+
+
+def _candidate_table_query_hint(
+    candidate: dict[str, Any],
+    retrieval_intent: RetrievalIntent,
+    source_bundle: SourceBundle,
+) -> str:
+    best_unit = _candidate_best_evidence_unit(candidate)
+    if not best_unit:
+        return _officeqa_table_query(retrieval_intent, source_bundle)
+    hinted = _normalize_query(
+        " ".join(
+            part
+            for part in (
+                retrieval_intent.entity,
+                retrieval_intent.metric,
+                retrieval_intent.period,
+                " ".join(str(item or "") for item in list(best_unit.get("headers", []))[:4]),
+                " ".join(str(item or "") for item in list(best_unit.get("row_labels", []))[:3]),
+                str(best_unit.get("table_family", "") or ""),
+            )
+            if part
+        )
+    )
+    return hinted or _officeqa_table_query(retrieval_intent, source_bundle)
 
 
 def _normalize_query(query: str) -> str:
@@ -714,15 +763,27 @@ def _search_candidate_text(candidate: dict[str, Any]) -> str:
 
 def _candidate_metadata_text(candidate: dict[str, Any]) -> str:
     metadata = dict(candidate.get("metadata", {}) or {})
+    best_unit = dict(metadata.get("best_evidence_unit", {}) or {})
     return " ".join(
         [
             " ".join(str(item or "") for item in list(metadata.get("years", []))),
+            str(metadata.get("publication_year", "") or ""),
+            str(metadata.get("publication_month", "") or ""),
             " ".join(str(item or "") for item in list(metadata.get("page_markers", []))),
             " ".join(str(item or "") for item in list(metadata.get("section_titles", []))),
             " ".join(str(item or "") for item in list(metadata.get("table_headers", []))),
             " ".join(str(item or "") for item in list(metadata.get("row_labels", []))),
             " ".join(str(item or "") for item in list(metadata.get("unit_hints", []))),
             " ".join(str(item or "") for item in list(metadata.get("month_coverage", []))),
+            " ".join(str(item or "") for item in list(metadata.get("period_types", []))),
+            str(best_unit.get("locator", "") or ""),
+            str(best_unit.get("table_family", "") or ""),
+            str(best_unit.get("period_type", "") or ""),
+            " ".join(str(item or "") for item in list(best_unit.get("headers", []))),
+            " ".join(str(item or "") for item in list(best_unit.get("row_labels", []))),
+            " ".join(str(item or "") for item in list(best_unit.get("year_refs", []))),
+            " ".join(str(item or "") for item in list(best_unit.get("month_coverage", []))),
+            str(best_unit.get("preview_text", "") or ""),
         ]
     ).strip()
 
@@ -732,6 +793,10 @@ def _query_years(retrieval_intent: RetrievalIntent) -> set[str]:
 
 
 def _candidate_publication_years(candidate: dict[str, Any]) -> set[str]:
+    metadata = dict(candidate.get("metadata", {}) or {})
+    publication_year = str(metadata.get("publication_year", "") or "").strip()
+    if re.fullmatch(r"(?:19|20)\d{2}", publication_year):
+        return {publication_year}
     return set(
         re.findall(
             r"\b((?:19|20)\d{2})\b",
@@ -741,6 +806,11 @@ def _candidate_publication_years(candidate: dict[str, Any]) -> set[str]:
             ),
         )
     )
+
+
+def _candidate_best_evidence_unit(candidate: dict[str, Any]) -> dict[str, Any]:
+    metadata = dict(candidate.get("metadata", {}) or {})
+    return dict(metadata.get("best_evidence_unit", {}) or {})
 
 
 def _query_entity_tokens(retrieval_intent: RetrievalIntent) -> set[str]:
@@ -757,9 +827,12 @@ def _query_metric_tokens(retrieval_intent: RetrievalIntent) -> set[str]:
 def _granularity_fit_score(candidate: dict[str, Any], retrieval_intent: RetrievalIntent) -> float:
     metadata = dict(candidate.get("metadata", {}) or {})
     text = f"{_search_candidate_text(candidate)} {_candidate_metadata_text(candidate)}".lower()
+    best_unit = _candidate_best_evidence_unit(candidate)
     granularity = retrieval_intent.granularity_requirement
     if granularity == "monthly_series":
         month_coverage = list(metadata.get("month_coverage", []))
+        if str(best_unit.get("period_type", "") or "").lower() == "monthly_series":
+            return 1.0
         if len(month_coverage) >= 6:
             return 0.9
         if any(token in text for token in ("monthly", "month", "receipts expenditures and balances", "january", "february", "march")):
@@ -768,10 +841,14 @@ def _granularity_fit_score(candidate: dict[str, Any], retrieval_intent: Retrieva
             return -0.35
         return -0.15
     if granularity == "fiscal_year":
+        if str(best_unit.get("period_type", "") or "").lower() == "fiscal_year":
+            return 0.9
         if any(token in text for token in ("fiscal year", "fy ", "end of fiscal years")):
             return 0.65
         return -0.1
     if granularity == "calendar_year":
+        if str(best_unit.get("period_type", "") or "").lower() == "calendar_year":
+            return 0.55
         if any(token in text for token in ("calendar year", "annual", "summary", "actual 6 months", "estimate")):
             return 0.18
         return 0.0
@@ -783,44 +860,50 @@ def _granularity_fit_score(candidate: dict[str, Any], retrieval_intent: Retrieva
 
 def _category_fit_score(candidate: dict[str, Any], retrieval_intent: RetrievalIntent) -> float:
     metadata_text = _candidate_metadata_text(candidate).lower()
+    best_unit = _candidate_best_evidence_unit(candidate)
     entity_tokens = _query_entity_tokens(retrieval_intent)
     metric_tokens = _query_metric_tokens(retrieval_intent)
     score = 0.0
     score += 0.18 * len(entity_tokens & set(_retrieval_tokens(metadata_text)))
     score += 0.12 * len(metric_tokens & set(_retrieval_tokens(metadata_text)))
+    if entity_tokens and set(_retrieval_tokens(" ".join(str(item or "") for item in list(best_unit.get("row_labels", []))))) & entity_tokens:
+        score += 0.18
+    if metric_tokens and set(_retrieval_tokens(" ".join(str(item or "") for item in list(best_unit.get("headers", []))))) & metric_tokens:
+        score += 0.14
     return score
 
 
 def _year_fit_score(candidate: dict[str, Any], retrieval_intent: RetrievalIntent) -> float:
     metadata = dict(candidate.get("metadata", {}) or {})
+    best_unit = _candidate_best_evidence_unit(candidate)
     candidate_years = {str(item) for item in list(metadata.get("years", [])) if str(item)}
-    required_years = _query_years(retrieval_intent)
+    candidate_years.update(str(item) for item in list(best_unit.get("year_refs", [])) if str(item))
+    required_years = set(retrieval_intent.target_years) or _query_years(retrieval_intent)
     publication_years = _candidate_publication_years(candidate)
     if not required_years:
         return 0.0
-    single_direct_year = len(required_years) == 1 and retrieval_intent.granularity_requirement in {
-        "point_lookup",
-        "calendar_year",
-        "fiscal_year",
-        "monthly_series",
-    }
-    if publication_years and required_years & publication_years:
-        return 1.2
-    if single_direct_year and publication_years and not (required_years & publication_years):
-        return -1.15
+    preferred_publication_years = list(retrieval_intent.preferred_publication_years)
+    publication_window = set(retrieval_intent.publication_year_window)
+    score = 0.0
+    for publication_year in publication_years:
+        if publication_year in preferred_publication_years:
+            position = preferred_publication_years.index(publication_year)
+            score = max(score, max(0.2, 1.1 - (0.18 * position)))
+        elif publication_year in publication_window:
+            score = max(score, 0.25)
+        elif publication_window:
+            score -= 0.22
     if candidate_years and required_years & candidate_years:
-        return 0.95
+        score += 0.95
     if candidate_years and not (required_years & candidate_years):
-        return -0.45
+        score -= 0.28
     text = f"{_search_candidate_text(candidate)} {_candidate_metadata_text(candidate)}"
     text_years = set(re.findall(r"\b((?:19|20)\d{2})\b", text))
     if required_years & text_years:
-        if single_direct_year and publication_years and not (required_years & publication_years):
-            return -0.25
-        return 0.55
+        score += 0.35
     if text_years:
-        return -0.2
-    return 0.0
+        score -= 0.12
+    return score
 
 
 def _exclusion_fit_score(candidate: dict[str, Any], retrieval_intent: RetrievalIntent) -> float:
@@ -906,6 +989,7 @@ def _search_candidate_score(
 ) -> float:
     text = _search_candidate_text(candidate).lower()
     metadata_text = _candidate_metadata_text(candidate).lower()
+    best_unit = _candidate_best_evidence_unit(candidate)
     combined_text = f"{text} {metadata_text}".strip()
     tokens = set(_retrieval_tokens(combined_text))
     title_tokens = set(_retrieval_tokens(str(candidate.get("title", ""))))
@@ -930,6 +1014,7 @@ def _search_candidate_score(
     score += _category_fit_score(candidate, retrieval_intent)
     score += _exclusion_fit_score(candidate, retrieval_intent)
     score += _historical_family_fit_score(candidate, retrieval_intent)
+    score += 0.22 * float(best_unit.get("table_confidence", 0.0) or 0.0)
 
     citation = str(candidate.get("citation", "")).lower()
     if any(host in citation for host in ("govinfo.gov", "census.gov", "va.gov", "fraser.stlouisfed.org", ".gov/")):
@@ -1048,12 +1133,16 @@ def _candidate_diagnostics(
     rejected: list[dict[str, Any]] = []
     for index, candidate in enumerate(deduped_candidates):
         score = round(_search_candidate_score(candidate, retrieval_intent, source_bundle, benchmark_overrides), 3)
+        best_unit = _candidate_best_evidence_unit(candidate)
+        metadata = dict(candidate.get("metadata", {}) or {})
         item = {
             "title": str(candidate.get("title", "") or ""),
             "citation": str(candidate.get("citation", "") or ""),
             "document_id": str(candidate.get("document_id", "") or ""),
             "rank": int(candidate.get("rank", 999) or 999),
             "score": score,
+            "publication_year": str(metadata.get("publication_year", "") or ""),
+            "best_table_family": str(best_unit.get("table_family", "") or ""),
         }
         if index < 3:
             kept.append(item)
@@ -1322,7 +1411,7 @@ def _fallback_retrieval_action(
                     tool_name=officeqa_table_tools[0],
                     document_id=first.get("document_id", ""),
                     path=first.get("path", "") or first.get("citation", ""),
-                    query=next_table_query or officeqa_table_query,
+                    query=next_table_query or _candidate_table_query_hint(first, retrieval_intent, source_bundle),
                     rationale="Open the best matching OfficeQA document and extract the relevant table first.",
                 )
             if officeqa_page_tools:
@@ -1365,7 +1454,7 @@ def _fallback_retrieval_action(
                         tool_name=officeqa_table_tools[0],
                         document_id=str(next_ranked_candidate.get("document_id", "")),
                         path=str(next_ranked_candidate.get("path", "") or next_ranked_candidate.get("citation", "")),
-                        query=next_table_query or officeqa_table_query,
+                        query=next_table_query or _candidate_table_query_hint(next_ranked_candidate, retrieval_intent, source_bundle),
                         evidence_gap="wrong document",
                         rationale="Reopen retrieval on the next ranked source because the current document keeps yielding the wrong table family.",
                     )
@@ -1446,7 +1535,7 @@ def _fallback_retrieval_action(
                     tool_name=officeqa_table_tools[0],
                     document_id=str(next_ranked_candidate.get("document_id", "")),
                     path=str(next_ranked_candidate.get("path", "") or next_ranked_candidate.get("citation", "")),
-                    query=next_table_query or officeqa_table_query,
+                    query=next_table_query or _candidate_table_query_hint(next_ranked_candidate, retrieval_intent, source_bundle),
                     evidence_gap="wrong document",
                     rationale="Reopen source search on the next ranked candidate because the current document did not contain the requested row.",
                 )
@@ -1458,7 +1547,7 @@ def _fallback_retrieval_action(
                     tool_name=officeqa_table_tools[0],
                     document_id=str(next_ranked_candidate.get("document_id", "")),
                     path=str(next_ranked_candidate.get("path", "") or next_ranked_candidate.get("citation", "")),
-                    query=next_table_query or officeqa_table_query,
+                    query=next_table_query or _candidate_table_query_hint(next_ranked_candidate, retrieval_intent, source_bundle),
                     evidence_gap="wrong table family",
                     rationale="Switch to the next ranked source because the current document produced a mismatched table family.",
                 )
@@ -1516,7 +1605,7 @@ def _fallback_retrieval_action(
                     tool_name=officeqa_table_tools[0],
                     document_id=str(next_ranked_candidate.get("document_id", "")),
                     path=str(next_ranked_candidate.get("path", "") or next_ranked_candidate.get("citation", "")),
-                    query=next_table_query or officeqa_table_query,
+                    query=next_table_query or _candidate_table_query_hint(next_ranked_candidate, retrieval_intent, source_bundle),
                     evidence_gap="wrong table family",
                     rationale="Switch to the next ranked source because the current document still does not expose the required table family.",
                 )

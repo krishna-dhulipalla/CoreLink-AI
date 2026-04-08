@@ -865,6 +865,13 @@ def search_reference_corpus(
     top_k: int = 5,
     snippet_chars: int = 700,
     source_files: list[str] | None = None,
+    target_years: list[str] | None = None,
+    publication_year_window: list[str] | None = None,
+    preferred_publication_years: list[str] | None = None,
+    period_type: str = "",
+    granularity_requirement: str = "",
+    entity: str = "",
+    metric: str = "",
 ) -> dict[str, Any]:
     """Search a configured local document corpus for relevant files and snippets."""
     root = _resolve_corpus_root()
@@ -877,6 +884,13 @@ def search_reference_corpus(
             top_k=top_k,
             snippet_chars=snippet_chars,
             source_files=source_files,
+            target_years=target_years,
+            publication_year_window=publication_year_window,
+            preferred_publication_years=preferred_publication_years,
+            period_type=period_type,
+            granularity_requirement=granularity_requirement,
+            entity=entity,
+            metric=metric,
         )
 
     scored_results: list[tuple[float, Path, str]] = []
@@ -936,6 +950,13 @@ def search_officeqa_documents(
     top_k: int = 5,
     snippet_chars: int = 700,
     source_files: list[str] | None = None,
+    target_years: list[str] | None = None,
+    publication_year_window: list[str] | None = None,
+    preferred_publication_years: list[str] | None = None,
+    period_type: str = "",
+    granularity_requirement: str = "",
+    entity: str = "",
+    metric: str = "",
 ) -> dict[str, Any]:
     """Search the indexed OfficeQA corpus for candidate Treasury source documents."""
     root = _resolve_corpus_root()
@@ -949,6 +970,13 @@ def search_officeqa_documents(
         top_k=top_k,
         snippet_chars=snippet_chars,
         source_files=source_files,
+        target_years=target_years,
+        publication_year_window=publication_year_window,
+        preferred_publication_years=preferred_publication_years,
+        period_type=period_type,
+        granularity_requirement=granularity_requirement,
+        entity=entity,
+        metric=metric,
     )
     result["officeqa_stage"] = "identify_source"
     return result

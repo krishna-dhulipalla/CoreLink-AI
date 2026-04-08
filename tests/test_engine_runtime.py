@@ -172,6 +172,76 @@ def test_search_ranking_prefers_publication_year_match_over_historical_mentions(
     assert ranked[0]["document_id"] == "treasury_bulletin_1934_06_json"
 
 
+def test_search_ranking_can_prefer_next_year_publication_for_calendar_year_summary_questions():
+    retrieval_intent = RetrievalIntent(
+        entity="U.S. national defense",
+        metric="total expenditures",
+        period="1940",
+        period_type="calendar_year",
+        target_years=["1940"],
+        publication_year_window=["1939", "1940", "1941"],
+        preferred_publication_years=["1941", "1940", "1939"],
+        granularity_requirement="calendar_year",
+        document_family="official_government_finance",
+        aggregation_shape="calendar_year_total",
+    )
+    source_bundle = SourceBundle(
+        task_text="What were the total expenditures for U.S. national defense in the calendar year 1940?",
+        focus_query="U.S. national defense total expenditures calendar year 1940",
+        target_period="1940",
+        entities=["U.S. national defense"],
+    )
+    candidates = [
+        {
+            "document_id": "treasury_bulletin_1940_01_json",
+            "citation": "treasury_bulletin_1940_01.json",
+            "path": "treasury_bulletin_1940_01.json",
+            "title": "Treasury Bulletin 1940-01",
+            "snippet": "Current monthly Treasury statement.",
+            "rank": 1,
+            "score": 0.95,
+            "metadata": {
+                "publication_year": "1940",
+                "years": ["1940"],
+                "month_coverage": ["january", "february"],
+                "best_evidence_unit": {
+                    "table_family": "monthly_series",
+                    "period_type": "monthly_series",
+                    "headers": ["Month", "Receipts"],
+                    "row_labels": ["January", "February"],
+                    "year_refs": ["1940"],
+                    "table_confidence": 0.82,
+                },
+            },
+        },
+        {
+            "document_id": "treasury_bulletin_1941_11_json",
+            "citation": "treasury_bulletin_1941_11.json",
+            "path": "treasury_bulletin_1941_11.json",
+            "title": "Treasury Bulletin 1941-11",
+            "snippet": "Summary of expenditures for calendar year 1940.",
+            "rank": 2,
+            "score": 0.9,
+            "metadata": {
+                "publication_year": "1941",
+                "years": ["1940", "1941"],
+                "best_evidence_unit": {
+                    "table_family": "category_breakdown",
+                    "period_type": "calendar_year",
+                    "headers": ["Category", "Calendar year 1940"],
+                    "row_labels": ["U.S. national defense"],
+                    "year_refs": ["1940"],
+                    "table_confidence": 0.88,
+                },
+            },
+        },
+    ]
+
+    ranked = _rank_search_candidates(candidates, retrieval_intent, source_bundle, {"benchmark_adapter": "officeqa"})
+
+    assert ranked[0]["document_id"] == "treasury_bulletin_1941_11_json"
+
+
 def test_engine_solver_context_block_removes_redundant_objective_and_tool_query_noise():
     payload = solver_context_block(
         {
