@@ -213,6 +213,7 @@ def test_capture_officeqa_artifacts_collects_tables_and_ledger():
     assert artifacts["compute_ledger"][0]["operator"] == "monthly_sum"
     assert artifacts["solver_llm_decision"]["reason"] == "deterministic_compute_completed"
     assert artifacts["llm_repair_history"][0]["stage"] == "validator_repair"
+    assert artifacts["repair_failures"] == []
     assert artifacts["evidence_review"]["status"] == "ready"
     assert artifacts["final_artifact_signature"] == "sig-1"
 
@@ -430,6 +431,66 @@ def test_summarize_regression_report_tracks_source_ranking_and_repair_stalls():
     assert summary["source_ranking_correct_cases"] == 1
     assert summary["source_ranking_accuracy"] == 0.5
     assert summary["go_for_full_benchmark"] is False
+
+
+def test_build_case_report_captures_explicit_repair_failure_tags():
+    state = make_state(
+        "OfficeQA task",
+        benchmark_overrides={"benchmark_adapter": "officeqa"},
+        task_intent={"task_family": "document_qa", "execution_mode": "document_grounded_analysis"},
+        curated_context={
+            "structured_evidence": {"values": [], "value_count": 0},
+            "provenance_summary": {
+                "retrieval_diagnostics": {
+                    "retrieval_decision": {"tool_name": "search_officeqa_documents", "strategy": "table_first"},
+                    "candidate_sources": [{"document_id": "wrong"}],
+                }
+            },
+        },
+        execution_journal={
+            "events": [],
+            "tool_results": [
+                {"type": "search_officeqa_documents", "facts": {"metadata": {"officeqa_status": "ok"}, "document_id": "wrong"}}
+            ],
+            "routed_tool_families": [],
+            "revision_count": 0,
+            "self_reflection_count": 0,
+            "retrieval_iterations": 2,
+            "retrieval_queries": [],
+            "retrieved_citations": [],
+            "final_artifact_signature": "",
+            "progress_signatures": [],
+            "stop_reason": "repair_reused_stale_state",
+            "contract_collapse_attempts": 0,
+        },
+        workpad={
+            "officeqa_repair_failures": [
+                {"code": "repair_applied_but_no_new_evidence", "details": {"tool_name": "search_officeqa_documents"}},
+                {"code": "repair_reused_stale_state", "details": {"reason": "compute_or_review_reached_before_fresh_retrieval_hop"}},
+            ],
+            "officeqa_llm_repair_history": [
+                {"stage": "retrieval_repair", "trigger": "wrong document", "path_changed": True, "decision": {"decision": "rewrite_query"}}
+            ],
+        },
+        review_packet={
+            "validator_result": {
+                "verdict": "revise",
+                "retry_allowed": True,
+                "retry_stop_reason": "repair_reused_stale_state",
+                "remediation_codes": ["RETRIEVE_EXACT_PERIOD"],
+            }
+        },
+    )
+
+    report = build_case_report(
+        {"id": "case", "prompt": "OfficeQA task", "case_kind": "benchmark_regression"},
+        _trace(state, "<FINAL_ANSWER>Cannot calculate</FINAL_ANSWER>"),
+    )
+
+    assert "repair_applied_but_no_new_evidence" in report["benchmark_analysis"]["tags"]
+    assert "repair_reused_stale_state" in report["benchmark_analysis"]["tags"]
+    assert "repair_stall" in report["benchmark_analysis"]["tags"]
+    assert report["artifacts"]["repair_failures"][0]["code"] == "repair_applied_but_no_new_evidence"
 
 
 def test_build_case_report_includes_classification_and_artifacts():

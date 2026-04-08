@@ -111,6 +111,21 @@ from context_manager import count_tokens
 logger = logging.getLogger(__name__)
 RuntimeState = AgentState
 _RETRIEVAL_EXECUTION_MODES = {"retrieval_augmented_analysis", "document_grounded_analysis"}
+_OFFICEQA_SEARCH_DISCOVER_TOOLS = {
+    "search_officeqa_documents",
+    "search_reference_corpus",
+    "internet_search",
+    "list_reference_files",
+}
+_OFFICEQA_FETCH_TOOLS = {
+    "fetch_officeqa_pages",
+    "fetch_officeqa_table",
+    "lookup_officeqa_rows",
+    "lookup_officeqa_cells",
+    "fetch_corpus_document",
+    "fetch_reference_file",
+}
+_OFFICEQA_RETRIEVAL_TOOLS = _OFFICEQA_SEARCH_DISCOVER_TOOLS | _OFFICEQA_FETCH_TOOLS
 
 # Prompts are centralized in prompts.py; orchestration code stays logic-only.
 
@@ -675,6 +690,9 @@ def _record_llm_repair_decision(
     trigger: str,
     decision: dict[str, Any],
     path_changed: bool,
+    reroute_action: str = "",
+    pre_retrieval_signature: str = "",
+    post_retrieval_signature: str = "",
 ) -> dict[str, Any]:
     updated = dict(workpad)
     history = list(updated.get("officeqa_llm_repair_history", []))
@@ -683,6 +701,9 @@ def _record_llm_repair_decision(
             "stage": stage,
             "trigger": trigger,
             "path_changed": path_changed,
+            "reroute_action": reroute_action,
+            "pre_retrieval_signature": pre_retrieval_signature,
+            "post_retrieval_signature": post_retrieval_signature,
             "decision": dict(decision or {}),
         }
     )
@@ -691,15 +712,286 @@ def _record_llm_repair_decision(
     return updated
 
 
+def _officeqa_retrieval_input_signature(retrieval_intent: RetrievalIntent, workpad: dict[str, Any]) -> str:
+    payload = {
+        "strategy": retrieval_intent.strategy,
+        "period_type": retrieval_intent.period_type,
+        "target_years": list(retrieval_intent.target_years),
+        "publication_year_window": list(retrieval_intent.publication_year_window),
+        "preferred_publication_years": list(retrieval_intent.preferred_publication_years),
+        "granularity_requirement": retrieval_intent.granularity_requirement,
+        "document_family": retrieval_intent.document_family,
+        "aggregation_shape": retrieval_intent.aggregation_shape,
+        "query_plan": retrieval_intent.query_plan.model_dump(),
+        "include_constraints": list(retrieval_intent.include_constraints),
+        "exclude_constraints": list(retrieval_intent.exclude_constraints),
+        "must_include_terms": list(retrieval_intent.must_include_terms),
+        "must_exclude_terms": list(retrieval_intent.must_exclude_terms),
+        "override_query": str(workpad.get("officeqa_override_query", "") or ""),
+        "override_table_query": str(workpad.get("officeqa_override_table_query", "") or ""),
+    }
+    return hashlib.sha1(json.dumps(payload, sort_keys=True, ensure_ascii=True).encode("utf-8")).hexdigest()[:16]
+
+
+def _officeqa_tool_evidence_atoms(tool_result: dict[str, Any]) -> set[str]:
+    tool_type = str(tool_result.get("type", "") or "").strip()
+    if not tool_type:
+        return set()
+    facts = dict(tool_result.get("facts") or {})
+    metadata = dict(facts.get("metadata") or {})
+    document_id = str(facts.get("document_id", "") or metadata.get("document_id", "") or "").strip()
+    citation = str(facts.get("citation", "") or "").strip()
+    atoms: set[str] = set()
+
+    if tool_type in _OFFICEQA_SEARCH_DISCOVER_TOOLS:
+        for candidate in _search_result_candidates(tool_result)[:8]:
+            candidate_id = str(candidate.get("document_id", "") or "").strip()
+            candidate_path = str(candidate.get("path", "") or candidate.get("citation", "") or "").strip()
+            candidate_title = str(candidate.get("title", "") or "").strip()
+            if candidate_id or candidate_path or candidate_title:
+                atoms.add(f"search:{candidate_id}:{candidate_path}:{candidate_title}")
+        return atoms
+
+    if tool_type == "fetch_officeqa_table":
+        table_locator = str(facts.get("table_locator", "") or metadata.get("table_locator", "") or "").strip()
+        page_locator = str(facts.get("page_locator", "") or metadata.get("page_locator", "") or "").strip()
+        atoms.add(f"table:{document_id}:{table_locator}:{page_locator}:{citation}")
+        return atoms
+
+    if tool_type == "lookup_officeqa_rows":
+        table_locator = str(facts.get("table_locator", "") or metadata.get("table_locator", "") or "").strip()
+        row_hits = list(facts.get("rows", []) or [])
+        if row_hits:
+            for row in row_hits[:12]:
+                row_label = str(dict(row).get("row_label", "") or "").strip()
+                atoms.add(f"row:{document_id}:{table_locator}:{row_label}")
+        else:
+            atoms.add(f"row:{document_id}:{table_locator}:{citation}")
+        return atoms
+
+    if tool_type == "lookup_officeqa_cells":
+        table_locator = str(facts.get("table_locator", "") or metadata.get("table_locator", "") or "").strip()
+        cells = list(facts.get("cells", []) or [])
+        if cells:
+            for cell in cells[:12]:
+                cell_dict = dict(cell)
+                atoms.add(
+                    ":".join(
+                        [
+                            "cell",
+                            document_id,
+                            table_locator,
+                            str(cell_dict.get("row_label", "") or "").strip(),
+                            str(cell_dict.get("column_label", "") or "").strip(),
+                            str(cell_dict.get("normalized_value", "") or cell_dict.get("value", "") or "").strip(),
+                        ]
+                    )
+                )
+        else:
+            atoms.add(f"cell:{document_id}:{table_locator}:{citation}")
+        return atoms
+
+    if tool_type in _OFFICEQA_FETCH_TOOLS:
+        page_locator = str(facts.get("page_locator", "") or metadata.get("page_locator", "") or "").strip()
+        atoms.add(f"fetch:{tool_type}:{document_id}:{page_locator}:{citation}")
+    return atoms
+
+
+def _officeqa_structured_evidence_atoms(curated: CuratedContext) -> set[str]:
+    structured = dict(curated.structured_evidence or {})
+    atoms: set[str] = set()
+    for table in list(structured.get("tables", []) or [])[:24]:
+        table_dict = dict(table)
+        atoms.add(
+            ":".join(
+                [
+                    "table",
+                    str(table_dict.get("document_id", "") or "").strip(),
+                    str(table_dict.get("table_locator", "") or "").strip(),
+                    str(table_dict.get("page_locator", "") or "").strip(),
+                    str(table_dict.get("table_family", "") or "").strip(),
+                ]
+            )
+        )
+    for value in list(structured.get("values", []) or [])[:80]:
+        value_dict = dict(value)
+        atoms.add(
+            ":".join(
+                [
+                    "value",
+                    str(value_dict.get("document_id", "") or "").strip(),
+                    str(value_dict.get("table_locator", "") or "").strip(),
+                    str(value_dict.get("page_locator", "") or "").strip(),
+                    " > ".join(str(part).strip() for part in list(value_dict.get("row_path", []) or []) if str(part).strip()),
+                    " > ".join(str(part).strip() for part in list(value_dict.get("column_path", []) or []) if str(part).strip()),
+                    str(value_dict.get("normalized_value", "") or value_dict.get("value", "") or "").strip(),
+                ]
+            )
+        )
+    return atoms
+
+
+def _officeqa_evidence_signature(journal: ExecutionJournal, curated: CuratedContext) -> str:
+    atoms: set[str] = set()
+    atoms.update(str(item).strip() for item in list(journal.retrieved_citations) if str(item).strip())
+    for tool_result in list(journal.tool_results or []):
+        atoms.update(_officeqa_tool_evidence_atoms(dict(tool_result)))
+    atoms.update(_officeqa_structured_evidence_atoms(curated))
+    return hashlib.sha1(json.dumps(sorted(atoms), sort_keys=True, ensure_ascii=True).encode("utf-8")).hexdigest()[:16]
+
+
+def _officeqa_reroute_action(stage: str, trigger: str, decision: dict[str, Any]) -> str:
+    action = str(decision.get("decision", "") or "").strip()
+    normalized_trigger = " ".join([str(stage or "").strip().lower(), str(trigger or "").strip().lower()])
+    if action == "retune_table_query":
+        if "unit" in normalized_trigger:
+            return "unit_repair"
+        return "table_query_rewrite"
+    if action == "change_strategy":
+        return "strategy_shift"
+    if action == "rewrite_query":
+        if any(fragment in normalized_trigger for fragment in ("wrong document", "wrong source", "source", "identify_source")):
+            return "source_rerank"
+        return "query_rewrite"
+    return action or "keep"
+
+
+def _filter_tool_results_for_reroute_action(
+    tool_results: list[dict[str, Any]],
+    reroute_action: str,
+) -> list[dict[str, Any]]:
+    if reroute_action in {"query_rewrite", "source_rerank", "strategy_shift"}:
+        return []
+    if reroute_action in {"table_query_rewrite", "unit_repair"}:
+        return [dict(item) for item in tool_results if str(dict(item).get("type", "") or "") in _OFFICEQA_SEARCH_DISCOVER_TOOLS]
+    return [dict(item) for item in tool_results]
+
+
+def _record_officeqa_repair_failure(
+    workpad: dict[str, Any],
+    *,
+    code: str,
+    details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    updated = dict(workpad)
+    failures = list(updated.get("officeqa_repair_failures", []) or [])
+    payload = {
+        "code": str(code or "").strip(),
+        "details": dict(details or {}),
+        "repair_epoch": int(updated.get("officeqa_repair_epoch", 0) or 0),
+    }
+    if payload["code"] and payload not in failures:
+        failures.append(payload)
+    updated["officeqa_repair_failures"] = failures
+    updated["officeqa_latest_repair_failure"] = payload if payload["code"] else dict(updated.get("officeqa_latest_repair_failure") or {})
+    return updated
+
+
+def _invalidate_officeqa_repair_state(
+    *,
+    workpad: dict[str, Any],
+    journal: ExecutionJournal,
+    curated: CuratedContext,
+    stage: str,
+    trigger: str,
+    decision: dict[str, Any],
+    reroute_action: str,
+    pre_retrieval_signature: str,
+    post_retrieval_signature: str,
+) -> tuple[dict[str, Any], ExecutionJournal, CuratedContext]:
+    updated_workpad = dict(workpad)
+    updated_journal = journal.model_copy(deep=True)
+    updated_curated = curated.model_copy(deep=True)
+    pre_evidence_signature = _officeqa_evidence_signature(journal, curated)
+    retained_tool_results = _filter_tool_results_for_reroute_action(list(updated_journal.tool_results or []), reroute_action)
+    updated_journal.tool_results = retained_tool_results
+    updated_journal.retrieved_citations = []
+    if reroute_action in {"query_rewrite", "source_rerank", "strategy_shift"}:
+        updated_journal.retrieval_queries = []
+    updated_curated.structured_evidence = {}
+    updated_curated.compute_result = {}
+    provenance_summary = dict(updated_curated.provenance_summary or {})
+    for key in ("retrieval_diagnostics", "evidence_plan_check", "compute_reselection", "answer_strategy"):
+        provenance_summary.pop(key, None)
+    updated_curated.provenance_summary = provenance_summary
+    for key in (
+        "retrieval_diagnostics",
+        "officeqa_evidence_review",
+        "officeqa_predictive_gaps",
+        "officeqa_compute",
+        "officeqa_answer_strategy",
+        "officeqa_compute_reselection",
+        "officeqa_compute_reselection_attempted",
+        "review_ready",
+        "completion_budget",
+    ):
+        updated_workpad.pop(key, None)
+    repair_epoch = int(updated_workpad.get("officeqa_repair_epoch", 0) or 0) + 1
+    transition = {
+        "stage": stage,
+        "trigger": trigger,
+        "decision": str(decision.get("decision", "") or "").strip(),
+        "reroute_action": reroute_action,
+        "pre_retrieval_signature": pre_retrieval_signature,
+        "post_retrieval_signature": post_retrieval_signature,
+        "pre_evidence_signature": pre_evidence_signature,
+        "retained_tool_result_count": len(retained_tool_results),
+        "requires_fresh_retrieval": True,
+        "status": "pending_fresh_retrieval",
+    }
+    updated_workpad["officeqa_repair_epoch"] = repair_epoch
+    updated_workpad["officeqa_pending_repair_transition"] = transition
+    updated_workpad["officeqa_latest_repair_transition"] = transition
+    updated_workpad["officeqa_last_retrieval_input_signature"] = post_retrieval_signature
+    if stage == "validator_repair":
+        updated_workpad["officeqa_last_validator_repair_signature"] = post_retrieval_signature
+    return updated_workpad, updated_journal, updated_curated
+
+
+def _finalize_pending_officeqa_repair_transition(
+    workpad: dict[str, Any],
+    *,
+    journal: ExecutionJournal,
+    curated: CuratedContext,
+    tool_name: str,
+) -> dict[str, Any]:
+    pending = dict(workpad.get("officeqa_pending_repair_transition") or {})
+    if not pending or tool_name not in _OFFICEQA_RETRIEVAL_TOOLS:
+        return workpad
+    updated = dict(workpad)
+    post_evidence_signature = _officeqa_evidence_signature(journal, curated)
+    pending["completed_by_tool"] = tool_name
+    pending["completed_retrieval_iteration"] = int(journal.retrieval_iterations or 0)
+    pending["post_evidence_signature"] = post_evidence_signature
+    if post_evidence_signature == str(pending.get("pre_evidence_signature", "") or ""):
+        pending["status"] = "repair_applied_but_no_new_evidence"
+        updated = _record_officeqa_repair_failure(
+            updated,
+            code="repair_applied_but_no_new_evidence",
+            details={
+                "reroute_action": pending.get("reroute_action", ""),
+                "tool_name": tool_name,
+                "stage": pending.get("stage", ""),
+                "trigger": pending.get("trigger", ""),
+            },
+        )
+    else:
+        pending["status"] = "fresh_evidence_observed"
+    updated["officeqa_latest_repair_transition"] = pending
+    updated.pop("officeqa_pending_repair_transition", None)
+    return updated
+
+
 def _apply_officeqa_llm_repair_decision(
     retrieval_intent: RetrievalIntent,
     workpad: dict[str, Any],
     decision: dict[str, Any],
-) -> tuple[RetrievalIntent, dict[str, Any], bool]:
+) -> tuple[RetrievalIntent, dict[str, Any], bool, str]:
     updated_intent = retrieval_intent.model_copy(deep=True)
     updated_workpad = dict(workpad)
     action = str(decision.get("decision", "") or "").strip()
     path_changed = False
+    reroute_action = _officeqa_reroute_action("", "", decision)
 
     if action == "rewrite_query":
         revised_query = str(decision.get("revised_query", "") or "").strip()
@@ -730,7 +1022,7 @@ def _apply_officeqa_llm_repair_decision(
             ]
             path_changed = True
 
-    return updated_intent, updated_workpad, path_changed
+    return updated_intent, updated_workpad, path_changed, reroute_action
 
 
 def _officeqa_retry_policy(
@@ -977,20 +1269,50 @@ def make_executor(registry: dict[str, dict[str, Any]]):
             }
 
         if officeqa_mode and (targeted_retrieval_retry or targeted_compute_retry) and llm_repair_state.get("validator_repair_calls", 0) < llm_repair_budget.get("validator_repair_calls", 0):
+            current_retrieval_signature = _officeqa_retrieval_input_signature(active_retrieval_intent, workpad)
+            last_validator_repair_signature = str(workpad.get("officeqa_last_validator_repair_signature", "") or "").strip()
             validator_candidate_sources = list(dict(workpad.get("retrieval_diagnostics") or {}).get("candidate_sources") or [])
-            repair_decision = maybe_repair_from_validator(
-                task_text=task_text,
-                retrieval_intent=active_retrieval_intent,
-                review_feedback=review_feedback,
-                candidate_sources=validator_candidate_sources,
-            )
+            repair_decision = None
+            if current_retrieval_signature != last_validator_repair_signature:
+                repair_decision = maybe_repair_from_validator(
+                    task_text=task_text,
+                    retrieval_intent=active_retrieval_intent,
+                    review_feedback=review_feedback,
+                    candidate_sources=validator_candidate_sources,
+                )
+            else:
+                workpad = _record_officeqa_repair_failure(
+                    workpad,
+                    code="repair_reused_stale_state",
+                    details={
+                        "stage": "validator_repair",
+                        "trigger": str(review_feedback.get("orchestration_strategy", "") or review_feedback.get("repair_target", "") or "validator_retry"),
+                        "reason": "validator_repair_skipped_without_retrieval_input_change",
+                    },
+                )
             if repair_decision is not None:
                 decision_payload = repair_decision.model_dump()
-                active_retrieval_intent, workpad, path_changed = _apply_officeqa_llm_repair_decision(
+                validator_trigger = str(review_feedback.get("orchestration_strategy", "") or review_feedback.get("repair_target", "") or "validator_retry")
+                active_retrieval_intent, workpad, path_changed, reroute_action = _apply_officeqa_llm_repair_decision(
                     active_retrieval_intent,
                     workpad,
                     decision_payload,
                 )
+                reroute_action = _officeqa_reroute_action("validator_repair", validator_trigger, decision_payload)
+                post_retrieval_signature = _officeqa_retrieval_input_signature(active_retrieval_intent, workpad)
+                if path_changed:
+                    workpad, journal, curated = _invalidate_officeqa_repair_state(
+                        workpad=workpad,
+                        journal=journal,
+                        curated=curated,
+                        stage="validator_repair",
+                        trigger=validator_trigger,
+                        decision=decision_payload,
+                        reroute_action=reroute_action,
+                        pre_retrieval_signature=current_retrieval_signature,
+                        post_retrieval_signature=post_retrieval_signature,
+                    )
+                    tool_plan.pending_tools = []
                 llm_repair_state["validator_repair_calls"] = int(llm_repair_state.get("validator_repair_calls", 0) or 0) + 1
                 workpad["officeqa_llm_repair_state"] = llm_repair_state
                 workpad["solver_llm_decision"] = {
@@ -1000,9 +1322,12 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                 workpad = _record_llm_repair_decision(
                     workpad,
                     stage="validator_repair",
-                    trigger=str(review_feedback.get("orchestration_strategy", "") or review_feedback.get("repair_target", "") or "validator_retry"),
+                    trigger=validator_trigger,
                     decision=decision_payload,
                     path_changed=path_changed,
+                    reroute_action=reroute_action,
+                    pre_retrieval_signature=current_retrieval_signature,
+                    post_retrieval_signature=post_retrieval_signature,
                 )
                 workpad = _record_event(
                     workpad,
@@ -1034,6 +1359,12 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                             journal.retrieved_citations.append(citation)
                 journal.routed_tool_families = list(dict.fromkeys([*journal.routed_tool_families, *tool_plan.tool_families_needed]))
                 workpad = _record_event(workpad, "executor", f"ran tool {next_tool}")
+                workpad = _finalize_pending_officeqa_repair_transition(
+                    workpad,
+                    journal=journal,
+                    curated=curated,
+                    tool_name=next_tool,
+                )
                 tool_plan.pending_tools = tool_plan.pending_tools[1:]
                 evidence_sufficiency = assess_evidence_sufficiency(task_text, source_bundle, journal.tool_results, benchmark_overrides)
                 should_continue_after_tool = bool(tool_plan.pending_tools) or intent.execution_mode in _RETRIEVAL_EXECUTION_MODES
@@ -1084,6 +1415,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                     budget.log_budget_exit("tool_budget_exhausted", f"Blocked tool '{retrieval_action.tool_name}' after reaching tool-call cap.")
                 else:
                     if officeqa_mode and llm_repair_state.get("query_rewrite_calls", 0) < llm_repair_budget.get("query_rewrite_calls", 0):
+                        current_retrieval_signature = _officeqa_retrieval_input_signature(active_retrieval_intent, workpad)
                         repair_decision = maybe_rewrite_retrieval_path(
                             task_text=task_text,
                             retrieval_intent=active_retrieval_intent,
@@ -1096,11 +1428,35 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                         )
                         if repair_decision is not None:
                             decision_payload = repair_decision.model_dump()
-                            active_retrieval_intent, workpad, path_changed = _apply_officeqa_llm_repair_decision(
+                            repair_trigger = retrieval_action.evidence_gap or retrieval_action.stage or "retrieval_gap"
+                            active_retrieval_intent, workpad, path_changed, reroute_action = _apply_officeqa_llm_repair_decision(
                                 active_retrieval_intent,
                                 workpad,
                                 decision_payload,
                             )
+                            reroute_action = _officeqa_reroute_action("retrieval_repair", repair_trigger, decision_payload)
+                            post_retrieval_signature = _officeqa_retrieval_input_signature(active_retrieval_intent, workpad)
+                            if path_changed:
+                                workpad, journal, curated = _invalidate_officeqa_repair_state(
+                                    workpad=workpad,
+                                    journal=journal,
+                                    curated=curated,
+                                    stage="retrieval_repair",
+                                    trigger=repair_trigger,
+                                    decision=decision_payload,
+                                    reroute_action=reroute_action,
+                                    pre_retrieval_signature=current_retrieval_signature,
+                                    post_retrieval_signature=post_retrieval_signature,
+                                )
+                                retrieval_action = _plan_retrieval_action(
+                                    execution_mode=intent.execution_mode,
+                                    source_bundle=source_bundle,
+                                    retrieval_intent=active_retrieval_intent,
+                                    tool_plan=tool_plan,
+                                    journal=journal,
+                                    registry=registry,
+                                    benchmark_overrides=benchmark_overrides,
+                                )
                             llm_repair_state["query_rewrite_calls"] = int(llm_repair_state.get("query_rewrite_calls", 0) or 0) + 1
                             workpad["officeqa_llm_repair_state"] = llm_repair_state
                             workpad["solver_llm_decision"] = {
@@ -1110,9 +1466,12 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                             workpad = _record_llm_repair_decision(
                                 workpad,
                                 stage="retrieval_repair",
-                                trigger=retrieval_action.evidence_gap or retrieval_action.stage or "retrieval_gap",
+                                trigger=repair_trigger,
                                 decision=decision_payload,
                                 path_changed=path_changed,
+                                reroute_action=reroute_action,
+                                pre_retrieval_signature=current_retrieval_signature,
+                                post_retrieval_signature=post_retrieval_signature,
                             )
                             workpad = _record_event(
                                 workpad,
@@ -1167,6 +1526,12 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                             "remediation_codes": list(review_feedback.get("remediation_codes", [])),
                         }
                     workpad = _record_event(workpad, "executor", f"retrieval hop -> {retrieval_action.tool_name}")
+                    workpad = _finalize_pending_officeqa_repair_transition(
+                        workpad,
+                        journal=journal,
+                        curated=curated,
+                        tool_name=retrieval_action.tool_name,
+                    )
                     if not bool(dict(workpad.get("solver_llm_decision") or {}).get("used_llm")):
                         workpad["solver_llm_decision"] = {
                             "used_llm": False,
@@ -1208,6 +1573,50 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                     }
             else:
                 workpad = _record_event(workpad, "executor", f"retrieval ready to answer -> {retrieval_action.rationale or 'evidence collected'}")
+
+        if benchmark_overrides.get("benchmark_adapter") == "officeqa" and workpad.get("officeqa_pending_repair_transition"):
+            pending_transition = dict(workpad.get("officeqa_pending_repair_transition") or {})
+            workpad = _record_officeqa_repair_failure(
+                workpad,
+                code="repair_reused_stale_state",
+                details={
+                    "stage": pending_transition.get("stage", ""),
+                    "trigger": pending_transition.get("trigger", ""),
+                    "reroute_action": pending_transition.get("reroute_action", ""),
+                    "reason": "compute_or_review_reached_before_fresh_retrieval_hop",
+                },
+            )
+            journal.stop_reason = "repair_reused_stale_state"
+            answer = _officeqa_required_compute_insufficiency_answer(["repair reused stale state"])
+            journal.final_artifact_signature = _artifact_signature(answer)
+            workpad["completion_budget"] = 0
+            workpad["review_ready"] = True
+            workpad["solver_llm_decision"] = {
+                "used_llm": False,
+                "reason": "repair_reused_stale_state",
+            }
+            workpad = _record_event(workpad, "executor", "blocked stale evidence reuse after repair")
+            return {
+                "messages": [AIMessage(content=answer)],
+                "last_tool_result": journal.tool_results[-1] if journal.tool_results else None,
+                "task_intent": intent.model_dump(),
+                "retrieval_intent": active_retrieval_intent.model_dump(),
+                "tool_plan": tool_plan.model_dump(),
+                "execution_journal": journal.model_dump(),
+                "curated_context": curated.model_dump(),
+                "review_packet": build_review_packet(
+                    task_text=task_text,
+                    answer_text=answer,
+                    answer_contract=state.get("answer_contract", {}) or {},
+                    curated_context=curated.model_dump(),
+                    tool_results=journal.tool_results,
+                    evidence_sufficiency=evidence_sufficiency.model_dump(),
+                ).model_dump(),
+                "evidence_sufficiency": evidence_sufficiency.model_dump(),
+                "solver_stage": "SYNTHESIZE",
+                "review_feedback": None,
+                "workpad": workpad,
+            }
 
         if benchmark_overrides.get("benchmark_adapter") == "officeqa" and journal.tool_results and curated.structured_evidence:
             predictive_gaps = predictive_evidence_gaps(active_retrieval_intent, curated.structured_evidence)

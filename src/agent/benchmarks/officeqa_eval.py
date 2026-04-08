@@ -15,6 +15,8 @@ BenchmarkFailureTag = Literal[
     "incomplete_evidence",
     "false_semantic_pass",
     "repair_stall",
+    "repair_applied_but_no_new_evidence",
+    "repair_reused_stale_state",
 ]
 
 _EXTRACTION_STATUSES = {"missing_table", "partial_table", "missing_row", "missing_month_coverage", "unit_ambiguity"}
@@ -197,6 +199,8 @@ def _classify_benchmark_failure(
     chosen_sources = list(artifacts.get("chosen_sources", []) or [])
     extracted_tables = [dict(item) for item in list(artifacts.get("extracted_tables", []) or []) if isinstance(item, dict)]
     llm_repair_history = list(artifacts.get("llm_repair_history", []) or [])
+    repair_failures = [dict(item) for item in list(artifacts.get("repair_failures", []) or []) if isinstance(item, dict)]
+    repair_failure_codes = [str(item.get("code", "") or "") for item in repair_failures]
     retry_stop_reason = str(artifacts.get("retry_stop_reason", "") or "")
     final_answer = _normalized_answer_value(str(artifacts.get("final_answer", "") or ""))
     expectations = _benchmark_expectations(case)
@@ -213,6 +217,7 @@ def _classify_benchmark_failure(
             *evidence_gaps,
             *semantic_issues,
             *rejected_alternatives,
+            *repair_failure_codes,
             str(classification.get("rationale", "") or ""),
             str(artifacts.get("strategy_reason", "") or ""),
             retry_stop_reason,
@@ -257,8 +262,15 @@ def _classify_benchmark_failure(
     if subsystem == "pass" and ((answer_match is False) or not semantic_ok):
         tags.append("false_semantic_pass")
 
+    if "repair_applied_but_no_new_evidence" in repair_failure_codes:
+        tags.append("repair_applied_but_no_new_evidence")
+
+    if "repair_reused_stale_state" in repair_failure_codes:
+        tags.append("repair_reused_stale_state")
+
     if subsystem != "pass" and (
         llm_repair_history
+        or repair_failure_codes
         or retry_stop_reason
         or ("retry" in combined_signals)
         or ("repair" in combined_signals)
@@ -431,6 +443,12 @@ def capture_officeqa_artifacts(trace: dict[str, Any] | None) -> dict[str, Any]:
         "compute_ledger": compute_ledger,
         "solver_llm_decision": dict(workpad.get("solver_llm_decision") or {}),
         "llm_repair_history": list(workpad.get("officeqa_llm_repair_history", []) or [])[:6],
+        "repair_failures": list(workpad.get("officeqa_repair_failures", []) or [])[:6],
+        "latest_repair_transition": dict(
+            workpad.get("officeqa_latest_repair_transition")
+            or workpad.get("officeqa_pending_repair_transition")
+            or {}
+        ),
         "evidence_review": dict(workpad.get("officeqa_evidence_review", {}) or {}),
         "validator_remediation": list(validator.get("remediation_guidance", []) or [])[:6],
         "final_answer": answer,
