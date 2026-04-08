@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from agent.context.extraction import extract_question_decomposition
-from agent.contracts import QuestionDecomposition, SourceBundle
+from agent.context.extraction import build_question_semantic_plan, extract_question_decomposition
+from agent.contracts import QuestionDecomposition, QuestionSemanticPlan, SourceBundle
 from agent.retrieval_reasoning import build_retrieval_intent
 
 
@@ -135,3 +135,43 @@ def test_decomposition_llm_fallback_merges_missing_fields(monkeypatch):
     assert decomposition.period == "1945"
     assert decomposition.entity == "Public debt"
     assert decomposition.confidence >= 0.8
+
+
+def test_semantic_plan_records_explicit_llm_usage(monkeypatch):
+    prompt = "How much was it?"
+    source_bundle = SourceBundle(
+        task_text=prompt,
+        focus_query="",
+        target_period="1945",
+        entities=[],
+    )
+
+    monkeypatch.setattr(
+        "agent.context.extraction.invoke_structured_output",
+        lambda *args, **kwargs: (
+            QuestionSemanticPlan(
+                entity="Public debt",
+                metric="public debt outstanding",
+                period="1945",
+                period_type="point_lookup",
+                target_years=["1945"],
+                publication_year_window=["1944", "1945", "1946"],
+                preferred_publication_years=["1945"],
+                granularity_requirement="point_lookup",
+                ambiguity_flags=["missing_core_slot"],
+                rationale="semantic_plan_llm",
+                confidence=0.87,
+                used_llm=True,
+            ),
+            "semantic-plan-model",
+        ),
+    )
+
+    semantic_plan = build_question_semantic_plan(prompt, source_bundle)
+    retrieval_intent = build_retrieval_intent(prompt, source_bundle, {"benchmark_adapter": "officeqa"})
+
+    assert semantic_plan.used_llm is True
+    assert semantic_plan.model_name == "semantic-plan-model"
+    assert retrieval_intent.semantic_plan.used_llm is True
+    assert retrieval_intent.semantic_plan.model_name == "semantic-plan-model"
+    assert retrieval_intent.decomposition_used_llm_fallback is True

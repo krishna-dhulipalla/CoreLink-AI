@@ -10,8 +10,13 @@ from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from agent.contracts import QueryPlan, QuestionDecomposition, SourceBundle
-from agent.model_config import invoke_structured_output
+from agent.contracts import QueryPlan, QuestionDecomposition, QuestionSemanticPlan, SourceBundle
+from agent.model_config import (
+    get_model_name_for_officeqa_control,
+    get_model_runtime_kwargs_for_officeqa_control,
+    invoke_structured_output,
+)
+from agent.prompts import FINANCIAL_SEMANTIC_PLAN_SYSTEM
 
 _URL_RE = re.compile(r"https?://[^\s\)\]\"',]+")
 _TITLE_ENTITY_RE = re.compile(
@@ -361,6 +366,129 @@ def extract_question_decomposition(
     if fallback is None:
         return decomposition
     return _merge_decomposition(decomposition, fallback)
+
+
+def _semantic_ambiguity_flags(task_text: str, decomposition: QuestionDecomposition) -> list[str]:
+    task_lower = str(task_text or "").lower()
+    flags: list[str] = []
+    if decomposition.confidence < 0.8:
+        flags.append("low_rule_confidence")
+    if decomposition.granularity_requirement in {"calendar_year", "fiscal_year", "monthly_series"}:
+        flags.append("temporal_publication_lag_risk")
+    if decomposition.include_constraints or decomposition.exclude_constraints:
+        flags.append("constraint_sensitive")
+    if any(token in task_lower for token in ("forecast", "regression", "correlation", "standard deviation", "weighted average", "value at risk", "var ")):
+        flags.append("advanced_financial_reasoning")
+    if not decomposition.entity or not decomposition.metric:
+        flags.append("missing_core_slot")
+    return list(dict.fromkeys(flags))
+
+
+def _needs_semantic_plan_llm(task_text: str, decomposition: QuestionDecomposition) -> bool:
+    flags = _semantic_ambiguity_flags(task_text, decomposition)
+    if "missing_core_slot" in flags or "advanced_financial_reasoning" in flags:
+        return True
+    return decomposition.confidence < 0.8 or len(flags) >= 2
+
+
+def _semantic_plan_from_decomposition(
+    decomposition: QuestionDecomposition,
+    *,
+    rationale: str = "",
+    used_llm: bool = False,
+    model_name: str = "",
+) -> QuestionSemanticPlan:
+    return QuestionSemanticPlan(
+        entity=decomposition.entity,
+        metric=decomposition.metric,
+        period=decomposition.period,
+        period_type=decomposition.period_type,
+        target_years=list(decomposition.target_years),
+        publication_year_window=list(decomposition.publication_year_window),
+        preferred_publication_years=list(decomposition.preferred_publication_years),
+        granularity_requirement=decomposition.granularity_requirement,
+        include_constraints=list(decomposition.include_constraints),
+        exclude_constraints=list(decomposition.exclude_constraints),
+        qualifier_terms=list(decomposition.qualifier_terms),
+        ambiguity_flags=_semantic_ambiguity_flags("", decomposition),
+        rationale=rationale,
+        confidence=decomposition.confidence,
+        used_llm=used_llm,
+        model_name=model_name,
+    )
+
+
+def _merge_semantic_plan(primary: QuestionSemanticPlan, fallback: QuestionSemanticPlan) -> QuestionSemanticPlan:
+    return QuestionSemanticPlan(
+        entity=primary.entity or fallback.entity,
+        metric=primary.metric or fallback.metric,
+        period=primary.period or fallback.period,
+        period_type=primary.period_type or fallback.period_type,
+        target_years=list(dict.fromkeys([*primary.target_years, *fallback.target_years]))[:4],
+        publication_year_window=list(dict.fromkeys([*primary.publication_year_window, *fallback.publication_year_window]))[:12],
+        preferred_publication_years=list(dict.fromkeys([*primary.preferred_publication_years, *fallback.preferred_publication_years]))[:12],
+        granularity_requirement=primary.granularity_requirement or fallback.granularity_requirement,
+        include_constraints=_dedupe_strings([*primary.include_constraints, *fallback.include_constraints], limit=6),
+        exclude_constraints=_dedupe_strings([*primary.exclude_constraints, *fallback.exclude_constraints], limit=6),
+        qualifier_terms=_dedupe_strings([*primary.qualifier_terms, *fallback.qualifier_terms], limit=6),
+        ambiguity_flags=_dedupe_strings([*primary.ambiguity_flags, *fallback.ambiguity_flags], limit=8),
+        rationale=primary.rationale or fallback.rationale,
+        confidence=max(primary.confidence, min(0.92, fallback.confidence)),
+        used_llm=bool(primary.used_llm or fallback.used_llm),
+        model_name=fallback.model_name or primary.model_name,
+    )
+
+
+def _fallback_semantic_plan(task_text: str, source_bundle: SourceBundle, decomposition: QuestionDecomposition) -> QuestionSemanticPlan | None:
+    model_name = get_model_name_for_officeqa_control("semantic_plan_llm")
+    runtime_kwargs = get_model_runtime_kwargs_for_officeqa_control("semantic_plan_llm")
+    messages = [
+        SystemMessage(content=FINANCIAL_SEMANTIC_PLAN_SYSTEM),
+        HumanMessage(
+            content=_normalize_space(
+                f"TASK={task_text}\nFOCUS_QUERY={source_bundle.focus_query}\nTARGET_PERIOD={source_bundle.target_period}\n"
+                f"ENTITIES={source_bundle.entities}\nSOURCE_FILES={source_bundle.source_files_expected[:8]}\n"
+                f"RULE_ENTITY={decomposition.entity}\nRULE_METRIC={decomposition.metric}\nRULE_PERIOD={decomposition.period}\n"
+                f"RULE_GRANULARITY={decomposition.granularity_requirement}\nRULE_INCLUDE={decomposition.include_constraints}\n"
+                f"RULE_EXCLUDE={decomposition.exclude_constraints}\nRULE_QUALIFIERS={decomposition.qualifier_terms}"
+            )
+        ),
+    ]
+    try:
+        parsed, resolved_model = invoke_structured_output(
+            "profiler",
+            QuestionSemanticPlan,
+            messages,
+            temperature=0,
+            max_tokens=260,
+            model_name_override=model_name,
+            runtime_kwargs_override=runtime_kwargs,
+        )
+        candidate = QuestionSemanticPlan.model_validate(parsed)
+        candidate.used_llm = True
+        candidate.model_name = resolved_model
+        return candidate
+    except Exception:
+        return None
+
+
+def build_question_semantic_plan(task_text: str, source_bundle: SourceBundle) -> QuestionSemanticPlan:
+    decomposition = extract_question_decomposition(task_text, source_bundle, allow_llm_fallback=True)
+    base_plan = _semantic_plan_from_decomposition(
+        decomposition,
+        rationale="rule_based_semantic_plan",
+        used_llm=bool(decomposition.used_llm_fallback),
+    )
+    base_plan.ambiguity_flags = _semantic_ambiguity_flags(task_text, decomposition)
+    if not _needs_semantic_plan_llm(task_text, decomposition):
+        return base_plan
+    fallback = _fallback_semantic_plan(task_text, source_bundle, decomposition)
+    if fallback is None:
+        return base_plan
+    merged = _merge_semantic_plan(base_plan, fallback)
+    if not merged.rationale:
+        merged.rationale = "semantic_plan_llm"
+    return merged
 
 
 def extract_urls(text: str) -> list[str]:

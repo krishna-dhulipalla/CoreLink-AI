@@ -260,6 +260,21 @@ def _execution_summary(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     }.items()
                     if value not in ("", [], {}, None)
                 }
+            llm_usage = [dict(item) for item in list(entry.get("officeqa_llm_usage") or []) if isinstance(item, dict)]
+            if llm_usage:
+                item["llm_usage"] = [
+                    {
+                        key: value
+                        for key, value in {
+                            "category": record.get("category", ""),
+                            "reason": record.get("reason", ""),
+                            "model_name": record.get("model_name", ""),
+                            "applied": record.get("applied"),
+                        }.items()
+                        if value not in ("", [], {}, None)
+                    }
+                    for record in llm_usage[-4:]
+                ]
             retrieval = dict(entry.get("retrieval_decision") or entry.get("retrieval_action") or {})
             if retrieval:
                 item["retrieval"] = {

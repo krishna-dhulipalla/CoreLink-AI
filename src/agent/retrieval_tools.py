@@ -837,6 +837,38 @@ def _table_payload(
     primary = tables[0] if tables else {}
     headers = list(primary.get("headers", [])) if isinstance(primary, dict) else []
     rows = list(primary.get("rows", [])) if isinstance(primary, dict) else []
+    table_candidates = []
+    for item in tables[:5]:
+        if not isinstance(item, dict):
+            continue
+        row_labels: list[str] = []
+        canonical_table = dict(item.get("canonical_table") or {})
+        for row in list(canonical_table.get("rows", []) or [])[:8]:
+            if not isinstance(row, dict):
+                continue
+            row_path = list(row.get("row_path", []) or [])
+            label = " > ".join(str(part or "") for part in row_path if str(part or "").strip())
+            if not label:
+                label = str(row.get("row_label", "") or "")
+            if label:
+                row_labels.append(label)
+        if not row_labels:
+            row_labels = [
+                str(row[0] or "")
+                for row in list(item.get("rows", []))[:8]
+                if isinstance(row, list) and row and str(row[0] or "").strip()
+            ]
+        table_candidates.append(
+            {
+                "locator": str(item.get("locator", "") or ""),
+                "table_family": str(item.get("table_family", "") or ""),
+                "table_family_confidence": item.get("table_family_confidence", 0.0),
+                "page_locator": str(item.get("page_locator", "") or ""),
+                "headers": list(item.get("headers", []))[:8],
+                "row_labels": row_labels[:8],
+                "unit_hint": str(item.get("unit_hint", "") or ""),
+            }
+        )
     metadata = {
         "file_name": file_name,
         "format": file_format,
@@ -846,6 +878,7 @@ def _table_payload(
         "row_count": len(rows),
         "column_count": len(headers),
         "table_family": str(primary.get("table_family", "") or ""),
+        "table_candidates": table_candidates,
     }
     if extra:
         metadata.update(extra)

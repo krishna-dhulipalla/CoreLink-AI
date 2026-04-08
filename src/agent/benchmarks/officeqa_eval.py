@@ -425,6 +425,7 @@ def capture_officeqa_artifacts(trace: dict[str, Any] | None) -> dict[str, Any]:
         "strategy_reason": str(retrieval_diagnostics.get("strategy_reason", "") or ""),
         "answer_mode": str(retrieval_plan.get("answer_mode", "") or _retrieval_intent(state).get("answer_mode", "") or ""),
         "compute_policy": str(retrieval_plan.get("compute_policy", "") or _retrieval_intent(state).get("compute_policy", "") or ""),
+        "semantic_plan": dict(_retrieval_intent(state).get("semantic_plan") or {}),
         "validator_codes": list(validator.get("remediation_codes", []) or [])[:8],
         "orchestration_strategy": str(validator.get("orchestration_strategy", "") or ""),
         "retry_allowed": bool(validator.get("retry_allowed")),
@@ -442,6 +443,7 @@ def capture_officeqa_artifacts(trace: dict[str, Any] | None) -> dict[str, Any]:
         "semantic_diagnostics": dict(compute.get("semantic_diagnostics", {}) or {}),
         "compute_ledger": compute_ledger,
         "solver_llm_decision": dict(workpad.get("solver_llm_decision") or {}),
+        "llm_usage": list(workpad.get("officeqa_llm_usage", []) or [])[:10],
         "llm_repair_history": list(workpad.get("officeqa_llm_repair_history", []) or [])[:6],
         "repair_failures": list(workpad.get("officeqa_repair_failures", []) or [])[:6],
         "latest_repair_transition": dict(

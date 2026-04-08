@@ -4,7 +4,7 @@ import re
 from typing import Any
 
 from agent.benchmarks.officeqa import officeqa_analysis_modes
-from agent.context.extraction import extract_question_decomposition
+from agent.context.extraction import build_question_semantic_plan
 from agent.contracts import EvidencePlan, EvidenceRequirement, EvidenceSufficiency, QueryPlan, RetrievalIntent, SourceBundle
 
 _MONTH_NAMES = (
@@ -659,20 +659,20 @@ def build_retrieval_intent(
     source_bundle: SourceBundle,
     benchmark_overrides: dict[str, Any] | None = None,
 ) -> RetrievalIntent:
-    decomposition = extract_question_decomposition(task_text, source_bundle, allow_llm_fallback=True)
-    entity = decomposition.entity
-    metric = decomposition.metric
-    period = decomposition.period
-    period_type = decomposition.period_type
-    target_years = list(decomposition.target_years)
-    publication_year_window = list(decomposition.publication_year_window)
-    preferred_publication_years = list(decomposition.preferred_publication_years)
-    granularity_requirement = decomposition.granularity_requirement
+    semantic_plan = build_question_semantic_plan(task_text, source_bundle)
+    entity = semantic_plan.entity
+    metric = semantic_plan.metric
+    period = semantic_plan.period
+    period_type = semantic_plan.period_type
+    target_years = list(semantic_plan.target_years)
+    publication_year_window = list(semantic_plan.publication_year_window)
+    preferred_publication_years = list(semantic_plan.preferred_publication_years)
+    granularity_requirement = semantic_plan.granularity_requirement
     document_family = _document_family(task_text, source_bundle, benchmark_overrides)
     aggregation_shape = _aggregation_shape(task_text)
     years = list(target_years) or _period_years(period, task_text)
     retrieval_metric = _primary_retrieval_metric(metric, aggregation_shape)
-    qualifier_terms = list(decomposition.qualifier_terms)
+    qualifier_terms = list(semantic_plan.qualifier_terms)
     analysis_modes = _task_analysis_modes(task_text, benchmark_overrides)
     answer_mode, compute_policy, partial_answer_allowed = _classify_answer_mode(
         task_text,
@@ -701,8 +701,8 @@ def build_retrieval_intent(
         strategy,
         analysis_modes,
         join_requirements,
-        decomposition.include_constraints,
-        decomposition.exclude_constraints,
+        semantic_plan.include_constraints,
+        semantic_plan.exclude_constraints,
     )
     query_plan = _build_query_plan(
         document_family=document_family,
@@ -714,8 +714,8 @@ def build_retrieval_intent(
         publication_year_window=publication_year_window,
         preferred_publication_years=preferred_publication_years,
         granularity_requirement=granularity_requirement,
-        include_constraints=decomposition.include_constraints,
-        exclude_constraints=decomposition.exclude_constraints,
+        include_constraints=semantic_plan.include_constraints,
+        exclude_constraints=semantic_plan.exclude_constraints,
         source_bundle=source_bundle,
     )
 
@@ -738,13 +738,13 @@ def build_retrieval_intent(
         must_include_terms.extend(["monthly", "month"])
     if aggregation_shape == "inflation_adjusted_monthly_difference":
         must_include_terms.extend(["cpi", "inflation"])
-    must_include_terms.extend(decomposition.include_constraints)
+    must_include_terms.extend(semantic_plan.include_constraints)
     must_include_terms.extend(_source_file_query_terms(source_bundle))
     must_include_terms = list(dict.fromkeys([item for item in must_include_terms if item]))
 
     policy = _benchmark_policy(benchmark_overrides)
     must_exclude_terms = list(policy.get("excluded_retrieval_terms", [])) if _officeqa_active(benchmark_overrides) else []
-    must_exclude_terms.extend(decomposition.exclude_constraints)
+    must_exclude_terms.extend(semantic_plan.exclude_constraints)
     must_exclude_terms = list(dict.fromkeys([item for item in must_exclude_terms if item]))
 
     query_candidates = [
@@ -776,10 +776,11 @@ def build_retrieval_intent(
         fallback_chain=fallback_chain,
         join_requirements=join_requirements,
         evidence_plan=evidence_plan,
-        include_constraints=decomposition.include_constraints,
-        exclude_constraints=decomposition.exclude_constraints,
-        decomposition_confidence=decomposition.confidence,
-        decomposition_used_llm_fallback=decomposition.used_llm_fallback,
+        include_constraints=semantic_plan.include_constraints,
+        exclude_constraints=semantic_plan.exclude_constraints,
+        decomposition_confidence=semantic_plan.confidence,
+        decomposition_used_llm_fallback=semantic_plan.used_llm,
+        semantic_plan=semantic_plan,
         query_plan=query_plan,
         must_include_terms=must_include_terms,
         must_exclude_terms=must_exclude_terms,

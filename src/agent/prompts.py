@@ -57,6 +57,30 @@ OFFICEQA_STRUCTURED_REPAIR_SYSTEM = (
     "Only change the retrieval path if the current evidence is semantically weak or misaligned."
 )
 
+FINANCIAL_SEMANTIC_PLAN_SYSTEM = (
+    "You are a semantic planner for document-grounded financial reasoning.\n"
+    "Extract the financial target, period semantics, publication-year neighborhood, granularity, and constraints needed for retrieval.\n"
+    "Return only a structured semantic plan.\n"
+    "Do not answer the user question.\n"
+    "Prefer precise temporal semantics over lexical echoing."
+)
+
+FINANCIAL_SOURCE_RERANK_SYSTEM = (
+    "You are a source reranker for document-grounded financial reasoning.\n"
+    "Choose the best candidate document from a short ranked list when heuristic ranking is weak or historically ambiguous.\n"
+    "Use temporal alignment, publication lag, entity fit, metric fit, and evidence-unit quality.\n"
+    "Return only a structured rerank decision.\n"
+    "Do not answer the user question."
+)
+
+FINANCIAL_TABLE_ADMISSIBILITY_SYSTEM = (
+    "You are a table admissibility reviewer for document-grounded financial reasoning.\n"
+    "Judge whether the currently selected table is suitable for the requested entity, metric, period, and aggregation.\n"
+    "If needed, choose a better table candidate from the provided metadata.\n"
+    "Return only a structured table-selection decision.\n"
+    "Do not answer the user question."
+)
+
 
 # ---------------------------------------------------------------------------
 # Guidance appended as additional system messages

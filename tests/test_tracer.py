@@ -103,6 +103,14 @@ def test_tracer_preserves_structured_diagnostic_artifacts(monkeypatch):
                     "decision": {"decision": "rewrite_query", "confidence": 0.88},
                 }
             ],
+            "officeqa_llm_usage": [
+                {
+                    "category": "semantic_plan_llm",
+                    "reason": "semantic_plan_llm",
+                    "model_name": "semantic-plan-model",
+                    "applied": True,
+                }
+            ],
             "tools_ran": ["fetch_officeqa_table"],
             "retrieval_decision": {"tool_name": "fetch_officeqa_table", "strategy": "table_first"},
             "strategy_reason": "primary metric is expected to be recoverable from structured table evidence",
@@ -139,6 +147,7 @@ def test_tracer_preserves_structured_diagnostic_artifacts(monkeypatch):
     assert execution_summary[0]["llm_decision_reason"] == "deterministic_compute_completed"
     assert execution_summary[0]["llm_repair"]["count"] == 1
     assert execution_summary[0]["llm_repair"]["decision"] == "rewrite_query"
+    assert execution_summary[0]["llm_usage"][0]["category"] == "semantic_plan_llm"
     assert execution_summary[0]["retrieval"]["tool_name"] == "fetch_officeqa_table"
     assert execution_summary[0]["evidence_gaps"] == ["missing month coverage"]
     assert execution_summary[0]["tool_results"][0]["tool"] == "fetch_officeqa_table"

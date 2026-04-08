@@ -5,7 +5,11 @@ from typing import Any
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from agent.contracts import OfficeQALLMRepairDecision, RetrievalIntent, SourceBundle
-from agent.model_config import invoke_structured_output
+from agent.model_config import (
+    get_model_name_for_officeqa_control,
+    get_model_runtime_kwargs_for_officeqa_control,
+    invoke_structured_output,
+)
 from agent.prompts import OFFICEQA_STRUCTURED_REPAIR_SYSTEM, build_officeqa_structured_repair_prompt
 
 _MAX_QUERY_REWRITE_CALLS = 2
@@ -49,21 +53,26 @@ def _repairable_gap(evidence_gap: str) -> bool:
 
 
 def _invoke_repair_decision(prompt: str) -> OfficeQALLMRepairDecision | None:
+    model_name = get_model_name_for_officeqa_control("repair_llm")
+    runtime_kwargs = get_model_runtime_kwargs_for_officeqa_control("repair_llm")
     messages = [
         SystemMessage(content=OFFICEQA_STRUCTURED_REPAIR_SYSTEM),
         HumanMessage(content=prompt),
     ]
     try:
-        parsed, _ = invoke_structured_output(
+        parsed, resolved_model = invoke_structured_output(
             "profiler",
             OfficeQALLMRepairDecision,
             messages,
             temperature=0,
             max_tokens=260,
+            model_name_override=model_name,
+            runtime_kwargs_override=runtime_kwargs,
         )
         decision = OfficeQALLMRepairDecision.model_validate(parsed)
     except Exception:
         return None
+    decision.model_name = resolved_model
     if decision.confidence < 0.45:
         return None
     if decision.decision == "rewrite_query" and not decision.revised_query.strip():

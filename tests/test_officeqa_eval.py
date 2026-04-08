@@ -141,6 +141,15 @@ def test_capture_officeqa_artifacts_collects_tables_and_ledger():
         },
         workpad={
             "solver_llm_decision": {"used_llm": False, "reason": "deterministic_compute_completed"},
+            "officeqa_llm_usage": [
+                {
+                    "category": "semantic_plan_llm",
+                    "used": True,
+                    "reason": "semantic_plan_llm",
+                    "model_name": "semantic-plan-model",
+                    "applied": True,
+                }
+            ],
             "officeqa_llm_repair_history": [
                 {
                     "stage": "validator_repair",
@@ -190,6 +199,19 @@ def test_capture_officeqa_artifacts_collects_tables_and_ledger():
             }
         },
     )
+    state["retrieval_intent"] = {
+        "answer_mode": "hybrid_grounded",
+        "compute_policy": "preferred",
+        "semantic_plan": {
+            "entity": "National defense",
+            "metric": "total expenditures",
+            "period": "1940",
+            "granularity_requirement": "monthly_series",
+            "confidence": 0.88,
+            "used_llm": True,
+            "model_name": "semantic-plan-model",
+        },
+    }
 
     artifacts = capture_officeqa_artifacts(_trace(state, "<REASONING>x</REASONING><FINAL_ANSWER>2602</FINAL_ANSWER>"))
 
@@ -212,6 +234,8 @@ def test_capture_officeqa_artifacts_collects_tables_and_ledger():
     assert artifacts["extracted_tables"][0]["document_id"] == "treasury_1940_json"
     assert artifacts["compute_ledger"][0]["operator"] == "monthly_sum"
     assert artifacts["solver_llm_decision"]["reason"] == "deterministic_compute_completed"
+    assert artifacts["semantic_plan"]["used_llm"] is True
+    assert artifacts["llm_usage"][0]["category"] == "semantic_plan_llm"
     assert artifacts["llm_repair_history"][0]["stage"] == "validator_repair"
     assert artifacts["repair_failures"] == []
     assert artifacts["evidence_review"]["status"] == "ready"

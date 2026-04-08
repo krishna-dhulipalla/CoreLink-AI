@@ -285,6 +285,61 @@ def get_model_name_for_task(
     return get_model_name(role)
 
 
+def get_model_name_for_officeqa_control(
+    category: str,
+    *,
+    answer_mode: str = "",
+    analysis_modes: list[str] | None = None,
+) -> str:
+    category_key = str(category or "").strip().lower()
+    env_candidates = {
+        "semantic_plan_llm": ["OFFICEQA_SEMANTIC_PLAN_MODEL", "SEMANTIC_PLAN_MODEL"],
+        "retrieval_rerank_llm": ["OFFICEQA_RETRIEVAL_RERANK_MODEL", "RETRIEVAL_RERANK_MODEL"],
+        "table_rerank_llm": ["OFFICEQA_TABLE_RERANK_MODEL", "TABLE_RERANK_MODEL"],
+        "repair_llm": ["OFFICEQA_REPAIR_MODEL", "REPAIR_MODEL"],
+    }.get(category_key, [])
+    for env_name in env_candidates:
+        override = os.getenv(env_name, "").strip()
+        if override:
+            return override
+
+    if category_key == "semantic_plan_llm":
+        if answer_mode in {"grounded_synthesis", "hybrid_grounded"}:
+            return get_model_name_for_task("solver", answer_mode=answer_mode, analysis_modes=analysis_modes)
+        if {str(item).strip().lower() for item in analysis_modes or [] if str(item).strip()}.intersection({"statistical_analysis", "time_series_forecasting", "risk_metric"}):
+            return get_model_name_for_task("solver", answer_mode=answer_mode, analysis_modes=analysis_modes)
+        return get_model_name("profiler")
+    if category_key == "retrieval_rerank_llm":
+        return get_model_name_for_task("reviewer", answer_mode=answer_mode, analysis_modes=analysis_modes)
+    if category_key == "table_rerank_llm":
+        return get_model_name_for_task("reviewer", answer_mode=answer_mode, analysis_modes=analysis_modes)
+    if category_key == "repair_llm":
+        return get_model_name_for_task("reviewer", answer_mode=answer_mode, analysis_modes=analysis_modes)
+    return get_model_name("profiler")
+
+
+def get_model_runtime_kwargs_for_officeqa_control(
+    category: str,
+    *,
+    answer_mode: str = "",
+    analysis_modes: list[str] | None = None,
+) -> dict[str, Any]:
+    category_key = str(category or "").strip().lower()
+    if category_key in {"retrieval_rerank_llm", "table_rerank_llm", "repair_llm"}:
+        return get_model_runtime_kwargs(
+            "reviewer",
+            answer_mode=answer_mode,
+            analysis_modes=analysis_modes,
+        )
+    if category_key == "semantic_plan_llm":
+        return get_model_runtime_kwargs(
+            "solver" if answer_mode in {"grounded_synthesis", "hybrid_grounded"} else "profiler",
+            answer_mode=answer_mode,
+            analysis_modes=analysis_modes,
+        )
+    return get_model_runtime_kwargs("profiler", answer_mode=answer_mode, analysis_modes=analysis_modes)
+
+
 def _role_reasoning_effort_env_names(role: str) -> list[str]:
     canonical = _canonical_role(role)
     names = [f"{canonical.upper()}_REASONING_EFFORT"]
@@ -571,6 +626,8 @@ def invoke_structured_output(
     role: str,
     schema: type,
     messages: list[BaseMessage],
+    model_name_override: str | None = None,
+    runtime_kwargs_override: dict[str, Any] | None = None,
     **kwargs: Any,
 ):
     """Invoke a model and return a parsed Pydantic object.
@@ -578,11 +635,11 @@ def invoke_structured_output(
     Native structured output is used when supported. For local vLLM-style
     endpoints, this falls back to explicit JSON prompting plus local parsing.
     """
-    model_name = get_model_name(role)
+    model_name = str(model_name_override or get_model_name(role))
     model_init_kwargs: dict[str, Any] = {
         "model": model_name,
         **get_client_kwargs(role),
-        **get_model_runtime_kwargs(role),
+        **(runtime_kwargs_override or get_model_runtime_kwargs(role)),
         **kwargs,
     }
 

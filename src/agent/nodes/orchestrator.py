@@ -29,6 +29,13 @@ from agent.contracts import (
 from agent.context.evidence import _extract_policy_context
 from agent.context.extraction import derive_market_snapshot
 from agent.model_config import ChatOpenAI, get_client_kwargs, get_model_name, get_model_name_for_task, get_model_runtime_kwargs, invoke_structured_output
+from agent.llm_control import (
+    initial_officeqa_llm_control_state,
+    maybe_rerank_source_candidates,
+    maybe_review_table_admissibility,
+    officeqa_llm_control_budget,
+    record_officeqa_llm_usage,
+)
 from agent.llm_repair import (
     initial_officeqa_llm_repair_state,
     maybe_repair_from_validator,
@@ -712,6 +719,111 @@ def _record_llm_repair_decision(
     return updated
 
 
+def _seed_officeqa_semantic_plan_usage(workpad: dict[str, Any], retrieval_intent: RetrievalIntent) -> dict[str, Any]:
+    semantic_plan = retrieval_intent.semantic_plan
+    if not semantic_plan.used_llm:
+        return workpad
+    existing = [dict(item) for item in list(workpad.get("officeqa_llm_usage", []) or []) if isinstance(item, dict)]
+    if any(str(item.get("category", "") or "") == "semantic_plan_llm" for item in existing):
+        return workpad
+    return record_officeqa_llm_usage(
+        workpad,
+        category="semantic_plan_llm",
+        used=True,
+        reason=semantic_plan.rationale or "semantic_plan_llm",
+        model_name=semantic_plan.model_name,
+        confidence=semantic_plan.confidence,
+        applied=True,
+        details={
+            "ambiguity_flags": list(semantic_plan.ambiguity_flags[:6]),
+            "entity": semantic_plan.entity,
+            "metric": semantic_plan.metric,
+            "period": semantic_plan.period,
+        },
+    )
+
+
+def _source_rerank_is_worth_llm(candidate_sources: list[dict[str, Any]]) -> bool:
+    ranked = [dict(item) for item in list(candidate_sources or []) if isinstance(item, dict)]
+    if len(ranked) < 2:
+        return False
+    first = float(ranked[0].get("score", 0.0) or 0.0)
+    second = float(ranked[1].get("score", 0.0) or 0.0)
+    return first < 1.45 or (first - second) < 0.18
+
+
+def _apply_source_rerank_decision(
+    retrieval_action: RetrievalAction,
+    candidate_sources: list[dict[str, Any]],
+    decision_document_id: str,
+) -> tuple[RetrievalAction, bool]:
+    normalized_target = str(decision_document_id or "").strip().lower()
+    if not normalized_target:
+        return retrieval_action, False
+    chosen = next(
+        (
+            dict(item)
+            for item in candidate_sources
+            if str(dict(item).get("document_id", "") or "").strip().lower() == normalized_target
+        ),
+        None,
+    )
+    if chosen is None:
+        return retrieval_action, False
+    if str(retrieval_action.document_id or "").strip().lower() == normalized_target:
+        return retrieval_action, False
+    updated = retrieval_action.model_copy(deep=True)
+    updated.document_id = str(chosen.get("document_id", "") or "")
+    updated.path = str(chosen.get("path", "") or chosen.get("citation", "") or "")
+    updated.rationale = (
+        f"{retrieval_action.rationale} LLM rerank selected a more semantically aligned source candidate."
+    ).strip()
+    return updated, True
+
+
+def _table_review_is_worth_llm(table_candidates: list[dict[str, Any]], evidence_gap: str) -> bool:
+    candidates = [dict(item) for item in list(table_candidates or []) if isinstance(item, dict)]
+    if len(candidates) < 2:
+        return False
+    if evidence_gap in {"wrong table family", "missing month coverage", "wrong row or column semantics", "wrong period slice"}:
+        return True
+    confidences = [float(item.get("table_family_confidence", 0.0) or 0.0) for item in candidates[:2]]
+    if len(confidences) >= 2 and abs(confidences[0] - confidences[1]) < 0.18:
+        return True
+    return False
+
+
+def _table_candidates_from_last_result(tool_result: dict[str, Any]) -> list[dict[str, Any]]:
+    facts = dict(tool_result.get("facts") or {})
+    metadata = dict(facts.get("metadata") or {})
+    return [dict(item) for item in list(metadata.get("table_candidates", []) or []) if isinstance(item, dict)]
+
+
+def _officeqa_trace_llm_usage(workpad: dict[str, Any]) -> list[dict[str, Any]]:
+    return [dict(item) for item in list(workpad.get("officeqa_llm_usage", []) or [])[:8] if isinstance(item, dict)]
+
+
+def _apply_table_review_decision(
+    retrieval_action: RetrievalAction,
+    decision: dict[str, Any],
+) -> tuple[RetrievalAction, dict[str, Any], bool]:
+    locator = str(decision.get("preferred_table_locator", "") or "").strip()
+    query = str(decision.get("suggested_table_query", "") or "").strip()
+    if not query and locator:
+        query = locator
+    if not query:
+        return retrieval_action, {}, False
+    updated = retrieval_action.model_copy(deep=True)
+    updated.action = "tool"
+    updated.stage = "locate_table"
+    updated.evidence_gap = str(decision.get("admissibility_gap", "") or retrieval_action.evidence_gap or "").strip()
+    updated.query = query
+    updated.rationale = (
+        f"{retrieval_action.rationale} LLM table admissibility review requested a targeted table reselection."
+    ).strip()
+    return updated, {"officeqa_override_table_query": query}, True
+
+
 def _officeqa_retrieval_input_signature(retrieval_intent: RetrievalIntent, workpad: dict[str, Any]) -> str:
     payload = {
         "strategy": retrieval_intent.strategy,
@@ -1145,6 +1257,16 @@ def make_executor(registry: dict[str, dict[str, Any]]):
             and review_feedback.get("retry_allowed", True)
         )
         active_retrieval_intent = _apply_review_orchestration(retrieval_intent, review_feedback)
+        llm_control_state = (
+            dict(workpad.get("officeqa_llm_control_state") or initial_officeqa_llm_control_state(active_retrieval_intent))
+            if officeqa_mode
+            else {}
+        )
+        llm_control_budget = (
+            dict(workpad.get("officeqa_llm_control_budget") or officeqa_llm_control_budget())
+            if officeqa_mode
+            else {}
+        )
         llm_repair_state = (
             dict(workpad.get("officeqa_llm_repair_state") or initial_officeqa_llm_repair_state(active_retrieval_intent))
             if officeqa_mode
@@ -1156,8 +1278,11 @@ def make_executor(registry: dict[str, dict[str, Any]]):
             else {}
         )
         if officeqa_mode:
+            workpad["officeqa_llm_control_state"] = llm_control_state
+            workpad["officeqa_llm_control_budget"] = llm_control_budget
             workpad["officeqa_llm_repair_state"] = llm_repair_state
             workpad["officeqa_llm_repair_budget"] = llm_repair_budget
+            workpad = _seed_officeqa_semantic_plan_usage(workpad, active_retrieval_intent)
         budget = state.get("budget_tracker")
         tracker = state.get("cost_tracker")
         tracer = get_tracer()
@@ -1329,6 +1454,16 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                     pre_retrieval_signature=current_retrieval_signature,
                     post_retrieval_signature=post_retrieval_signature,
                 )
+                workpad = record_officeqa_llm_usage(
+                    workpad,
+                    category="repair_llm",
+                    used=True,
+                    reason="validator_directed_retrieval_repair",
+                    model_name=str(decision_payload.get("model_name", "") or ""),
+                    confidence=float(decision_payload.get("confidence", 0.0) or 0.0),
+                    applied=path_changed,
+                    details={"stage": "validator_repair", "trigger": validator_trigger, "decision": decision_payload.get("decision", "")},
+                )
                 workpad = _record_event(
                     workpad,
                     "executor",
@@ -1385,6 +1520,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                                 "tool_results": _compact_tool_findings(journal.tool_results),
                                 "output_preview": "",
                                 "completion_budget": 0,
+                                "officeqa_llm_usage": _officeqa_trace_llm_usage(workpad),
                                 "llm_repair_history": list(workpad.get("officeqa_llm_repair_history", []) or []),
                             },
                         )
@@ -1414,6 +1550,83 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                 if budget and budget.tool_calls_exhausted():
                     budget.log_budget_exit("tool_budget_exhausted", f"Blocked tool '{retrieval_action.tool_name}' after reaching tool-call cap.")
                 else:
+                    if (
+                        officeqa_mode
+                        and retrieval_action.candidate_sources
+                        and retrieval_action.tool_name in {"fetch_officeqa_table", "fetch_officeqa_pages", "fetch_corpus_document"}
+                        and llm_control_state.get("retrieval_rerank_calls", 0) < llm_control_budget.get("retrieval_rerank_calls", 0)
+                        and _source_rerank_is_worth_llm(retrieval_action.candidate_sources)
+                    ):
+                        rerank_decision = maybe_rerank_source_candidates(
+                            task_text=task_text,
+                            retrieval_intent=active_retrieval_intent,
+                            candidate_sources=retrieval_action.candidate_sources,
+                            reason=retrieval_action.evidence_gap or retrieval_action.rationale or retrieval_action.stage,
+                        )
+                        if rerank_decision is not None:
+                            retrieval_action, rerank_applied = _apply_source_rerank_decision(
+                                retrieval_action,
+                                retrieval_action.candidate_sources,
+                                rerank_decision.preferred_document_id,
+                            )
+                            llm_control_state["retrieval_rerank_calls"] = int(llm_control_state.get("retrieval_rerank_calls", 0) or 0) + 1
+                            workpad["officeqa_llm_control_state"] = llm_control_state
+                            workpad = record_officeqa_llm_usage(
+                                workpad,
+                                category="retrieval_rerank_llm",
+                                used=True,
+                                reason=retrieval_action.evidence_gap or "weak_source_ranking",
+                                model_name=rerank_decision.model_name,
+                                confidence=rerank_decision.confidence,
+                                applied=rerank_applied,
+                                details={
+                                    "preferred_document_id": rerank_decision.preferred_document_id,
+                                    "decision": rerank_decision.decision,
+                                },
+                            )
+                    if (
+                        officeqa_mode
+                        and journal.tool_results
+                        and retrieval_action.tool_name in {"lookup_officeqa_rows", "lookup_officeqa_cells", "fetch_officeqa_pages"}
+                        and llm_control_state.get("table_rerank_calls", 0) < llm_control_budget.get("table_rerank_calls", 0)
+                    ):
+                        last_tool_result = dict(journal.tool_results[-1] or {})
+                        last_tool_type = str(last_tool_result.get("type", "") or "")
+                        table_candidates = _table_candidates_from_last_result(last_tool_result)
+                        if (
+                            last_tool_type == "fetch_officeqa_table"
+                            and _table_review_is_worth_llm(table_candidates, retrieval_action.evidence_gap)
+                        ):
+                            table_decision = maybe_review_table_admissibility(
+                                task_text=task_text,
+                                retrieval_intent=active_retrieval_intent,
+                                document_id=str(dict(last_tool_result.get("facts") or {}).get("document_id", "") or retrieval_action.document_id),
+                                table_candidates=table_candidates,
+                                reason=retrieval_action.evidence_gap or retrieval_action.rationale or retrieval_action.stage,
+                            )
+                            if table_decision is not None:
+                                retrieval_action, table_overrides, table_applied = _apply_table_review_decision(
+                                    retrieval_action,
+                                    table_decision.model_dump(),
+                                )
+                                if table_overrides:
+                                    workpad.update(table_overrides)
+                                llm_control_state["table_rerank_calls"] = int(llm_control_state.get("table_rerank_calls", 0) or 0) + 1
+                                workpad["officeqa_llm_control_state"] = llm_control_state
+                                workpad = record_officeqa_llm_usage(
+                                    workpad,
+                                    category="table_rerank_llm",
+                                    used=True,
+                                    reason=retrieval_action.evidence_gap or "table_admissibility_review",
+                                    model_name=table_decision.model_name,
+                                    confidence=table_decision.confidence,
+                                    applied=table_applied,
+                                    details={
+                                        "decision": table_decision.decision,
+                                        "preferred_table_locator": table_decision.preferred_table_locator,
+                                        "preferred_table_family": table_decision.preferred_table_family,
+                                    },
+                                )
                     if officeqa_mode and llm_repair_state.get("query_rewrite_calls", 0) < llm_repair_budget.get("query_rewrite_calls", 0):
                         current_retrieval_signature = _officeqa_retrieval_input_signature(active_retrieval_intent, workpad)
                         repair_decision = maybe_rewrite_retrieval_path(
@@ -1472,6 +1685,16 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                                 reroute_action=reroute_action,
                                 pre_retrieval_signature=current_retrieval_signature,
                                 post_retrieval_signature=post_retrieval_signature,
+                            )
+                            workpad = record_officeqa_llm_usage(
+                                workpad,
+                                category="repair_llm",
+                                used=True,
+                                reason="structured_retrieval_repair",
+                                model_name=str(decision_payload.get("model_name", "") or ""),
+                                confidence=float(decision_payload.get("confidence", 0.0) or 0.0),
+                                applied=path_changed,
+                                details={"stage": "retrieval_repair", "trigger": repair_trigger, "decision": decision_payload.get("decision", "")},
                             )
                             workpad = _record_event(
                                 workpad,
@@ -1557,6 +1780,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                                 "evidence_gaps": [retrieval_action.evidence_gap] if retrieval_action.evidence_gap else [],
                                 "orchestration_strategy": review_feedback.get("orchestration_strategy", "") if targeted_retrieval_retry else "",
                                 "retry_path": dict(workpad.get("officeqa_retry_path") or {}),
+                                "officeqa_llm_usage": _officeqa_trace_llm_usage(workpad),
                                 "llm_repair_history": list(workpad.get("officeqa_llm_repair_history", []) or []),
                             },
                         )
@@ -1668,6 +1892,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                             "evidence_gaps": predictive_gaps,
                             "strategy_reason": active_retrieval_intent.evidence_plan.objective or active_retrieval_intent.strategy,
                             "evidence_review": dict(workpad.get("officeqa_evidence_review") or {}),
+                            "officeqa_llm_usage": _officeqa_trace_llm_usage(workpad),
                         },
                     )
                 if active_retrieval_intent.compute_policy == "required":
@@ -1766,6 +1991,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                                 "answer_mode": active_retrieval_intent.answer_mode,
                                 "compute_policy": active_retrieval_intent.compute_policy,
                                 "evidence_review": dict(workpad.get("officeqa_evidence_review") or {}),
+                                "officeqa_llm_usage": _officeqa_trace_llm_usage(workpad),
                                 "llm_repair_history": list(workpad.get("officeqa_llm_repair_history", []) or []),
                             },
                         )
@@ -1983,6 +2209,19 @@ def make_executor(registry: dict[str, dict[str, Any]]):
             "used_llm": True,
             "reason": "grounded_synthesis_required",
         }
+        if officeqa_mode:
+            llm_control_state["final_synthesis_calls"] = int(llm_control_state.get("final_synthesis_calls", 0) or 0) + 1
+            workpad["officeqa_llm_control_state"] = llm_control_state
+            workpad = record_officeqa_llm_usage(
+                workpad,
+                category="final_synthesis_llm",
+                used=True,
+                reason="grounded_synthesis_required",
+                model_name=model_name,
+                confidence=1.0,
+                applied=True,
+                details={"answer_mode": active_retrieval_intent.answer_mode, "compute_policy": active_retrieval_intent.compute_policy},
+            )
         workpad = _record_event(workpad, "executor", "final draft ready")
         if tracer:
             tracer.record(
@@ -2002,6 +2241,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                         "prompt": prompt_tokens,
                         "completion": count_tokens([AIMessage(content=content)]),
                     },
+                    "officeqa_llm_usage": _officeqa_trace_llm_usage(workpad),
                     "llm_repair_history": list(workpad.get("officeqa_llm_repair_history", []) or []),
                 },
             )

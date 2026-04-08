@@ -19,7 +19,7 @@ from agent.benchmarks import (
 )
 from agent.benchmarks.officeqa_validator import validate_officeqa_final
 from agent.benchmarks.officeqa_index import build_officeqa_index
-from agent.contracts import EvidenceSufficiency, ExecutionJournal, OfficeQALLMRepairDecision, OfficeQAValidationResult, ProgressSignature, RetrievalAction, RetrievalIntent, SourceBundle, TaskIntent, ToolPlan
+from agent.contracts import EvidenceSufficiency, ExecutionJournal, OfficeQALLMRepairDecision, OfficeQASourceRerankDecision, OfficeQAValidationResult, ProgressSignature, RetrievalAction, RetrievalIntent, SourceBundle, TaskIntent, ToolPlan
 from agent.officeqa_structured_evidence import build_officeqa_structured_evidence
 from agent.retrieval_tools import fetch_corpus_document as fetch_corpus_document_tool
 from agent.retrieval_tools import fetch_officeqa_table, lookup_officeqa_cells, search_reference_corpus
@@ -2418,6 +2418,158 @@ def test_officeqa_retrieval_repair_retunes_table_query_and_replaces_stale_table_
     assert dict(captured["tool_args"])["table_query"] == "national defense expenditures calendar year 1940"
     assert [item["type"] for item in result["execution_journal"]["tool_results"]] == ["search_officeqa_documents", "fetch_officeqa_table"]
     assert result["workpad"]["officeqa_latest_repair_transition"]["reroute_action"] == "table_query_rewrite"
+
+
+def test_officeqa_executor_applies_llm_source_rerank_before_fetch(monkeypatch):
+    prompt = "What were the total expenditures for U.S. national defense in the calendar year 1940?"
+    registry = build_capability_registry([CALCULATOR_TOOL, SEARCH_TOOL, *BUILTIN_RETRIEVAL_TOOLS])
+    executor = make_executor(registry)
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        "agent.nodes.orchestrator._plan_retrieval_action",
+        lambda **kwargs: RetrievalAction(
+            action="tool",
+            tool_name="fetch_officeqa_table",
+            stage="locate_table",
+            strategy="table_first",
+            query="national defense expenditures calendar year 1940",
+            document_id="treasury_bulletin_1940_01_json",
+            path="treasury_bulletin_1940_01.json",
+            evidence_gap="wrong document",
+            candidate_sources=[
+                {
+                    "document_id": "treasury_bulletin_1940_01_json",
+                    "path": "treasury_bulletin_1940_01.json",
+                    "score": 1.11,
+                },
+                {
+                    "document_id": "treasury_bulletin_1941_11_json",
+                    "path": "treasury_bulletin_1941_11.json",
+                    "score": 1.02,
+                },
+            ],
+            rationale="Fetch the top-ranked candidate table first.",
+        ),
+    )
+    monkeypatch.setattr(
+        "agent.nodes.orchestrator.maybe_rerank_source_candidates",
+        lambda **kwargs: OfficeQASourceRerankDecision(
+            decision="select_candidate",
+            preferred_document_id="treasury_bulletin_1941_11_json",
+            rationale="Later publication-year summary is a better semantic fit.",
+            confidence=0.83,
+            model_name="rerank-model",
+        ),
+    )
+    monkeypatch.setattr("agent.nodes.orchestrator.maybe_rewrite_retrieval_path", lambda **kwargs: None)
+    monkeypatch.setattr("agent.nodes.orchestrator.maybe_repair_from_validator", lambda **kwargs: None)
+
+    async def _fake_run_tool_step_with_args(state, registry, tool_name, tool_args):
+        captured["tool_name"] = tool_name
+        captured["tool_args"] = dict(tool_args)
+        return tool_args, normalize_tool_output(
+            tool_name,
+            {
+                "document_id": "treasury_bulletin_1941_11_json",
+                "table_locator": "table 19",
+                "page_locator": "page 29",
+                "headers": ["Category", "Calendar year 1940"],
+                "rows": [["U.S. national defense", "4748"]],
+                "metadata": {"officeqa_status": "ok", "document_id": "treasury_bulletin_1941_11_json"},
+            },
+            tool_args,
+        )
+
+    monkeypatch.setattr("agent.nodes.orchestrator._run_tool_step_with_args", _fake_run_tool_step_with_args)
+
+    state = make_state(
+        prompt,
+        task_profile="document_qa",
+        task_intent={
+            "task_family": "document_qa",
+            "execution_mode": "document_grounded_analysis",
+            "complexity_tier": "structured_analysis",
+            "tool_families_needed": ["document_retrieval", "exact_compute"],
+            "evidence_strategy": "document_first",
+            "review_mode": "document_grounded",
+            "completion_mode": "document_grounded",
+            "planner_source": "heuristic",
+        },
+        benchmark_overrides={"benchmark_adapter": "officeqa"},
+        execution_journal={
+            "events": [],
+            "tool_results": [],
+            "routed_tool_families": ["document_retrieval"],
+            "revision_count": 0,
+            "self_reflection_count": 0,
+            "retrieval_iterations": 1,
+            "retrieval_queries": ["national defense expenditures 1940"],
+            "retrieved_citations": [],
+            "final_artifact_signature": "",
+            "progress_signatures": [],
+            "stop_reason": "",
+            "contract_collapse_attempts": 0,
+        },
+        source_bundle={
+            "task_text": prompt,
+            "focus_query": "national defense expenditures 1940",
+            "target_period": "1940",
+            "entities": ["U.S. national defense"],
+            "urls": [],
+            "inline_facts": {},
+            "tables": [],
+            "formulas": [],
+        },
+        tool_plan={
+            "tool_families_needed": ["document_retrieval", "exact_compute"],
+            "widened_families": [],
+            "selected_tools": ["search_officeqa_documents"],
+            "pending_tools": [],
+            "blocked_families": [],
+            "ace_events": [],
+            "notes": [],
+            "stop_reason": "",
+        },
+        curated_context={
+            "objective": "Find the calendar year 1940 national defense expenditures.",
+            "facts_in_use": [],
+            "open_questions": [],
+            "assumptions": [],
+            "requested_output": {"format": "text"},
+            "structured_evidence": {},
+            "compute_result": {},
+            "provenance_summary": {},
+        },
+    )
+    state["retrieval_intent"] = {
+        "entity": "U.S. national defense",
+        "metric": "total expenditures",
+        "period": "1940",
+        "period_type": "calendar_year",
+        "target_years": ["1940"],
+        "publication_year_window": ["1939", "1940", "1941"],
+        "preferred_publication_years": ["1941", "1940", "1939"],
+        "granularity_requirement": "calendar_year",
+        "document_family": "treasury_bulletin",
+        "aggregation_shape": "calendar_year_total",
+        "answer_mode": "deterministic_compute",
+        "compute_policy": "required",
+        "strategy": "table_first",
+        "strategy_confidence": 0.6,
+        "analysis_modes": [],
+        "semantic_plan": {"used_llm": False},
+        "query_candidates": ["national defense expenditures 1940"],
+        "query_plan": {"primary_semantic_query": "national defense expenditures 1940"},
+    }
+
+    result = asyncio.run(executor(state))
+
+    assert result["solver_stage"] == "GATHER"
+    assert captured["tool_name"] == "fetch_officeqa_table"
+    assert dict(captured["tool_args"])["document_id"] == "treasury_bulletin_1941_11_json"
+    assert result["workpad"]["officeqa_llm_usage"][-1]["category"] == "retrieval_rerank_llm"
+    assert result["workpad"]["officeqa_llm_usage"][-1]["applied"] is True
 
 
 def test_officeqa_validator_repair_does_not_repeat_without_retrieval_input_change(monkeypatch):

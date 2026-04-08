@@ -372,6 +372,13 @@ RetrievalStrategy = Literal["table_first", "text_first", "hybrid", "multi_table"
 EvidenceSupportMode = Literal["table", "text", "table_or_text", "table_and_text"]
 AnswerMode = Literal["deterministic_compute", "grounded_synthesis", "hybrid_grounded"]
 ComputePolicy = Literal["required", "preferred", "not_applicable"]
+OfficeQALLLMUsageCategory = Literal[
+    "semantic_plan_llm",
+    "retrieval_rerank_llm",
+    "table_rerank_llm",
+    "repair_llm",
+    "final_synthesis_llm",
+]
 
 
 class TaskIntent(BaseModel):
@@ -490,6 +497,25 @@ class QuestionDecomposition(BaseModel):
     query_plan: QueryPlan = Field(default_factory=QueryPlan)
 
 
+class QuestionSemanticPlan(BaseModel):
+    entity: str = ""
+    metric: str = ""
+    period: str = ""
+    period_type: str = ""
+    target_years: list[str] = Field(default_factory=list)
+    publication_year_window: list[str] = Field(default_factory=list)
+    preferred_publication_years: list[str] = Field(default_factory=list)
+    granularity_requirement: str = ""
+    include_constraints: list[str] = Field(default_factory=list)
+    exclude_constraints: list[str] = Field(default_factory=list)
+    qualifier_terms: list[str] = Field(default_factory=list)
+    ambiguity_flags: list[str] = Field(default_factory=list)
+    rationale: str = ""
+    confidence: float = 0.0
+    used_llm: bool = False
+    model_name: str = ""
+
+
 class RetrievalIntent(BaseModel):
     entity: str = ""
     metric: str = ""
@@ -515,6 +541,7 @@ class RetrievalIntent(BaseModel):
     exclude_constraints: list[str] = Field(default_factory=list)
     decomposition_confidence: float = 0.0
     decomposition_used_llm_fallback: bool = False
+    semantic_plan: QuestionSemanticPlan = Field(default_factory=QuestionSemanticPlan)
     query_plan: QueryPlan = Field(default_factory=QueryPlan)
     must_include_terms: list[str] = Field(default_factory=list)
     must_exclude_terms: list[str] = Field(default_factory=list)
@@ -528,6 +555,36 @@ class OfficeQALLMRepairDecision(BaseModel):
     preferred_strategy: Literal["table_first", "text_first", "hybrid", "multi_table", "multi_document", ""] = ""
     rationale: str = ""
     confidence: float = 0.0
+    model_name: str = ""
+
+
+class OfficeQASourceRerankDecision(BaseModel):
+    decision: Literal["keep", "select_candidate"] = "keep"
+    preferred_document_id: str = ""
+    rationale: str = ""
+    confidence: float = 0.0
+    model_name: str = ""
+
+
+class OfficeQATableAdmissibilityDecision(BaseModel):
+    decision: Literal["keep", "select_candidate", "reject_current"] = "keep"
+    preferred_table_locator: str = ""
+    preferred_table_family: str = ""
+    suggested_table_query: str = ""
+    admissibility_gap: str = ""
+    rationale: str = ""
+    confidence: float = 0.0
+    model_name: str = ""
+
+
+class OfficeQALLLMUsageRecord(BaseModel):
+    category: OfficeQALLLMUsageCategory
+    used: bool = False
+    reason: str = ""
+    model_name: str = ""
+    confidence: float = 0.0
+    applied: bool = False
+    details: dict[str, Any] = Field(default_factory=dict)
 
 
 class CuratedContext(BaseModel):
