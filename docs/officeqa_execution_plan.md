@@ -1375,12 +1375,12 @@ Why now:
 
 Tasks:
 
-- [ ] `P29.1` Make repair decisions first-class state transitions with explicit invalidation of stale `structured_evidence`, `compute_result`, and retrieval summaries
-- [ ] `P29.2` Distinguish `query rewrite`, `table query rewrite`, `source rerank`, `strategy shift`, and `unit repair` as separate reroute actions instead of generic repair flags
-- [ ] `P29.3` Require a fresh retrieval hop after any repair that changes query, table query, source selection, or retrieval strategy
-- [ ] `P29.4` Prevent validator repair from repeating if no retrieval input changed since the previous repair
-- [ ] `P29.5` Add explicit `repair_applied_but_no_new_evidence` and `repair_reused_stale_state` trace/report failures
-- [ ] `P29.6` Add regressions for:
+- [x] `P29.1` Make repair decisions first-class state transitions with explicit invalidation of stale `structured_evidence`, `compute_result`, and retrieval summaries
+- [x] `P29.2` Distinguish `query rewrite`, `table query rewrite`, `source rerank`, `strategy shift`, and `unit repair` as separate reroute actions instead of generic repair flags
+- [x] `P29.3` Require a fresh retrieval hop after any repair that changes query, table query, source selection, or retrieval strategy
+- [x] `P29.4` Prevent validator repair from repeating if no retrieval input changed since the previous repair
+- [x] `P29.5` Add explicit `repair_applied_but_no_new_evidence` and `repair_reused_stale_state` trace/report failures
+- [x] `P29.6` Add regressions for:
   - task-1 style `retune_table_query` that must trigger a new table fetch
   - task-2 style `missing month coverage` that must reopen retrieval
   - task-3 style wrong-source repair that must rerank or re-search before page fetch
@@ -1399,52 +1399,123 @@ Exit criteria:
 - any repair that changes the retrieval path produces a fresh retrieval action, not a repeated insufficiency answer over the same evidence
 - `repair_stall` becomes a genuine exhaustion signal instead of a state-invalidation bug
 
-## Phase 30: Table-Family And Evidence Admissibility Before Compute
+Execution order note:
+
+- do `Phase 30` before `Phase 29`
+- then do `Phase 29`
+- then do `Phase 31`
+
+Reason:
+
+- the April 6 run showed that wrong evidence-unit choice is the earliest fault
+- repairing state transitions before fixing document/evidence selection will still leave the runtime looping on bad candidates
+
+## Phase 30: Temporal Neighborhood Evidence Retrieval And Structural Reranking
 
 Objective:
 
-- stop wrong-family tables from reaching deterministic compute by enforcing semantic admissibility earlier and more explicitly.
+- choose the right evidence units before extraction/compute by moving from file-first lexical search to temporal-aware, table/row-granular retrieval with structural reranking.
+
+Target flow:
+
+- question
+- temporal intent
+- candidate evidence units
+- structural rerank
+- header-aware extraction
+- numeric validation
 
 Why now:
 
-- task 1 selected the right year/source but a receipts table instead of an expenditures table
-- task 2 selected the right year/source but an annual/category summary instead of a monthly series
-- current extraction confidence was high in both cases, which means structure quality alone is not the right gate
+- manual inspection of the 1940 national-defense question showed the answer lives in later bulletins such as `1941_11` / `1941_12`, not in the `1940_01` through `1940_05` files the runtime kept searching
+- current ranking is still too anchored to publication-year match at the document level
+- file-level retrieval is too coarse for Treasury Bulletins because the question often targets a table or row whose publication lag does not match the target year directly
+- searching the whole corpus for every question is too expensive, so the fix needs targeted expansion, not brute force
 
 Tasks:
 
-- [ ] `P30.1` Introduce explicit Treasury table-family taxonomy:
-  - expenditures
-  - receipts
-  - debt
-  - loan / lending
-  - summary / contents / navigational
-  - cross-program category summary
-- [ ] `P30.2` Build a question-level admissibility contract from the decomposition layer:
-  - expected metric family
-  - allowed aggregation grains
-  - required period slice
-  - required entity/category family
-- [ ] `P30.3` Reject extracted tables before compute when table family, row family, or column period slice violates the contract
-- [ ] `P30.4` Add a second-stage semantic row/column selector that uses the admissibility contract rather than only lexical overlap
-- [ ] `P30.5` Surface `wrong_table_family`, `wrong_row_family`, and `wrong_period_slice` as retrieval-stage failures, not only validator-stage failures
-- [ ] `P30.6` Add regressions for:
-  - 1940 national-defense expenditures vs receipts-table confusion
-  - 1953 monthly-series vs annual summary confusion
+- [x] `P30.1` Add explicit temporal intent extraction:
+  - target year(s)
+  - period type (`calendar_year`, `fiscal_year`, `monthly_series`, `as_of_year`, `historical_retrospective`)
+  - publication-lag sensitivity
+  - expected evidence granularity (`document`, `table`, `row`)
+- [x] `P30.2` Build an evidence-unit index below the file level:
+  - document metadata
+  - table metadata
+  - row-family / header-path metadata
+  - referenced years
+  - publication year
+  - period slice type
+  - month coverage
+  - metric-family hints
+- [x] `P30.3` Introduce generic temporal neighborhood expansion for year-constrained questions:
+  - score evidence units primarily from a small window such as `[Y-1, Y, Y+1]`
+  - keep it as a weighted prior, not a hard filter
+  - let period type decide whether forward-looking or same-year evidence should dominate
+- [x] `P30.4` Switch to coarse-to-fine retrieval:
+  - coarse candidate files/documents
+  - then candidate tables
+  - then candidate rows / evidence units
+- [x] `P30.5` Add structural reranking with a score shaped like:
+  - semantic relevance
+  - temporal relevance
+  - header-path match
+  - period-type match
+  - table-confidence / extraction-quality
+- [x] `P30.6` Add generic regressions for:
+  - later-publication annual summaries outranking same-year monthly files when temporal and structural evidence is stronger
+  - publication-neighbor retrieval outranking historical mentions in distant years
+  - monthly-series questions preferring monthly evidence units over annual/category summaries
 
 Suggested code targets:
 
+- `src/agent/context/extraction.py`
+- `src/agent/benchmarks/officeqa_manifest.py`
+- `src/agent/benchmarks/officeqa_index.py`
 - `src/agent/retrieval_tools.py`
+- `src/agent/nodes/orchestrator_retrieval.py`
+- `src/agent/retrieval_reasoning.py`
 - `src/agent/officeqa_structured_evidence.py`
-- `src/agent/benchmarks/officeqa_compute.py`
-- `src/agent/benchmarks/officeqa_validator.py`
-- `tests/test_officeqa_compute.py`
+- `tests/test_officeqa_index.py`
 - `tests/test_engine_runtime.py`
 
 Exit criteria:
 
-- wrong-family or wrong-grain tables are rejected before deterministic compute
-- tasks like the April 6 task 1 and task 2 fail early as retrieval/admissibility errors, not late validation stalls
+- year-constrained questions can retrieve evidence from publication-neighbor bulletins without hardcoding benchmark cases
+- the runtime no longer has to brute-force all documents to recover lagged annual evidence
+- wrong evidence units are filtered by temporal and structural reranking before compute sees them
+
+Phase 30 completion notes:
+
+- `RetrievalIntent` now carries explicit temporal intent:
+  - `period_type`
+  - `target_years`
+  - `publication_year_window`
+  - `preferred_publication_years`
+- the OfficeQA manifest/index now operates at evidence-unit granularity by storing publication metadata plus per-table evidence units with:
+  - table family
+  - period type
+  - year references
+  - month coverage
+  - header/row metadata
+  - table confidence
+- local search now uses a small temporal neighborhood as a weighted prior instead of a same-year hard preference
+- search results now expose the best evidence unit for each candidate document, and retrieval uses that to guide table extraction
+- generic regressions now cover publication-lag annual summaries, publication-neighbor ranking, and monthly-vs-annual evidence selection without naming benchmark-specific tasks
+- index schema version is now `2`; local corpora need a rebuild so the new evidence-unit metadata is available
+
+Scoring direction:
+
+- `final_score = semantic + temporal + header_match + period_type_match + table_confidence`
+- exact weights should be learned / tuned from regressions, not hardcoded from one benchmark case
+
+Research rationale:
+
+- [Retrieval of Temporal Event Sequences from Textual Descriptions (Liu & Quan, KnowledgeNLP 2025)](https://aclanthology.org/2025.knowledgenlp-1.3/) supports treating temporal constraints as first-class retrieval structure instead of leaving time alignment implicit
+- [FunnelRAG (Zhao et al., NAACL Findings 2025)](https://aclanthology.org/2025.findings-naacl.165/) supports coarse-to-fine retrieval over progressively smaller, more relevant units
+- [TreeRAG (Tao et al., ACL Findings 2025)](https://aclanthology.org/2025.findings-acl.20/) supports hierarchical storage and retrieval over long documents instead of flat chunk/file search
+- [RealHiTBench (Wu et al., ACL Findings 2025)](https://aclanthology.org/2025.findings-acl.371/) supports header-aware structural reasoning instead of flat cell matching
+- [Capturing Row and Column Semantics (Glass et al., NAACL 2021)](https://aclanthology.org/2021.naacl-main.96/) supports row/column-aware evidence selection rather than only document/table lexical overlap
 
 ## Phase 31: Explicit LLM Control Plane For Hard Financial Document Questions
 
@@ -1472,34 +1543,38 @@ Design direction:
 
 Tasks:
 
-- [ ] `P31.1` Add a typed `question_semantic_plan` LLM step for medium/high-complexity document questions:
+- [x] `P31.1` Add a typed `question_semantic_plan` LLM step for medium/high-complexity document questions:
   - target metric family
   - entity/category family
   - period interpretation
   - likely table families
   - likely evidence mode (`table`, `text`, `hybrid`)
-- [ ] `P31.2` Add top-k source reranking with an LLM over manifest/document summaries when heuristic ranking confidence is weak or historically ambiguous
-- [ ] `P31.3` Add table-family reranking / admissibility review with an LLM over normalized table metadata when multiple extracted tables are plausible
-- [ ] `P31.4` Add explicit budget partitioning per question:
+- [x] `P31.2` Add top-k source reranking with an LLM over manifest/document summaries when heuristic ranking confidence is weak or historically ambiguous
+- [x] `P31.3` Add table-family reranking / admissibility review with an LLM over normalized table metadata when multiple extracted tables are plausible
+- [x] `P31.4` Add explicit budget partitioning per question:
   - decomposition / planning budget
   - retrieval-rerank budget
   - repair budget
   - final synthesis budget
-- [ ] `P31.5` Make solver LLM usage visible as separate categories:
+- [x] `P31.5` Make solver LLM usage visible as separate categories:
   - `semantic_plan_llm`
   - `retrieval_rerank_llm`
+  - `table_rerank_llm`
   - `repair_llm`
   - `final_synthesis_llm`
-- [ ] `P31.6` Add original-benchmark regressions showing that complex sampled questions can use bounded LLM planning while still keeping final numeric compute deterministic
+- [x] `P31.6` Add original-benchmark regressions showing that complex sampled questions can use bounded LLM planning while still keeping final numeric compute deterministic
 
 Suggested code targets:
 
 - `src/agent/context/extraction.py`
 - `src/agent/retrieval_reasoning.py`
+- `src/agent/llm_control.py`
 - `src/agent/nodes/orchestrator_retrieval.py`
 - `src/agent/llm_repair.py`
 - `src/agent/nodes/orchestrator.py`
 - `src/agent/model_config.py`
+- `src/agent/tracer.py`
+- `src/agent/benchmarks/officeqa_eval.py`
 - `tests/test_question_decomposition.py`
 - `tests/test_engine_runtime.py`
 
@@ -1509,47 +1584,18 @@ Exit criteria:
 - LLM use is explicit, bounded, typed, and traceable
 - deterministic compute remains the final authority for supported numeric tasks
 
-## Phase 32: Trace Semantics And Cross-Trace Mapping Cleanup
+Status:
 
-Objective:
-
-- make local traces, LangSmith exports, and regression reports easy to align during benchmark debugging.
-
-Why now:
-
-- the April 6 debugging pass showed real confusion:
-  - local benchmark case ids did not line up with `task1.json`, `task2.json`, `task3.json` in exported LangSmith files
-  - `used_llm: false` coexisted with `total_llm_calls: 1` because support-LLM calls were not represented as solver usage
-  - LangSmith exported repeated AI messages that looked like duplicate work but were actually successive state outputs
-
-Tasks:
-
-- [ ] `P32.1` Add stable case id / prompt hash / run id mapping into both local traces and exported LangSmith metadata
-- [ ] `P32.2` Split local LLM accounting into:
-  - `solver_llm_calls`
-  - `support_llm_calls`
-  - `repair_llm_calls`
-- [ ] `P32.3` Record repeated final-ish AI messages as `state snapshots`, not independent answer attempts
-- [ ] `P32.4` Add a lightweight trace diff/view command that aligns one local trace with one LangSmith export
-- [ ] `P32.5` Add report fields for:
-  - `first_wrong_commitment_stage`
-  - `stale_repair_reuse`
-  - `support_llm_used`
-- [ ] `P32.6` Document the mapping rules in the walkthrough and keep them stable
-
-Suggested code targets:
-
-- `src/agent/tracer.py`
-- `src/agent/benchmarks/officeqa_eval.py`
-- `scripts/run_officeqa_regression.py`
-- `docs/v5_runtime_walkthrough.md`
-- `tests/test_tracer.py`
-- `tests/test_officeqa_eval.py`
-
-Exit criteria:
-
-- local and LangSmith traces are explainably different rather than confusingly different
-- debugging a failed benchmark case no longer requires manual guesswork about task numbering or hidden LLM calls
+- `RetrievalIntent` now carries a typed `semantic_plan`, and semantic planning can use a bounded structured LLM step instead of only regex decomposition.
+- Weak-confidence source selection can now use an explicit LLM rerank over candidate evidence units before the next fetch hop.
+- Table admissibility can now use an explicit LLM review over normalized table metadata and candidate locators before row/cell extraction continues.
+- Per-question OfficeQA LLM budgeting is now explicit in runtime state:
+  - semantic plan
+  - retrieval rerank
+  - table rerank
+  - repair
+  - final synthesis
+- Traces and regression artifacts now expose category-tagged OfficeQA LLM usage instead of only coarse `used_llm` flags.
 
 ## Optional Backlog: Shared Global Workpad
 
