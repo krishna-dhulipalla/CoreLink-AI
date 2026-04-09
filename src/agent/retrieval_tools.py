@@ -83,6 +83,17 @@ def _tokenize(text: str) -> list[str]:
     return [t for t in re.findall(r"[a-z0-9]+", (text or "").lower()) if t not in _STOP_WORDS and len(t) > 1]
 
 
+def _token_ngrams(tokens: list[str], *, min_n: int = 2, max_n: int = 4) -> set[str]:
+    if len(tokens) < min_n:
+        return set()
+    ngrams: set[str] = set()
+    upper = min(max_n, len(tokens))
+    for n in range(min_n, upper + 1):
+        for idx in range(0, len(tokens) - n + 1):
+            ngrams.add(" ".join(tokens[idx : idx + n]))
+    return ngrams
+
+
 def _normalize_space(text: Any) -> str:
     return re.sub(r"\s+", " ", str(text or "")).strip()
 
@@ -1254,12 +1265,30 @@ def _extract_document_tables(target: Path, text: str, citation: str, *, table_qu
 
 
 def _match_score(text: str, query: str) -> float:
-    query_tokens = set(_tokenize(query))
+    query_tokens = _tokenize(query)
     if not query_tokens:
         return 0.0
-    text_tokens = set(_tokenize(text))
-    overlap = len(query_tokens & text_tokens)
-    return float(overlap) / max(1, len(query_tokens))
+    text_tokens = _tokenize(text)
+    if not text_tokens:
+        return 0.0
+
+    query_token_set = set(query_tokens)
+    text_token_set = set(text_tokens)
+    token_recall = float(len(query_token_set & text_token_set)) / max(1, len(query_token_set))
+    if len(query_tokens) < 2:
+        return token_recall
+
+    query_ngrams = _token_ngrams(query_tokens)
+    text_ngrams = _token_ngrams(text_tokens)
+    ngram_hits = query_ngrams & text_ngrams
+    phrase_recall = float(len(ngram_hits)) / max(1, len(query_ngrams))
+    longest_match = max((len(item.split()) for item in ngram_hits), default=0)
+    best_phrase_strength = float(longest_match) / max(2, min(4, len(query_tokens)))
+    normalized_query = " ".join(query_tokens)
+    normalized_text = " ".join(text_tokens)
+    exact_phrase_bonus = 0.15 if normalized_query and normalized_query in normalized_text else 0.0
+
+    return token_recall + (0.8 * phrase_recall) + (0.2 * best_phrase_strength) + exact_phrase_bonus
 
 
 def _rank_tables(tables: list[dict[str, Any]], table_query: str) -> list[dict[str, Any]]:

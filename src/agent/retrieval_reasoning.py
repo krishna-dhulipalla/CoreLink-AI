@@ -575,7 +575,7 @@ def _build_query_plan(
         annual_hint = "narrative discussion"
 
     source_file_terms = _source_file_query_terms(source_bundle)
-    source_file_query = _normalize_space(" ".join(source_file_terms[:2]))[:280] if source_file_terms else ""
+    source_file_query = _normalize_space(" ".join(source_file_terms))[:280] if source_file_terms else ""
     primary_semantic_query = _normalize_space(
         " ".join(
             part

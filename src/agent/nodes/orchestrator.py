@@ -710,6 +710,9 @@ def _record_llm_repair_decision(
             "stage": stage,
             "trigger": trigger,
             "path_changed": path_changed,
+            "llm_path_changed": path_changed,
+            "document_pivot_triggered": False,
+            "effective_retrieval_change": path_changed,
             "reroute_action": reroute_action,
             "pre_retrieval_signature": pre_retrieval_signature,
             "post_retrieval_signature": post_retrieval_signature,
@@ -718,6 +721,59 @@ def _record_llm_repair_decision(
     )
     updated["officeqa_llm_repair_history"] = history
     updated["officeqa_latest_llm_repair"] = history[-1]
+    return updated
+
+
+def _annotate_officeqa_repair_execution_outcome(
+    workpad: dict[str, Any],
+    *,
+    retrieval_action: RetrievalAction,
+    tool_result: dict[str, Any],
+) -> dict[str, Any]:
+    history = [dict(item) for item in list(workpad.get("officeqa_llm_repair_history", []) or []) if isinstance(item, dict)]
+    if not history:
+        return workpad
+    latest = dict(history[-1] or {})
+    if str(latest.get("stage", "") or "") not in {"retrieval_repair", "validator_repair"}:
+        return workpad
+    if bool(latest.get("execution_outcome_recorded", False)):
+        return workpad
+
+    facts = dict(tool_result.get("facts") or {})
+    requested_document_id = str(retrieval_action.document_id or "").strip()
+    resolved_document_id = str(facts.get("document_id", "") or "").strip()
+    requested_path = str(retrieval_action.path or "").strip()
+    resolved_path = str(facts.get("citation", "") or facts.get("path", "") or "").strip()
+    document_pivot_triggered = False
+    if requested_document_id and resolved_document_id:
+        document_pivot_triggered = requested_document_id.lower() != resolved_document_id.lower()
+    elif requested_path and resolved_path:
+        document_pivot_triggered = requested_path.lower() != resolved_path.lower()
+
+    llm_path_changed = bool(latest.get("path_changed", False))
+    latest["llm_path_changed"] = llm_path_changed
+    latest["requested_document_id"] = requested_document_id
+    latest["resolved_document_id"] = resolved_document_id
+    latest["requested_path"] = requested_path
+    latest["resolved_path"] = resolved_path
+    latest["document_pivot_triggered"] = document_pivot_triggered
+    latest["effective_retrieval_change"] = bool(llm_path_changed or document_pivot_triggered)
+    latest["execution_outcome_recorded"] = True
+
+    updated = dict(workpad)
+    history[-1] = latest
+    updated["officeqa_llm_repair_history"] = history
+    updated["officeqa_latest_llm_repair"] = latest
+    for key in ("officeqa_latest_repair_transition", "officeqa_pending_repair_transition"):
+        transition = dict(updated.get(key) or {})
+        if transition:
+            transition["requested_document_id"] = requested_document_id
+            transition["resolved_document_id"] = resolved_document_id
+            transition["requested_path"] = requested_path
+            transition["resolved_path"] = resolved_path
+            transition["document_pivot_triggered"] = document_pivot_triggered
+            transition["effective_retrieval_change"] = bool(llm_path_changed or document_pivot_triggered)
+            updated[key] = transition
     return updated
 
 
@@ -1740,6 +1796,11 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                           "remediation_codes": list(review_feedback.get("remediation_codes", [])),
                       }
                   workpad = _record_event(workpad, "executor", f"retrieval hop -> {retrieval_action.tool_name}")
+                  workpad = _annotate_officeqa_repair_execution_outcome(
+                      workpad,
+                      retrieval_action=retrieval_action,
+                      tool_result=tool_result.model_dump(),
+                  )
                   workpad = _finalize_pending_officeqa_repair_transition(
                       workpad,
                       journal=journal,

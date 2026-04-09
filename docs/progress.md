@@ -343,3 +343,16 @@ Rules:
   - narrow structural ranking margins
 - Deterministic compute remains authoritative for supported numeric answers; this refresh only deepens bounded semantic assist behavior, not free-form compute replacement.
 - Added focused regressions in `tests/test_llm_control.py` for the refreshed gating and budget logic.
+
+### Chat 14: Retrieval Semantic Bias And Repair Diagnostics Tightened
+
+- Removed the source-hint truncation in retrieval query planning so multi-document source bundles no longer collapse to the first two file hints when building `source_file_query`.
+- Strengthened generic semantic matching with phrase-aware scoring:
+  - token overlap still matters
+  - but ordered 2- to 4-gram phrase matches now add explicit weight
+  - exact metric/entity phrases can now outrank broader generic token coverage instead of being drowned out by long summary tables
+- Kept the repair metric semantics explicit:
+  - `path_changed` remains the LLM-mutation signal
+  - new repair artifacts now separately record whether execution actually pivoted documents after the decision
+  - traces can now distinguish `llm_path_changed` from `document_pivot_triggered`
+- This avoids the earlier confusion where a repair looked like a no-op in trace history even though the runtime had actually jumped from one bulletin file to another during tool execution.

@@ -753,6 +753,48 @@ def test_rank_tables_prefers_generic_structural_fit_without_manual_category_boos
     assert ranked[0]["ranking_score"] > ranked[1]["ranking_score"]
 
 
+def test_rank_tables_prefers_exact_phrase_alignment_over_generic_token_volume():
+    query = "Treasury Bulletin national defense expenditures 1940 monthly series"
+    generic_rows = [[f"Generic treasury bulletin expenditures row {idx}", str(100 + idx), str(120 + idx)] for idx in range(24)]
+    ranked = _rank_tables(
+        [
+            {
+                "locator": "table generic",
+                "headers": ["Row", "January 1940", "February 1940"],
+                "rows": generic_rows,
+                "context_text": "Treasury Bulletin expenditures monthly series summary table",
+                "heading_chain": ["Treasury Bulletin", "Monthly expenditures summary"],
+                "unit_hint": "million dollars",
+                "canonical_table": {
+                    "row_records": [
+                        {"row_type": "data", "row_path": [f"Generic treasury expenditures row {idx}"], "row_label": f"Generic treasury expenditures row {idx}"}
+                        for idx in range(12)
+                    ],
+                    "normalization_metrics": {"header_data_separation_quality": 0.82},
+                },
+            },
+            {
+                "locator": "table exact",
+                "headers": ["Row", "January 1940", "February 1940"],
+                "rows": [["National defense", "210", "225"], ["Postal service", "120", "123"]],
+                "context_text": "Treasury Bulletin monthly expenditures by category",
+                "heading_chain": ["Treasury Bulletin", "Monthly expenditures by category"],
+                "unit_hint": "million dollars",
+                "canonical_table": {
+                    "row_records": [
+                        {"row_type": "data", "row_path": ["National defense"], "row_label": "National defense"},
+                        {"row_type": "data", "row_path": ["Postal service"], "row_label": "Postal service"},
+                    ],
+                    "normalization_metrics": {"header_data_separation_quality": 0.9},
+                },
+            },
+        ],
+        query,
+    )
+
+    assert ranked[0]["locator"] == "table exact"
+
+
 def test_fetch_officeqa_table_exposes_structural_candidates_for_table_rerank_llm(monkeypatch, tmp_path):
     corpus_root = tmp_path / "treasury_bulletins_parsed"
     corpus_root.mkdir(parents=True)

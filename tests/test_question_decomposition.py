@@ -30,6 +30,27 @@ def test_decomposition_extracts_calendar_year_category_slots():
     assert "calendar year" in retrieval_intent.query_plan.granularity_query.lower()
 
 
+def test_decomposition_source_file_query_keeps_multi_document_hints():
+    prompt = "What were the total expenditures for U.S. national defense in the calendar year 1940?"
+    source_bundle = SourceBundle(
+        task_text=prompt,
+        focus_query="U.S. national defense total expenditures 1940",
+        target_period="1940",
+        entities=["U.S. national defense"],
+        source_files_expected=[
+            "treasury_bulletin_1940_01.json",
+            "treasury_bulletin_1940_02.json",
+            "treasury_bulletin_1940_03.json",
+            "treasury_bulletin_1940_04.json",
+        ],
+    )
+
+    retrieval_intent = build_retrieval_intent(prompt, source_bundle, {"benchmark_adapter": "officeqa"})
+
+    assert "treasury_bulletin_1940_01.json" in retrieval_intent.query_plan.source_file_query
+    assert "treasury_bulletin_1940_04.json" in retrieval_intent.query_plan.source_file_query
+
+
 def test_decomposition_strips_period_qualifier_from_entity_phrase():
     prompt = "What were the total expenditures for U.S. national defense in the calendar year 1940?"
     source_bundle = SourceBundle(
