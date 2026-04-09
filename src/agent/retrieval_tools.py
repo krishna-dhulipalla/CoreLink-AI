@@ -23,6 +23,7 @@ from agent.benchmarks.officeqa_manifest import (
     read_officeqa_document_text,
     resolve_officeqa_corpus_root,
 )
+from agent.tools.officeqa_json_context import dedupe_context_parts, iter_stateful_table_nodes
 from agent.tools.table_normalization import normalize_dense_table_grid, normalize_flat_table
 from agent.tools.tsr_fallback import select_dense_table_normalization
 
@@ -80,6 +81,10 @@ def _is_within_root(candidate: Path, root: Path) -> bool:
 def _tokenize(text: str) -> list[str]:
     """Tokenize text into lowercase alpha-numeric tokens, filtering stop words."""
     return [t for t in re.findall(r"[a-z0-9]+", (text or "").lower()) if t not in _STOP_WORDS and len(t) > 1]
+
+
+def _normalize_space(text: Any) -> str:
+    return re.sub(r"\s+", " ", str(text or "")).strip()
 
 
 def _table_extraction_timeout_seconds() -> float:
@@ -273,6 +278,7 @@ def _coerce_table(
     page_locator: str = "",
     context_text: str = "",
     canonical_table: dict[str, Any] | None = None,
+    extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized_headers = [str(header).strip() for header in headers if str(header).strip()]
     normalized_rows = [[str(cell).strip() for cell in row] for row in rows if any(str(cell).strip() for cell in row)]
@@ -301,6 +307,8 @@ def _coerce_table(
         payload["context_text"] = context_text
     if canonical_table:
         payload["canonical_table"] = canonical_table
+    if extra:
+        payload.update(extra)
     return payload
 
 
@@ -309,7 +317,15 @@ def _html_cell_text(fragment: str) -> str:
     cleaned = re.sub(r"</p\s*>", "\n", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"<[^>]+>", " ", cleaned)
     cleaned = html.unescape(cleaned)
-    return re.sub(r"\s+", " ", cleaned).strip()
+    cleaned = cleaned.replace("\xa0", " ")
+    leading_match = re.match(r"^[ \t]+", cleaned)
+    leading = leading_match.group(0) if leading_match else ""
+    body = cleaned[len(leading):] if leading else cleaned
+    body = re.sub(r"\s+", " ", body).strip()
+    if not body:
+        return ""
+    preserved_leading = " " * min(6, len(leading.replace("\t", "    ")))
+    return f"{preserved_leading}{body}" if preserved_leading else body
 
 
 def _page_locator_from_payload(payload: dict[str, Any]) -> str:
@@ -323,6 +339,191 @@ def _page_locator_from_payload(payload: dict[str, Any]) -> str:
     if isinstance(page, int) and page > 0:
         return f"page {page}"
     return ""
+
+
+def _combine_context_text(*parts: Any) -> str:
+    flattened: list[str] = []
+    for part in parts:
+        if isinstance(part, list):
+            flattened.extend(str(item or "") for item in part)
+        else:
+            flattened.append(str(part or ""))
+    return " | ".join(dedupe_context_parts(flattened))
+
+
+def _table_headers_are_generic(headers: list[str]) -> bool:
+    normalized = [re.sub(r"\s+", " ", str(header or "")).strip() for header in headers if str(header or "").strip()]
+    if not normalized:
+        return True
+    data_headers = normalized[1:] if normalized and normalized[0].lower() == "row" else normalized
+    if not data_headers:
+        return True
+    informative = [
+        header
+        for header in data_headers
+        if not re.fullmatch(r"column\s+\d+", header.lower())
+        and header.lower() not in {"value", "values", "amount", "amounts", "data"}
+    ]
+    return not informative
+
+
+def _dedupe_table_rows(rows: list[list[str]]) -> list[list[str]]:
+    deduped: list[list[str]] = []
+    seen: set[tuple[str, ...]] = set()
+    for row in rows:
+        key = tuple(str(cell or "") for cell in row)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(list(row))
+    return deduped
+
+
+def _decorate_stateful_table_payload(table: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    document_context = {
+        "heading_chain": list(context.get("heading_chain", [])),
+        "raw_heading_chain": list(context.get("raw_heading_chain", [])),
+        "note_context": list(context.get("note_context", [])),
+        "raw_note_context": list(context.get("raw_note_context", [])),
+        "is_continuation": bool(context.get("is_continuation")),
+        "continuation_key": str(context.get("continuation_key", "") or ""),
+        "continued_from_locator": str(context.get("continued_from_locator", "") or ""),
+        "continued_from_page_locator": str(context.get("continued_from_page_locator", "") or ""),
+        "continued_from_heading_chain": list(context.get("continued_from_heading_chain", [])),
+    }
+    updated = dict(table)
+    updated["context_text"] = _combine_context_text(context.get("heading_chain", []), context.get("note_context", []))
+    updated["heading_chain"] = list(context.get("heading_chain", []))
+    updated["continuation_key"] = str(context.get("continuation_key", "") or "")
+    updated["document_context"] = document_context
+    if context.get("is_continuation"):
+        updated["is_continuation"] = True
+    if context.get("page_locator") and not updated.get("page_locator"):
+        updated["page_locator"] = str(context.get("page_locator", "") or "")
+    if context.get("unit_hint") and not updated.get("unit_hint"):
+        updated["unit_hint"] = str(context.get("unit_hint", "") or "")
+    return updated
+
+
+def _merge_continued_table_payload(parent: dict[str, Any], child: dict[str, Any]) -> dict[str, Any] | None:
+    parent_headers = [str(item or "") for item in list(parent.get("headers", []))]
+    parent_rows = [list(row) for row in list(parent.get("rows", [])) if isinstance(row, list)]
+    child_canonical = dict(child.get("canonical_table") or {})
+    child_rows = [list(row) for row in list(child.get("rows", [])) if isinstance(row, list)]
+    if not parent_headers or not parent_rows or not child_rows:
+        source_grid_rows = [list(row) for row in list(child_canonical.get("source_grid_text", [])) if isinstance(row, list)]
+        if not parent_headers or not parent_rows or not source_grid_rows:
+            return None
+        child_rows = source_grid_rows
+    if not child.get("is_continuation"):
+        return None
+
+    expected_width = len(parent_headers)
+    if expected_width <= 1:
+        return None
+    child_headers = [str(item or "") for item in list(child.get("headers", []))]
+    use_source_grid = (
+        (not bool(child_canonical.get("source_grid_has_header_cells")))
+        or _table_headers_are_generic(child_headers)
+    ) and bool(child_canonical.get("source_grid_text"))
+    source_rows = (
+        [list(row) for row in list(child_canonical.get("source_grid_text", [])) if isinstance(row, list)]
+        if use_source_grid
+        else child_rows
+    )
+    normalized_child_rows: list[list[str]] = []
+    for raw_row in source_rows:
+        row = [str(cell or "") for cell in raw_row[:expected_width]]
+        if len(row) < expected_width:
+            row.extend([""] * (expected_width - len(row)))
+        if not any(str(cell or "").strip() for cell in row):
+            continue
+        normalized_child_rows.append(row)
+    if not normalized_child_rows:
+        return None
+
+    if child_headers and len(child_headers) != expected_width and not _table_headers_are_generic(child_headers):
+        return None
+
+    merged_rows = _dedupe_table_rows([*parent_rows, *normalized_child_rows])
+    combined_heading_chain = dedupe_context_parts([*list(parent.get("heading_chain", [])), *list(child.get("heading_chain", []))])
+    combined_note_context = dedupe_context_parts(
+        [
+            *list((parent.get("document_context") or {}).get("note_context", [])),
+            *list((child.get("document_context") or {}).get("note_context", [])),
+        ]
+    )
+    combined_page_locators = dedupe_context_parts([parent.get("page_locator", ""), child.get("page_locator", "")])
+    combined_context_text = _combine_context_text(combined_heading_chain, combined_note_context)
+    merged_canonical = normalize_flat_table(
+        parent_headers,
+        merged_rows,
+        locator=str(parent.get("locator", "") or child.get("locator", "") or "table"),
+        page_locator=str(parent.get("page_locator", "") or child.get("page_locator", "") or ""),
+        unit_hint=str(parent.get("unit_hint", "") or child.get("unit_hint", "") or ""),
+        context_text=combined_context_text,
+    )
+    merged = _coerce_table(
+        list(merged_canonical.get("display_headers", []) or parent_headers),
+        [list(row) for row in merged_canonical.get("display_rows", []) or merged_rows],
+        str(parent.get("citation", "") or child.get("citation", "") or ""),
+        locator=str(parent.get("locator", "") or child.get("locator", "") or "table"),
+        unit_hint=str(parent.get("unit_hint", "") or child.get("unit_hint", "") or ""),
+        page_locator=str(parent.get("page_locator", "") or child.get("page_locator", "") or ""),
+        context_text=combined_context_text,
+        canonical_table=merged_canonical,
+        extra={
+            "heading_chain": combined_heading_chain,
+            "continuation_key": str(parent.get("continuation_key", "") or child.get("continuation_key", "") or ""),
+            "is_continuation": False,
+            "page_locators": combined_page_locators,
+            "document_context": {
+                "heading_chain": combined_heading_chain,
+                "raw_heading_chain": dedupe_context_parts(
+                    [
+                        *list((parent.get("document_context") or {}).get("raw_heading_chain", [])),
+                        *list((child.get("document_context") or {}).get("raw_heading_chain", [])),
+                    ]
+                ),
+                "note_context": combined_note_context,
+                "raw_note_context": dedupe_context_parts(
+                    [
+                        *list((parent.get("document_context") or {}).get("raw_note_context", [])),
+                        *list((child.get("document_context") or {}).get("raw_note_context", [])),
+                    ]
+                ),
+                "is_continuation_group": True,
+                "continuation_key": str(parent.get("continuation_key", "") or child.get("continuation_key", "") or ""),
+                "continued_from_locator": str((child.get("document_context") or {}).get("continued_from_locator", "") or ""),
+                "continued_from_page_locator": str((child.get("document_context") or {}).get("continued_from_page_locator", "") or ""),
+            },
+        },
+    )
+    return merged
+
+
+def _append_stateful_table(
+    tables: list[dict[str, Any]],
+    table: dict[str, Any],
+    context: dict[str, Any],
+    continuation_groups: dict[str, int],
+    *,
+    limit: int,
+) -> None:
+    if len(tables) >= limit:
+        return
+    decorated = _decorate_stateful_table_payload(table, context)
+    continuation_key = str(decorated.get("continuation_key", "") or "")
+    if continuation_key and context.get("is_continuation") and continuation_key in continuation_groups:
+        parent_index = continuation_groups[continuation_key]
+        if 0 <= parent_index < len(tables):
+            merged = _merge_continued_table_payload(tables[parent_index], decorated)
+            if merged is not None:
+                tables[parent_index] = merged
+                return
+    tables.append(decorated)
+    if continuation_key:
+        continuation_groups[continuation_key] = len(tables) - 1
 
 
 def _extract_tables_from_html_string(
@@ -406,6 +607,13 @@ def _extract_tables_from_html_string(
                 unit_hint=unit_hint,
                 context_text=context_text,
             )
+            canonical_table["source_grid_text"] = [
+                [str(cell.get("text", "") or "") for cell in row]
+                for row in raw_rows
+            ]
+            canonical_table["source_grid_has_header_cells"] = any(
+                bool(cell.get("is_header")) for row in raw_rows for cell in row
+            )
             headers = list(canonical_table.get("display_headers", []))
             rows = [list(row) for row in canonical_table.get("display_rows", [])]
             if headers and rows:
@@ -437,6 +645,91 @@ def _extract_tables_from_json_payload(
     if len(tables) >= limit:
         return
     if isinstance(payload, dict):
+        stateful_nodes = iter_stateful_table_nodes(payload)
+        if stateful_nodes:
+            continuation_groups: dict[str, int] = {}
+            for table_context in stateful_nodes:
+                if len(tables) >= limit:
+                    return
+                node = dict(table_context.get("node") or {})
+                locator = str(table_context.get("locator", "") or f"table {len(tables) + 1}")
+                page_locator = str(table_context.get("page_locator", "") or "")
+                resolved_context_text = _combine_context_text(
+                    table_context.get("context_text", ""),
+                    table_context.get("note_context", []),
+                )
+                resolved_unit_hint = str(node.get("unit") or node.get("units") or table_context.get("unit_hint") or "").strip()
+                content = node.get("content")
+                if (
+                    isinstance(content, str)
+                    and "<table" in content.lower()
+                    and _table_candidate_matches_query(
+                        locator,
+                        resolved_context_text,
+                        content,
+                        table_query,
+                        page_locator=page_locator,
+                        unit_hint=resolved_unit_hint,
+                    )
+                ):
+                    html_tables = _extract_tables_from_html_string(
+                        content,
+                        citation,
+                        locator=locator,
+                        page_locator=page_locator,
+                        unit_hint=resolved_unit_hint,
+                        context_text=resolved_context_text,
+                        deadline=deadline,
+                    )
+                    for item in html_tables:
+                        _append_stateful_table(
+                            tables,
+                            item,
+                            table_context,
+                            continuation_groups,
+                            limit=limit,
+                        )
+                        if len(tables) >= limit:
+                            return
+                headers = node.get("headers") or node.get("header") or node.get("columns") or node.get("column_headers")
+                rows = node.get("rows")
+                if isinstance(headers, list) and isinstance(rows, list):
+                    normalized_rows: list[list[str]] = []
+                    for row in rows[:200]:
+                        if isinstance(row, list):
+                            normalized_rows.append([str(cell).strip() for cell in row])
+                        elif isinstance(row, dict):
+                            normalized_rows.append([str(row.get(str(header), "")).strip() for header in headers])
+                    if normalized_rows:
+                        canonical_table = normalize_flat_table(
+                            [str(header) for header in headers],
+                            normalized_rows,
+                            locator=locator,
+                            page_locator=page_locator,
+                            unit_hint=resolved_unit_hint,
+                            context_text=resolved_context_text,
+                        )
+                        canonical_table["source_grid_text"] = [list(row) for row in normalized_rows]
+                        canonical_table["source_grid_has_header_cells"] = bool(headers)
+                        _append_stateful_table(
+                            tables,
+                            _coerce_table(
+                                list(canonical_table.get("display_headers", []) or [str(header) for header in headers]),
+                                [list(row) for row in canonical_table.get("display_rows", []) or normalized_rows],
+                                citation,
+                                locator=locator,
+                                unit_hint=resolved_unit_hint,
+                                page_locator=page_locator,
+                                context_text=resolved_context_text,
+                                canonical_table=canonical_table,
+                            ),
+                            table_context,
+                            continuation_groups,
+                            limit=limit,
+                        )
+                        if len(tables) >= limit:
+                            return
+            return
         page_locator = _page_locator_from_payload(payload)
         context_text = " ".join(
             str(part).strip()
@@ -453,7 +746,14 @@ def _extract_tables_from_json_payload(
         if (
             isinstance(content, str)
             and "<table" in content.lower()
-            and _table_candidate_matches_query(locator, context_text, content, table_query)
+            and _table_candidate_matches_query(
+                locator,
+                context_text,
+                content,
+                table_query,
+                page_locator=page_locator,
+                unit_hint=str(payload.get("unit") or payload.get("units") or ""),
+            )
         ):
             html_tables = _extract_tables_from_html_string(
                 content,
@@ -486,6 +786,8 @@ def _extract_tables_from_json_payload(
                     unit_hint=str(payload.get("unit") or payload.get("units") or ""),
                     context_text=context_text,
                 )
+                canonical_table["source_grid_text"] = [list(row) for row in normalized_rows]
+                canonical_table["source_grid_has_header_cells"] = bool(headers)
                 tables.append(
                     _coerce_table(
                         list(canonical_table.get("display_headers", []) or [str(header) for header in headers]),
@@ -541,6 +843,8 @@ def _extract_tables_from_delimited_text(text: str, citation: str) -> list[dict[s
     headers = parsed_rows[0]
     rows = parsed_rows[1:]
     canonical_table = normalize_flat_table(headers, rows, locator="table 1")
+    canonical_table["source_grid_text"] = [list(row) for row in rows]
+    canonical_table["source_grid_has_header_cells"] = bool(headers)
     return [
         _coerce_table(
             list(canonical_table.get("display_headers", []) or headers),
@@ -567,6 +871,8 @@ def _extract_tables_from_text_layout(text: str, citation: str) -> list[dict[str,
     headers = table_rows[0]
     rows = table_rows[1:]
     canonical_table = normalize_flat_table(headers, rows, locator="table 1")
+    canonical_table["source_grid_text"] = [list(row) for row in rows]
+    canonical_table["source_grid_has_header_cells"] = bool(headers)
     return [
         _coerce_table(
             list(canonical_table.get("display_headers", []) or headers),
@@ -578,18 +884,36 @@ def _extract_tables_from_text_layout(text: str, citation: str) -> list[dict[str,
     ]
 
 
-def _table_candidate_matches_query(locator: str, context_text: str, content: str, table_query: str) -> bool:
+def _table_candidate_matches_query(
+    locator: str,
+    context_text: str,
+    content: str,
+    table_query: str,
+    *,
+    page_locator: str = "",
+    unit_hint: str = "",
+) -> bool:
     if not (table_query or "").strip():
         return True
-    preview = f"{locator}\n{context_text}\n{(content or '')[:_HTML_QUERY_PREVIEW_CHARS]}"
-    if _match_score(preview, table_query) > 0.0:
+    signature = _html_table_signature(
+        locator,
+        context_text,
+        content,
+        page_locator=page_locator,
+        unit_hint=unit_hint,
+    )
+    if _match_score(signature, table_query) > 0.0:
         return True
 
     lowered_query = (table_query or "").lower()
-    lowered_preview = preview.lower()
+    lowered_signature = signature.lower()
     if any(token in lowered_query for token in ("monthly", "all individual calendar months", "calendar months", "monthly series")):
-        if "month" in lowered_preview or any(month in lowered_preview for month in _MONTH_TOKENS):
+        if "month" in lowered_signature or any(month in lowered_signature for month in _MONTH_TOKENS):
             return True
+    query_metric_group = _financial_metric_group(table_query)
+    signature_metric_group = _financial_metric_group(signature)
+    if query_metric_group and signature_metric_group and query_metric_group == signature_metric_group:
+        return True
     return False
 
 
@@ -627,10 +951,12 @@ def _table_text(table: dict[str, Any]) -> str:
         [
             str(table.get("locator", "") or ""),
             str(table.get("context_text", "") or ""),
+            " ".join(str(item or "") for item in list(table.get("heading_chain", []))),
             str(table.get("page_locator", "") or ""),
             " ".join(str(item or "") for item in list(table.get("headers", []))),
             " ".join(" ".join(str(cell or "") for cell in row[:8]) for row in list(table.get("rows", []))[:24]),
             str(table.get("unit_hint", "") or ""),
+            " ".join(str(item or "") for item in list((table.get("document_context") or {}).get("note_context", []))),
         ]
     ).strip()
 
@@ -639,29 +965,165 @@ def _query_years(query: str) -> set[str]:
     return set(_YEAR_RE.findall(query or ""))
 
 
+def _table_row_path_samples(table: dict[str, Any], limit: int = 10) -> list[str]:
+    canonical_table = dict(table.get("canonical_table") or {})
+    row_records = [item for item in list(canonical_table.get("row_records", [])) if isinstance(item, dict)]
+    samples: list[str] = []
+    for row in row_records:
+        if str(row.get("row_type", "") or "") == "section_divider":
+            continue
+        row_path = [str(part or "") for part in list(row.get("row_path", [])) if str(part or "").strip()]
+        if row_path:
+            samples.append(" > ".join(row_path))
+        else:
+            label = _normalize_space(row.get("row_label", ""))
+            if label:
+                samples.append(label)
+        if len(samples) >= limit:
+            break
+    if samples:
+        return samples
+    fallback_rows = [list(row) for row in list(table.get("rows", []))[:limit] if isinstance(row, list) and row]
+    return [_normalize_space(row[0]) for row in fallback_rows if _normalize_space(row[0])]
+
+
+def _table_confidence_value(table: dict[str, Any]) -> float:
+    canonical_table = dict(table.get("canonical_table") or {})
+    metrics = dict(canonical_table.get("normalization_metrics") or {})
+    explicit = canonical_table.get("table_confidence", table.get("table_confidence", 0.0))
+    try:
+        confidence = float(explicit or 0.0)
+    except Exception:
+        confidence = 0.0
+    if confidence > 0:
+        return max(0.0, min(1.0, confidence))
+    if not metrics:
+        return 0.0
+    components = [
+        float(metrics.get("duplicate_header_collapse_score", 0.0) or 0.0),
+        float(metrics.get("header_data_separation_quality", 0.0) or 0.0),
+        float(metrics.get("span_consistency", 0.0) or 0.0),
+        float(metrics.get("recovered_unit_coverage", 0.0) or 0.0),
+    ]
+    return max(0.0, min(1.0, sum(components) / max(1, len(components))))
+
+
+def _table_period_type(table: dict[str, Any]) -> str:
+    canonical_table = dict(table.get("canonical_table") or {})
+    explicit = str(table.get("period_type", "") or canonical_table.get("period_type", "")).strip().lower()
+    if explicit:
+        return explicit
+    family = str(table.get("table_family", "") or "").strip().lower()
+    if family == "monthly_series":
+        return "monthly_series"
+    if family == "fiscal_year_comparison":
+        return "fiscal_year"
+    text = _table_text(table).lower()
+    if "fiscal year" in text or re.search(r"\bfy\s+\d{4}\b", text):
+        return "fiscal_year"
+    if "calendar year" in text:
+        return "calendar_year"
+    month_hits = sum(1 for month in _MONTH_TOKENS if month in text)
+    if month_hits >= 4:
+        return "monthly_series"
+    return ""
+
+
+def _financial_metric_group(text: str) -> str:
+    lowered = (text or "").lower()
+    if any(token in lowered for token in ("debt", "liabilities", "assets", "obligations", "securities", "balance sheet")):
+        return "debt"
+    if any(token in lowered for token in ("receipts", "revenue", "collections", "income")):
+        return "revenue"
+    if any(token in lowered for token in ("expenditures", "outlays", "disbursements", "spending", "expenses")):
+        return "expenditures"
+    return ""
+
+
+def _table_structural_signature(table: dict[str, Any]) -> str:
+    canonical_table = dict(table.get("canonical_table") or {})
+    normalization_metrics = dict(canonical_table.get("normalization_metrics") or {})
+    parts = [
+        _normalize_space(table.get("locator", "")),
+        _normalize_space(table.get("page_locator", "")),
+        _normalize_space(table.get("context_text", "")),
+        " | ".join(str(item or "") for item in list(table.get("heading_chain", []))[:8] if str(item or "").strip()),
+        " | ".join(str(item or "") for item in list(table.get("headers", []))[:10] if str(item or "").strip()),
+        " | ".join(_table_row_path_samples(table, limit=10)),
+        _normalize_space(table.get("unit_hint", "")),
+        str(table.get("table_family", "") or ""),
+        _table_period_type(table),
+        f"table_confidence={_table_confidence_value(table):.3f}",
+        f"header_data_separation_quality={float(normalization_metrics.get('header_data_separation_quality', 0.0) or 0.0):.3f}",
+    ]
+    return "\n".join(part for part in parts if part)
+
+
+def _html_table_signature(
+    locator: str,
+    context_text: str,
+    content: str,
+    *,
+    page_locator: str = "",
+    unit_hint: str = "",
+) -> str:
+    heading_cells: list[str] = []
+    row_labels: list[str] = []
+    sample_rows: list[str] = []
+    for row_index, row_html in enumerate(_HTML_ROW_RE.findall(content or "")):
+        cells: list[str] = []
+        has_header = False
+        for tag_name, _attrs, cell_html in _HTML_CELL_RE.findall(row_html)[:12]:
+            text = _normalize_space(_html_cell_text(cell_html))
+            if not text:
+                continue
+            cells.append(text)
+            has_header = has_header or str(tag_name).lower() == "th"
+        if not cells:
+            continue
+        if has_header and len(heading_cells) < 24:
+            heading_cells.extend(cells[:8])
+            continue
+        if row_index < 40:
+            row_labels.append(cells[0])
+            sample_rows.append(" | ".join(cells[:6]))
+        if len(sample_rows) >= 16:
+            break
+    signature_parts = [
+        _normalize_space(locator),
+        _normalize_space(page_locator),
+        _normalize_space(context_text),
+        _normalize_space(unit_hint),
+        " | ".join(heading_cells[:24]),
+        " | ".join(row_labels[:16]),
+        " | ".join(sample_rows[:10]),
+    ]
+    return "\n".join(part for part in signature_parts if part)
+
+
 def _classify_table_family(table: dict[str, Any]) -> tuple[str, float]:
     if _is_navigational_table(table):
         return "navigation_or_contents", 0.98
 
     text = _table_text(table).lower()
-    rows = [list(row) for row in list(table.get("rows", []))[:40]]
+    rows = [list(row) for row in list(table.get("rows", []))[:60]]
     headers = [str(item or "") for item in list(table.get("headers", []))]
     headers_lower = " ".join(headers).lower()
+    row_path_samples = _table_row_path_samples(table, limit=16)
     row_text = " ".join(" ".join(str(cell or "") for cell in row[:8]) for row in rows).lower()
-    month_hits = sum(1 for month in _MONTH_TOKENS if month in row_text or month in " ".join(headers).lower())
+    row_path_text = " ".join(row_path_samples).lower()
+    month_hits = sum(1 for month in _MONTH_TOKENS if month in row_text or month in headers_lower or month in row_path_text)
     year_hits = len(set(_YEAR_RE.findall(text)))
-    category_terms = (
-        "national defense",
-        "veterans",
-        "veterans administration",
-        "agriculture",
-        "receipts",
-        "expenditures",
-        "outlays",
-        "department",
-        "activities",
-    )
     debt_terms = ("public debt", "debt outstanding", "guaranteed obligations", "balance sheet", "assets", "liabilities", "securities")
+    metric_group = _financial_metric_group(text)
+    canonical_table = dict(table.get("canonical_table") or {})
+    row_records = [item for item in list(canonical_table.get("row_records", [])) if isinstance(item, dict)]
+    data_row_count = sum(1 for row in row_records if str(row.get("row_type", "") or "") != "section_divider")
+    numeric_row_count = sum(1 for row in rows[:20] if any(re.search(r"\d", str(cell or "")) for cell in row[1:]))
+    year_header_hits = sum(1 for header in headers if _YEAR_RE.search(str(header or "")))
+    total_like_headers = sum(
+        1 for header in headers if any(token in str(header or "").lower() for token in ("total", "actual", "estimate", "calendar year", "fiscal year"))
+    )
 
     if any(token in text for token in debt_terms):
         return "debt_or_balance_sheet", 0.9
@@ -671,12 +1133,21 @@ def _classify_table_family(table: dict[str, Any]) -> tuple[str, float]:
         return "monthly_series", min(0.92, 0.62 + 0.04 * len(rows))
     if month_hits >= 4:
         return "monthly_series", min(0.95, 0.55 + 0.06 * month_hits)
-    if any(token in text for token in category_terms) and year_hits >= 1:
-        return "category_breakdown", 0.8
-    if any(token in text for token in ("actual", "estimate", "calendar year", "total", "summary")) and year_hits >= 1:
+    if (
+        (year_header_hits >= 1 or year_hits >= 1)
+        and data_row_count >= 2
+        and numeric_row_count >= 1
+        and metric_group in {"expenditures", "revenue"}
+    ):
+        return "category_breakdown", 0.78
+    if (
+        (year_header_hits >= 1 or year_hits >= 1)
+        and total_like_headers >= 1
+        and data_row_count <= 3
+    ):
         return "annual_summary", 0.72
-    if any(token in text for token in category_terms):
-        return "category_breakdown", 0.65
+    if (year_header_hits >= 1 or year_hits >= 1) and data_row_count >= 2 and row_path_samples:
+        return "category_breakdown", 0.66
     return "generic_financial_table", 0.45
 
 
@@ -688,7 +1159,7 @@ def _required_table_family(table_query: str) -> str:
         return "fiscal_year_comparison"
     if any(token in lowered for token in ("public debt", "debt outstanding", "balance sheet", "guaranteed obligations")):
         return "debt_or_balance_sheet"
-    if any(token in lowered for token in ("total expenditures", "receipts", "national defense", "veterans administration", "veterans")):
+    if any(token in lowered for token in ("total expenditures", "expenditures", "outlays", "receipts", "revenue", "collections", "spending")):
         return "category_breakdown"
     return ""
 
@@ -713,6 +1184,43 @@ def _table_family_score(table: dict[str, Any], table_query: str) -> float:
         if "actual 6 months" in text or "total 9/" in text:
             score -= 0.35
     return score
+
+
+def _table_row_path_fit(table: dict[str, Any], table_query: str) -> float:
+    samples = " ".join(_table_row_path_samples(table, limit=12))
+    return _match_score(samples, table_query)
+
+
+def _table_heading_fit(table: dict[str, Any], table_query: str) -> float:
+    heading_text = " ".join(str(item or "") for item in list(table.get("heading_chain", []))[:8])
+    context_text = str(table.get("context_text", "") or "")
+    return _match_score(" ".join(part for part in [heading_text, context_text] if part), table_query)
+
+
+def _table_metric_fit(table: dict[str, Any], table_query: str) -> float:
+    query_group = _financial_metric_group(table_query)
+    if not query_group:
+        return 0.0
+    table_group = _financial_metric_group(_table_text(table))
+    if not table_group:
+        return 0.0
+    return 0.38 if table_group == query_group else -0.34
+
+
+def _table_period_fit(table: dict[str, Any], table_query: str) -> float:
+    required_family = _required_table_family(table_query)
+    period_type = _table_period_type(table)
+    if required_family == "monthly_series":
+        if period_type == "monthly_series":
+            return 0.42
+        if period_type in {"calendar_year", "fiscal_year"}:
+            return -0.28
+    if required_family == "fiscal_year_comparison":
+        if period_type == "fiscal_year":
+            return 0.3
+        if period_type == "calendar_year":
+            return -0.12
+    return 0.0
 
 
 def _extract_document_tables(target: Path, text: str, citation: str, *, table_query: str = "") -> list[dict[str, Any]]:
@@ -761,14 +1269,18 @@ def _rank_tables(tables: list[dict[str, Any]], table_query: str) -> list[dict[st
     query_tokens = set(_tokenize(table_query))
 
     def _score(table: dict[str, Any]) -> float:
-        text = _table_text(table)
+        text = _table_structural_signature(table)
         score = _match_score(text, table_query)
         score += _table_family_score(table, table_query)
+        score += 0.32 * _table_heading_fit(table, table_query)
+        score += 0.44 * _table_row_path_fit(table, table_query)
+        score += _table_metric_fit(table, table_query)
+        score += _table_period_fit(table, table_query)
         headers_text = " ".join(str(item or "") for item in list(table.get("headers", []))[:12])
-        row_label_text = " ".join(str(row[0] or "") for row in list(table.get("rows", []))[:30] if isinstance(row, list) and row)
+        row_label_text = " ".join(_table_row_path_samples(table, limit=20))
         score += 0.35 * _match_score(row_label_text, table_query)
         score += 0.2 * _match_score(headers_text, table_query)
-        lowered = text.lower()
+        lowered = _table_text(table).lower()
         numeric_cells = sum(
             1
             for row in list(table.get("rows", []))[:24]
@@ -777,24 +1289,28 @@ def _rank_tables(tables: list[dict[str, Any]], table_query: str) -> list[dict[st
         )
         if numeric_cells >= 8:
             score += 0.05
+        score += 0.22 * _table_confidence_value(table)
         query_years = _query_years(table_query)
         if query_years:
-            table_years = _query_years(text)
+            table_years = _query_years(_table_text(table))
             if query_years & table_years:
                 score += 0.18
             elif table_years:
                 score -= 0.22
-        if {"national", "defense"} & query_tokens and "national defense" in row_label_text.lower():
-            score += 0.4
-        if "veterans" in query_tokens and "veterans" in row_label_text.lower():
-            score += 0.35
         if "expenditures" in query_tokens and "expenditures" not in lowered and any(
             token in lowered for token in ("receipts", "sources of revenue", "revenue")
         ):
             score -= 0.4
         return score
 
-    return sorted(tables, key=_score, reverse=True)
+    ranked: list[dict[str, Any]] = []
+    for table in tables:
+        score = _score(table)
+        enriched = dict(table)
+        enriched["ranking_score"] = round(score, 4)
+        enriched["structural_signature"] = _table_structural_signature(table)
+        ranked.append(enriched)
+    return sorted(ranked, key=lambda item: float(item.get("ranking_score", 0.0) or 0.0), reverse=True)
 
 
 def _filter_rows(table: dict[str, Any], row_query: str) -> list[list[str]]:
@@ -843,7 +1359,7 @@ def _table_payload(
             continue
         row_labels: list[str] = []
         canonical_table = dict(item.get("canonical_table") or {})
-        for row in list(canonical_table.get("rows", []) or [])[:8]:
+        for row in list(canonical_table.get("row_records", []) or [])[:8]:
             if not isinstance(row, dict):
                 continue
             row_path = list(row.get("row_path", []) or [])
@@ -863,10 +1379,15 @@ def _table_payload(
                 "locator": str(item.get("locator", "") or ""),
                 "table_family": str(item.get("table_family", "") or ""),
                 "table_family_confidence": item.get("table_family_confidence", 0.0),
+                "ranking_score": item.get("ranking_score", 0.0),
                 "page_locator": str(item.get("page_locator", "") or ""),
+                "heading_chain": list(item.get("heading_chain", []))[:6],
                 "headers": list(item.get("headers", []))[:8],
                 "row_labels": row_labels[:8],
+                "period_type": _table_period_type(item),
+                "table_confidence": round(_table_confidence_value(item), 4),
                 "unit_hint": str(item.get("unit_hint", "") or ""),
+                "structural_signature": _table_structural_signature(item),
             }
         )
     metadata = {

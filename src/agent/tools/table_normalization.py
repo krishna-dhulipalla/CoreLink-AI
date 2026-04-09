@@ -27,6 +27,10 @@ def _clean_text(text: Any) -> str:
     return re.sub(r"\s+", " ", str(text or "").strip())
 
 
+def _raw_text(text: Any) -> str:
+    return str(text or "").replace("\xa0", " ")
+
+
 def _normalized_text(text: Any) -> str:
     return _clean_text(text).lower()
 
@@ -36,6 +40,33 @@ def _is_numeric_text(text: Any) -> bool:
     if not compact:
         return False
     return bool(_NUMERIC_RE.fullmatch(compact))
+
+
+def _leading_indent_units(text: Any) -> int:
+    raw = _raw_text(text)
+    if not raw:
+        return 0
+    match = re.match(r"^[ \t]+", raw)
+    if not match:
+        return 0
+    width = len(match.group(0).replace("\t", "    "))
+    return min(3, max(0, width // 2))
+
+
+def _leading_empty_cells(row: list[dict[str, Any]], limit: int) -> int:
+    count = 0
+    for cell in row[:limit]:
+        if _clean_text(cell.get("text", "")):
+            break
+        count += 1
+    return count
+
+
+def _first_numeric_index(texts: list[str]) -> int | None:
+    for idx, text in enumerate(texts):
+        if _is_numeric_text(text):
+            return idx
+    return None
 
 
 def _dedupe_path(parts: list[str]) -> list[str]:
@@ -137,23 +168,69 @@ def _infer_header_row_count(grid: list[list[dict[str, Any]]]) -> int:
     return max(1, header_rows)
 
 
-def _infer_row_header_depth(data_rows: list[list[dict[str, Any]]], column_count: int) -> int:
-    depths: list[int] = []
-    for row in data_rows[:40]:
-        texts = [_clean_text(cell.get("text", "")) for cell in row]
-        first_numeric: int | None = None
-        for idx, text in enumerate(texts):
-            if _is_numeric_text(text):
-                first_numeric = idx
-                break
-        if first_numeric is None:
+def _header_alignment_depth(header_rows: list[list[dict[str, Any]]], column_count: int) -> int:
+    candidates: list[int] = []
+    for row in header_rows[-3:]:
+        texts = [_clean_text(cell.get("text", "")) for cell in row[:column_count]]
+        if not any(texts):
             continue
-        if first_numeric > 0:
-            depths.append(min(first_numeric, 3))
-    if not depths:
-        return 1 if column_count >= 2 else 0
-    counter = Counter(depths)
-    return max(1, min(3, counter.most_common(1)[0][0]))
+        leading_empty = 0
+        for text in texts:
+            if text:
+                break
+            leading_empty += 1
+        if 0 < leading_empty < column_count:
+            candidates.append(min(3, leading_empty))
+    if not candidates:
+        return 0
+    return Counter(candidates).most_common(1)[0][0]
+
+
+def _descriptive_row_depth_candidate(row: list[dict[str, Any]], column_count: int) -> int:
+    texts = [_clean_text(cell.get("text", "")) for cell in row[:column_count]]
+    if not any(texts):
+        return 0
+    if _first_numeric_index(texts) == 0:
+        return 0
+    first_nonempty = next((idx for idx, text in enumerate(texts) if text), None)
+    if first_nonempty is None:
+        return 0
+    populated_positions = [idx for idx, text in enumerate(texts[: min(column_count, 4)]) if text]
+    if len(populated_positions) >= 2 and all(not _is_numeric_text(texts[idx]) for idx in populated_positions):
+        return min(3, populated_positions[-1] + 1)
+    if first_nonempty > 0:
+        return min(3, first_nonempty + 1)
+    return 0
+
+
+def _infer_row_header_depth(
+    data_rows: list[list[dict[str, Any]]],
+    header_rows: list[list[dict[str, Any]]],
+    column_count: int,
+) -> int:
+    if column_count < 2:
+        return 0
+    vote_counter: Counter[int] = Counter()
+    for row in data_rows[:160]:
+        texts = [_clean_text(cell.get("text", "")) for cell in row[:column_count]]
+        if not any(texts):
+            continue
+        first_numeric = _first_numeric_index(texts)
+        if first_numeric is not None and first_numeric > 0:
+            vote_counter[min(3, first_numeric)] += 3
+            continue
+        descriptive_depth = _descriptive_row_depth_candidate(row, column_count)
+        if descriptive_depth > 0:
+            vote_counter[min(3, descriptive_depth)] += 1
+
+    aligned_depth = _header_alignment_depth(header_rows, column_count)
+    if aligned_depth > 0:
+        vote_counter[min(3, aligned_depth)] += 2
+
+    if not vote_counter:
+        return 1
+    best_depth, _ = max(vote_counter.items(), key=lambda item: (item[1], item[0]))
+    return max(1, min(3, best_depth))
 
 
 def _column_paths(header_rows: list[list[dict[str, Any]]], column_count: int) -> list[list[str]]:
@@ -186,26 +263,44 @@ def _row_records(
 ) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     section_stack: list[str] = []
+    hierarchy_cap = max(1, row_header_depth + 1)
     for row_index, row in enumerate(data_rows):
         values = [_clean_text(cell.get("text", "")) for cell in row]
         row_type = _row_type_for_values(values)
         if row_type == "empty":
             continue
 
-        leading_headers = _dedupe_path(values[:row_header_depth])
+        header_cells = row[:row_header_depth] if row_header_depth > 0 else row[:1]
+        leading_empty_cells = _leading_empty_cells(header_cells, len(header_cells))
+        first_nonempty_header_index = next(
+            (idx for idx, cell in enumerate(header_cells) if _clean_text(cell.get("text", ""))),
+            None,
+        )
+        indentation_depth = (
+            _leading_indent_units(header_cells[first_nonempty_header_index].get("text", ""))
+            if first_nonempty_header_index is not None
+            else 0
+        )
+        local_depth = min(hierarchy_cap, leading_empty_cells + indentation_depth)
+        label_parts = _dedupe_path(values[leading_empty_cells:row_header_depth])
+        if not label_parts and row_header_depth > 0:
+            label_parts = _dedupe_path(values[:row_header_depth])
         if row_type == "section_divider":
-            section_stack = leading_headers[:1]
+            section_stack = _dedupe_path([*section_stack[:local_depth], *label_parts])
             records.append(
                 {
                     "row_index": row_index,
                     "row_type": row_type,
                     "row_path": list(section_stack),
+                    "row_depth": local_depth,
+                    "leading_empty_cells": leading_empty_cells,
+                    "indentation_depth": indentation_depth,
                     "cells": [],
                 }
             )
             continue
 
-        row_path = _dedupe_path([*section_stack, *leading_headers])
+        row_path = _dedupe_path([*section_stack[:local_depth], *label_parts])
         cells: list[dict[str, Any]] = []
         for col_idx in range(row_header_depth, min(len(row), len(column_paths))):
             cell_text = _clean_text(row[col_idx].get("text", ""))
@@ -228,9 +323,13 @@ def _row_records(
                 "row_type": row_type,
                 "row_path": row_path,
                 "row_label": _build_leaf_label(row_path, f"row {row_index + 1}"),
+                "row_depth": local_depth,
+                "leading_empty_cells": leading_empty_cells,
+                "indentation_depth": indentation_depth,
                 "cells": cells,
             }
         )
+        section_stack = list(row_path)
     return records
 
 
@@ -286,7 +385,7 @@ def normalize_dense_table_grid(
     header_row_count = min(len(padded_grid), _infer_header_row_count(padded_grid))
     header_rows = padded_grid[:header_row_count]
     raw_data_rows = padded_grid[header_row_count:]
-    row_header_depth = _infer_row_header_depth(raw_data_rows, column_count)
+    row_header_depth = _infer_row_header_depth(raw_data_rows, header_rows, column_count)
     column_paths = _column_paths(header_rows, column_count)
     row_records = _row_records(raw_data_rows, row_header_depth=row_header_depth, column_paths=column_paths)
     metrics = _header_metrics(header_rows, raw_data_rows, unit_hint)
@@ -323,14 +422,14 @@ def normalize_flat_table(
     if headers:
         grid.append(
             [
-                {"text": _clean_text(header), "is_header": True, "origin_id": f"h0_{idx}"}
+                {"text": _raw_text(header), "is_header": True, "origin_id": f"h0_{idx}"}
                 for idx, header in enumerate(headers)
             ]
         )
     for row_idx, row in enumerate(rows):
         grid.append(
             [
-                {"text": _clean_text(cell), "is_header": False, "origin_id": f"r{row_idx}_{col_idx}"}
+                {"text": _raw_text(cell), "is_header": False, "origin_id": f"r{row_idx}_{col_idx}"}
                 for col_idx, cell in enumerate(row)
             ]
         )

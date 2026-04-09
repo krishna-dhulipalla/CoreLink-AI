@@ -21,16 +21,37 @@ from agent.prompts import (
 )
 
 _MAX_SEMANTIC_PLAN_CALLS = 1
-_MAX_RETRIEVAL_RERANK_CALLS = 2
-_MAX_TABLE_RERANK_CALLS = 2
+_BASE_RETRIEVAL_RERANK_CALLS = 2
+_HARD_RETRIEVAL_RERANK_CALLS = 3
+_BASE_TABLE_RERANK_CALLS = 2
+_HARD_TABLE_RERANK_CALLS = 3
 _MAX_FINAL_SYNTHESIS_CALLS = 1
 
 
-def officeqa_llm_control_budget() -> dict[str, int]:
+def _requires_hard_semantic_control(retrieval_intent: RetrievalIntent | None) -> bool:
+    if retrieval_intent is None:
+        return False
+    if retrieval_intent.strategy in {"multi_table", "multi_document", "hybrid"}:
+        return True
+    if retrieval_intent.answer_mode != "deterministic_compute":
+        return True
+    if retrieval_intent.analysis_modes:
+        return True
+    if retrieval_intent.decomposition_confidence and retrieval_intent.decomposition_confidence < 0.78:
+        return True
+    if len(list(retrieval_intent.preferred_publication_years or [])) >= 4:
+        return True
+    if len(list(retrieval_intent.publication_year_window or [])) >= 5:
+        return True
+    return False
+
+
+def officeqa_llm_control_budget(retrieval_intent: RetrievalIntent | None = None) -> dict[str, int]:
+    hard_mode = _requires_hard_semantic_control(retrieval_intent)
     return {
         "semantic_plan_calls": _MAX_SEMANTIC_PLAN_CALLS,
-        "retrieval_rerank_calls": _MAX_RETRIEVAL_RERANK_CALLS,
-        "table_rerank_calls": _MAX_TABLE_RERANK_CALLS,
+        "retrieval_rerank_calls": _HARD_RETRIEVAL_RERANK_CALLS if hard_mode else _BASE_RETRIEVAL_RERANK_CALLS,
+        "table_rerank_calls": _HARD_TABLE_RERANK_CALLS if hard_mode else _BASE_TABLE_RERANK_CALLS,
         "final_synthesis_calls": _MAX_FINAL_SYNTHESIS_CALLS,
     }
 
@@ -170,10 +191,15 @@ def _table_review_prompt(
                 "locator": str(item.get("locator", "") or ""),
                 "table_family": str(item.get("table_family", "") or ""),
                 "table_family_confidence": item.get("table_family_confidence", 0.0),
+                "ranking_score": item.get("ranking_score", 0.0),
+                "period_type": str(item.get("period_type", "") or ""),
+                "table_confidence": item.get("table_confidence", 0.0),
                 "page_locator": str(item.get("page_locator", "") or ""),
+                "heading_chain": list(item.get("heading_chain", []))[:6],
                 "headers": list(item.get("headers", []))[:8],
                 "row_labels": list(item.get("row_labels", []))[:8],
                 "unit_hint": str(item.get("unit_hint", "") or ""),
+                "structural_signature": str(item.get("structural_signature", "") or ""),
             }
         )
     return (
@@ -234,3 +260,107 @@ def maybe_review_table_admissibility(
     ):
         return None
     return decision
+
+
+def _requested_period_kind(retrieval_intent: RetrievalIntent) -> str:
+    return str(retrieval_intent.period_type or retrieval_intent.granularity_requirement or "").strip().lower()
+
+
+def should_use_source_rerank_llm(
+    *,
+    retrieval_intent: RetrievalIntent,
+    candidate_sources: list[dict[str, Any]],
+    evidence_gap: str = "",
+) -> tuple[bool, str]:
+    ranked = [dict(item) for item in list(candidate_sources or []) if isinstance(item, dict)]
+    if len(ranked) < 2:
+        return False, "not_enough_candidates"
+
+    normalized_gap = str(evidence_gap or "").strip().lower()
+    if normalized_gap in {
+        "wrong document",
+        "incomplete evidence",
+        "missing month coverage",
+        "wrong period slice",
+        "wrong row or column semantics",
+        "repair_applied_but_no_new_evidence",
+        "repair_reused_stale_state",
+    }:
+        return True, normalized_gap
+
+    first = float(ranked[0].get("score", 0.0) or 0.0)
+    second = float(ranked[1].get("score", 0.0) or 0.0)
+
+    preferred_years = [str(item) for item in list(retrieval_intent.preferred_publication_years or []) if str(item)]
+    if preferred_years:
+        top_year = str(dict(ranked[0].get("metadata") or {}).get("publication_year", "") or "")
+        runner_year = str(dict(ranked[1].get("metadata") or {}).get("publication_year", "") or "")
+        if top_year and top_year not in preferred_years[:2] and runner_year in preferred_years[:2]:
+            return True, "publication_year_mismatch"
+
+    requested_period = _requested_period_kind(retrieval_intent)
+    if requested_period:
+        top_unit = dict(ranked[0].get("best_evidence_unit") or {})
+        runner_unit = dict(ranked[1].get("best_evidence_unit") or {})
+        top_period = str(top_unit.get("period_type", "") or "").strip().lower()
+        runner_period = str(runner_unit.get("period_type", "") or "").strip().lower()
+        if top_period and runner_period and top_period != requested_period and runner_period == requested_period:
+            return True, "period_type_mismatch"
+
+    top_confidence = float(dict(ranked[0].get("best_evidence_unit") or {}).get("table_confidence", 0.0) or 0.0)
+    if top_confidence and top_confidence < 0.62:
+        return True, "weak_evidence_unit_confidence"
+
+    if first < 1.45:
+        return True, "weak_top_source_score"
+    if (first - second) < 0.22:
+        return True, "narrow_source_margin"
+
+    if retrieval_intent.decomposition_confidence and retrieval_intent.decomposition_confidence < 0.78 and (first - second) < 0.4:
+        return True, "low_decomposition_confidence"
+
+    return False, "source_ranking_clear_enough"
+
+
+def should_use_table_rerank_llm(
+    *,
+    retrieval_intent: RetrievalIntent,
+    table_candidates: list[dict[str, Any]],
+    evidence_gap: str = "",
+) -> tuple[bool, str]:
+    candidates = [dict(item) for item in list(table_candidates or []) if isinstance(item, dict)]
+    if len(candidates) < 2:
+        return False, "not_enough_candidates"
+
+    normalized_gap = str(evidence_gap or "").strip().lower()
+    if normalized_gap in {
+        "wrong table family",
+        "missing month coverage",
+        "wrong row or column semantics",
+        "wrong period slice",
+        "incomplete evidence",
+    }:
+        return True, normalized_gap
+
+    top = candidates[0]
+    second = candidates[1]
+    requested_period = _requested_period_kind(retrieval_intent)
+    if requested_period:
+        top_period = str(top.get("period_type", "") or "").strip().lower()
+        runner_period = str(second.get("period_type", "") or "").strip().lower()
+        if top_period and runner_period and top_period != requested_period and runner_period == requested_period:
+            return True, "table_period_type_mismatch"
+
+    top_score = float(top.get("ranking_score", 0.0) or 0.0)
+    second_score = float(second.get("ranking_score", 0.0) or 0.0)
+    top_table_conf = float(top.get("table_confidence", 0.0) or 0.0)
+    top_family_conf = float(top.get("table_family_confidence", 0.0) or 0.0)
+    if top_table_conf < 0.72 or top_family_conf < 0.7:
+        return True, "low_table_confidence"
+    if abs(top_score - second_score) < 0.25:
+        return True, "narrow_table_margin"
+
+    if retrieval_intent.decomposition_confidence and retrieval_intent.decomposition_confidence < 0.78 and top_table_conf < 0.82:
+        return True, "low_decomposition_confidence"
+
+    return False, "table_choice_clear_enough"

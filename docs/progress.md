@@ -190,40 +190,26 @@ Rules:
 
 ## Recent Chats
 
-### Chat 1: Phase 23 Completed With Explicit Repair Orchestration And Bounded LLM Escalation
-
-- Added an explicit repair layer so OfficeQA can use typed, bounded LLM assistance at specific retrieval-repair points without falling back into an open-ended prompt loop.
-- Low-confidence decomposition fallback became a code-owned path rather than an env-only behavior.
-- Repair history, evidence review, and bounded repair counts are now visible in traces and eval artifacts.
-- Deterministic compute remained authoritative; repair can rewrite retrieval behavior but cannot replace supported compute.
-
-### Chat 2: Phase 24 Completed With State Ownership Cleanup And Schema Audit
-
-- Cleaned up overlapping runtime fields so the compact runtime has one owner per concept.
-- Removed `answer_focus` and kept `TaskIntent.routing_rationale` as the routing explanation owner.
-- Compact provenance now centers on `query_plan`, `retrieval_seed`, and typed strategy fields instead of replaying compatibility state like `query_candidates`.
-- The walkthrough documents which field is authoritative and which repeated values are only historical snapshots.
-
-### Chat 3: Phase 25 Completed With Original-Benchmark Failure Taxonomy And Harness Cleanup
+### Chat 1: Phase 25 Completed With Original-Benchmark Failure Taxonomy And Harness Cleanup
 
 - Added a benchmark-facing failure taxonomy so the local harness can distinguish mechanical pipeline success from benchmark-wrong answers.
 - Reports now classify issues like `wrong_source`, `wrong_table_family`, `wrong_row_or_column_semantics`, `incomplete_evidence`, `false_semantic_pass`, and `repair_stall`.
 - Added the sampled original-benchmark regression slice and tightened readiness logic so benchmark-like regressions affect go/no-go decisions.
 
-### Chat 4: Phases 26-28 Completed For Benchmark Output, Trace Alignment, Decomposition/Ranking, And Deeper Repair
+### Chat 2: Phases 26-28 Completed For Benchmark Output, Trace Alignment, Decomposition/Ranking, And Deeper Repair
 
 - Hardened output adaptation so simple final answers survive `<FINAL_ANSWER>` formatting correctly.
 - Aligned local trace accounting with request-scoped tracker data so local traces and LangSmith no longer disagree as badly on call counts.
 - Improved decomposition and ranking for monthly/year language, publication-year drift, and Treasury table semantics.
 - Deepened repair and TSR fallback behavior while keeping it bounded and code-owned.
 
-### Chat 5: Validation Closed And Legacy Runtime Tests Pruned
+### Chat 3: Validation Closed And Legacy Runtime Tests Pruned
 
 - Removed stale pre-OfficeQA runtime expectations from the regular test surface and fixed a dead import hole left behind by older options code.
 - Tightened retrieval reasoning so cross-document deterministic numeric paths no longer fail on fake narrative-support requirements.
 - This closed the remaining legacy test debt that was obscuring benchmark-runtime regressions.
 
-### Chat 6: April 6 Benchmark Regression Audit Documented Without Code Changes
+### Chat 4: April 6 Benchmark Regression Audit Documented Without Code Changes
 
 - Audited the April 6 sampled benchmark run and found the next real system bottlenecks were semantic source commitment, table-family admissibility, stale-state reuse after repair, and too little explicit LLM control.
 - Documented how local traces and LangSmith differ:
@@ -232,7 +218,7 @@ Rules:
   - support LLM calls can exist even when solver usage remains `false`
 - This pass was documentation-only and reopened planning around the real benchmark failures.
 
-### Chat 7: Retrieval Roadmap Rebased Around Temporal Evidence Units
+### Chat 5: Retrieval Roadmap Rebased Around Temporal Evidence Units
 
 - Rebased the next plan around the discovery that some answers for year `Y` are actually published in later Treasury bulletins such as `Y+1`.
 - Added the generic temporal-neighborhood idea to planning:
@@ -241,23 +227,23 @@ Rules:
   - candidate evidence units
   - structural rerank
   - header-aware extraction
-  - numeric validation
+- numeric validation
 - Kept repair invalidation and explicit LLM control as important, but moved temporal evidence-unit selection ahead of repair work.
 
-### Chat 8: Phase 30 Implemented With Temporal-Neighborhood Evidence Retrieval
+### Chat 6: Phase 30 Implemented With Temporal-Neighborhood Evidence Retrieval
 
 - Implemented temporal intent and evidence-unit retrieval rather than relying on exact-year file bias.
 - `RetrievalIntent` now carries `period_type`, `target_years`, `publication_year_window`, and preferred publication years.
 - The manifest and index now store publication metadata and table-unit metadata so search can rank by evidence units rather than only whole-file lexical overlap.
 - The index schema moved to `2`, requiring local index rebuild.
 
-### Chat 9: Phase 29 Completed With Explicit Repair Invalidation And Fresh-Hop Enforcement
+### Chat 7: Phase 29 Completed With Explicit Repair Invalidation And Fresh-Hop Enforcement
 
 - Completed repair-state invalidation so repair transitions now force fresh retrieval hops instead of reusing stale evidence.
 - Added explicit reporting for `repair_applied_but_no_new_evidence` and `repair_reused_stale_state`.
 - The walkthrough explains that repairs must yield new evidence, not just rewritten rationale over the same artifacts.
 
-### Chat 10: Phase 31 Completed With An Explicit LLM Control Plane
+### Chat 8: Phase 31 Completed With An Explicit LLM Control Plane
 
 - Added an explicit OfficeQA LLM control plane for hard financial document questions.
 - The runtime now has typed, bounded LLM stages for:
@@ -267,3 +253,93 @@ Rules:
   - repair support
   - final synthesis when needed
 - Deterministic compute remains authoritative for supported numeric answers, but the system now has an explicit semantic assist path instead of relying almost entirely on regex and heuristics.
+
+### Chat 9: April 8 Extraction Audit Rebased The Next Plan Around Context And Hierarchy Loss
+
+- Reviewed the live extraction path against the real parsed corpus shape in `data/officeqa/source/treasury_bulletins_parsed/jsons/treasury_bulletin_1941_11.json`.
+- Confirmed that the current extractor still parses table nodes too locally:
+  - sibling `section_header` and `title` elements are present in the source JSON
+  - but `_extract_tables_from_json_payload()` mainly reads node-local fields like `section_title`, `title`, and `description` from the current table wrapper
+  - so tables can lose the document heading chain before ranking begins
+- Confirmed that normalization is still destroying hierarchy too early:
+  - `_clean_text()` and `_html_cell_text()` collapse whitespace aggressively
+  - `_row_records()` replaces `section_stack` with `leading_headers[:1]`, which is too shallow for deep Treasury row hierarchies
+- Confirmed that ranking is still compensating with overfit shortcuts:
+  - `_classify_table_family()` uses brittle keyword tuples
+  - `_rank_tables()` still has manual category boosts such as `national defense` and `veterans`
+  - `_table_candidate_matches_query()` still gates candidates through a fixed HTML preview window
+- Planning correction:
+  - the next priority is not more compute logic
+  - it is extraction robustness in this order:
+    - stateful document-context projection
+    - hierarchical row/header preservation
+    - structure-aware candidate filtering and overfit removal
+  - the bounded LLM control plane remains important, but it should consume stronger structural inputs instead of compensating for earlier state loss
+- Docs updated in:
+  - `docs/officeqa_execution_plan.md`
+  - `docs/v5_runtime_walkthrough.md`
+- No code changes in this pass by request.
+
+### Chat 10: Phase 32 Completed With Stateful Context Projection And Continued-Table Linking
+
+- Replaced node-local parsed-JSON table extraction with a state-aware traversal that carries page, title chain, section-header chain, nearby unit text, and nearby note context.
+- Live OfficeQA table extraction now projects cleaned `heading_chain` plus raw context fields onto each extracted table payload before ranking.
+- Continued tables are now linked across page breaks by detecting `(Continued)` titles and footnotes such as `(Continued on following page)`, then inheriting parent headers and context for later segments.
+- The OfficeQA manifest/index now stores the same richer context on evidence units, so ranking can use sibling heading context instead of only raw HTML body overlap.
+- The OfficeQA index schema moved to `3` in this phase, so local corpus indexes must be rebuilt after pulling this change.
+
+### Chat 11: Phase 33 Completed With Hierarchy-Preserving Normalization
+
+- Normalization now separates raw structural text from cleaned display text so hierarchy inference does not lose indentation or nonbreaking-space signals too early.
+- Treasury-style visual depth encoded through leading empty `<td>` cells is now treated as structure, not discarded as empty noise.
+- `row_header_depth` inference is no longer tied mainly to seeing a numeric cell early in the table:
+  - header alignment
+  - late descriptive rows
+  - leading empty-cell structure
+  now contribute to the inferred row-header boundary.
+- Canonical row records now preserve hierarchy features such as:
+  - `row_depth`
+  - `leading_empty_cells`
+  - `indentation_depth`
+- The row hierarchy stack is now depth-aware, so child rows can retain their full parent path instead of collapsing to a shallow single-label section context.
+- Docs updated in:
+  - `docs/officeqa_execution_plan.md`
+  - `docs/v5_runtime_walkthrough.md`
+
+### Chat 12: Phase 34 Completed With Structure-Aware Candidate Filtering And Overfit Removal
+
+- Replaced fixed-character HTML preview gating with structural table signatures built from locator/context, sampled headers, sampled row paths, unit hints, and page metadata.
+- Removed the remaining benchmark-shaped ranking shortcuts such as manual `national defense` and `veterans` score boosts from table selection logic.
+- Table-family classification is now driven more by structure:
+  - monthly coverage
+  - fiscal/calendar period shape
+  - debt/balance-sheet semantics
+  - row-path diversity
+  - normalization confidence
+- The bounded `table_rerank_llm` path now receives richer structured candidates:
+  - heading chain
+  - row-path samples
+  - period type
+  - table confidence
+  - structural signature
+- Evidence-unit ranking in the OfficeQA index now weights heading-chain and row-path fit more explicitly instead of relying mainly on coarse lexical overlap.
+- No index schema bump in this phase; local indexes do not need a rebuild just for Phase 34.
+
+### Chat 13: Phase 35 Completed With A Refreshed Bounded LLM Control Plane
+
+- Reopened the old Phase 31 control plane as a post-Phase-34 refresh instead of pretending the original control logic was already calibrated to the stronger structural pipeline.
+- OfficeQA LLM control budgets are now retrieval-intent aware:
+  - simple deterministic year-neighborhood questions keep the smaller default rerank budget
+  - harder semantic cases such as multi-table, multi-document, lower-confidence decomposition, or richer analysis modes can use a slightly larger bounded rerank budget
+- Source rerank LLM use is now triggered by stronger semantic ambiguity signals:
+  - publication-year mismatch
+  - evidence-unit period mismatch
+  - weak best-evidence confidence
+  - low decomposition confidence
+- Table admissibility LLM use is now triggered by stronger structural ambiguity signals:
+  - period-type mismatch
+  - low table confidence
+  - low family confidence
+  - narrow structural ranking margins
+- Deterministic compute remains authoritative for supported numeric answers; this refresh only deepens bounded semantic assist behavior, not free-form compute replacement.
+- Added focused regressions in `tests/test_llm_control.py` for the refreshed gating and budget logic.

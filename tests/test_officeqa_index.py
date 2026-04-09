@@ -9,7 +9,10 @@ from agent.benchmarks.officeqa_index import (
 from agent.benchmarks.officeqa_runtime import OfficeQACorpusBootstrapError, verify_officeqa_corpus_bundle
 from agent.retrieval_tools import (
     _OfficeQATableExtractionTimeout,
+    _classify_table_family,
     _extract_tables_from_html_string,
+    _rank_tables,
+    _table_candidate_matches_query,
     fetch_officeqa_table,
     lookup_officeqa_cells,
     search_reference_corpus,
@@ -248,7 +251,7 @@ def test_verify_officeqa_corpus_bundle_succeeds_with_built_index(tmp_path):
     summary = verify_officeqa_corpus_bundle(corpus_root=corpus_root)
 
     assert summary["document_count"] == 1
-    assert summary["index_schema_version"] == 2
+    assert summary["index_schema_version"] == 3
 
 
 def test_verify_officeqa_corpus_bundle_requires_manifest_metadata(tmp_path):
@@ -503,3 +506,299 @@ def test_fetch_officeqa_table_prefers_monthly_series_over_annual_summary(monkeyp
     assert table_result["tables"][0]["table_family"] == "monthly_series"
     assert table_result["tables"][0]["page_locator"] == "page 18"
     assert table_result["tables"][0]["rows"][0][0] == "January"
+
+
+def test_fetch_officeqa_table_projects_sibling_section_header_context(monkeypatch, tmp_path):
+    corpus_root = tmp_path / "treasury_bulletins_parsed"
+    corpus_root.mkdir(parents=True)
+    (corpus_root / "treasury_bulletin_1941_11.json").write_text(
+        json.dumps(
+            {
+                "document": {
+                    "elements": [
+                        {"type": "title", "content": "Bulletin of the Treasury Department, November 1941", "bbox": [{"page_id": 11}]},
+                        {"type": "section_header", "content": "SUMMARY OF FISCAL STATISTICS", "bbox": [{"page_id": 11}]},
+                        {"type": "text", "content": "(in millions of dollars)", "bbox": [{"page_id": 11}]},
+                        {
+                            "type": "table",
+                            "bbox": [{"page_id": 11}],
+                            "content": (
+                                "<table>"
+                                "<tr><th>Category</th><th>1940</th></tr>"
+                                "<tr><td>Total expenditures</td><td>8,998</td></tr>"
+                                "</table>"
+                            ),
+                        },
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    build_officeqa_index(corpus_root=corpus_root)
+    monkeypatch.setenv("OFFICEQA_CORPUS_DIR", str(corpus_root))
+
+    table_result = fetch_officeqa_table.invoke(
+        {"document_id": "treasury_bulletin_1941_11_json", "table_query": "summary of fiscal statistics"}
+    )
+
+    assert table_result["metadata"]["officeqa_status"] == "ok"
+    assert "summary of fiscal statistics" in table_result["tables"][0]["context_text"].lower()
+    assert "SUMMARY OF FISCAL STATISTICS" in table_result["tables"][0]["document_context"]["raw_heading_chain"]
+
+
+def test_fetch_officeqa_table_stitches_continued_tables_across_pages(monkeypatch, tmp_path):
+    corpus_root = tmp_path / "treasury_bulletins_parsed"
+    corpus_root.mkdir(parents=True)
+    (corpus_root / "treasury_bulletin_1941_11.json").write_text(
+        json.dumps(
+            {
+                "document": {
+                    "elements": [
+                        {"type": "title", "content": "Bulletin of the Treasury Department, November 1941", "bbox": [{"page_id": 12}]},
+                        {"type": "section_header", "content": "Budget Receipts and Expenditures", "bbox": [{"page_id": 12}]},
+                        {"type": "text", "content": "(in millions of dollars)", "bbox": [{"page_id": 12}]},
+                        {
+                            "type": "table",
+                            "bbox": [{"page_id": 12}],
+                            "content": (
+                                "<table>"
+                                "<tr><th>Category</th><th>1940</th></tr>"
+                                "<tr><td>Total expenditures</td><td>8,998</td></tr>"
+                                "</table>"
+                            ),
+                        },
+                        {"type": "footnote", "content": "(Continued on following page)", "bbox": [{"page_id": 12}]},
+                        {"type": "title", "content": "Budget Receipts and Expenditures - (Continued)", "bbox": [{"page_id": 13}]},
+                        {
+                            "type": "table",
+                            "bbox": [{"page_id": 13}],
+                            "content": (
+                                "<table>"
+                                "<tr><td>U.S. national defense</td><td>4,748</td></tr>"
+                                "<tr><td>Veterans' Administration</td><td>557</td></tr>"
+                                "</table>"
+                            ),
+                        },
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    build_officeqa_index(corpus_root=corpus_root)
+    monkeypatch.setenv("OFFICEQA_CORPUS_DIR", str(corpus_root))
+
+    table_result = fetch_officeqa_table.invoke(
+        {
+            "document_id": "treasury_bulletin_1941_11_json",
+            "table_query": "u.s. national defense total expenditures 1940",
+        }
+    )
+
+    assert table_result["metadata"]["officeqa_status"] == "ok"
+    assert table_result["tables"][0]["headers"] == ["Row", "1940"]
+    assert any(row[0] == "U.S. national defense" and row[1] == "4,748" for row in table_result["tables"][0]["rows"])
+    assert table_result["tables"][0]["document_context"]["is_continuation_group"] is True
+
+
+def test_search_officeqa_corpus_index_uses_stateful_context_in_best_evidence_unit(tmp_path):
+    corpus_root = tmp_path / "treasury_bulletins_parsed"
+    corpus_root.mkdir(parents=True)
+    (corpus_root / "treasury_bulletin_1941_11.json").write_text(
+        json.dumps(
+            {
+                "document": {
+                    "elements": [
+                        {"type": "title", "content": "Bulletin of the Treasury Department, November 1941", "bbox": [{"page_id": 12}]},
+                        {"type": "section_header", "content": "SUMMARY OF FISCAL STATISTICS", "bbox": [{"page_id": 12}]},
+                        {"type": "section_header", "content": "Budget Receipts and Expenditures", "bbox": [{"page_id": 12}]},
+                        {"type": "text", "content": "(in millions of dollars)", "bbox": [{"page_id": 12}]},
+                        {
+                            "type": "table",
+                            "bbox": [{"page_id": 12}],
+                            "content": (
+                                "<table>"
+                                "<tr><th>Category</th><th>1940</th></tr>"
+                                "<tr><td>Total expenditures</td><td>8,998</td></tr>"
+                                "</table>"
+                            ),
+                        },
+                        {"type": "footnote", "content": "(Continued on following page)", "bbox": [{"page_id": 12}]},
+                        {"type": "title", "content": "Budget Receipts and Expenditures - (Continued)", "bbox": [{"page_id": 13}]},
+                        {
+                            "type": "table",
+                            "bbox": [{"page_id": 13}],
+                            "content": (
+                                "<table>"
+                                "<tr><td>U.S. national defense</td><td>4,748</td></tr>"
+                                "<tr><td>Veterans' Administration</td><td>557</td></tr>"
+                                "</table>"
+                            ),
+                        },
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    build_officeqa_index(corpus_root=corpus_root)
+
+    result = search_officeqa_corpus_index(
+        "What were the total expenditures for U.S. national defense in the calendar year 1940?",
+        corpus_root=corpus_root,
+        target_years=["1940"],
+        publication_year_window=["1940", "1941", "1942"],
+        preferred_publication_years=["1941", "1940", "1942"],
+        period_type="calendar_year",
+        granularity_requirement="calendar_year",
+        entity="U.S. national defense",
+        metric="total expenditures",
+        top_k=1,
+    )
+
+    assert result["results"][0]["document_id"] == "treasury_bulletin_1941_11_json"
+    best_unit = result["results"][0]["metadata"]["best_evidence_unit"]
+    assert "summary of fiscal statistics" in best_unit["context_text"].lower()
+    assert "Budget Receipts and Expenditures" in best_unit["heading_chain"]
+    assert best_unit["is_continuation_group"] is True
+
+
+def test_table_candidate_matches_query_uses_structural_signature_not_fixed_preview():
+    filler = "<tr><td>Filler category</td><td>000</td></tr>" * 220
+    content = (
+        "<table>"
+        "<tr><th>Category</th><th>Calendar year 1940</th></tr>"
+        f"{filler}"
+        "<tr><td>Postal Savings System</td><td>125</td></tr>"
+        "</table>"
+    )
+
+    assert _table_candidate_matches_query(
+        "table 7",
+        "Summary of fiscal statistics",
+        content,
+        "postal savings system expenditures 1940",
+        page_locator="page 18",
+        unit_hint="million dollars",
+    ) is True
+
+
+def test_classify_table_family_generalizes_beyond_benchmark_keyword_boosts():
+    table = {
+        "locator": "table 4",
+        "headers": ["Row", "Calendar year 1940"],
+        "rows": [
+            ["Postal Savings System", "125"],
+            ["Interior Department", "77"],
+            ["Bureau of Mines", "18"],
+        ],
+        "context_text": "Summary of expenditures by department",
+        "heading_chain": ["Summary of Fiscal Statistics", "Budget Expenditures"],
+        "unit_hint": "million dollars",
+        "canonical_table": {
+            "row_records": [
+                {"row_type": "data", "row_path": ["Postal Savings System"], "row_label": "Postal Savings System"},
+                {"row_type": "data", "row_path": ["Interior Department"], "row_label": "Interior Department"},
+                {"row_type": "data", "row_path": ["Bureau of Mines"], "row_label": "Bureau of Mines"},
+            ],
+            "normalization_metrics": {"header_data_separation_quality": 0.88},
+        },
+    }
+
+    family, confidence = _classify_table_family(table)
+
+    assert family == "category_breakdown"
+    assert confidence >= 0.6
+
+
+def test_rank_tables_prefers_generic_structural_fit_without_manual_category_boosts():
+    query = "What were the total expenditures for Postal Savings System in the calendar year 1940?"
+    ranked = _rank_tables(
+        [
+            {
+                "locator": "table receipts",
+                "headers": ["Row", "Calendar year 1940"],
+                "rows": [["Postal Savings receipts", "800"]],
+                "context_text": "Summary of receipts",
+                "heading_chain": ["Budget Receipts"],
+                "unit_hint": "million dollars",
+                "canonical_table": {
+                    "row_records": [
+                        {"row_type": "data", "row_path": ["Postal Savings receipts"], "row_label": "Postal Savings receipts"},
+                    ],
+                    "normalization_metrics": {"header_data_separation_quality": 0.81},
+                },
+            },
+            {
+                "locator": "table expenditures",
+                "headers": ["Row", "Calendar year 1940"],
+                "rows": [["Postal Savings System", "125"], ["Interior Department", "77"]],
+                "context_text": "Summary of expenditures by department",
+                "heading_chain": ["Budget Expenditures"],
+                "unit_hint": "million dollars",
+                "canonical_table": {
+                    "row_records": [
+                        {"row_type": "data", "row_path": ["Postal Savings System"], "row_label": "Postal Savings System"},
+                        {"row_type": "data", "row_path": ["Interior Department"], "row_label": "Interior Department"},
+                    ],
+                    "normalization_metrics": {"header_data_separation_quality": 0.9},
+                },
+            },
+        ],
+        query,
+    )
+
+    assert ranked[0]["locator"] == "table expenditures"
+    assert ranked[0]["ranking_score"] > ranked[1]["ranking_score"]
+
+
+def test_fetch_officeqa_table_exposes_structural_candidates_for_table_rerank_llm(monkeypatch, tmp_path):
+    corpus_root = tmp_path / "treasury_bulletins_parsed"
+    corpus_root.mkdir(parents=True)
+    (corpus_root / "treasury_generic_1940.json").write_text(
+        json.dumps(
+            {
+                "document": {
+                    "elements": [
+                        {"type": "section_header", "content": "Summary of Fiscal Statistics"},
+                        {
+                            "type": "table",
+                            "content": (
+                                "<table>"
+                                "<tr><th>Category</th><th>Calendar year 1940</th></tr>"
+                                "<tr><td>Postal Savings System</td><td>125</td></tr>"
+                                "<tr><td>Interior Department</td><td>77</td></tr>"
+                                "</table>"
+                            ),
+                        },
+                        {
+                            "type": "table",
+                            "content": (
+                                "<table>"
+                                "<tr><th>Category</th><th>Calendar year 1940</th></tr>"
+                                "<tr><td>Postal Savings receipts</td><td>800</td></tr>"
+                                "</table>"
+                            ),
+                        },
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    build_officeqa_index(corpus_root=corpus_root)
+    monkeypatch.setenv("OFFICEQA_CORPUS_DIR", str(corpus_root))
+
+    result = fetch_officeqa_table.invoke(
+        {
+            "document_id": "treasury_generic_1940_json",
+            "table_query": "Postal Savings System total expenditures 1940",
+        }
+    )
+
+    candidate = result["metadata"]["table_candidates"][0]
+    assert candidate["structural_signature"]
+    assert "Postal Savings System" in candidate["structural_signature"]
+    assert "period_type" in candidate
+    assert "table_confidence" in candidate

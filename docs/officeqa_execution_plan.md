@@ -18,6 +18,7 @@ Current state:
 
 - V5 baseline is complete.
 - A new hardening backlog is now open because the V5 walkthrough review exposed remaining OfficeQA-only cleanup, retrieval flexibility gaps, hidden execution decisions, and future multi-document needs.
+- A second hardening track is now open after the April 8 reference-corpus audit showed that extraction is still losing document and row hierarchy semantics before compute begins.
 
 ## Planning Rules
 
@@ -1596,6 +1597,203 @@ Status:
   - repair
   - final synthesis
 - Traces and regression artifacts now expose category-tagged OfficeQA LLM usage instead of only coarse `used_llm` flags.
+
+## Phase 32: Stateful Document Context Projection
+
+Objective:
+
+- stop parsing tables as isolated JSON nodes and restore the surrounding document context that Treasury parsed JSON already contains.
+
+Why now:
+
+- in files like `treasury_bulletin_1941_11.json`, section headings such as `SUMMARY OF FISCAL STATISTICS` are sibling elements that appear immediately before tables
+- the current extractor reads each node in isolation and only checks fields like `payload.get("section_title")` on the table node itself
+- this means correct tables lose their heading chain before ranking begins, so later ranking must guess from raw HTML content alone
+
+Tasks:
+
+- [x] `P32.1` Replace isolated recursive JSON walking with a state-aware document traversal that carries:
+  - current page
+  - current title chain
+  - current section-header chain
+  - nearby unit text
+  - local footnote / note context
+- [x] `P32.2` Project that rolling document state onto each extracted table and index-time evidence unit before ranking or indexing
+- [x] `P32.3` Record heading-chain metadata explicitly in OfficeQA table payloads and evidence-unit index entries
+- [x] `P32.4` Keep raw document-context fields separate from cleaned display labels so later stages can reason over both
+- [x] `P32.5` Add generic regressions using real parsed Treasury JSON where:
+  - the useful table depends on a preceding sibling `section_header`
+  - the same table HTML would be ambiguous without the heading chain
+- [x] `P32.6` Detect `(Continued)` title chains and footnote-driven page breaks, then stitch or semantically link continued tables so later segments inherit parent headers and context instead of becoming ambiguous standalone fragments
+
+Suggested code targets:
+
+- `src/agent/retrieval_tools.py`
+- `src/agent/benchmarks/officeqa_index.py`
+- `src/agent/benchmarks/officeqa_manifest.py`
+- `src/agent/officeqa_structured_evidence.py`
+- `tests/test_officeqa_index.py`
+- `tests/test_engine_runtime.py`
+
+Exit criteria:
+
+- extracted tables carry document section context even when the source JSON stores headings as sibling elements
+- continued multi-page tables can preserve parent headers and context across page breaks
+- ranking no longer depends on keywords appearing again inside the raw HTML table body
+
+Completion note:
+
+- Phase 32 completed by introducing state-aware Treasury JSON traversal, context-rich table payloads, continuation-aware stitching for multi-page tables, and matching evidence-unit enrichment in the OfficeQA manifest/index.
+- The OfficeQA index schema moved to `3` in this phase because evidence-unit metadata now carries richer document-context and continuation fields.
+
+## Phase 33: Hierarchical Row And Header Preservation
+
+Objective:
+
+- preserve the structural hierarchy already present in Treasury tables instead of flattening it away during normalization.
+
+Why now:
+
+- the current normalization path aggressively collapses whitespace and replaces section context with a single-entry `section_stack`
+- this destroys indentation-based row hierarchy and parent-child row paths before structured evidence is built
+- once this hierarchy is lost, compute and validator have no way to distinguish sibling rows that need full parent context
+
+Tasks:
+
+- [x] `P33.1` Split text handling into:
+  - raw structural text
+  - cleaned display text
+  so normalization does not destroy leading indentation or nonbreaking-space signals before hierarchy inference
+- [x] `P33.2` Preserve row indentation or visual depth as an explicit feature in canonical row records
+- [x] `P33.2a` Treat leading empty header cells such as `<td></td><td>Income Tax</td>` as structural depth signals rather than empty noise
+- [x] `P33.3` Replace the single-level `section_stack = leading_headers[:1]` behavior with a depth-aware row hierarchy stack
+- [x] `P33.3a` Augment `row_header_depth` inference with header-alignment and late-numeric safety signals so long descriptive table intros do not collapse to depth `1` only because no numeric cells appear in the first few rows
+- [x] `P33.4` Build explicit row-tree and header-tree outputs in the canonical table schema:
+  - parent row path
+  - full row path
+  - header path
+  - local depth
+- [x] `P33.5` Add generic regressions for:
+  - child rows distinguished only by indentation or hierarchy
+  - repeated subheaders under different parents
+  - deep Treasury category tables with multiple section layers
+  - leading-empty-cell hierarchy
+  - late-numeric descriptive intros that still require multi-column row headers
+
+Suggested code targets:
+
+- `src/agent/tools/table_normalization.py`
+- `src/agent/retrieval_tools.py`
+- `src/agent/benchmarks/officeqa_manifest.py`
+- `src/agent/officeqa_structured_evidence.py`
+- `src/agent/benchmarks/officeqa_compute.py`
+- `src/agent/benchmarks/officeqa_validator.py`
+- `tests/test_table_normalization.py`
+- `tests/test_officeqa_index.py`
+- `tests/test_officeqa_compute.py`
+
+Exit criteria:
+
+- row hierarchy survives normalization into structured evidence
+- compute and validator can rely on full row paths instead of only flattened row labels
+
+## Phase 34: Structure-Aware Candidate Filtering And Overfit Removal
+
+Objective:
+
+- remove the current overfit ranking shortcuts and replace them with structure-aware candidate selection that generalizes beyond already-tested benchmark categories.
+
+Why now:
+
+- current ranking still uses hardcoded category terms and manual boosts such as `national defense` and `veterans`
+- candidate gating still uses a fixed HTML preview truncation window, which can skip the right table before full expansion
+- this is masking upstream extraction weakness with benchmark-shaped scoring hacks
+
+Tasks:
+
+- [x] `P34.1` Replace fixed-character HTML preview gating with structural signatures built from:
+  - heading chain
+  - unit text
+  - normalized header rows
+  - sampled row paths
+  - page locator / document metadata
+- [x] `P34.2` Demote hardcoded category tuples and manual score boosts from `_classify_table_family()` and `_rank_tables()`
+- [x] `P34.3` Move ambiguous table-family selection into the bounded `table_rerank_llm` control-plane path from Phase 31, using structured signatures instead of raw HTML
+- [x] `P34.4` Extend evidence-unit scoring so reranking uses:
+  - semantic fit
+  - temporal fit
+  - heading-chain fit
+  - row-path fit
+  - period-type fit
+  - table confidence
+- [x] `P34.5` Add generic regressions where correct answers come from departments or categories not already represented in the current keyword boosts
+
+Suggested code targets:
+
+- `src/agent/retrieval_tools.py`
+- `src/agent/retrieval_reasoning.py`
+- `src/agent/llm_control.py`
+- `src/agent/nodes/orchestrator_retrieval.py`
+- `src/agent/benchmarks/officeqa_index.py`
+- `tests/test_engine_runtime.py`
+- `tests/test_question_decomposition.py`
+- `tests/test_officeqa_index.py`
+
+Exit criteria:
+
+- correct tables are not skipped just because key evidence sits outside a fixed preview window
+- ranking behavior generalizes beyond currently hardcoded benchmark-friendly categories
+- the LLM control plane consumes richer structural metadata instead of compensating for earlier extraction loss
+
+## Phase 35: Bounded LLM Control Plane Refresh After Structural Hardening
+
+Objective:
+
+- refresh the Phase 31 control plane so bounded LLM use is driven by the stronger temporal, structural, and hierarchy signals from Phases 30 to 34.
+
+Why now:
+
+- the original Phase 31 control plane was added before stateful context projection, hierarchy preservation, and structure-aware reranking existed
+- now that those stronger signals exist, the LLM control plane should use them directly instead of acting like a thin fallback on weak score gaps alone
+- the benchmark budget can support slightly deeper bounded semantic control, but deterministic compute must remain authoritative for supported numeric answers
+
+Tasks:
+
+- [x] `P35.1` Make OfficeQA LLM control budgets retrieval-intent aware instead of fixed for every question
+- [x] `P35.2` Trigger source rerank LLM usage from semantic ambiguity signals such as:
+  - publication-year mismatch
+  - period-type mismatch
+  - low evidence-unit confidence
+  - low decomposition confidence
+  instead of only top-score weakness
+- [x] `P35.3` Trigger table admissibility LLM usage from structural ambiguity signals such as:
+  - period-type mismatch
+  - low table confidence
+  - low family confidence
+  - narrow structural ranking margins
+- [x] `P35.4` Keep deterministic compute authoritative and do not allow this refresh to replace compute with free-form synthesis for supported numeric tasks
+- [x] `P35.5` Add focused regressions for the refreshed LLM control gates and budgets
+
+Suggested code targets:
+
+- `src/agent/llm_control.py`
+- `src/agent/nodes/orchestrator.py`
+- `tests/test_llm_control.py`
+- `tests/test_engine_runtime.py`
+
+Exit criteria:
+
+- the control plane uses stronger structural/temporal ambiguity signals before invoking bounded rerank LLMs
+- simple year-neighborhood deterministic questions keep the smaller default budget
+- harder semantic cases can spend a slightly larger bounded rerank budget without opening uncontrolled LLM loops
+
+Execution order update:
+
+- do `Phase 32` before any further ranking cleanup
+- do `Phase 33` before widening compute or validator semantics again
+- do `Phase 34` after the stronger context and hierarchy signals exist
+- keep `Phase 31` as the bounded semantic assist layer, but feed it better structural inputs rather than asking it to compensate for state loss
+- use `Phase 35` as the post-hardening refresh of that bounded semantic assist layer
 
 ## Optional Backlog: Shared Global Workpad
 

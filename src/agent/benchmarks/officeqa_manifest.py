@@ -10,6 +10,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from agent.tools.officeqa_json_context import dedupe_context_parts, iter_stateful_table_nodes
 from agent.tools.table_normalization import normalize_dense_table_grid, normalize_flat_table
 
 _CORPUS_ENV_NAMES = (
@@ -30,7 +31,7 @@ _SUPPORTED_EXTENSIONS = {".txt", ".md", ".json", ".csv", ".html", ".xml", ".tsv"
 _INDEX_DIR_NAME = ".officeqa_index"
 _MANIFEST_FILENAME = "manifest.jsonl"
 _METADATA_FILENAME = "index_metadata.json"
-_INDEX_SCHEMA_VERSION = 2
+_INDEX_SCHEMA_VERSION = 3
 _MAX_FILES = 4000
 _MONTHS = (
     "january",
@@ -281,12 +282,162 @@ def _table_confidence(canonical_table: dict[str, Any], family_confidence: float)
     return round(max(0.05, min(1.0, confidence)), 4)
 
 
+def _combine_context_text(*parts: Any) -> str:
+    flattened: list[str] = []
+    for part in parts:
+        if isinstance(part, list):
+            flattened.extend(str(item or "") for item in part)
+        else:
+            flattened.append(str(part or ""))
+    return " | ".join(dedupe_context_parts(flattened))
+
+
+def _table_headers_are_generic(headers: list[str]) -> bool:
+    normalized = [re.sub(r"\s+", " ", str(header or "")).strip() for header in headers if str(header or "").strip()]
+    if not normalized:
+        return True
+    data_headers = normalized[1:] if normalized and normalized[0].lower() == "row" else normalized
+    if not data_headers:
+        return True
+    informative = [
+        header
+        for header in data_headers
+        if not re.fullmatch(r"column\s+\d+", header.lower())
+        and header.lower() not in {"value", "values", "amount", "amounts", "data"}
+    ]
+    return not informative
+
+
+def _dedupe_display_rows(rows: list[list[str]]) -> list[list[str]]:
+    deduped: list[list[str]] = []
+    seen: set[tuple[str, ...]] = set()
+    for row in rows:
+        key = tuple(str(cell or "") for cell in row)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(list(row))
+    return deduped
+
+
+def _attach_stateful_context(canonical_table: dict[str, Any], state: dict[str, Any], *, unit_hint: str) -> dict[str, Any]:
+    updated = dict(canonical_table)
+    updated["context_text"] = _combine_context_text(state.get("heading_chain", []), state.get("note_context", []))
+    updated["heading_chain"] = list(state.get("heading_chain", []))
+    updated["document_context"] = {
+        "heading_chain": list(state.get("heading_chain", [])),
+        "raw_heading_chain": list(state.get("raw_heading_chain", [])),
+        "note_context": list(state.get("note_context", [])),
+        "raw_note_context": list(state.get("raw_note_context", [])),
+        "is_continuation": bool(state.get("is_continuation")),
+        "continuation_key": str(state.get("continuation_key", "") or ""),
+        "continued_from_locator": str(state.get("continued_from_locator", "") or ""),
+        "continued_from_page_locator": str(state.get("continued_from_page_locator", "") or ""),
+        "continued_from_heading_chain": list(state.get("continued_from_heading_chain", [])),
+    }
+    updated["unit_hint"] = str(updated.get("unit_hint", "") or unit_hint or "")
+    return updated
+
+
+def _merge_continued_canonical_tables(parent: dict[str, Any], child: dict[str, Any]) -> dict[str, Any] | None:
+    parent_canonical = dict(parent.get("canonical_table") or {})
+    child_canonical = dict(child.get("canonical_table") or {})
+    parent_headers = [str(item or "") for item in list(parent_canonical.get("display_headers", []))]
+    parent_rows = [list(row) for row in list(parent_canonical.get("display_rows", [])) if isinstance(row, list)]
+    child_rows = [list(row) for row in list(child_canonical.get("display_rows", [])) if isinstance(row, list)]
+    child_headers = [str(item or "") for item in list(child_canonical.get("display_headers", []))]
+    if not parent_headers or not parent_rows:
+        return None
+    use_source_grid = (
+        (not bool(child_canonical.get("source_grid_has_header_cells")))
+        or _table_headers_are_generic(child_headers)
+    ) and bool(child_canonical.get("source_grid_text"))
+    source_rows = (
+        [list(row) for row in list(child_canonical.get("source_grid_text", [])) if isinstance(row, list)]
+        if use_source_grid
+        else child_rows
+    )
+    if not source_rows:
+        return None
+    if child_headers and len(child_headers) != len(parent_headers) and not _table_headers_are_generic(child_headers):
+        return None
+
+    expected_width = len(parent_headers)
+    normalized_child_rows: list[list[str]] = []
+    for raw_row in source_rows:
+        row = [str(cell or "") for cell in raw_row[:expected_width]]
+        if len(row) < expected_width:
+            row.extend([""] * (expected_width - len(row)))
+        if not any(str(cell or "").strip() for cell in row):
+            continue
+        normalized_child_rows.append(row)
+    if not normalized_child_rows:
+        return None
+
+    merged_rows = _dedupe_display_rows([*parent_rows, *normalized_child_rows])
+    combined_heading_chain = dedupe_context_parts(
+        [
+            *list(parent_canonical.get("heading_chain", [])),
+            *list(child_canonical.get("heading_chain", [])),
+        ]
+    )
+    combined_note_context = dedupe_context_parts(
+        [
+            *list((parent_canonical.get("document_context") or {}).get("note_context", [])),
+            *list((child_canonical.get("document_context") or {}).get("note_context", [])),
+        ]
+    )
+    combined_context_text = _combine_context_text(combined_heading_chain, combined_note_context)
+    merged_canonical = normalize_flat_table(
+        parent_headers,
+        merged_rows,
+        locator=str(parent.get("locator", "") or child.get("locator", "") or "table"),
+        page_locator=str(parent.get("page_locator", "") or child.get("page_locator", "") or ""),
+        unit_hint=str(parent.get("unit_hint", "") or child.get("unit_hint", "") or ""),
+        context_text=combined_context_text,
+    )
+    merged_canonical["heading_chain"] = combined_heading_chain
+    merged_canonical["document_context"] = {
+        "heading_chain": combined_heading_chain,
+        "raw_heading_chain": dedupe_context_parts(
+            [
+                *list((parent_canonical.get("document_context") or {}).get("raw_heading_chain", [])),
+                *list((child_canonical.get("document_context") or {}).get("raw_heading_chain", [])),
+            ]
+        ),
+        "note_context": combined_note_context,
+        "raw_note_context": dedupe_context_parts(
+            [
+                *list((parent_canonical.get("document_context") or {}).get("raw_note_context", [])),
+                *list((child_canonical.get("document_context") or {}).get("raw_note_context", [])),
+            ]
+        ),
+        "is_continuation_group": True,
+        "continuation_key": str(parent.get("continuation_key", "") or child.get("continuation_key", "") or ""),
+    }
+    return {
+        "canonical_table": merged_canonical,
+        "locator": str(parent.get("locator", "") or child.get("locator", "") or "table"),
+        "page_locator": str(parent.get("page_locator", "") or child.get("page_locator", "") or ""),
+        "unit_hint": str(parent.get("unit_hint", "") or child.get("unit_hint", "") or ""),
+        "continuation_key": str(parent.get("continuation_key", "") or child.get("continuation_key", "") or ""),
+    }
+
+
 def _html_cell_text(fragment: str) -> str:
     cleaned = re.sub(r"<br\s*/?>", "\n", fragment or "", flags=re.IGNORECASE)
     cleaned = re.sub(r"</p\s*>", "\n", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"<[^>]+>", " ", cleaned)
     cleaned = html.unescape(cleaned)
-    return re.sub(r"\s+", " ", cleaned).strip()
+    cleaned = cleaned.replace("\xa0", " ")
+    leading_match = re.match(r"^[ \t]+", cleaned)
+    leading = leading_match.group(0) if leading_match else ""
+    body = cleaned[len(leading):] if leading else cleaned
+    body = re.sub(r"\s+", " ", body).strip()
+    if not body:
+        return ""
+    preserved_leading = " " * min(6, len(leading.replace("\t", "    ")))
+    return f"{preserved_leading}{body}" if preserved_leading else body
 
 
 def _html_table_to_grid(table_html: str) -> list[list[dict[str, Any]]]:
@@ -352,10 +503,15 @@ def _table_unit_from_canonical(
     row_records = [item for item in list(canonical_table.get("row_records", [])) if isinstance(item, dict)]
     row_labels = [str(item.get("row_label", "") or "") for item in row_records if str(item.get("row_label", "") or "").strip()]
     column_paths = [" | ".join(path) for path in list(canonical_table.get("column_paths", [])) if path]
+    heading_chain = [str(item or "") for item in list(canonical_table.get("heading_chain", [])) if str(item or "").strip()]
+    context_text = str(canonical_table.get("context_text", "") or "").strip()
+    document_context = dict(canonical_table.get("document_context") or {})
     preview_text = " ".join(
         [
             locator,
             page_locator,
+            context_text,
+            " ".join(heading_chain[:6]),
             " ".join(display_headers[:8]),
             " ".join(row_labels[:12]),
             unit_hint,
@@ -367,6 +523,8 @@ def _table_unit_from_canonical(
     return {
         "locator": locator,
         "page_locator": page_locator,
+        "context_text": context_text,
+        "heading_chain": heading_chain[:8],
         "table_family": table_family,
         "table_family_confidence": round(family_confidence, 4),
         "period_type": _period_type_for_table(preview_text, month_coverage, year_refs),
@@ -380,6 +538,8 @@ def _table_unit_from_canonical(
         "unit_hints": [unit_hint] if unit_hint else [],
         "table_confidence": _table_confidence(canonical_table, family_confidence),
         "preview_text": preview_text[:900],
+        "continuation_key": str(document_context.get("continuation_key", "") or ""),
+        "is_continuation_group": bool(document_context.get("is_continuation_group")),
     }
 
 
@@ -400,6 +560,8 @@ def _table_unit_from_headers_and_rows(
         page_locator=page_locator,
         unit_hint=unit_hint,
     )
+    canonical_table["source_grid_text"] = [list(row) for row in rows]
+    canonical_table["source_grid_has_header_cells"] = bool(headers)
     return _table_unit_from_canonical(
         canonical_table,
         locator=locator,
@@ -412,6 +574,111 @@ def _table_unit_from_headers_and_rows(
 
 def _table_units_from_payload(payload: Any, *, path: Path) -> list[dict[str, Any]]:
     publication_year, publication_month = _publication_stamp(path)
+    stateful_nodes = iter_stateful_table_nodes(payload)
+    if stateful_nodes:
+        extracted_tables: list[dict[str, Any]] = []
+        continuation_groups: dict[str, int] = {}
+
+        def append_stateful_canonical(source: dict[str, Any]) -> None:
+            continuation_key = str(source.get("continuation_key", "") or "")
+            if continuation_key and continuation_key in continuation_groups and source.get("is_continuation"):
+                parent_index = continuation_groups[continuation_key]
+                if 0 <= parent_index < len(extracted_tables):
+                    merged = _merge_continued_canonical_tables(extracted_tables[parent_index], source)
+                    if merged is not None:
+                        extracted_tables[parent_index] = merged
+                        return
+            extracted_tables.append(source)
+            if continuation_key:
+                continuation_groups[continuation_key] = len(extracted_tables) - 1
+
+        for table_context in stateful_nodes:
+            node = dict(table_context.get("node") or {})
+            locator = str(table_context.get("locator", "") or "table")
+            page_locator = str(table_context.get("page_locator", "") or "")
+            resolved_unit_hint = str(node.get("unit") or node.get("units") or table_context.get("unit_hint") or "").strip()
+            resolved_context_text = _combine_context_text(
+                table_context.get("context_text", ""),
+                table_context.get("note_context", []),
+            )
+            headers = list(node.get("headers", []) or node.get("columns", []) or node.get("column_headers", []) or [])
+            rows = list(node.get("rows", []) or [])
+            if headers and rows:
+                normalized_rows = []
+                for row in rows[:40]:
+                    if isinstance(row, list):
+                        normalized_rows.append([str(cell or "") for cell in row[:16]])
+                    elif isinstance(row, dict):
+                        normalized_rows.append([str(value or "") for value in list(row.values())[:16]])
+                if normalized_rows:
+                    canonical_table = normalize_flat_table(
+                        [str(header or "") for header in headers[:16]],
+                        normalized_rows,
+                        locator=locator,
+                        page_locator=page_locator,
+                        unit_hint=resolved_unit_hint,
+                        context_text=resolved_context_text,
+                    )
+                    canonical_table["source_grid_text"] = [list(row) for row in normalized_rows]
+                    canonical_table["source_grid_has_header_cells"] = bool(headers)
+                    canonical_table = _attach_stateful_context(canonical_table, table_context, unit_hint=resolved_unit_hint)
+                    append_stateful_canonical(
+                        {
+                            "canonical_table": canonical_table,
+                            "locator": locator,
+                            "page_locator": page_locator,
+                            "unit_hint": resolved_unit_hint,
+                            "continuation_key": str(table_context.get("continuation_key", "") or ""),
+                            "is_continuation": bool(table_context.get("is_continuation")),
+                        }
+                    )
+            content = str(node.get("content") or "")
+            if "<table" in content.lower():
+                for table_index, table_match in enumerate(_HTML_TABLE_RE.finditer(content), start=1):
+                    grid = _html_table_to_grid(table_match.group(0))
+                    if len(grid) < 2:
+                        continue
+                    canonical_table = normalize_dense_table_grid(
+                        grid,
+                        locator=locator if table_index == 1 else f"{locator}#{table_index}",
+                        page_locator=page_locator,
+                        unit_hint=resolved_unit_hint,
+                        context_text=resolved_context_text,
+                    )
+                    canonical_table["source_grid_text"] = [
+                        [str(cell.get("text", "") or "") for cell in row]
+                        for row in grid
+                    ]
+                    canonical_table["source_grid_has_header_cells"] = any(
+                        bool(cell.get("is_header")) for row in grid for cell in row
+                    )
+                    canonical_table = _attach_stateful_context(canonical_table, table_context, unit_hint=resolved_unit_hint)
+                    append_stateful_canonical(
+                        {
+                            "canonical_table": canonical_table,
+                            "locator": str(canonical_table.get("locator", "") or locator or "table"),
+                            "page_locator": page_locator,
+                            "unit_hint": resolved_unit_hint,
+                            "continuation_key": str(table_context.get("continuation_key", "") or ""),
+                            "is_continuation": bool(table_context.get("is_continuation")),
+                        }
+                    )
+                    if len(extracted_tables) >= 24:
+                        break
+            if len(extracted_tables) >= 24:
+                break
+        return [
+            _table_unit_from_canonical(
+                item["canonical_table"],
+                locator=str(item.get("locator", "") or "table"),
+                page_locator=str(item.get("page_locator", "") or ""),
+                unit_hint=str(item.get("unit_hint", "") or ""),
+                publication_year=publication_year,
+                publication_month=publication_month,
+            )
+            for item in extracted_tables[:24]
+        ]
+
     units: list[dict[str, Any]] = []
 
     def visit(node: Any, *, locator_hint: str = "", page_hint: str = "", unit_hint: str = "") -> None:
@@ -471,6 +738,13 @@ def _table_units_from_payload(payload: Any, *, path: Path) -> list[dict[str, Any
                         locator=(locator or "table") if table_index == 1 else f"{locator or 'table'}#{table_index}",
                         page_locator=page_locator,
                         unit_hint=resolved_unit_hint,
+                    )
+                    canonical_table["source_grid_text"] = [
+                        [str(cell.get("text", "") or "") for cell in row]
+                        for row in grid
+                    ]
+                    canonical_table["source_grid_has_header_cells"] = any(
+                        bool(cell.get("is_header")) for row in grid for cell in row
                     )
                     units.append(
                         _table_unit_from_canonical(

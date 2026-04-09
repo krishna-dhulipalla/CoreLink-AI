@@ -87,6 +87,8 @@ def _table_unit_text(unit: dict[str, Any]) -> str:
         [
             str(unit.get("locator", "") or ""),
             str(unit.get("page_locator", "") or ""),
+            str(unit.get("context_text", "") or ""),
+            " ".join(str(item or "") for item in list(unit.get("heading_chain", []))),
             " ".join(str(item or "") for item in list(unit.get("headers", []))),
             " ".join(str(item or "") for item in list(unit.get("row_labels", []))),
             " ".join(str(item or "") for item in list(unit.get("column_paths", []))),
@@ -146,12 +148,17 @@ def _table_unit_score(unit: dict[str, Any], profile: dict[str, Any]) -> float:
     target_years = set(profile.get("target_years", []))
     header_tokens = set(_tokenize(" ".join(str(item or "") for item in list(unit.get("headers", [])))))
     row_tokens = set(_tokenize(" ".join(str(item or "") for item in list(unit.get("row_labels", [])))))
+    heading_tokens = set(_tokenize(" ".join(str(item or "") for item in list(unit.get("heading_chain", [])))))
+    column_tokens = set(_tokenize(" ".join(str(item or "") for item in list(unit.get("column_paths", [])))))
     year_refs = {str(item) for item in list(unit.get("year_refs", [])) if str(item)}
     month_coverage = list(unit.get("month_coverage", []))
     score = 0.0
     score += 0.18 * len(semantic_tokens & tokens)
     score += 0.16 * len(entity_tokens & row_tokens)
     score += 0.14 * len(metric_tokens & header_tokens)
+    score += 0.1 * len(metric_tokens & heading_tokens)
+    score += 0.08 * len(entity_tokens & heading_tokens)
+    score += 0.08 * len(metric_tokens & column_tokens)
     if target_years and year_refs & target_years:
         score += 0.9
     elif year_refs and target_years and not (year_refs & target_years):
