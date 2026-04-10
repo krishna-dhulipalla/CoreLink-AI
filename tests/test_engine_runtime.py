@@ -245,6 +245,79 @@ def test_search_ranking_can_prefer_next_year_publication_for_calendar_year_summa
     assert ranked[0]["document_id"] == "treasury_bulletin_1941_11_json"
 
 
+def test_search_ranking_ignores_generic_domain_tokens_and_prefers_entity_focused_table_family():
+    retrieval_intent = RetrievalIntent(
+        entity="U.S. national defense",
+        metric="total expenditures",
+        period="1940",
+        period_type="calendar_year",
+        target_years=["1940"],
+        publication_year_window=["1939", "1940", "1941"],
+        preferred_publication_years=["1940", "1941"],
+        granularity_requirement="calendar_year",
+        document_family="official_government_finance",
+        aggregation_shape="calendar_year_total",
+        must_include_terms=["official government finance"],
+    )
+    source_bundle = SourceBundle(
+        task_text="What were the total expenditures for U.S. national defense in the calendar year 1940?",
+        focus_query="official government finance U.S. national defense total expenditures 1940 calendar year",
+        target_period="1940",
+        entities=["U.S. national defense"],
+    )
+    candidates = [
+        {
+            "document_id": "treasury_bulletin_1940_08_json",
+            "citation": "treasury_bulletin_1940_08.json",
+            "path": "treasury_bulletin_1940_08.json",
+            "title": "Treasury Bulletin 1940-08",
+            "snippet": "Summary table on receipts, expenditures and public debt.",
+            "rank": 2,
+            "score": 9.676,
+            "metadata": {
+                "publication_year": "1940",
+                "years": ["1940"],
+                "best_evidence_unit": {
+                    "locator": "Summary Table on Receipts, Expenditures and Public Debt | Receipts and Expenditures",
+                    "table_family": "debt_or_balance_sheet",
+                    "period_type": "calendar_year",
+                    "headers": ["Actual 1939", "Actual 1940", "Estimated 1941"],
+                    "row_labels": ["Income Tax", "National defense and Veterans Adm", "Total Expenditures"],
+                    "year_refs": ["1940", "1941"],
+                    "table_confidence": 0.91,
+                },
+            },
+        },
+        {
+            "document_id": "treasury_bulletin_1942_04_json",
+            "citation": "treasury_bulletin_1942_04.json",
+            "path": "treasury_bulletin_1942_04.json",
+            "title": "Treasury Bulletin 1942-04",
+            "snippet": "Table 4.- Analysis of National Defense Expenditures.",
+            "rank": 1,
+            "score": 10.268,
+            "metadata": {
+                "publication_year": "1942",
+                "years": ["1940", "1941", "1942"],
+                "best_evidence_unit": {
+                    "locator": "Table 1.- Summary by Major Classifications | Table 4.- Analysis of National Defense Expenditures",
+                    "table_family": "category_breakdown",
+                    "period_type": "calendar_year",
+                    "headers": ["1939", "1940", "1941"],
+                    "row_labels": ["Total", "War Department", "Navy Department", "Total miscellaneous national defense"],
+                    "heading_chain": ["Table 1.- Summary by Major Classifications", "Table 4.- Analysis of National Defense Expenditures"],
+                    "year_refs": ["1940", "1941"],
+                    "table_confidence": 0.85,
+                },
+            },
+        },
+    ]
+
+    ranked = _rank_search_candidates(candidates, retrieval_intent, source_bundle, {"benchmark_adapter": "officeqa"})
+
+    assert ranked[0]["document_id"] == "treasury_bulletin_1942_04_json"
+
+
 def test_officeqa_soft_source_hints_trigger_search_first_and_keep_full_source_list():
     source_files = [f"treasury_bulletin_1940_{month:02d}.json" for month in range(1, 13)]
     source_bundle = SourceBundle(

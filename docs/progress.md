@@ -420,3 +420,17 @@ Rules:
 - This phase reduced one class of LLM-caused regressions, but the smoke rerun still shows broader retrieval/repair problems. The main remaining bottleneck has shifted again:
   - task 2 now enters the later-year pool correctly
   - but later-year source selection and repair follow-through are still not strong enough to finish the case
+
+### Chat 18: Source-Ranking Handoff Aligned And OfficeQA Smoke Restored To Green
+
+- Rebalanced document-level OfficeQA index scoring so whole-file lexical overlap no longer dominates focused evidence-unit quality.
+- Made ranking use more distinctive semantic tokens and a heavier best-evidence-unit contribution, while keeping publication year and source aliases as weaker priors.
+- Added a focus-cohesion bonus for tables whose heading chain jointly expresses the requested entity and metric, which helps focused category tables outrank broad mixed summaries without task-specific boosts.
+- Fixed the second-stage orchestrator reranker to stop treating provenance/domain tokens like `official government finance`, `Treasury`, and `Bulletin` as semantic evidence.
+- Tightened table-family admissibility in the orchestrator:
+  - flow metrics like expenditures/receipts no longer treat `debt_or_balance_sheet` as an equally valid family
+  - debt metrics still prefer `debt_or_balance_sheet`
+- Result:
+  - `retrieval_public_debt_1945` stays stable on the correct debt table and passes
+  - `extraction_national_defense_1940` now follows the later-year focused category table instead of falling back to the 1940 mixed summary path
+  - OfficeQA smoke is green again in `officeqa_regression_smoke_20260410T162438Z.json`

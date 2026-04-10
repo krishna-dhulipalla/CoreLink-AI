@@ -28,6 +28,14 @@ _SURFACE_NOISE_TOKENS = frozenset({
     "row", "rows", "table", "page", "pages", "note", "notes", "source",
     "analysis", "summary", "continued", "statement", "report",
 })
+_QUERY_PROVENANCE_TOKENS = frozenset({
+    "according", "treasury", "bulletin", "department", "reported",
+})
+_QUERY_GENERIC_RANK_TOKENS = frozenset({
+    "table", "row", "rows", "column", "columns", "page", "pages", "source",
+    "total", "calendar", "year", "years", "monthly", "annual", "reported",
+    "values", "figure", "figures",
+})
 _DEBT_FAMILY_TOKENS = frozenset({"debt", "obligations", "guaranteed", "outstanding", "liabilities", "securities"})
 _FLOW_FAMILY_TOKENS = frozenset({"receipts", "expenditures", "revenue", "revenues", "collections", "outlays", "spending"})
 
@@ -85,6 +93,21 @@ def _semantic_phrases(query: str, entity: str, metric: str) -> list[str]:
     return phrases
 
 
+def _rank_tokens(query: str, entity: str, metric: str, target_years: list[str]) -> set[str]:
+    query_tokens = set(_tokenize(query))
+    entity_tokens = set(_tokenize(entity))
+    metric_tokens = set(_tokenize(metric))
+    year_tokens = {year for year in target_years if year}
+    prioritized = (entity_tokens | metric_tokens | year_tokens) - _QUERY_PROVENANCE_TOKENS
+    if prioritized:
+        return prioritized
+    return {
+        token
+        for token in query_tokens
+        if token not in _QUERY_PROVENANCE_TOKENS and token not in _QUERY_GENERIC_RANK_TOKENS
+    } or (query_tokens - _QUERY_PROVENANCE_TOKENS)
+
+
 def _query_profile(
     *,
     query: str,
@@ -96,6 +119,7 @@ def _query_profile(
     entity: str = "",
     metric: str = "",
 ) -> dict[str, Any]:
+    normalized_target_years = _normalized_years(target_years) or _normalized_years(_query_years(query))
     semantic_tokens = set(_tokenize(" ".join(part for part in [query, entity, metric] if part)))
     return {
         "query": query,
@@ -103,10 +127,11 @@ def _query_profile(
         "semantic_tokens": semantic_tokens,
         "entity_tokens": set(_tokenize(entity)),
         "metric_tokens": set(_tokenize(metric)),
+        "rank_tokens": _rank_tokens(query, entity, metric, normalized_target_years),
         "entity_text": str(entity or "").strip(),
         "metric_text": str(metric or "").strip(),
         "semantic_phrases": _semantic_phrases(query, entity, metric),
-        "target_years": _normalized_years(target_years) or _normalized_years(_query_years(query)),
+        "target_years": normalized_target_years,
         "publication_year_window": _normalized_years(publication_year_window),
         "preferred_publication_years": _normalized_years(preferred_publication_years),
         "period_type": str(period_type or "").strip().lower(),
@@ -270,6 +295,40 @@ def _phrase_bonus(text: str, phrases: list[str], *, weight: float) -> float:
     return weight * sum(1 for phrase in phrases if phrase and phrase in lowered)
 
 
+def _best_surface_match(text: str, phrase: str) -> float:
+    normalized_text = " ".join(_tokenize(text))
+    normalized_phrase = " ".join(_tokenize(phrase))
+    if not normalized_text or not normalized_phrase:
+        return 0.0
+    if normalized_phrase in normalized_text:
+        return 1.0
+    text_tokens = set(normalized_text.split())
+    phrase_tokens = set(normalized_phrase.split())
+    if not phrase_tokens:
+        return 0.0
+    return float(len(text_tokens & phrase_tokens)) / max(1, len(phrase_tokens))
+
+
+def _row_focus_score(unit: dict[str, Any], entity_text: str) -> float:
+    entity_phrase = " ".join(_tokenize(entity_text))
+    if not entity_phrase:
+        return 0.0
+    row_candidates = [str(item or "") for item in list(unit.get("row_paths", []))]
+    row_candidates.extend(str(item or "") for item in list(unit.get("row_labels", [])))
+    normalized_rows = [row for row in row_candidates if row.strip()]
+    if not normalized_rows:
+        return 0.0
+    row_scores = [_best_surface_match(row, entity_phrase) for row in normalized_rows]
+    best = max(row_scores, default=0.0)
+    if best <= 0.0:
+        return 0.0
+    strong_match_count = sum(1 for score in row_scores if score >= 0.72)
+    row_count = max(1, len(normalized_rows))
+    focus_ratio = 1.0 / max(1, strong_match_count)
+    compactness = min(1.0, 6.0 / float(row_count))
+    return best * ((0.7 * focus_ratio) + (0.3 * compactness))
+
+
 def _table_unit_score(unit: dict[str, Any], profile: dict[str, Any]) -> float:
     structured_text = _unit_structured_text(unit)
     preview_text = _unit_preview_text(unit)
@@ -284,6 +343,8 @@ def _table_unit_score(unit: dict[str, Any], profile: dict[str, Any]) -> float:
     row_text = " ".join(_flatten_text(item) for item in list(unit.get("row_labels", [])))
     heading_text = " ".join(_flatten_text(item) for item in list(unit.get("heading_chain", [])))
     column_text = " ".join(_flatten_text(item) for item in list(unit.get("column_paths", [])))
+    entity_text = str(profile.get("entity_text", "") or "")
+    metric_text = str(profile.get("metric_text", "") or "")
     header_tokens = set(_tokenize(header_text))
     row_tokens = set(_tokenize(row_text))
     heading_tokens = set(_tokenize(heading_text))
@@ -304,6 +365,20 @@ def _table_unit_score(unit: dict[str, Any], profile: dict[str, Any]) -> float:
     score += _phrase_bonus(row_text, semantic_phrases, weight=0.16)
     score += _phrase_bonus(column_text, semantic_phrases, weight=0.14)
     score += _phrase_bonus(preview_text[:320], semantic_phrases, weight=0.05)
+    if entity_text:
+        score += 0.42 * _best_surface_match(heading_text, entity_text)
+        score += 0.48 * _best_surface_match(row_text, entity_text)
+        score += 0.4 * _row_focus_score(unit, entity_text)
+    if metric_text:
+        score += 0.34 * _best_surface_match(heading_text, metric_text)
+        score += 0.26 * _best_surface_match(header_text, metric_text)
+        score += 0.22 * _best_surface_match(column_text, metric_text)
+    focus_tokens = sorted((entity_tokens | metric_tokens) - {"total"})
+    if entity_text and metric_tokens and focus_tokens:
+        focus_phrase = " ".join(focus_tokens)
+        locator_text = _flatten_text(unit.get("locator", ""))
+        score += 0.55 * _best_surface_match(heading_text, focus_phrase)
+        score += 0.18 * _best_surface_match(locator_text, focus_phrase)
     if entity_tokens and not (entity_tokens & (row_tokens | column_tokens | heading_tokens)):
         score -= 0.35
     if metric_tokens and not (metric_tokens & (header_tokens | column_tokens | heading_tokens)):
@@ -401,27 +476,28 @@ def _score_record(record: dict[str, Any], profile: dict[str, Any]) -> tuple[floa
     text_tokens = set(_tokenize(_record_text(record)))
     alias_tokens = set(_tokenize(" ".join(str(item) for item in record.get("source_aliases", []))))
     query_tokens = set(profile.get("query_tokens", set()))
-    if not query_tokens:
+    rank_tokens = set(profile.get("rank_tokens", set())) or query_tokens
+    if not rank_tokens:
         return 0.0, None
-    overlap = query_tokens & text_tokens
+    overlap = rank_tokens & text_tokens
     if not overlap:
         return 0.0, None
-    score = 0.3 * len(overlap)
-    score += 0.7 * len(query_tokens & alias_tokens)
+    score = 0.18 * len(overlap)
+    score += 0.2 * len(rank_tokens & alias_tokens)
 
     years = set(str(year) for year in record.get("years", []))
     for year in _query_years(query):
         if year in years:
-            score += 1.0
+            score += 0.7
     lowered_query = (query or "").lower()
     if "treasury bulletin" in lowered_query and record.get("is_treasury_bulletin"):
-        score += 1.2
+        score += 0.45
     if any(token in lowered_query for token in ("monthly", "calendar months")) and record.get("has_month_names"):
-        score += 0.8
+        score += 0.35
     if any(token in lowered_query for token in ("table", "row", "column", "reported values")) and record.get("has_table_like_rows"):
-        score += 0.8
+        score += 0.35
     if any(token in lowered_query for token in ("million", "billion", "percent", "nominal")):
-        score += 0.2 * len(set(_tokenize(" ".join(record.get("unit_hints", [])))) & query_tokens)
+        score += 0.12 * len(set(_tokenize(" ".join(record.get("unit_hints", [])))) & rank_tokens)
     publication_year = _record_publication_year(record)
     score += _publication_year_fit(publication_year, profile)
 
@@ -433,7 +509,7 @@ def _score_record(record: dict[str, Any], profile: dict[str, Any]) -> tuple[floa
             best_unit = unit
             best_unit_score = unit_score
     if best_unit is not None:
-        score += best_unit_score
+        score += 1.25 * best_unit_score
     return score, best_unit
 
 
