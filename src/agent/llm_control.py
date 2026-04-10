@@ -343,9 +343,9 @@ def should_use_source_rerank_llm(
     if top_confidence and top_confidence < 0.62:
         return True, "weak_evidence_unit_confidence"
 
-    if first < 1.45:
+    if first < 1.65:
         return True, "weak_top_source_score"
-    if (first - second) < 0.22:
+    if (first - second) < 0.35:
         top_family = _candidate_family(ranked[0])
         runner_family = _candidate_family(ranked[1])
         top_year_preferred = not preferred_years or top_year in preferred_years[:2]
@@ -395,7 +395,7 @@ def should_use_table_rerank_llm(
     top_family_conf = float(top.get("table_family_confidence", 0.0) or 0.0)
     if top_table_conf < 0.72 or top_family_conf < 0.7:
         return True, "low_table_confidence"
-    if abs(top_score - second_score) < 0.25:
+    if abs(top_score - second_score) < 0.35:
         return True, "narrow_table_margin"
 
     if retrieval_intent.decomposition_confidence and retrieval_intent.decomposition_confidence < 0.78 and top_table_conf < 0.82:

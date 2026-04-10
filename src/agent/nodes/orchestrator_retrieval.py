@@ -36,17 +36,7 @@ _RETRIEVAL_STOP_WORDS = {
     "source",
     "using",
     "based",
-    "official",
-    "government",
-    "finance",
-    "treasury",
-    "bulletin",
-    "calendar",
-    "year",
-    "total",
 }
-_FLOW_METRIC_TOKENS = {"expenditures", "receipts", "revenue", "revenues", "collections", "outlays", "spending"}
-_DEBT_METRIC_TOKENS = {"debt", "outstanding", "obligations", "liabilities", "securities"}
 
 
 def _tool_lookup(registry: dict[str, dict[str, Any]], tool_name: str) -> Any | None:
@@ -848,32 +838,7 @@ def _query_metric_tokens(retrieval_intent: RetrievalIntent) -> set[str]:
     return set(_retrieval_tokens(metric_basis))
 
 
-def _best_unit_focus_score(candidate: dict[str, Any], retrieval_intent: RetrievalIntent) -> float:
-    best_unit = _candidate_best_evidence_unit(candidate)
-    if not best_unit:
-        return 0.0
-    entity_tokens = _query_entity_tokens(retrieval_intent)
-    metric_tokens = _query_metric_tokens(retrieval_intent)
-    focus_tokens = (entity_tokens | metric_tokens) - {"total"}
-    heading_text = " ".join(
-        str(item or "")
-        for item in [
-            best_unit.get("locator", ""),
-            *list(best_unit.get("heading_chain", [])),
-            *list(best_unit.get("headers", [])),
-        ]
-    )
-    row_text = " ".join(str(item or "") for item in list(best_unit.get("row_labels", [])))
-    heading_tokens = set(_retrieval_tokens(heading_text))
-    row_tokens = set(_retrieval_tokens(row_text))
-    score = 0.0
-    if focus_tokens:
-        score += 0.12 * len(focus_tokens & heading_tokens)
-    if entity_tokens:
-        score += 0.18 * len(entity_tokens & row_tokens)
-    if entity_tokens and metric_tokens and entity_tokens & heading_tokens and metric_tokens & heading_tokens:
-        score += 0.55
-    return score
+
 
 
 def _granularity_fit_score(candidate: dict[str, Any], retrieval_intent: RetrievalIntent) -> float:
@@ -1045,15 +1010,10 @@ def _table_family_matches_intent(table_family: str, retrieval_intent: RetrievalI
     if family == "navigation_or_contents":
         return False
     granularity = retrieval_intent.granularity_requirement
-    metric_tokens = _query_metric_tokens(retrieval_intent)
     if granularity == "monthly_series":
         return family == "monthly_series"
     if granularity == "fiscal_year":
         return family in {"fiscal_year_comparison", "category_breakdown"}
-    if metric_tokens & _DEBT_METRIC_TOKENS:
-        return family == "debt_or_balance_sheet"
-    if metric_tokens & _FLOW_METRIC_TOKENS:
-        return family in {"category_breakdown", "annual_summary", "fiscal_year_comparison", "generic_financial_table"}
     return family in {"category_breakdown", "annual_summary", "fiscal_year_comparison", "debt_or_balance_sheet", "generic_financial_table"}
 
 
@@ -1072,7 +1032,7 @@ def _search_candidate_score(
     score = 0.0
     rank = int(candidate.get("rank", 999) or 999)
     score += max(0.0, 0.4 - 0.05 * max(0, rank - 1))
-    score += min(4.0, float(candidate.get("score", 0.0) or 0.0) * 0.38)
+    score += min(1.2, float(candidate.get("score", 0.0) or 0.0) * 0.28)
 
     entity_tokens = _query_entity_tokens(retrieval_intent)
     metric_tokens = _query_metric_tokens(retrieval_intent)
@@ -1081,22 +1041,16 @@ def _search_candidate_score(
     query_tokens = set(_retrieval_focus_tokens(source_bundle))
 
     overlap = len((entity_tokens | metric_tokens | period_tokens | must_tokens | query_tokens) & tokens)
-    score += 0.08 * overlap
+    score += 0.18 * overlap
     score += 0.12 * len(entity_tokens & title_tokens)
     score += 0.08 * len(metric_tokens & title_tokens)
     score += 0.06 * len(period_tokens & title_tokens)
     score += _year_fit_score(candidate, retrieval_intent)
     score += _granularity_fit_score(candidate, retrieval_intent)
     score += _category_fit_score(candidate, retrieval_intent)
-    score += _best_unit_focus_score(candidate, retrieval_intent)
     score += _exclusion_fit_score(candidate, retrieval_intent)
     score += _historical_family_fit_score(candidate, retrieval_intent)
-    score += 0.28 * float(best_unit.get("table_confidence", 0.0) or 0.0)
-    if best_unit:
-        if _table_family_matches_intent(str(best_unit.get("table_family", "") or ""), retrieval_intent):
-            score += 0.3
-        else:
-            score -= 0.85
+    score += 0.22 * float(best_unit.get("table_confidence", 0.0) or 0.0)
 
     citation = str(candidate.get("citation", "")).lower()
     if any(host in citation for host in ("govinfo.gov", "census.gov", "va.gov", "fraser.stlouisfed.org", ".gov/")):

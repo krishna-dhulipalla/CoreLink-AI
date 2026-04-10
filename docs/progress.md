@@ -434,3 +434,42 @@ Rules:
   - `retrieval_public_debt_1945` stays stable on the correct debt table and passes
   - `extraction_national_defense_1940` now follows the later-year focused category table instead of falling back to the 1940 mixed summary path
   - OfficeQA smoke is green again in `officeqa_regression_smoke_20260410T162438Z.json`
+
+### Chat 19: Code Review — Hardcoded Keyword Bias Destabilizes Task 1
+
+- Reviewed commit `9efa2dd` which claimed to restore smoke to green. Found that the green was **non-deterministic**: a second smoke run (`officeqa_regression_smoke_20260410T163354Z.json`) shows Task 1 regressing to `repair_stall` while Task 2 remains passing.
+- Root cause: the commit introduced task-specific hardcoded token biases that compound across two scoring layers (index and orchestrator), creating a score margin of only 0.097 between the correct table (Table 3 — Public Debt Outstanding) and a distractor (Table 5 — Savings Bonds). This margin is within the LLM reranking flip zone.
+- Seven specific issues identified:
+  1. **Mutually exclusive family gates** — `_FLOW_METRIC_TOKENS` / `_DEBT_METRIC_TOKENS` create binary short-circuits in `_table_family_matches_intent()` that prevent the system from distinguishing between same-family tables
+  2. **Unconditional `+0.55` focus bonus** — `_best_unit_focus_score` awards a massive bonus based on any-token overlap rather than semantic fit
+  3. **±1.15 family penalty swing** — the `+0.3` / `-0.85` gap in `_search_candidate_score` is too wide, making same-family distractors invisible to the penalty system
+  4. **2.7× score ceiling amplification** — raising `min(1.2, ...)` to `min(4.0, ...)` amplifies index-level noise beyond what downstream signals can correct
+  5. **Over-aggressive stop-word expansion** — adding `treasury`, `bulletin`, `calendar`, `year`, `total` to `_RETRIEVAL_STOP_WORDS` removes legitimate domain discrimination ability
+  6. **Duplicated family logic** — `_required_table_family()` in `officeqa_index.py` contains the same hard-token→family mapping as the orchestrator, causing double compounding
+  7. **Indentation inconsistency** — `search_reference_corpus` and `search_officeqa_documents` have mismatched indentation for keyword args
+- Decision: the heuristic token-matching approach has reached its complexity ceiling. Each fix for one task creates a regression for another because scoring weights are tuned against a 2-task smoke suite.
+- Recommended path forward:
+  - Revert the hardcoded family gates and aggressive stop-word expansion
+  - Reduce the score ceiling amplification
+  - Activate the Fast LLM tier (`table_rerank_llm` via `direct` lane) as the primary table discriminator when heuristic margins are thin
+  - Remove duplicated family classification logic between index and orchestrator
+
+### Chat 20: Reverted Hardcoded Biases — Activated LLM-First Disambiguation
+
+- Reverted all hardcoded keyword biases from commit `9efa2dd` in `orchestrator_retrieval.py`:
+  - Removed `_FLOW_METRIC_TOKENS`, `_DEBT_METRIC_TOKENS` constants
+  - Removed 8 over-aggressive stop words (`treasury`, `bulletin`, `finance`, `government`, `official`, `calendar`, `year`, `total`) that were silencing legitimate domain tokens
+  - Deleted `_best_unit_focus_score` function (the +0.55 unconditional bonus source)
+  - Reverted `_table_family_matches_intent` to non-exclusive admissibility check — all reasonable financial families pass, only `navigation_or_contents` is rejected. No token-based mutual-exclusion gates.
+  - Restored `_search_candidate_score` coefficients:
+    - Score ceiling: `min(1.2, ... * 0.28)` (was `min(4.0, ... * 0.38)`)
+    - Overlap weight: `0.18` (was `0.08`)
+    - Table confidence: `0.22` (was `0.28`)
+    - Removed family match bonus/penalty block (`+0.3`/`-0.85` swing)
+- Widened LLM trigger thresholds in `llm_control.py` to ensure the fast model activates when heuristic scores are close:
+  - Source rerank margin: `0.22` → `0.35`
+  - Table rerank margin: `0.25` → `0.35`
+  - Minimum top-score threshold: `1.45` → `1.65`
+- Net effect: the system now uses honest heuristic scores that reflect actual confidence, and delegates tie-breaking to the fast LLM (`direct` lane) instead of hardcoded keyword math
+- Both modified files pass syntax validation
+
