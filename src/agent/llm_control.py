@@ -278,6 +278,8 @@ def should_use_source_rerank_llm(
         return False, "not_enough_candidates"
 
     normalized_gap = str(evidence_gap or "").strip().lower()
+    if normalized_gap == "source pool too narrow":
+        return False, "candidate_pool_requires_widening"
     if normalized_gap in {
         "wrong document",
         "incomplete evidence",

@@ -289,6 +289,8 @@ def test_officeqa_soft_source_hints_trigger_search_first_and_keep_full_source_li
     assert action.tool_name == "search_officeqa_documents"
     assert args["source_files_policy"] == "soft"
     assert args["source_files"] == source_files
+    assert "national defense" in args["query"].lower()
+    assert "treasury_bulletin_1940_01.json" not in args["query"].lower()
 
 
 def test_officeqa_repair_can_widen_search_pool_without_task_specific_rules():
@@ -320,6 +322,96 @@ def test_officeqa_repair_can_widen_search_pool_without_task_specific_rules():
     assert updated_intent.preferred_publication_years[:1] == ["1940"]
     assert "officeqa_override_query" not in updated_workpad
     assert "officeqa_override_table_query" not in updated_workpad
+
+
+def test_officeqa_search_marks_temporally_local_candidate_pool_for_widening():
+    source_bundle = SourceBundle(
+        task_text="What were the total expenditures for U.S. national defense in the calendar year 1940?",
+        focus_query="U.S. national defense total expenditures calendar year 1940",
+        target_period="1940",
+        entities=["U.S. national defense"],
+        source_files_expected=[f"treasury_bulletin_1940_{month:02d}.json" for month in range(1, 13)],
+    )
+    retrieval_intent = RetrievalIntent(
+        entity="U.S. national defense",
+        metric="total expenditures",
+        period="1940",
+        period_type="calendar_year",
+        target_years=["1940"],
+        publication_year_window=["1939", "1940", "1941"],
+        preferred_publication_years=["1941", "1940", "1939"],
+        source_constraint_policy="soft",
+        granularity_requirement="calendar_year",
+        document_family="treasury_bulletin",
+        aggregation_shape="calendar_year_total",
+        strategy="table_first",
+        query_candidates=[
+            "Treasury Bulletin U.S. national defense total expenditures 1941 1940 calendar year",
+            "Treasury Bulletin U.S. national defense total expenditures 1940 calendar year",
+        ],
+    )
+    tool_plan = ToolPlan(selected_tools=["search_officeqa_documents", "fetch_officeqa_table"])
+    registry = build_capability_registry(BUILTIN_RETRIEVAL_TOOLS)
+    journal = ExecutionJournal(
+        retrieval_iterations=1,
+        retrieval_queries=["Treasury Bulletin U.S. national defense total expenditures 1941 1940 calendar year"],
+        tool_results=[
+            {
+                "type": "search_officeqa_documents",
+                "retrieval_status": "ok",
+                "facts": {
+                    "results": [
+                        {
+                            "document_id": "treasury_bulletin_1940_07_json",
+                            "title": "Treasury Bulletin 1940-07",
+                            "url": "treasury_bulletin_1940_07.json",
+                            "snippet": "Budget receipts and expenditures summary.",
+                            "rank": 1,
+                            "score": 1.2,
+                            "metadata": {
+                                "publication_year": "1940",
+                                "best_evidence_unit": {
+                                    "table_family": "annual_summary",
+                                    "period_type": "calendar_year",
+                                    "table_confidence": 0.72,
+                                },
+                            },
+                        },
+                        {
+                            "document_id": "treasury_bulletin_1940_03_json",
+                            "title": "Treasury Bulletin 1940-03",
+                            "url": "treasury_bulletin_1940_03.json",
+                            "snippet": "General expenditures summary.",
+                            "rank": 2,
+                            "score": 1.1,
+                            "metadata": {
+                                "publication_year": "1940",
+                                "best_evidence_unit": {
+                                    "table_family": "annual_summary",
+                                    "period_type": "calendar_year",
+                                    "table_confidence": 0.7,
+                                },
+                            },
+                        },
+                    ]
+                },
+            }
+        ],
+    )
+
+    action = _plan_retrieval_action(
+        execution_mode="document_grounded_analysis",
+        source_bundle=source_bundle,
+        retrieval_intent=retrieval_intent,
+        tool_plan=tool_plan,
+        journal=journal,
+        registry=registry,
+        benchmark_overrides={"benchmark_adapter": "officeqa"},
+    )
+
+    assert action.tool_name == "search_officeqa_documents"
+    assert action.evidence_gap == "source pool too narrow"
+    assert action.query == retrieval_intent.query_candidates[1]
 
 
 def test_engine_solver_context_block_removes_redundant_objective_and_tool_query_noise():

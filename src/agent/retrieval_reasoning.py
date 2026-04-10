@@ -540,6 +540,22 @@ def _source_file_query_terms(source_bundle: SourceBundle) -> list[str]:
     return list(dict.fromkeys(terms))
 
 
+def _active_query_candidates(
+    query_plan: QueryPlan,
+    *,
+    source_constraint_policy: str,
+) -> list[str]:
+    candidates = [
+        query_plan.temporal_query,
+        query_plan.primary_semantic_query,
+        query_plan.granularity_query,
+        query_plan.qualifier_query or query_plan.alternate_lexical_query,
+    ]
+    if source_constraint_policy == "hard" or not any(str(item or "").strip() for item in candidates):
+        candidates.append(query_plan.source_file_query)
+    return list(dict.fromkeys([str(query).strip()[:280] for query in candidates if str(query or "").strip()]))[:4]
+
+
 def _build_query_plan(
     *,
     document_family: str,
@@ -739,7 +755,6 @@ def build_retrieval_intent(
     if aggregation_shape == "inflation_adjusted_monthly_difference":
         must_include_terms.extend(["cpi", "inflation"])
     must_include_terms.extend(semantic_plan.include_constraints)
-    must_include_terms.extend(_source_file_query_terms(source_bundle))
     must_include_terms = list(dict.fromkeys([item for item in must_include_terms if item]))
     source_constraint_policy = "soft" if (source_bundle.source_files_expected or source_bundle.source_files_found) else "off"
 
@@ -748,14 +763,10 @@ def build_retrieval_intent(
     must_exclude_terms.extend(semantic_plan.exclude_constraints)
     must_exclude_terms = list(dict.fromkeys([item for item in must_exclude_terms if item]))
 
-    query_candidates = [
-        query_plan.source_file_query,
-        query_plan.temporal_query,
-        query_plan.primary_semantic_query,
-        query_plan.granularity_query,
-        query_plan.qualifier_query or query_plan.alternate_lexical_query,
-    ]
-    query_candidates = list(dict.fromkeys([query[:280] for query in query_candidates if query]))[:4]
+    query_candidates = _active_query_candidates(
+        query_plan,
+        source_constraint_policy=source_constraint_policy,
+    )
     return RetrievalIntent(
         entity=entity,
         metric=metric,

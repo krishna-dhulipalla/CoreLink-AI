@@ -294,14 +294,15 @@ def _retrieval_query_candidates(retrieval_intent: RetrievalIntent | None = None)
         return []
     query_plan = retrieval_intent.query_plan
     candidates = [
-        query_plan.primary_semantic_query,
         query_plan.temporal_query,
+        query_plan.primary_semantic_query,
         query_plan.granularity_query,
         query_plan.qualifier_query,
         query_plan.alternate_lexical_query,
-        query_plan.source_file_query,
         *list(retrieval_intent.query_candidates or []),
     ]
+    if retrieval_intent.source_constraint_policy == "hard" or not any(str(candidate or "").strip() for candidate in candidates):
+        candidates.append(query_plan.source_file_query)
     return [
         item
         for item in dict.fromkeys(str(candidate).strip()[:280] for candidate in candidates if str(candidate or "").strip())
@@ -940,6 +941,27 @@ def _ranking_confidence(
     return best, best - second
 
 
+def _candidate_pool_missing_preferred_publication_years(
+    candidates: list[dict[str, Any]],
+    retrieval_intent: RetrievalIntent,
+) -> bool:
+    preferred_years = [str(item) for item in list(retrieval_intent.preferred_publication_years or []) if str(item)]
+    target_years = {str(item) for item in list(retrieval_intent.target_years or []) if str(item)}
+    if not preferred_years or not target_years:
+        return False
+    preferred_head = preferred_years[0]
+    if preferred_head in target_years:
+        return False
+    publication_years = {
+        str(dict(candidate.get("metadata") or {}).get("publication_year", "") or "").strip()
+        for candidate in list(candidates or [])[:5]
+        if str(dict(candidate.get("metadata") or {}).get("publication_year", "") or "").strip()
+    }
+    if not publication_years:
+        return False
+    return preferred_head not in publication_years and publication_years.issubset(target_years)
+
+
 def _latest_search_candidates(
     journal: ExecutionJournal,
     retrieval_intent: RetrievalIntent,
@@ -1396,6 +1418,17 @@ def _fallback_retrieval_action(
             first = candidates[0]
             best_score, score_gap = _ranking_confidence(candidates, retrieval_intent, source_bundle, benchmark_overrides)
             next_query = _next_retrieval_query(journal, retrieval_intent, source_bundle)
+            localized_pool = _candidate_pool_missing_preferred_publication_years(candidates, retrieval_intent)
+            if localized_pool and next_query and next_query != (journal.retrieval_queries[-1] if journal.retrieval_queries else ""):
+                return RetrievalAction(
+                    action="tool",
+                    stage="identify_source",
+                    strategy=active_strategy,
+                    tool_name=last_type,
+                    query=next_query,
+                    evidence_gap="source pool too narrow",
+                    rationale="Refine OfficeQA source search because the current candidate pool stays trapped in the target-year publication slice.",
+                )
             if (best_score < 1.05 or (best_score < 1.45 and score_gap < 0.2)) and next_query and next_query != (journal.retrieval_queries[-1] if journal.retrieval_queries else ""):
                 return RetrievalAction(
                     action="tool",
@@ -1414,6 +1447,7 @@ def _fallback_retrieval_action(
                     tool_name=officeqa_page_tools[0],
                     document_id=first.get("document_id", ""),
                     path=first.get("path", "") or first.get("citation", ""),
+                    evidence_gap="source pool too narrow" if localized_pool else "",
                     rationale="Open the best matching OfficeQA document and inspect pages first for context.",
                 )
             if officeqa_table_tools:
@@ -1425,6 +1459,7 @@ def _fallback_retrieval_action(
                     document_id=first.get("document_id", ""),
                     path=first.get("path", "") or first.get("citation", ""),
                     query=next_table_query or _candidate_table_query_hint(first, retrieval_intent, source_bundle),
+                    evidence_gap="source pool too narrow" if localized_pool else "",
                     rationale="Open the best matching OfficeQA document and extract the relevant table first.",
                 )
             if officeqa_page_tools:
@@ -1435,6 +1470,7 @@ def _fallback_retrieval_action(
                     tool_name=officeqa_page_tools[0],
                     document_id=first.get("document_id", ""),
                     path=first.get("path", "") or first.get("citation", ""),
+                    evidence_gap="source pool too narrow" if localized_pool else "",
                     rationale="Open the best matching OfficeQA document and inspect the relevant pages.",
                 )
 

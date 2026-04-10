@@ -25,6 +25,7 @@ _SUPPORTED_RETRIEVAL_GAPS = {
     "incomplete evidence",
     "wrong row or column semantics",
     "wrong period slice",
+    "source pool too narrow",
 }
 
 

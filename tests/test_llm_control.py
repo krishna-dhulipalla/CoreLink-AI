@@ -64,6 +64,31 @@ def test_source_rerank_llm_triggers_on_publication_year_mismatch():
     assert reason == "publication_year_mismatch"
 
 
+def test_source_rerank_llm_skips_when_candidate_pool_needs_widening():
+    retrieval_intent = _base_retrieval_intent()
+    needed, reason = should_use_source_rerank_llm(
+        retrieval_intent=retrieval_intent,
+        candidate_sources=[
+            {
+                "document_id": "treasury_bulletin_1940_07_json",
+                "score": 2.1,
+                "metadata": {"publication_year": "1940"},
+                "best_evidence_unit": {"table_confidence": 0.78, "period_type": "calendar_year"},
+            },
+            {
+                "document_id": "treasury_bulletin_1940_03_json",
+                "score": 1.95,
+                "metadata": {"publication_year": "1940"},
+                "best_evidence_unit": {"table_confidence": 0.75, "period_type": "calendar_year"},
+            },
+        ],
+        evidence_gap="source pool too narrow",
+    )
+
+    assert needed is False
+    assert reason == "candidate_pool_requires_widening"
+
+
 def test_table_rerank_llm_triggers_on_low_structural_confidence():
     retrieval_intent = _base_retrieval_intent()
     needed, reason = should_use_table_rerank_llm(

@@ -49,6 +49,9 @@ def test_decomposition_source_file_query_keeps_multi_document_hints():
 
     assert "treasury_bulletin_1940_01.json" in retrieval_intent.query_plan.source_file_query
     assert "treasury_bulletin_1940_04.json" in retrieval_intent.query_plan.source_file_query
+    assert retrieval_intent.query_candidates[0] == retrieval_intent.query_plan.temporal_query
+    assert retrieval_intent.query_plan.source_file_query not in retrieval_intent.query_candidates
+    assert all("treasury_bulletin_1940_01.json" not in term for term in retrieval_intent.must_include_terms)
 
 
 def test_decomposition_strips_period_qualifier_from_entity_phrase():

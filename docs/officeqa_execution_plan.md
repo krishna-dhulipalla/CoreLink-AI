@@ -1847,6 +1847,63 @@ Completion note:
 
 - Phase 36 completed by introducing explicit source constraint policy, removing fixed hint truncation from the active retrieval path, preferring search over direct fetch only when the hinted pool is ambiguous, and adding a break-glass `widen_search_pool` repair action backed by the heavier LLM lane.
 
+## Phase 37: Semantic-First Retrieval Seeds And Generic Search-Pool Escalation
+
+Objective:
+
+- stop soft source hints from turning into a lexical search fence and make widening trigger when the retrieved candidate pool never leaves the target-year slice.
+
+Why now:
+
+- the first Phase 36 smoke rerun showed that `source_files_policy = soft` was active, but the actual search query was still dominated by the giant filename bundle
+- this meant later publication years such as `1941_*` never entered the candidate set, so fast rerank could only choose among the wrong `1940_*` documents
+- the heavy repair lane also did not activate because the candidate universe looked internally consistent even though it was temporally too narrow
+
+Tasks:
+
+- [x] `P37.1` Make OfficeQA retrieval seeds semantic-first:
+  - temporal query
+  - primary semantic query
+  - granularity query
+  - qualifier / alternate lexical query
+- [x] `P37.2` Keep `source_file_query` only as:
+  - trace/debug context
+  - hard-mode fallback when no semantic query exists
+- [x] `P37.3` Remove source-file terms from `must_include_terms` so hinted filenames do not behave like hidden lexical requirements during ranking
+- [x] `P37.4` Detect when the returned candidate pool is still trapped inside the target-year publication slice even though the preferred publication year is outside that slice
+- [x] `P37.5` Mark that state explicitly as `source pool too narrow` and use it to:
+  - prefer another semantic/temporal query first
+  - skip wasted fast rerank calls
+  - allow heavy repair to choose `widen_search_pool`
+- [x] `P37.6` When `widen_search_pool` is applied, clear stale source-file query seeds so widened retrieval does not immediately fall back to the old hinted-file string again
+- [x] `P37.7` Add generic regressions for:
+  - semantic-first search seeding
+  - source-file hints staying out of active soft-mode query candidates
+  - temporally narrow candidate-pool detection
+  - skipping fast rerank when widening is the right next move
+
+Suggested code targets:
+
+- `src/agent/retrieval_reasoning.py`
+- `src/agent/nodes/orchestrator_retrieval.py`
+- `src/agent/llm_control.py`
+- `src/agent/llm_repair.py`
+- `src/agent/nodes/orchestrator.py`
+- `tests/test_question_decomposition.py`
+- `tests/test_engine_runtime.py`
+- `tests/test_llm_control.py`
+
+Exit criteria:
+
+- soft source hints no longer dominate the first OfficeQA retrieval query
+- source-file names are no longer treated as hidden lexical must-match terms in the active search/ranking path
+- candidate pools that remain trapped in the target-year publication slice are surfaced as an explicit widening condition
+- heavy repair can widen the search pool without reusing the old source-file query seed
+
+Completion note:
+
+- Phase 37 completed by moving OfficeQA retrieval seeding to semantic/temporal-first ordering, demoting source-file strings to non-active soft-mode hints, and adding a generic `source pool too narrow` escalation path that routes widening to the heavy repair lane instead of wasting fast rerank calls.
+
 Execution order update:
 
 - do `Phase 32` before any further ranking cleanup
@@ -1855,6 +1912,7 @@ Execution order update:
 - keep `Phase 31` as the bounded semantic assist layer, but feed it better structural inputs rather than asking it to compensate for state loss
 - use `Phase 35` as the post-hardening refresh of that bounded semantic assist layer
 - use `Phase 36` to stop benchmark-linked source hints from silently becoming the candidate universe
+- use `Phase 37` to stop those hints from reappearing as the active search seed in soft-mode retrieval
 
 ## Optional Backlog: Shared Global Workpad
 

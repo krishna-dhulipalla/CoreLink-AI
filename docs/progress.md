@@ -380,3 +380,22 @@ Rules:
 - Updated:
   - `docs/officeqa_execution_plan.md`
   - `docs/v5_runtime_walkthrough.md`
+
+### Chat 16: Phase 37 Completed With Semantic-First Seeds And Generic Search-Pool Escalation
+
+- Fixed the remaining soft-hint failure mode where OfficeQA retrieval still used the giant filename bundle as the first search query even after hard source filtering was removed.
+- Active OfficeQA retrieval seeds are now semantic-first:
+  - temporal query
+  - primary semantic query
+  - granularity query
+  - qualifier / alternate lexical query
+- `source_file_query` is now kept only for:
+  - trace/debug visibility
+  - hard-mode fallback when no semantic query exists
+- Removed source-file names from `must_include_terms`, so hinted filenames no longer behave like hidden lexical match requirements during ranking.
+- Added a generic `source pool too narrow` signal for candidate pools that stay inside the target-year publication slice even when the preferred publication year is outside that slice.
+- When that signal appears:
+  - the executor tries another semantic/temporal query first
+  - fast source rerank is skipped
+  - the heavy repair lane can widen the search pool
+- `widen_search_pool` now also clears stale source-file query seeds so widened retrieval does not fall back to the old hinted-file string again.

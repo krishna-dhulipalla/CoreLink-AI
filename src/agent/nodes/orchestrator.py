@@ -1211,6 +1211,15 @@ def _apply_officeqa_llm_repair_decision(
         if expanded_preferred != list(updated_intent.preferred_publication_years):
             updated_intent.preferred_publication_years = expanded_preferred
             path_changed = True
+        source_file_query = str(updated_intent.query_plan.source_file_query or "").strip()
+        if source_file_query:
+            updated_intent.query_plan.source_file_query = ""
+            updated_intent.query_candidates = [
+                item
+                for item in updated_intent.query_candidates
+                if str(item).strip() and str(item).strip() != source_file_query
+            ]
+            path_changed = True
 
     return updated_intent, updated_workpad, path_changed, reroute_action
 
