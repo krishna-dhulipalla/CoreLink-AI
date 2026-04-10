@@ -1904,6 +1904,61 @@ Completion note:
 
 - Phase 37 completed by moving OfficeQA retrieval seeding to semantic/temporal-first ordering, demoting source-file strings to non-active soft-mode hints, and adding a generic `source pool too narrow` escalation path that routes widening to the heavy repair lane instead of wasting fast rerank calls.
 
+## Phase 38: Source-Cue Cleanup And Evidence-Unit Admissibility Guardrails
+
+Objective:
+
+- stop provenance cues from polluting semantic entity extraction and make both ranking and fast rerank respect evidence-unit family fit before overriding deterministic candidates.
+
+Why now:
+
+- once Phase 37 allowed later publication years into the candidate pool, two new failure modes became obvious:
+  - provenance text such as `According to the Treasury Bulletin` could still leak into the semantic plan as if it were the target entity
+  - document ranking could still prefer later-year debt/balance-sheet tables over category expenditure tables because evidence-unit family fit was too weak
+- fast source rerank was also too eager on simple narrow-margin cases and could override a strong deterministic top candidate without a real semantic reason
+
+Tasks:
+
+- [x] `P38.1` Strip generic source-document phrases from semantic entity extraction and merged semantic plans:
+  - `treasury bulletin`
+  - `report`
+  - `document`
+  - other generic provenance-only source cues
+- [x] `P38.2` Preserve those phrases as include/source constraints when they matter, but never let them become the target entity
+- [x] `P38.3` Add explicit table-family fit to evidence-unit scoring in the OfficeQA index:
+  - reward `category_breakdown` for expenditure / receipts questions
+  - reward `debt_or_balance_sheet` for debt questions
+  - reward `monthly_series` for monthly-series questions
+  - penalize cross-family mismatches
+- [x] `P38.4` Keep family-fit logic generic and metric/granularity-driven rather than benchmark-case-specific
+- [x] `P38.5` Tighten fast source-rerank gating so narrow-margin alone is not enough when:
+  - the deterministic top candidate already has strong evidence confidence
+  - the top candidate is in a preferred publication year
+  - the leading candidates share the same evidence-unit family
+- [x] `P38.6` Add generic regressions for:
+  - source-cue phrases not becoming semantic entities
+  - expenditure queries preferring category breakdown over debt tables
+  - fast source rerank skipping semantically stable narrow-margin cases
+
+Suggested code targets:
+
+- `src/agent/context/extraction.py`
+- `src/agent/benchmarks/officeqa_index.py`
+- `src/agent/llm_control.py`
+- `tests/test_question_decomposition.py`
+- `tests/test_officeqa_index.py`
+- `tests/test_llm_control.py`
+
+Exit criteria:
+
+- provenance/source-cue text no longer contaminates semantic entity slots
+- later-year candidate pools favor semantically admissible evidence-unit families before compute begins
+- fast rerank no longer overrides stable deterministic top candidates on narrow margin alone
+
+Completion note:
+
+- Phase 38 completed by sanitizing source-cue entities out of the semantic plan, adding explicit family-fit weighting to evidence-unit scoring, and making fast source rerank back off when the top deterministic candidate is already semantically stable.
+
 Execution order update:
 
 - do `Phase 32` before any further ranking cleanup
@@ -1913,6 +1968,7 @@ Execution order update:
 - use `Phase 35` as the post-hardening refresh of that bounded semantic assist layer
 - use `Phase 36` to stop benchmark-linked source hints from silently becoming the candidate universe
 - use `Phase 37` to stop those hints from reappearing as the active search seed in soft-mode retrieval
+- use `Phase 38` to tighten semantic admissibility before the next retrieval/repair expansion
 
 ## Optional Backlog: Shared Global Workpad
 

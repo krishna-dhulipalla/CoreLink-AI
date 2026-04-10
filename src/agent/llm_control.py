@@ -267,6 +267,10 @@ def _requested_period_kind(retrieval_intent: RetrievalIntent) -> str:
     return str(retrieval_intent.period_type or retrieval_intent.granularity_requirement or "").strip().lower()
 
 
+def _candidate_family(candidate: dict[str, Any]) -> str:
+    return str(dict(candidate.get("best_evidence_unit") or {}).get("table_family", "") or "").strip().lower()
+
+
 def should_use_source_rerank_llm(
     *,
     retrieval_intent: RetrievalIntent,
@@ -295,6 +299,8 @@ def should_use_source_rerank_llm(
     second = float(ranked[1].get("score", 0.0) or 0.0)
 
     preferred_years = [str(item) for item in list(retrieval_intent.preferred_publication_years or []) if str(item)]
+    top_year = ""
+    runner_year = ""
     if preferred_years:
         top_year = str(dict(ranked[0].get("metadata") or {}).get("publication_year", "") or "")
         runner_year = str(dict(ranked[1].get("metadata") or {}).get("publication_year", "") or "")
@@ -302,21 +308,27 @@ def should_use_source_rerank_llm(
             return True, "publication_year_mismatch"
 
     requested_period = _requested_period_kind(retrieval_intent)
+    top_unit = dict(ranked[0].get("best_evidence_unit") or {})
+    runner_unit = dict(ranked[1].get("best_evidence_unit") or {})
     if requested_period:
-        top_unit = dict(ranked[0].get("best_evidence_unit") or {})
-        runner_unit = dict(ranked[1].get("best_evidence_unit") or {})
         top_period = str(top_unit.get("period_type", "") or "").strip().lower()
         runner_period = str(runner_unit.get("period_type", "") or "").strip().lower()
         if top_period and runner_period and top_period != requested_period and runner_period == requested_period:
             return True, "period_type_mismatch"
 
-    top_confidence = float(dict(ranked[0].get("best_evidence_unit") or {}).get("table_confidence", 0.0) or 0.0)
+    top_confidence = float(top_unit.get("table_confidence", 0.0) or 0.0)
     if top_confidence and top_confidence < 0.62:
         return True, "weak_evidence_unit_confidence"
 
     if first < 1.45:
         return True, "weak_top_source_score"
     if (first - second) < 0.22:
+        top_family = _candidate_family(ranked[0])
+        runner_family = _candidate_family(ranked[1])
+        top_year_preferred = not preferred_years or top_year in preferred_years[:2]
+        runner_year_reasonable = not preferred_years or runner_year in preferred_years[:3]
+        if top_confidence >= 0.78 and top_family and top_family == runner_family and top_year_preferred and runner_year_reasonable:
+            return False, "deterministic_top_candidate_stable"
         return True, "narrow_source_margin"
 
     if retrieval_intent.decomposition_confidence and retrieval_intent.decomposition_confidence < 0.78 and (first - second) < 0.4:

@@ -134,6 +134,42 @@ def _period_type_fit(unit: dict[str, Any], profile: dict[str, Any]) -> float:
     return 0.0
 
 
+def _required_table_family(profile: dict[str, Any]) -> str:
+    requested = str(profile.get("granularity_requirement", "") or profile.get("period_type", "") or "").strip().lower()
+    metric_tokens = set(profile.get("metric_tokens", set()))
+    metric_text = " ".join(sorted(metric_tokens))
+    if requested == "monthly_series":
+        return "monthly_series"
+    if requested == "fiscal_year":
+        return "fiscal_year_comparison"
+    if any(token in metric_text for token in ("debt", "outstanding", "obligations", "liabilities", "securities")):
+        return "debt_or_balance_sheet"
+    if any(token in metric_text for token in ("expenditures", "receipts", "revenue", "collections", "outlays", "spending")):
+        return "category_breakdown"
+    return ""
+
+
+def _table_family_fit(unit: dict[str, Any], profile: dict[str, Any]) -> float:
+    family = str(unit.get("table_family", "") or "").strip().lower()
+    required = _required_table_family(profile)
+    if not required or not family:
+        return 0.0
+    family_conf = float(unit.get("table_family_confidence", unit.get("table_confidence", 0.0)) or 0.0)
+    if family == required:
+        return 0.9 * max(0.4, family_conf)
+    if required == "category_breakdown" and family in {"annual_summary", "fiscal_year_comparison"}:
+        return 0.18
+    if required == "fiscal_year_comparison" and family == "category_breakdown":
+        return 0.22
+    if required == "monthly_series" and family in {"annual_summary", "category_breakdown"}:
+        return -0.45
+    if required == "debt_or_balance_sheet" and family != "debt_or_balance_sheet":
+        return -0.4
+    if required == "category_breakdown" and family == "debt_or_balance_sheet":
+        return -0.6
+    return -0.18
+
+
 def _publication_year_fit(publication_year: str, profile: dict[str, Any]) -> float:
     if not publication_year:
         return 0.0
@@ -176,6 +212,7 @@ def _table_unit_score(unit: dict[str, Any], profile: dict[str, Any]) -> float:
         elif month_coverage:
             score += 0.28
     score += _period_type_fit(unit, profile)
+    score += _table_family_fit(unit, profile)
     score += 0.35 * float(unit.get("table_confidence", 0.0) or 0.0)
     return score
 

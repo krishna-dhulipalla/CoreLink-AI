@@ -301,6 +301,72 @@ def test_search_officeqa_corpus_index_prefers_temporal_neighbor_publication_with
     assert result["results"][0]["metadata"]["best_evidence_unit"]["table_family"] in {"category_breakdown", "annual_summary"}
 
 
+def test_search_officeqa_corpus_index_penalizes_debt_tables_for_expenditure_questions(tmp_path):
+    corpus_root = tmp_path / "treasury_bulletins_parsed"
+    corpus_root.mkdir(parents=True)
+    (corpus_root / "treasury_bulletin_1941_07.json").write_text(
+        json.dumps(
+            {
+                "document": {
+                    "elements": [
+                        {
+                            "type": "table",
+                            "description": "Debt statement",
+                            "bbox": [{"page_id": 20}],
+                            "content": (
+                                "<table>"
+                                "<tr><th>Item</th><th>Calendar year 1940</th></tr>"
+                                "<tr><td>Public debt outstanding</td><td>250000</td></tr>"
+                                "</table>"
+                            ),
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (corpus_root / "treasury_bulletin_1941_10.json").write_text(
+        json.dumps(
+            {
+                "document": {
+                    "elements": [
+                        {
+                            "type": "table",
+                            "description": "Expenditure summary",
+                            "bbox": [{"page_id": 29}],
+                            "content": (
+                                "<table>"
+                                "<tr><th>Category</th><th>Calendar year 1940</th></tr>"
+                                "<tr><td>U.S. national defense</td><td>4748</td></tr>"
+                                "</table>"
+                            ),
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    build_officeqa_index(corpus_root=corpus_root)
+
+    result = search_officeqa_corpus_index(
+        "What were the total expenditures for U.S. national defense in the calendar year 1940?",
+        corpus_root=corpus_root,
+        target_years=["1940"],
+        publication_year_window=["1939", "1940", "1941"],
+        preferred_publication_years=["1941", "1940", "1939"],
+        period_type="calendar_year",
+        granularity_requirement="calendar_year",
+        entity="U.S. national defense",
+        metric="total expenditures",
+        top_k=2,
+    )
+
+    assert result["results"][0]["document_id"] == "treasury_bulletin_1941_10_json"
+    assert result["results"][0]["metadata"]["best_evidence_unit"]["table_family"] == "category_breakdown"
+
+
 def test_validate_officeqa_index_reports_partially_parsed_documents(tmp_path):
     corpus_root = tmp_path / "treasury_bulletins_parsed"
     corpus_root.mkdir(parents=True)

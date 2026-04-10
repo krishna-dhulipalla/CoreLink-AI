@@ -90,6 +90,18 @@ def _normalize_financial_phrase(value: str) -> str:
     return cleaned.strip(" ,.;:!?")
 
 
+def _sanitize_source_cue_entity(entity: str, include_constraints: list[str]) -> str:
+    cleaned = _normalize_financial_phrase(entity)
+    if not cleaned:
+        return ""
+    if cleaned.lower() in _GENERIC_SOURCE_ENTITIES:
+        return ""
+    include_text = " ".join(str(item or "") for item in include_constraints).lower()
+    if "according to the treasury bulletin" in include_text and cleaned.lower() == "treasury bulletin":
+        return ""
+    return cleaned
+
+
 def _extract_year_scope(task_text: str, source_bundle: SourceBundle) -> str:
     if source_bundle.target_period:
         return _normalize_space(source_bundle.target_period)
@@ -272,7 +284,10 @@ def _rule_based_decomposition(task_text: str, source_bundle: SourceBundle) -> Qu
     include_constraints = _extract_include_constraints(task_text)
     exclude_constraints = _extract_exclude_constraints(task_text)
     qualifier_terms = _dedupe_strings([*include_constraints, *exclude_constraints], limit=6)
-    entity = _extract_entity_identity(task_text, source_bundle, metric)
+    entity = _sanitize_source_cue_entity(
+        _extract_entity_identity(task_text, source_bundle, metric),
+        include_constraints,
+    )
 
     confidence = 0.2
     if metric:
@@ -307,7 +322,7 @@ def _rule_based_decomposition(task_text: str, source_bundle: SourceBundle) -> Qu
 
 def _merge_decomposition(primary: QuestionDecomposition, fallback: QuestionDecomposition) -> QuestionDecomposition:
     return QuestionDecomposition(
-        entity=primary.entity or fallback.entity,
+        entity=_sanitize_source_cue_entity(primary.entity or fallback.entity, [*primary.include_constraints, *fallback.include_constraints]),
         metric=primary.metric or fallback.metric,
         period=primary.period or fallback.period,
         period_type=primary.period_type or fallback.period_type,
@@ -399,7 +414,7 @@ def _semantic_plan_from_decomposition(
     model_name: str = "",
 ) -> QuestionSemanticPlan:
     return QuestionSemanticPlan(
-        entity=decomposition.entity,
+        entity=_sanitize_source_cue_entity(decomposition.entity, decomposition.include_constraints),
         metric=decomposition.metric,
         period=decomposition.period,
         period_type=decomposition.period_type,
@@ -420,7 +435,7 @@ def _semantic_plan_from_decomposition(
 
 def _merge_semantic_plan(primary: QuestionSemanticPlan, fallback: QuestionSemanticPlan) -> QuestionSemanticPlan:
     return QuestionSemanticPlan(
-        entity=primary.entity or fallback.entity,
+        entity=_sanitize_source_cue_entity(primary.entity or fallback.entity, [*primary.include_constraints, *fallback.include_constraints]),
         metric=primary.metric or fallback.metric,
         period=primary.period or fallback.period,
         period_type=primary.period_type or fallback.period_type,

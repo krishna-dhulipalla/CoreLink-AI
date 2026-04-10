@@ -399,3 +399,24 @@ Rules:
   - fast source rerank is skipped
   - the heavy repair lane can widen the search pool
 - `widen_search_pool` now also clears stale source-file query seeds so widened retrieval does not fall back to the old hinted-file string again.
+
+### Chat 17: Phase 38 Completed With Source-Cue Cleanup And Evidence-Unit Admissibility Tightening
+
+- Semantic planning now strips generic source-document cues out of the target entity slot:
+  - `Treasury Bulletin`
+  - `report`
+  - `document`
+  and similar provenance-only phrases no longer become the entity used for retrieval planning.
+- Those source phrases can still remain as include/source constraints when they are part of the user instruction.
+- The OfficeQA index now scores evidence units with explicit family fit:
+  - expenditure / receipts questions prefer `category_breakdown`
+  - debt questions prefer `debt_or_balance_sheet`
+  - monthly-series questions prefer `monthly_series`
+  - cross-family mismatches are penalized
+- Fast source rerank now backs off on narrow-margin cases when the deterministic top candidate is already semantically stable:
+  - strong evidence confidence
+  - preferred publication year
+  - same evidence-unit family among the leading candidates
+- This phase reduced one class of LLM-caused regressions, but the smoke rerun still shows broader retrieval/repair problems. The main remaining bottleneck has shifted again:
+  - task 2 now enters the later-year pool correctly
+  - but later-year source selection and repair follow-through are still not strong enough to finish the case

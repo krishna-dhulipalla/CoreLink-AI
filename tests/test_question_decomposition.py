@@ -30,6 +30,23 @@ def test_decomposition_extracts_calendar_year_category_slots():
     assert "calendar year" in retrieval_intent.query_plan.granularity_query.lower()
 
 
+def test_decomposition_does_not_promote_treasury_bulletin_source_cue_to_entity():
+    prompt = "According to the Treasury Bulletin, what was total public debt outstanding in 1945?"
+    source_bundle = SourceBundle(
+        task_text=prompt,
+        focus_query=prompt,
+        target_period="1945",
+        entities=[],
+    )
+
+    semantic_plan = build_question_semantic_plan(prompt, source_bundle)
+    retrieval_intent = build_retrieval_intent(prompt, source_bundle, {"benchmark_adapter": "officeqa"})
+
+    assert semantic_plan.entity == ""
+    assert retrieval_intent.entity == ""
+    assert "according to the Treasury Bulletin" in retrieval_intent.include_constraints
+
+
 def test_decomposition_source_file_query_keeps_multi_document_hints():
     prompt = "What were the total expenditures for U.S. national defense in the calendar year 1940?"
     source_bundle = SourceBundle(

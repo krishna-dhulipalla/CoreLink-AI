@@ -89,6 +89,42 @@ def test_source_rerank_llm_skips_when_candidate_pool_needs_widening():
     assert reason == "candidate_pool_requires_widening"
 
 
+def test_source_rerank_llm_skips_narrow_margin_when_top_candidate_is_semantically_stable():
+    retrieval_intent = _base_retrieval_intent(
+        metric="public debt outstanding",
+        preferred_publication_years=["1945", "1946", "1944"],
+    )
+    needed, reason = should_use_source_rerank_llm(
+        retrieval_intent=retrieval_intent,
+        candidate_sources=[
+            {
+                "document_id": "treasury_bulletin_1945_08_json",
+                "score": 7.32,
+                "metadata": {"publication_year": "1945"},
+                "best_evidence_unit": {
+                    "table_confidence": 0.88,
+                    "period_type": "point_lookup",
+                    "table_family": "debt_or_balance_sheet",
+                },
+            },
+            {
+                "document_id": "treasury_bulletin_1946_08_json",
+                "score": 7.14,
+                "metadata": {"publication_year": "1946"},
+                "best_evidence_unit": {
+                    "table_confidence": 0.85,
+                    "period_type": "point_lookup",
+                    "table_family": "debt_or_balance_sheet",
+                },
+            },
+        ],
+        evidence_gap="",
+    )
+
+    assert needed is False
+    assert reason == "deterministic_top_candidate_stable"
+
+
 def test_table_rerank_llm_triggers_on_low_structural_confidence():
     retrieval_intent = _base_retrieval_intent()
     needed, reason = should_use_table_rerank_llm(
