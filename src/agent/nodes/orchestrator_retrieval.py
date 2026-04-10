@@ -352,15 +352,26 @@ def _retrieval_focus_tokens(source_bundle: SourceBundle) -> list[str]:
 
 
 def _officeqa_table_query(retrieval_intent: RetrievalIntent, source_bundle: SourceBundle) -> str:
-    query_plan = retrieval_intent.query_plan
+    metric_identity = retrieval_intent.evidence_plan.metric_identity or retrieval_intent.metric
     parts = [
-        query_plan.primary_semantic_query,
-        query_plan.granularity_query,
         retrieval_intent.entity,
-        retrieval_intent.metric,
+        metric_identity,
         retrieval_intent.period,
     ]
-    return re.sub(r"\s+", " ", " ".join(part for part in parts if part)).strip()[:280]
+    granularity = retrieval_intent.granularity_requirement
+    period_type = retrieval_intent.period_type
+    if granularity == "monthly_series":
+        parts.append("monthly")
+    elif granularity == "fiscal_year" or period_type == "fiscal_year":
+        parts.append("fiscal year")
+    elif granularity == "calendar_year" or period_type == "calendar_year":
+        parts.append("calendar year")
+    query = re.sub(r"\s+", " ", " ".join(part for part in parts if part)).strip()[:280]
+    if query:
+        return query
+    query_plan = retrieval_intent.query_plan
+    fallback = query_plan.primary_semantic_query or query_plan.granularity_query or source_bundle.focus_query or source_bundle.task_text
+    return re.sub(r"\s+", " ", str(fallback or "")).strip()[:280]
 
 
 def _officeqa_row_query(retrieval_intent: RetrievalIntent, source_bundle: SourceBundle) -> str:
@@ -1458,7 +1469,7 @@ def _fallback_retrieval_action(
                     tool_name=officeqa_table_tools[0],
                     document_id=first.get("document_id", ""),
                     path=first.get("path", "") or first.get("citation", ""),
-                    query=next_table_query or _candidate_table_query_hint(first, retrieval_intent, source_bundle),
+                    query=_candidate_table_query_hint(first, retrieval_intent, source_bundle) or next_table_query or officeqa_table_query,
                     evidence_gap="source pool too narrow" if localized_pool else "",
                     rationale="Open the best matching OfficeQA document and extract the relevant table first.",
                 )
@@ -1503,7 +1514,7 @@ def _fallback_retrieval_action(
                         tool_name=officeqa_table_tools[0],
                         document_id=str(next_ranked_candidate.get("document_id", "")),
                         path=str(next_ranked_candidate.get("path", "") or next_ranked_candidate.get("citation", "")),
-                        query=next_table_query or _candidate_table_query_hint(next_ranked_candidate, retrieval_intent, source_bundle),
+                        query=_candidate_table_query_hint(next_ranked_candidate, retrieval_intent, source_bundle) or next_table_query or officeqa_table_query,
                         evidence_gap="wrong document",
                         rationale="Reopen retrieval on the next ranked source because the current document keeps yielding the wrong table family.",
                     )
@@ -1584,7 +1595,7 @@ def _fallback_retrieval_action(
                     tool_name=officeqa_table_tools[0],
                     document_id=str(next_ranked_candidate.get("document_id", "")),
                     path=str(next_ranked_candidate.get("path", "") or next_ranked_candidate.get("citation", "")),
-                    query=next_table_query or _candidate_table_query_hint(next_ranked_candidate, retrieval_intent, source_bundle),
+                    query=_candidate_table_query_hint(next_ranked_candidate, retrieval_intent, source_bundle) or next_table_query or officeqa_table_query,
                     evidence_gap="wrong document",
                     rationale="Reopen source search on the next ranked candidate because the current document did not contain the requested row.",
                 )
@@ -1596,7 +1607,7 @@ def _fallback_retrieval_action(
                     tool_name=officeqa_table_tools[0],
                     document_id=str(next_ranked_candidate.get("document_id", "")),
                     path=str(next_ranked_candidate.get("path", "") or next_ranked_candidate.get("citation", "")),
-                    query=next_table_query or _candidate_table_query_hint(next_ranked_candidate, retrieval_intent, source_bundle),
+                    query=_candidate_table_query_hint(next_ranked_candidate, retrieval_intent, source_bundle) or next_table_query or officeqa_table_query,
                     evidence_gap="wrong table family",
                     rationale="Switch to the next ranked source because the current document produced a mismatched table family.",
                 )
@@ -1654,7 +1665,7 @@ def _fallback_retrieval_action(
                     tool_name=officeqa_table_tools[0],
                     document_id=str(next_ranked_candidate.get("document_id", "")),
                     path=str(next_ranked_candidate.get("path", "") or next_ranked_candidate.get("citation", "")),
-                    query=next_table_query or _candidate_table_query_hint(next_ranked_candidate, retrieval_intent, source_bundle),
+                    query=_candidate_table_query_hint(next_ranked_candidate, retrieval_intent, source_bundle) or next_table_query or officeqa_table_query,
                     evidence_gap="wrong table family",
                     rationale="Switch to the next ranked source because the current document still does not expose the required table family.",
                 )

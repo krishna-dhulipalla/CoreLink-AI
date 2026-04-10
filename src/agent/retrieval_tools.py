@@ -47,6 +47,15 @@ _STOP_WORDS = frozenset({
     "all", "each", "every", "both", "few", "more", "most", "other",
     "some", "such", "no", "only", "own", "same", "also", "just",
 })
+_TABLE_QUERY_GENERIC_TOKENS = frozenset({
+    "official", "government", "finance", "treasury", "bulletin", "budget",
+    "table", "tables", "row", "rows", "column", "columns", "category",
+    "categories", "page", "pages", "summary", "analysis", "reported",
+    "values", "value", "actual", "estimated", "estimate", "calendar",
+    "fiscal", "year", "years", "monthly", "series", "month", "months",
+    "total", "totals", "receipts", "revenue", "collections", "income",
+    "expenditures", "outlays", "disbursements", "spending", "expenses",
+})
 _HTML_TABLE_RE = re.compile(r"<table\b[^>]*>(.*?)</table>", re.IGNORECASE | re.DOTALL)
 _HTML_ROW_RE = re.compile(r"<tr\b[^>]*>(.*?)</tr>", re.IGNORECASE | re.DOTALL)
 _HTML_CELL_RE = re.compile(r"<(th|td)\b([^>]*)>(.*?)</t[hd]>", re.IGNORECASE | re.DOTALL)
@@ -96,6 +105,14 @@ def _token_ngrams(tokens: list[str], *, min_n: int = 2, max_n: int = 4) -> set[s
 
 def _normalize_space(text: Any) -> str:
     return re.sub(r"\s+", " ", str(text or "")).strip()
+
+
+def _distinctive_query_tokens(query: str) -> set[str]:
+    return {
+        token
+        for token in _tokenize(query)
+        if token not in _TABLE_QUERY_GENERIC_TOKENS and not re.fullmatch(r"(?:19|20)\d{2}", token)
+    }
 
 
 def _table_extraction_timeout_seconds() -> float:
@@ -1296,19 +1313,33 @@ def _rank_tables(tables: list[dict[str, Any]], table_query: str) -> list[dict[st
         return tables
 
     query_tokens = set(_tokenize(table_query))
+    distinctive_query_tokens = _distinctive_query_tokens(table_query)
 
     def _score(table: dict[str, Any]) -> float:
         text = _table_structural_signature(table)
+        heading_text = " ".join(str(item or "") for item in list(table.get("heading_chain", []))[:8])
+        context_text = str(table.get("context_text", "") or "")
+        row_label_text = " ".join(_table_row_path_samples(table, limit=20))
+        headers_text = " ".join(str(item or "") for item in list(table.get("headers", []))[:12])
+        key_surface_text = " ".join(part for part in [heading_text, context_text, row_label_text] if part)
+        key_surface_tokens = set(_tokenize(key_surface_text))
         score = _match_score(text, table_query)
         score += _table_family_score(table, table_query)
-        score += 0.32 * _table_heading_fit(table, table_query)
-        score += 0.44 * _table_row_path_fit(table, table_query)
+        score += 0.28 * _table_heading_fit(table, table_query)
+        score += 0.52 * _table_row_path_fit(table, table_query)
         score += _table_metric_fit(table, table_query)
         score += _table_period_fit(table, table_query)
-        headers_text = " ".join(str(item or "") for item in list(table.get("headers", []))[:12])
-        row_label_text = " ".join(_table_row_path_samples(table, limit=20))
         score += 0.35 * _match_score(row_label_text, table_query)
         score += 0.2 * _match_score(headers_text, table_query)
+        if distinctive_query_tokens:
+            distinctive_hits = distinctive_query_tokens & key_surface_tokens
+            score += 0.24 * len(distinctive_hits)
+            if distinctive_hits:
+                score += 0.18 * _match_score(key_surface_text, " ".join(sorted(distinctive_query_tokens)))
+                if distinctive_hits == distinctive_query_tokens:
+                    score += 0.28
+            else:
+                score -= 0.8
         lowered = _table_text(table).lower()
         numeric_cells = sum(
             1

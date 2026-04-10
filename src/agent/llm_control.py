@@ -140,6 +140,7 @@ def maybe_rerank_source_candidates(
 ) -> OfficeQASourceRerankDecision | None:
     if len(candidate_sources) < 2:
         return None
+    ranked_candidates = [dict(item) for item in list(candidate_sources or []) if isinstance(item, dict)]
     model_name = get_model_name_for_officeqa_control(
         "retrieval_rerank_llm",
         answer_mode=retrieval_intent.answer_mode,
@@ -172,6 +173,24 @@ def maybe_rerank_source_candidates(
         return None
     if decision.decision == "select_candidate" and not decision.preferred_document_id.strip():
         return None
+    if decision.decision == "select_candidate":
+        selected = next(
+            (
+                dict(item)
+                for item in ranked_candidates
+                if str(item.get("document_id", "") or "").strip() == decision.preferred_document_id.strip()
+            ),
+            None,
+        )
+        if selected is None:
+            return None
+        top_score = float(ranked_candidates[0].get("score", 0.0) or 0.0)
+        selected_score = float(selected.get("score", 0.0) or 0.0)
+        selected_rank = int(selected.get("rank", 999) or 999)
+        if selected_rank > 3:
+            return None
+        if reason not in {"wrong document", "incomplete evidence", "wrong row or column semantics"} and (top_score - selected_score) > 0.45:
+            return None
     return decision
 
 
@@ -310,13 +329,17 @@ def should_use_source_rerank_llm(
     requested_period = _requested_period_kind(retrieval_intent)
     top_unit = dict(ranked[0].get("best_evidence_unit") or {})
     runner_unit = dict(ranked[1].get("best_evidence_unit") or {})
+    top_confidence = float(top_unit.get("table_confidence", 0.0) or 0.0)
     if requested_period:
         top_period = str(top_unit.get("period_type", "") or "").strip().lower()
         runner_period = str(runner_unit.get("period_type", "") or "").strip().lower()
         if top_period and runner_period and top_period != requested_period and runner_period == requested_period:
-            return True, "period_type_mismatch"
+            top_family = _candidate_family(ranked[0])
+            runner_family = _candidate_family(ranked[1])
+            if (first - second) < 0.38 or top_confidence < 0.72 or (top_family and runner_family and top_family != runner_family):
+                return True, "period_type_mismatch"
+            return False, "deterministic_top_candidate_stable"
 
-    top_confidence = float(top_unit.get("table_confidence", 0.0) or 0.0)
     if top_confidence and top_confidence < 0.62:
         return True, "weak_evidence_unit_confidence"
 

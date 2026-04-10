@@ -24,10 +24,26 @@ _STOP_WORDS = frozenset({
     "should", "may", "might", "must", "can", "could", "for", "from", "with",
     "what", "which", "using", "specifically", "only", "reported", "values",
 })
+_SURFACE_NOISE_TOKENS = frozenset({
+    "row", "rows", "table", "page", "pages", "note", "notes", "source",
+    "analysis", "summary", "continued", "statement", "report",
+})
+_DEBT_FAMILY_TOKENS = frozenset({"debt", "obligations", "guaranteed", "outstanding", "liabilities", "securities"})
+_FLOW_FAMILY_TOKENS = frozenset({"receipts", "expenditures", "revenue", "revenues", "collections", "outlays", "spending"})
 
 
 def _tokenize(text: str) -> list[str]:
     return [token for token in re.findall(r"[a-z0-9]+", (text or "").lower()) if len(token) > 1 and token not in _STOP_WORDS]
+
+
+def _flatten_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return " ".join(_flatten_text(item) for item in value if item is not None)
+    if isinstance(value, dict):
+        return " ".join(_flatten_text(item) for item in value.values() if item is not None)
+    return str(value or "")
 
 
 def _query_years(query: str) -> list[str]:
@@ -48,6 +64,27 @@ def _normalized_years(values: list[str] | None) -> list[str]:
     return ordered
 
 
+def _semantic_phrases(query: str, entity: str, metric: str) -> list[str]:
+    phrases: list[str] = []
+    seen: set[str] = set()
+    for raw in (entity, metric):
+        normalized = re.sub(r"\s+", " ", str(raw or "").strip().lower())
+        if len(_tokenize(normalized)) >= 2 and normalized not in seen:
+            seen.add(normalized)
+            phrases.append(normalized)
+    query_tokens = _tokenize(query)
+    for n in (2, 3):
+        for index in range(0, max(0, len(query_tokens) - n + 1)):
+            phrase = " ".join(query_tokens[index : index + n]).strip()
+            if len(phrase) < 8 or phrase in seen or re.fullmatch(r"(?:19|20)\d{2}(?: (?:19|20)\d{2})*", phrase):
+                continue
+            seen.add(phrase)
+            phrases.append(phrase)
+            if len(phrases) >= 8:
+                return phrases
+    return phrases
+
+
 def _query_profile(
     *,
     query: str,
@@ -66,6 +103,9 @@ def _query_profile(
         "semantic_tokens": semantic_tokens,
         "entity_tokens": set(_tokenize(entity)),
         "metric_tokens": set(_tokenize(metric)),
+        "entity_text": str(entity or "").strip(),
+        "metric_text": str(metric or "").strip(),
+        "semantic_phrases": _semantic_phrases(query, entity, metric),
         "target_years": _normalized_years(target_years) or _normalized_years(_query_years(query)),
         "publication_year_window": _normalized_years(publication_year_window),
         "preferred_publication_years": _normalized_years(preferred_publication_years),
@@ -89,20 +129,33 @@ def _table_units(record: dict[str, Any]) -> list[dict[str, Any]]:
     return [item for item in list(record.get("table_units", [])) if isinstance(item, dict)]
 
 
+def _unit_structured_text(unit: dict[str, Any]) -> str:
+    return " ".join(
+        [
+            _flatten_text(unit.get("locator", "")),
+            _flatten_text(unit.get("page_locator", "")),
+            _flatten_text(unit.get("context_text", "")),
+            " ".join(_flatten_text(item) for item in list(unit.get("heading_chain", []))),
+            " ".join(_flatten_text(item) for item in list(unit.get("headers", []))),
+            " ".join(_flatten_text(item) for item in list(unit.get("row_labels", []))),
+            " ".join(_flatten_text(item) for item in list(unit.get("row_paths", []))),
+            " ".join(_flatten_text(item) for item in list(unit.get("column_paths", []))),
+            " ".join(_flatten_text(item) for item in list(unit.get("unit_hints", []))),
+            _flatten_text(unit.get("table_family", "")),
+            _flatten_text(unit.get("period_type", "")),
+        ]
+    ).strip()
+
+
+def _unit_preview_text(unit: dict[str, Any]) -> str:
+    return _flatten_text(unit.get("preview_text", "")).strip()
+
+
 def _table_unit_text(unit: dict[str, Any]) -> str:
     return " ".join(
         [
-            str(unit.get("locator", "") or ""),
-            str(unit.get("page_locator", "") or ""),
-            str(unit.get("context_text", "") or ""),
-            " ".join(str(item or "") for item in list(unit.get("heading_chain", []))),
-            " ".join(str(item or "") for item in list(unit.get("headers", []))),
-            " ".join(str(item or "") for item in list(unit.get("row_labels", []))),
-            " ".join(str(item or "") for item in list(unit.get("column_paths", []))),
-            " ".join(str(item or "") for item in list(unit.get("unit_hints", []))),
-            str(unit.get("preview_text", "") or ""),
-            str(unit.get("table_family", "") or ""),
-            str(unit.get("period_type", "") or ""),
+            _unit_structured_text(unit),
+            _unit_preview_text(unit),
         ]
     ).strip()
 
@@ -129,8 +182,12 @@ def _period_type_fit(unit: dict[str, Any], profile: dict[str, Any]) -> float:
             return 0.65
         if period_type == "monthly_series":
             return 0.2
+        if period_type in {"fiscal_year", "narrative_support"}:
+            return -0.28
     if requested in {"point_lookup", "point_in_time"} and period_type == "point_lookup":
         return 0.35
+    if requested in {"point_lookup", "point_in_time"} and period_type in {"calendar_year", "fiscal_year", "monthly_series"}:
+        return -0.22
     return 0.0
 
 
@@ -183,25 +240,75 @@ def _publication_year_fit(publication_year: str, profile: dict[str, Any]) -> flo
     return -0.18 if window else 0.0
 
 
+def _surface_family(tokens: set[str]) -> str:
+    debt_hits = len(tokens & _DEBT_FAMILY_TOKENS)
+    flow_hits = len(tokens & _FLOW_FAMILY_TOKENS)
+    if debt_hits >= 2 and debt_hits > flow_hits:
+        return "debt"
+    if flow_hits >= 2 and flow_hits > debt_hits:
+        return "flow"
+    return ""
+
+
+def _surface_family_consistency_penalty(heading_tokens: set[str], body_tokens: set[str]) -> float:
+    heading_core = {token for token in heading_tokens if token not in _SURFACE_NOISE_TOKENS}
+    body_core = {token for token in body_tokens if token not in _SURFACE_NOISE_TOKENS}
+    if not heading_core or not body_core:
+        return 0.0
+    heading_family = _surface_family(heading_core)
+    body_family = _surface_family(body_core)
+    if heading_family and body_family and heading_family != body_family:
+        return -0.55
+    overlap = heading_core & body_core
+    if not overlap and len(heading_core) >= 2 and len(body_core) >= 4:
+        return -0.18
+    return 0.0
+
+
+def _phrase_bonus(text: str, phrases: list[str], *, weight: float) -> float:
+    lowered = text.lower()
+    return weight * sum(1 for phrase in phrases if phrase and phrase in lowered)
+
+
 def _table_unit_score(unit: dict[str, Any], profile: dict[str, Any]) -> float:
-    tokens = set(_tokenize(_table_unit_text(unit)))
+    structured_text = _unit_structured_text(unit)
+    preview_text = _unit_preview_text(unit)
+    tokens = set(_tokenize(structured_text))
+    preview_tokens = set(_tokenize(preview_text))
     semantic_tokens = set(profile.get("semantic_tokens", set()))
     entity_tokens = set(profile.get("entity_tokens", set()))
     metric_tokens = set(profile.get("metric_tokens", set()))
+    semantic_phrases = list(profile.get("semantic_phrases", []))
     target_years = set(profile.get("target_years", []))
-    header_tokens = set(_tokenize(" ".join(str(item or "") for item in list(unit.get("headers", [])))))
-    row_tokens = set(_tokenize(" ".join(str(item or "") for item in list(unit.get("row_labels", [])))))
-    heading_tokens = set(_tokenize(" ".join(str(item or "") for item in list(unit.get("heading_chain", [])))))
-    column_tokens = set(_tokenize(" ".join(str(item or "") for item in list(unit.get("column_paths", [])))))
+    header_text = " ".join(_flatten_text(item) for item in list(unit.get("headers", [])))
+    row_text = " ".join(_flatten_text(item) for item in list(unit.get("row_labels", [])))
+    heading_text = " ".join(_flatten_text(item) for item in list(unit.get("heading_chain", [])))
+    column_text = " ".join(_flatten_text(item) for item in list(unit.get("column_paths", [])))
+    header_tokens = set(_tokenize(header_text))
+    row_tokens = set(_tokenize(row_text))
+    heading_tokens = set(_tokenize(heading_text))
+    column_tokens = set(_tokenize(column_text))
+    body_tokens = header_tokens | row_tokens | column_tokens
     year_refs = {str(item) for item in list(unit.get("year_refs", [])) if str(item)}
     month_coverage = list(unit.get("month_coverage", []))
     score = 0.0
-    score += 0.18 * len(semantic_tokens & tokens)
+    score += 0.22 * len(semantic_tokens & tokens)
+    score += 0.03 * len(semantic_tokens & preview_tokens)
     score += 0.16 * len(entity_tokens & row_tokens)
     score += 0.14 * len(metric_tokens & header_tokens)
     score += 0.1 * len(metric_tokens & heading_tokens)
     score += 0.08 * len(entity_tokens & heading_tokens)
     score += 0.08 * len(metric_tokens & column_tokens)
+    score += _phrase_bonus(heading_text, semantic_phrases, weight=0.18)
+    score += _phrase_bonus(header_text, semantic_phrases, weight=0.16)
+    score += _phrase_bonus(row_text, semantic_phrases, weight=0.16)
+    score += _phrase_bonus(column_text, semantic_phrases, weight=0.14)
+    score += _phrase_bonus(preview_text[:320], semantic_phrases, weight=0.05)
+    if entity_tokens and not (entity_tokens & (row_tokens | column_tokens | heading_tokens)):
+        score -= 0.35
+    if metric_tokens and not (metric_tokens & (header_tokens | column_tokens | heading_tokens)):
+        score -= 0.28
+    score += _surface_family_consistency_penalty(heading_tokens, body_tokens)
     if target_years and year_refs & target_years:
         score += 0.9
     elif year_refs and target_years and not (year_refs & target_years):
@@ -271,7 +378,8 @@ def _load_records(corpus_root: str | Path | None = None, index_dir: str | Path |
 
 
 def _record_text(record: dict[str, Any]) -> str:
-    table_unit_text = " ".join(_table_unit_text(unit) for unit in _table_units(record)[:6])
+    table_unit_text = " ".join(_unit_structured_text(unit) for unit in _table_units(record)[:6])
+    preview_text = " ".join(_unit_preview_text(unit)[:180] for unit in _table_units(record)[:3])
     parts: list[str] = [
         str(record.get("relative_path", "")),
         str(record.get("file_name", "")),
@@ -283,7 +391,7 @@ def _record_text(record: dict[str, Any]) -> str:
         " ".join(str(item) for item in record.get("unit_hints", [])),
         " ".join(str(item) for item in record.get("period_types", [])),
         table_unit_text,
-        str(record.get("preview_text", "")),
+        preview_text,
     ]
     return " ".join(part for part in parts if part)
 

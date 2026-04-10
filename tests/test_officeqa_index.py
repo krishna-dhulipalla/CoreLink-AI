@@ -367,6 +367,141 @@ def test_search_officeqa_corpus_index_penalizes_debt_tables_for_expenditure_ques
     assert result["results"][0]["metadata"]["best_evidence_unit"]["table_family"] == "category_breakdown"
 
 
+def test_search_officeqa_corpus_index_penalizes_mixed_heading_body_units_for_debt_questions(tmp_path):
+    corpus_root = tmp_path / "treasury_bulletins_parsed"
+    corpus_root.mkdir(parents=True)
+    (corpus_root / "treasury_bulletin_1946_12.json").write_text(
+        json.dumps(
+            {
+                "document": {
+                    "elements": [
+                        {"type": "section_header", "content": "Public Debt and Guaranteed Obligations Outstanding"},
+                        {
+                            "type": "table",
+                            "description": "Table 2.- Analysis of Receipts from Internal Revenue",
+                            "bbox": [{"page_id": 35}],
+                            "content": (
+                                "<table>"
+                                "<tr><th>Fiscal year or month</th><th>Total</th><th>Income taxes</th></tr>"
+                                "<tr><td>1945</td><td>2001</td><td>1000</td></tr>"
+                                "</table>"
+                            ),
+                        },
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (corpus_root / "treasury_bulletin_1946_08.json").write_text(
+        json.dumps(
+            {
+                "document": {
+                    "elements": [
+                        {
+                            "type": "table",
+                            "description": "Public debt statement",
+                            "bbox": [{"page_id": 20}],
+                            "content": (
+                                "<table>"
+                                "<tr><th>Year</th><th>Total public debt outstanding</th></tr>"
+                                "<tr><td>1945</td><td>258682</td></tr>"
+                                "</table>"
+                            ),
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    build_officeqa_index(corpus_root=corpus_root)
+
+    result = search_officeqa_corpus_index(
+        "According to the Treasury Bulletin, what was total public debt outstanding in 1945?",
+        corpus_root=corpus_root,
+        target_years=["1945"],
+        publication_year_window=["1945", "1946"],
+        preferred_publication_years=["1945", "1946"],
+        period_type="point_lookup",
+        granularity_requirement="point_lookup",
+        metric="public debt outstanding",
+        top_k=2,
+    )
+
+    assert result["results"][0]["document_id"] == "treasury_bulletin_1946_08_json"
+    assert result["results"][0]["metadata"]["best_evidence_unit"]["locator"] == "Public debt statement"
+
+
+def test_search_officeqa_corpus_index_prefers_structured_surface_match_over_preview_only_overlap(tmp_path):
+    corpus_root = tmp_path / "treasury_bulletins_parsed"
+    corpus_root.mkdir(parents=True)
+    (corpus_root / "treasury_bulletin_1940_08.json").write_text(
+        json.dumps(
+            {
+                "document": {
+                    "elements": [
+                        {
+                            "type": "table",
+                            "description": "General expenditure summary",
+                            "bbox": [{"page_id": 16}],
+                            "content": (
+                                "<table>"
+                                "<tr><th>Fiscal year or month</th><th>Total expenditures</th></tr>"
+                                "<tr><td>1940</td><td>10000</td></tr>"
+                                "</table>"
+                            ),
+                        },
+                        {
+                            "type": "paragraph",
+                            "content": "National defense expenditures are discussed in surrounding commentary.",
+                        },
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (corpus_root / "treasury_bulletin_1941_07.json").write_text(
+        json.dumps(
+            {
+                "document": {
+                    "elements": [
+                        {
+                            "type": "table",
+                            "description": "Analysis of national defense expenditures",
+                            "bbox": [{"page_id": 16}],
+                            "content": (
+                                "<table>"
+                                "<tr><th>Category</th><th>Calendar year 1940</th></tr>"
+                                "<tr><td>National defense</td><td>4748</td></tr>"
+                                "</table>"
+                            ),
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    build_officeqa_index(corpus_root=corpus_root)
+
+    result = search_officeqa_corpus_index(
+        "What were the total expenditures for U.S. national defense in the calendar year 1940?",
+        corpus_root=corpus_root,
+        target_years=["1940"],
+        publication_year_window=["1939", "1940", "1941"],
+        preferred_publication_years=["1941", "1940", "1939"],
+        period_type="calendar_year",
+        granularity_requirement="calendar_year",
+        entity="U.S. national defense",
+        metric="total expenditures",
+        top_k=2,
+    )
+
+    assert result["results"][0]["document_id"] == "treasury_bulletin_1941_07_json"
+
+
 def test_validate_officeqa_index_reports_partially_parsed_documents(tmp_path):
     corpus_root = tmp_path / "treasury_bulletins_parsed"
     corpus_root.mkdir(parents=True)
