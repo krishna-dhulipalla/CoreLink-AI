@@ -338,7 +338,7 @@ def _fallback_decomposition(task_text: str, source_bundle: SourceBundle) -> Ques
         HumanMessage(
             content=_normalize_space(
                 f"TASK={task_text}\nFOCUS_QUERY={source_bundle.focus_query}\nTARGET_PERIOD={source_bundle.target_period}\n"
-                f"ENTITIES={source_bundle.entities}\nSOURCE_FILES={source_bundle.source_files_expected[:8]}"
+                f"ENTITIES={source_bundle.entities}\nSOURCE_FILES={source_bundle.source_files_expected}"
             )
         ),
     ]
@@ -447,7 +447,7 @@ def _fallback_semantic_plan(task_text: str, source_bundle: SourceBundle, decompo
         HumanMessage(
             content=_normalize_space(
                 f"TASK={task_text}\nFOCUS_QUERY={source_bundle.focus_query}\nTARGET_PERIOD={source_bundle.target_period}\n"
-                f"ENTITIES={source_bundle.entities}\nSOURCE_FILES={source_bundle.source_files_expected[:8]}\n"
+                f"ENTITIES={source_bundle.entities}\nSOURCE_FILES={source_bundle.source_files_expected}\n"
                 f"RULE_ENTITY={decomposition.entity}\nRULE_METRIC={decomposition.metric}\nRULE_PERIOD={decomposition.period}\n"
                 f"RULE_GRANULARITY={decomposition.granularity_requirement}\nRULE_INCLUDE={decomposition.include_constraints}\n"
                 f"RULE_EXCLUDE={decomposition.exclude_constraints}\nRULE_QUALIFIERS={decomposition.qualifier_terms}"

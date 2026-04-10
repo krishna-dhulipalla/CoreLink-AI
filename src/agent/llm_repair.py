@@ -61,7 +61,7 @@ def _invoke_repair_decision(prompt: str) -> OfficeQALLMRepairDecision | None:
     ]
     try:
         parsed, resolved_model = invoke_structured_output(
-            "profiler",
+            "solver",
             OfficeQALLMRepairDecision,
             messages,
             temperature=0,
@@ -101,6 +101,10 @@ def maybe_rewrite_retrieval_path(
         task_text=task_text,
         retrieval_strategy=retrieval_strategy,
         evidence_gap=evidence_gap,
+        source_constraint_policy=retrieval_intent.source_constraint_policy,
+        target_years=list(retrieval_intent.target_years),
+        publication_year_window=list(retrieval_intent.publication_year_window),
+        preferred_publication_years=list(retrieval_intent.preferred_publication_years),
         current_query=current_query or source_bundle.focus_query,
         current_table_query=current_table_query,
         candidate_sources=candidate_sources,
@@ -125,6 +129,10 @@ def maybe_repair_from_validator(
         task_text=task_text,
         retrieval_strategy=retrieval_intent.strategy,
         evidence_gap=evidence_gap,
+        source_constraint_policy=retrieval_intent.source_constraint_policy,
+        target_years=list(retrieval_intent.target_years),
+        publication_year_window=list(retrieval_intent.publication_year_window),
+        preferred_publication_years=list(retrieval_intent.preferred_publication_years),
         current_query=(retrieval_intent.query_plan.primary_semantic_query or ""),
         current_table_query="",
         candidate_sources=candidate_sources,

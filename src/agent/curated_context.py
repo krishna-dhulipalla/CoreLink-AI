@@ -358,8 +358,8 @@ def build_curated_context(
             "source_bundle": {
                 "entities": source_bundle.entities[:6],
                 "urls": source_bundle.urls[:4],
-                "source_files_expected": source_bundle.source_files_expected[:8],
-                "source_files_found": source_bundle.source_files_found[:8],
+                "source_files_expected": list(source_bundle.source_files_expected),
+                "source_files_found": list(source_bundle.source_files_found),
                 "target_period": source_bundle.target_period,
             },
             "retrieval_plan": {

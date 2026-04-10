@@ -37,8 +37,10 @@ from agent.capabilities import (
 )
 from agent.curated_context import attach_structured_evidence, build_curated_context, build_source_bundle, solver_context_block
 from agent.nodes.orchestrator_retrieval import _plan_retrieval_action, _search_result_candidates
+from agent.nodes.orchestrator_retrieval import _tool_args_from_retrieval_action
 from agent.nodes.orchestrator import (
     _MAX_RETRIEVAL_HOPS,
+    _apply_officeqa_llm_repair_decision,
     _officeqa_retrieval_input_signature,
     context_curator,
     fast_path_gate,
@@ -241,6 +243,83 @@ def test_search_ranking_can_prefer_next_year_publication_for_calendar_year_summa
     ranked = _rank_search_candidates(candidates, retrieval_intent, source_bundle, {"benchmark_adapter": "officeqa"})
 
     assert ranked[0]["document_id"] == "treasury_bulletin_1941_11_json"
+
+
+def test_officeqa_soft_source_hints_trigger_search_first_and_keep_full_source_list():
+    source_files = [f"treasury_bulletin_1940_{month:02d}.json" for month in range(1, 13)]
+    source_bundle = SourceBundle(
+        task_text="What were the total expenditures for U.S. national defense in the calendar year 1940?",
+        focus_query="U.S. national defense total expenditures calendar year 1940",
+        target_period="1940",
+        entities=["U.S. national defense"],
+        source_files_expected=source_files,
+        source_files_found=[
+            {"document_id": name.replace(".json", "_json"), "relative_path": name}
+            for name in source_files
+        ],
+    )
+    retrieval_intent = RetrievalIntent(
+        entity="U.S. national defense",
+        metric="total expenditures",
+        period="1940",
+        period_type="calendar_year",
+        target_years=["1940"],
+        publication_year_window=["1939", "1940", "1941"],
+        preferred_publication_years=["1941", "1940", "1939"],
+        source_constraint_policy="soft",
+        granularity_requirement="calendar_year",
+        document_family="treasury_bulletin",
+        aggregation_shape="calendar_year_total",
+        strategy="table_first",
+    )
+    tool_plan = ToolPlan(selected_tools=["search_officeqa_documents", "fetch_officeqa_table"])
+    registry = build_capability_registry(BUILTIN_RETRIEVAL_TOOLS)
+
+    action = _plan_retrieval_action(
+        execution_mode="document_grounded_analysis",
+        source_bundle=source_bundle,
+        retrieval_intent=retrieval_intent,
+        tool_plan=tool_plan,
+        journal=ExecutionJournal(),
+        registry=registry,
+        benchmark_overrides={"benchmark_adapter": "officeqa"},
+    )
+    args = _tool_args_from_retrieval_action(action, source_bundle, registry, retrieval_intent)
+
+    assert action.tool_name == "search_officeqa_documents"
+    assert args["source_files_policy"] == "soft"
+    assert args["source_files"] == source_files
+
+
+def test_officeqa_repair_can_widen_search_pool_without_task_specific_rules():
+    retrieval_intent = RetrievalIntent(
+        entity="U.S. national defense",
+        metric="total expenditures",
+        period="1940",
+        period_type="calendar_year",
+        target_years=["1940"],
+        publication_year_window=["1940"],
+        preferred_publication_years=["1940"],
+        source_constraint_policy="soft",
+        granularity_requirement="calendar_year",
+        document_family="treasury_bulletin",
+        aggregation_shape="calendar_year_total",
+        strategy="table_first",
+    )
+
+    updated_intent, updated_workpad, changed, reroute_action = _apply_officeqa_llm_repair_decision(
+        retrieval_intent,
+        {"officeqa_override_query": "stale", "officeqa_override_table_query": "stale table"},
+        {"decision": "widen_search_pool"},
+    )
+
+    assert changed is True
+    assert reroute_action == "search_pool_widening"
+    assert updated_intent.source_constraint_policy == "off"
+    assert updated_intent.publication_year_window == ["1939", "1940", "1941"]
+    assert updated_intent.preferred_publication_years[:1] == ["1940"]
+    assert "officeqa_override_query" not in updated_workpad
+    assert "officeqa_override_table_query" not in updated_workpad
 
 
 def test_engine_solver_context_block_removes_redundant_objective_and_tool_query_noise():

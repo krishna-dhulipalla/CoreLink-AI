@@ -526,14 +526,14 @@ def _extract_qualifier_terms(task_text: str) -> list[str]:
 
 def _source_file_query_terms(source_bundle: SourceBundle) -> list[str]:
     terms: list[str] = []
-    for match in source_bundle.source_files_found[:6]:
+    for match in source_bundle.source_files_found:
         relative_path = str(match.get("relative_path", "")).strip()
         if relative_path:
             terms.append(relative_path)
         document_id = str(match.get("document_id", "")).strip()
         if document_id:
             terms.append(document_id)
-    for item in source_bundle.source_files_expected[:6]:
+    for item in source_bundle.source_files_expected:
         compact = str(item).strip()
         if compact:
             terms.append(compact)
@@ -741,6 +741,7 @@ def build_retrieval_intent(
     must_include_terms.extend(semantic_plan.include_constraints)
     must_include_terms.extend(_source_file_query_terms(source_bundle))
     must_include_terms = list(dict.fromkeys([item for item in must_include_terms if item]))
+    source_constraint_policy = "soft" if (source_bundle.source_files_expected or source_bundle.source_files_found) else "off"
 
     policy = _benchmark_policy(benchmark_overrides)
     must_exclude_terms = list(policy.get("excluded_retrieval_terms", [])) if _officeqa_active(benchmark_overrides) else []
@@ -763,6 +764,7 @@ def build_retrieval_intent(
         target_years=target_years,
         publication_year_window=publication_year_window,
         preferred_publication_years=preferred_publication_years,
+        source_constraint_policy=source_constraint_policy,
         granularity_requirement=granularity_requirement,
         document_family=document_family,
         aggregation_shape=aggregation_shape,

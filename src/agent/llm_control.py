@@ -123,6 +123,7 @@ def _source_rerank_prompt(
         f"PERIOD={retrieval_intent.period}\n"
         f"PERIOD_TYPE={retrieval_intent.period_type}\n"
         f"GRANULARITY={retrieval_intent.granularity_requirement}\n"
+        f"SOURCE_CONSTRAINT_POLICY={retrieval_intent.source_constraint_policy}\n"
         f"PREFERRED_PUBLICATION_YEARS={list(retrieval_intent.preferred_publication_years)}\n"
         f"PUBLICATION_YEAR_WINDOW={list(retrieval_intent.publication_year_window)}\n"
         f"RETRIEVAL_REASON={reason}\n"
@@ -155,7 +156,7 @@ def maybe_rerank_source_candidates(
     ]
     try:
         parsed, resolved_model = invoke_structured_output(
-            "reviewer",
+            "direct",
             OfficeQASourceRerankDecision,
             messages,
             temperature=0,
@@ -241,7 +242,7 @@ def maybe_review_table_admissibility(
     ]
     try:
         parsed, resolved_model = invoke_structured_output(
-            "reviewer",
+            "direct",
             OfficeQATableAdmissibilityDecision,
             messages,
             temperature=0,

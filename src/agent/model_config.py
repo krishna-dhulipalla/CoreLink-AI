@@ -310,11 +310,11 @@ def get_model_name_for_officeqa_control(
             return get_model_name_for_task("solver", answer_mode=answer_mode, analysis_modes=analysis_modes)
         return get_model_name("profiler")
     if category_key == "retrieval_rerank_llm":
-        return get_model_name_for_task("reviewer", answer_mode=answer_mode, analysis_modes=analysis_modes)
+        return get_model_name_for_task("direct", answer_mode=answer_mode, analysis_modes=analysis_modes)
     if category_key == "table_rerank_llm":
-        return get_model_name_for_task("reviewer", answer_mode=answer_mode, analysis_modes=analysis_modes)
+        return get_model_name_for_task("direct", answer_mode=answer_mode, analysis_modes=analysis_modes)
     if category_key == "repair_llm":
-        return get_model_name_for_task("reviewer", answer_mode=answer_mode, analysis_modes=analysis_modes)
+        return get_model_name_for_task("solver", answer_mode=answer_mode, analysis_modes=analysis_modes)
     return get_model_name("profiler")
 
 
@@ -325,9 +325,15 @@ def get_model_runtime_kwargs_for_officeqa_control(
     analysis_modes: list[str] | None = None,
 ) -> dict[str, Any]:
     category_key = str(category or "").strip().lower()
-    if category_key in {"retrieval_rerank_llm", "table_rerank_llm", "repair_llm"}:
+    if category_key in {"retrieval_rerank_llm", "table_rerank_llm"}:
         return get_model_runtime_kwargs(
-            "reviewer",
+            "direct",
+            answer_mode=answer_mode,
+            analysis_modes=analysis_modes,
+        )
+    if category_key == "repair_llm":
+        return get_model_runtime_kwargs(
+            "solver",
             answer_mode=answer_mode,
             analysis_modes=analysis_modes,
         )

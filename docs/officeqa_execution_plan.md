@@ -1787,6 +1787,66 @@ Exit criteria:
 - simple year-neighborhood deterministic questions keep the smaller default budget
 - harder semantic cases can spend a slightly larger bounded rerank budget without opening uncontrolled LLM loops
 
+## Phase 36: Soft Source Constraints And Semantic Control Rebalance
+
+Objective:
+
+- stop benchmark-linked source hints from becoming a hidden hard fence while keeping them useful as priors.
+
+Why now:
+
+- the April 9 smoke review showed that the runtime could still be trapped inside a benchmark-provided year/file pool even after temporal-neighborhood retrieval existed
+- the runtime was also still treating source and table reranking like reviewer tasks, while repair escalation remained too weak to break out of a dry search pool
+- this is a system fault, not a task-specific failure pattern
+
+Tasks:
+
+- [x] `P36.1` Change OfficeQA source-file handling from hard exclusion to explicit policy:
+  - `hard`
+  - `soft`
+  - `off`
+- [x] `P36.2` Make `soft` the default policy whenever benchmark-linked source hints exist, so source files act as a prior rather than a hard fence
+- [x] `P36.3` Preserve the full source-hint set through query planning and tool invocation instead of truncating it to a small fixed prefix
+- [x] `P36.4` Make initial OfficeQA retrieval search-first only when the source-hint pool is ambiguous or empty; keep direct document fetch for single-source cases
+- [x] `P36.5` Rebalance the LLM control plane so:
+  - source rerank uses the fast control path
+  - table admissibility uses the fast control path
+  - repair uses the heavier reasoning path
+- [x] `P36.6` Add an explicit `widen_search_pool` repair action that can:
+  - relax source constraints
+  - widen publication-year scope
+  - clear stale override queries before the next retrieval hop
+- [x] `P36.7` Add generic regressions for:
+  - escaping an incorrect hinted source pool
+  - preserving all hinted source files in retrieval args
+  - maintaining direct-fetch behavior for true single-source narrative cases
+  - separating fast rerank control from heavy repair control
+
+Suggested code targets:
+
+- `src/agent/retrieval_reasoning.py`
+- `src/agent/benchmarks/officeqa_index.py`
+- `src/agent/retrieval_tools.py`
+- `src/agent/nodes/orchestrator_retrieval.py`
+- `src/agent/llm_control.py`
+- `src/agent/llm_repair.py`
+- `src/agent/model_config.py`
+- `src/agent/nodes/orchestrator.py`
+- `tests/test_officeqa_index.py`
+- `tests/test_engine_runtime.py`
+- `tests/test_model_config.py`
+
+Exit criteria:
+
+- benchmark-linked source hints no longer prevent later publication-year evidence from being discovered
+- large hinted source pools are preserved end to end instead of being truncated away
+- fast semantic rerank and heavy repair are explicitly separated in code rather than sharing the same reviewer lane
+- repair can widen search generically without task-specific exceptions
+
+Completion note:
+
+- Phase 36 completed by introducing explicit source constraint policy, removing fixed hint truncation from the active retrieval path, preferring search over direct fetch only when the hinted pool is ambiguous, and adding a break-glass `widen_search_pool` repair action backed by the heavier LLM lane.
+
 Execution order update:
 
 - do `Phase 32` before any further ranking cleanup
@@ -1794,6 +1854,7 @@ Execution order update:
 - do `Phase 34` after the stronger context and hierarchy signals exist
 - keep `Phase 31` as the bounded semantic assist layer, but feed it better structural inputs rather than asking it to compensate for state loss
 - use `Phase 35` as the post-hardening refresh of that bounded semantic assist layer
+- use `Phase 36` to stop benchmark-linked source hints from silently becoming the candidate universe
 
 ## Optional Backlog: Shared Global Workpad
 

@@ -52,7 +52,7 @@ OFFICEQA_STRUCTURED_REPAIR_SYSTEM = (
     "You are a bounded retrieval-repair controller for document-grounded financial reasoning.\n"
     "Your job is to improve retrieval or table selection without answering the user question.\n"
     "Return only a structured repair decision.\n"
-    "Allowed actions are: keep, rewrite_query, retune_table_query, change_strategy.\n"
+    "Allowed actions are: keep, rewrite_query, retune_table_query, change_strategy, widen_search_pool.\n"
     "Do not invent facts, numbers, or final answers.\n"
     "Only change the retrieval path if the current evidence is semantically weak or misaligned."
 )
@@ -209,6 +209,10 @@ def build_officeqa_structured_repair_prompt(
     task_text: str,
     retrieval_strategy: str,
     evidence_gap: str,
+    source_constraint_policy: str = "",
+    target_years: list[str] | None = None,
+    publication_year_window: list[str] | None = None,
+    preferred_publication_years: list[str] | None = None,
     current_query: str = "",
     current_table_query: str = "",
     candidate_sources: list[dict[str, Any]] | None = None,
@@ -224,6 +228,8 @@ def build_officeqa_structured_repair_prompt(
                 "title": str(item.get("title", "") or ""),
                 "score": item.get("score", 0.0),
                 "snippet": str(item.get("snippet", "") or "")[:220],
+                "metadata": dict(item.get("metadata", {}) or {}),
+                "best_evidence_unit": dict(item.get("best_evidence_unit", {}) or {}),
             }
         )
     feedback = dict(review_feedback or {})
@@ -231,6 +237,10 @@ def build_officeqa_structured_repair_prompt(
         f"TASK={task_text}\n"
         f"CURRENT_STRATEGY={retrieval_strategy}\n"
         f"EVIDENCE_GAP={evidence_gap}\n"
+        f"SOURCE_CONSTRAINT_POLICY={source_constraint_policy}\n"
+        f"TARGET_YEARS={list(target_years or [])}\n"
+        f"PUBLICATION_YEAR_WINDOW={list(publication_year_window or [])}\n"
+        f"PREFERRED_PUBLICATION_YEARS={list(preferred_publication_years or [])}\n"
         f"CURRENT_QUERY={current_query}\n"
         f"CURRENT_TABLE_QUERY={current_table_query}\n"
         f"REVIEW_REPAIR_TARGET={feedback.get('repair_target', '')}\n"

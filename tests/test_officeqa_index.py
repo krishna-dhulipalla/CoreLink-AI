@@ -107,11 +107,85 @@ def test_search_reference_corpus_can_filter_by_source_files(monkeypatch, tmp_pat
             "query": "Treasury Bulletin 1940",
             "top_k": 5,
             "source_files": ["treasury_1940.json"],
+            "source_files_policy": "hard",
         }
     )
 
     assert result["source_files_filter_applied"] is True
+    assert result["source_files_policy"] == "hard"
     assert result["results"][0]["document_id"] == "treasury_1940_json"
+
+
+def test_search_officeqa_corpus_index_treats_source_files_as_soft_prior_by_default(tmp_path):
+    corpus_root = tmp_path / "treasury_bulletins_parsed"
+    corpus_root.mkdir(parents=True)
+    (corpus_root / "treasury_bulletin_1940_01.json").write_text(
+        json.dumps(
+            {
+                "document": {
+                    "elements": [
+                        {
+                            "type": "table",
+                            "description": "Current monthly statement",
+                            "bbox": [{"page_id": 7}],
+                            "content": (
+                                "<table>"
+                                "<tr><th>Month</th><th>Receipts</th></tr>"
+                                "<tr><td>January</td><td>10</td></tr>"
+                                "<tr><td>February</td><td>11</td></tr>"
+                                "</table>"
+                            ),
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (corpus_root / "treasury_bulletin_1941_11.json").write_text(
+        json.dumps(
+            {
+                "document": {
+                    "elements": [
+                        {"type": "section_header", "content": "Summary of fiscal statistics"},
+                        {
+                            "type": "table",
+                            "description": "Summary of expenditures for calendar year 1940",
+                            "bbox": [{"page_id": 29}],
+                            "content": (
+                                "<table>"
+                                "<tr><th>Category</th><th>Calendar year 1940</th></tr>"
+                                "<tr><td>U.S. national defense</td><td>4748</td></tr>"
+                                "</table>"
+                            ),
+                        },
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    build_officeqa_index(corpus_root=corpus_root)
+
+    result = search_officeqa_corpus_index(
+        "What were the total expenditures for U.S. national defense in the calendar year 1940?",
+        corpus_root=corpus_root,
+        source_files=["treasury_bulletin_1940_01.json"],
+        source_files_policy="soft",
+        target_years=["1940"],
+        publication_year_window=["1939", "1940", "1941"],
+        preferred_publication_years=["1941", "1940", "1939"],
+        period_type="calendar_year",
+        granularity_requirement="calendar_year",
+        entity="U.S. national defense",
+        metric="total expenditures",
+        top_k=2,
+    )
+
+    assert result["source_files_filter_applied"] is False
+    assert result["source_files_prior_applied"] is True
+    assert result["source_files_policy"] == "soft"
+    assert result["results"][0]["document_id"] == "treasury_bulletin_1941_11_json"
 
 
 def test_resolve_source_files_to_manifest_matches_relative_and_stem_names(tmp_path):

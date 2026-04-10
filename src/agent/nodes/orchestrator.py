@@ -868,6 +868,7 @@ def _officeqa_retrieval_input_signature(retrieval_intent: RetrievalIntent, workp
         "target_years": list(retrieval_intent.target_years),
         "publication_year_window": list(retrieval_intent.publication_year_window),
         "preferred_publication_years": list(retrieval_intent.preferred_publication_years),
+        "source_constraint_policy": retrieval_intent.source_constraint_policy,
         "granularity_requirement": retrieval_intent.granularity_requirement,
         "document_family": retrieval_intent.document_family,
         "aggregation_shape": retrieval_intent.aggregation_shape,
@@ -880,6 +881,27 @@ def _officeqa_retrieval_input_signature(retrieval_intent: RetrievalIntent, workp
         "override_table_query": str(workpad.get("officeqa_override_table_query", "") or ""),
     }
     return hashlib.sha1(json.dumps(payload, sort_keys=True, ensure_ascii=True).encode("utf-8")).hexdigest()[:16]
+
+
+def _expanded_officeqa_publication_scope(retrieval_intent: RetrievalIntent) -> tuple[list[str], list[str]]:
+    seeds = {
+        int(value)
+        for value in [
+            *list(retrieval_intent.target_years),
+            *list(retrieval_intent.publication_year_window),
+            *list(retrieval_intent.preferred_publication_years),
+        ]
+        if re.fullmatch(r"(?:19|20)\d{2}", str(value or "").strip())
+    }
+    if not seeds:
+        return list(retrieval_intent.publication_year_window), list(retrieval_intent.preferred_publication_years)
+
+    expanded_window = [str(year) for year in range(min(seeds) - 1, max(seeds) + 2)]
+    preferred = [str(item) for item in list(retrieval_intent.preferred_publication_years) if str(item)]
+    for year in expanded_window:
+        if year not in preferred:
+            preferred.append(year)
+    return expanded_window, preferred
 
 
 def _officeqa_tool_evidence_atoms(tool_result: dict[str, Any]) -> set[str]:
@@ -992,6 +1014,8 @@ def _officeqa_evidence_signature(journal: ExecutionJournal, curated: CuratedCont
 def _officeqa_reroute_action(stage: str, trigger: str, decision: dict[str, Any]) -> str:
     action = str(decision.get("decision", "") or "").strip()
     normalized_trigger = " ".join([str(stage or "").strip().lower(), str(trigger or "").strip().lower()])
+    if action == "widen_search_pool":
+        return "search_pool_widening"
     if action == "retune_table_query":
         if "unit" in normalized_trigger:
             return "unit_repair"
@@ -1009,7 +1033,7 @@ def _filter_tool_results_for_reroute_action(
     tool_results: list[dict[str, Any]],
     reroute_action: str,
 ) -> list[dict[str, Any]]:
-    if reroute_action in {"query_rewrite", "source_rerank", "strategy_shift"}:
+    if reroute_action in {"query_rewrite", "source_rerank", "strategy_shift", "search_pool_widening"}:
         return []
     if reroute_action in {"table_query_rewrite", "unit_repair"}:
         return [dict(item) for item in tool_results if str(dict(item).get("type", "") or "") in _OFFICEQA_SEARCH_DISCOVER_TOOLS]
@@ -1055,7 +1079,7 @@ def _invalidate_officeqa_repair_state(
     retained_tool_results = _filter_tool_results_for_reroute_action(list(updated_journal.tool_results or []), reroute_action)
     updated_journal.tool_results = retained_tool_results
     updated_journal.retrieved_citations = []
-    if reroute_action in {"query_rewrite", "source_rerank", "strategy_shift"}:
+    if reroute_action in {"query_rewrite", "source_rerank", "strategy_shift", "search_pool_widening"}:
         updated_journal.retrieval_queries = []
     updated_curated.structured_evidence = {}
     updated_curated.compute_result = {}
@@ -1169,6 +1193,23 @@ def _apply_officeqa_llm_repair_decision(
                 for item in dict.fromkeys([*updated_intent.fallback_chain, retrieval_intent.strategy])
                 if item and item != updated_intent.strategy
             ]
+            path_changed = True
+    elif action == "widen_search_pool":
+        updated_workpad.pop("officeqa_override_query", None)
+        updated_workpad.pop("officeqa_override_table_query", None)
+        prior_policy = updated_intent.source_constraint_policy
+        if prior_policy == "hard":
+            updated_intent.source_constraint_policy = "soft"
+            path_changed = True
+        elif prior_policy != "off":
+            updated_intent.source_constraint_policy = "off"
+            path_changed = True
+        expanded_window, expanded_preferred = _expanded_officeqa_publication_scope(updated_intent)
+        if expanded_window != list(updated_intent.publication_year_window):
+            updated_intent.publication_year_window = expanded_window
+            path_changed = True
+        if expanded_preferred != list(updated_intent.preferred_publication_years):
+            updated_intent.preferred_publication_years = expanded_preferred
             path_changed = True
 
     return updated_intent, updated_workpad, path_changed, reroute_action

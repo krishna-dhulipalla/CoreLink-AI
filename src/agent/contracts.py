@@ -524,6 +524,7 @@ class RetrievalIntent(BaseModel):
     target_years: list[str] = Field(default_factory=list)
     publication_year_window: list[str] = Field(default_factory=list)
     preferred_publication_years: list[str] = Field(default_factory=list)
+    source_constraint_policy: Literal["soft", "hard", "off"] = "off"
     granularity_requirement: str = ""
     document_family: str = ""
     aggregation_shape: str = ""
@@ -549,7 +550,7 @@ class RetrievalIntent(BaseModel):
 
 
 class OfficeQALLMRepairDecision(BaseModel):
-    decision: Literal["keep", "rewrite_query", "retune_table_query", "change_strategy"] = "keep"
+    decision: Literal["keep", "rewrite_query", "retune_table_query", "change_strategy", "widen_search_pool"] = "keep"
     revised_query: str = ""
     revised_table_query: str = ""
     preferred_strategy: Literal["table_first", "text_first", "hybrid", "multi_table", "multi_document", ""] = ""

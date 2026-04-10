@@ -247,3 +247,23 @@ class TestModelConfig:
         assert "max_completion_tokens" not in params
         assert payload["max_tokens"] == 1400
         assert "max_completion_tokens" not in payload
+
+    def test_officeqa_control_routes_fast_rerank_and_heavy_repair_by_role(self, monkeypatch):
+        model_config = _reload_model_config()
+
+        monkeypatch.setattr(
+            model_config,
+            "get_model_name_for_task",
+            lambda role, **kwargs: f"{role}-model",
+        )
+        monkeypatch.setattr(
+            model_config,
+            "get_model_runtime_kwargs",
+            lambda role, **kwargs: {"role": role},
+        )
+
+        assert model_config.get_model_name_for_officeqa_control("retrieval_rerank_llm") == "direct-model"
+        assert model_config.get_model_name_for_officeqa_control("table_rerank_llm") == "direct-model"
+        assert model_config.get_model_name_for_officeqa_control("repair_llm") == "solver-model"
+        assert model_config.get_model_runtime_kwargs_for_officeqa_control("retrieval_rerank_llm") == {"role": "direct"}
+        assert model_config.get_model_runtime_kwargs_for_officeqa_control("repair_llm") == {"role": "solver"}

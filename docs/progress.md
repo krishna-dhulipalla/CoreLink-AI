@@ -356,3 +356,27 @@ Rules:
   - new repair artifacts now separately record whether execution actually pivoted documents after the decision
   - traces can now distinguish `llm_path_changed` from `document_pivot_triggered`
 - This avoids the earlier confusion where a repair looked like a no-op in trace history even though the runtime had actually jumped from one bulletin file to another during tool execution.
+
+### Chat 15: Phase 36 Completed With Soft Source Constraints, Fast Rerank, And Heavy Repair Widening
+
+- Introduced explicit OfficeQA source-constraint policy:
+  - `hard`
+  - `soft`
+  - `off`
+- Source hints are now treated as a soft prior by default whenever benchmark-linked source files exist, instead of silently becoming a hard candidate fence.
+- Removed fixed truncation from the active source-hint path:
+  - retrieval query planning now keeps the full source hint set
+  - OfficeQA search tool args now carry the full hinted list instead of slicing it down
+- Initial OfficeQA retrieval is now:
+  - direct-fetch first for true single-source cases
+  - search-first when the hinted source pool is ambiguous or empty
+- Rebalanced the bounded LLM control plane:
+  - source rerank and table admissibility now use the fast control lane
+  - structured repair now uses the heavier reasoning lane
+- Added an explicit `widen_search_pool` repair action that can:
+  - relax source constraints
+  - widen publication-year scope
+  - clear stale query overrides before the next fresh retrieval hop
+- Updated:
+  - `docs/officeqa_execution_plan.md`
+  - `docs/v5_runtime_walkthrough.md`

@@ -144,7 +144,8 @@ def _structured_tool_args(state: RuntimeState, registry: dict[str, dict[str, Any
             "query": query,
             "top_k": 5,
             "snippet_chars": 700,
-            "source_files": source_bundle.source_files_expected[:8],
+            "source_files": list(source_bundle.source_files_expected),
+            "source_files_policy": retrieval_intent.source_constraint_policy,
             "target_years": list(retrieval_intent.target_years),
             "publication_year_window": list(retrieval_intent.publication_year_window),
             "preferred_publication_years": list(retrieval_intent.preferred_publication_years),
@@ -159,7 +160,8 @@ def _structured_tool_args(state: RuntimeState, registry: dict[str, dict[str, Any
             "query": query,
             "top_k": 8,
             "snippet_chars": 700,
-            "source_files": source_bundle.source_files_expected[:8],
+            "source_files": list(source_bundle.source_files_expected),
+            "source_files_policy": retrieval_intent.source_constraint_policy,
             "target_years": list(retrieval_intent.target_years),
             "publication_year_window": list(retrieval_intent.publication_year_window),
             "preferred_publication_years": list(retrieval_intent.preferred_publication_years),
@@ -1143,6 +1145,8 @@ def _candidate_diagnostics(
             "score": score,
             "publication_year": str(metadata.get("publication_year", "") or ""),
             "best_table_family": str(best_unit.get("table_family", "") or ""),
+            "metadata": metadata,
+            "best_evidence_unit": best_unit,
         }
         if index < 3:
             kept.append(item)
@@ -1223,7 +1227,7 @@ def _attach_retrieval_diagnostics(
         benchmark_overrides,
     )
     if not candidate_sources and source_bundle.source_files_found:
-        candidate_sources, rejected_candidates = _source_file_candidate_diagnostics(list(source_bundle.source_files_found[:8]))
+        candidate_sources, rejected_candidates = _source_file_candidate_diagnostics(list(source_bundle.source_files_found))
     action.candidate_sources = candidate_sources
     action.rejected_candidates = rejected_candidates
     return action
@@ -1260,7 +1264,7 @@ def _fallback_retrieval_action(
     benchmark_policy = benchmark_runtime_policy(overrides)
     allow_web_fallback = bool(benchmark_policy.get("allow_web_fallback", True))
     corpus_grounded_only = execution_mode == "document_grounded_analysis" and officeqa_mode and not allow_web_fallback
-    indexed_source_matches = list(source_bundle.source_files_found[:4])
+    indexed_source_matches = list(source_bundle.source_files_found)
     officeqa_search_tools = [name for name in document_search_tools if name == "search_officeqa_documents"]
     officeqa_table_tools = [name for name in document_fetch_tools if name == "fetch_officeqa_table"]
     officeqa_row_tools = [name for name in document_fetch_tools if name == "lookup_officeqa_rows"]
@@ -1297,6 +1301,15 @@ def _fallback_retrieval_action(
         prefer_text_first = _strategy_prefers_text_first(retrieval_intent, active_strategy)
 
         if not journal.tool_results:
+            if officeqa_search_tools and retrieval_intent.source_constraint_policy != "hard" and len(indexed_source_matches) != 1:
+                return RetrievalAction(
+                    action="tool",
+                    stage="identify_source",
+                    strategy=active_strategy,
+                    tool_name=officeqa_search_tools[0],
+                    query=seed_query,
+                    rationale="Search the indexed OfficeQA corpus first, treating benchmark-linked source files as a soft prior rather than a hard fence.",
+                )
             if next_source_match:
                 if prefer_text_first and officeqa_page_tools:
                     return RetrievalAction(
@@ -1894,14 +1907,30 @@ def _tool_args_from_retrieval_action(
             "query": action.query or _derive_retrieval_seed_query(source_bundle, retrieval_intent),
             "top_k": 5,
             "snippet_chars": 700,
-            "source_files": source_bundle.source_files_expected[:8],
+            "source_files": list(source_bundle.source_files_expected),
+            "source_files_policy": retrieval_intent.source_constraint_policy,
+            "target_years": list(retrieval_intent.target_years),
+            "publication_year_window": list(retrieval_intent.publication_year_window),
+            "preferred_publication_years": list(retrieval_intent.preferred_publication_years),
+            "period_type": retrieval_intent.period_type,
+            "granularity_requirement": retrieval_intent.granularity_requirement,
+            "entity": retrieval_intent.entity,
+            "metric": retrieval_intent.metric,
         }
     if action.tool_name == "search_reference_corpus":
         return {
             "query": action.query or _derive_retrieval_seed_query(source_bundle, retrieval_intent),
             "top_k": 5,
             "snippet_chars": 700,
-            "source_files": source_bundle.source_files_expected[:8],
+            "source_files": list(source_bundle.source_files_expected),
+            "source_files_policy": retrieval_intent.source_constraint_policy,
+            "target_years": list(retrieval_intent.target_years),
+            "publication_year_window": list(retrieval_intent.publication_year_window),
+            "preferred_publication_years": list(retrieval_intent.preferred_publication_years),
+            "period_type": retrieval_intent.period_type,
+            "granularity_requirement": retrieval_intent.granularity_requirement,
+            "entity": retrieval_intent.entity,
+            "metric": retrieval_intent.metric,
         }
     if action.tool_name == "list_reference_files":
         return {"prompt_text": source_bundle.task_text}

@@ -78,6 +78,13 @@ def _record_publication_year(record: dict[str, Any]) -> str:
     return str(record.get("publication_year", "") or "").strip()
 
 
+def _normalize_source_files_policy(policy: str) -> str:
+    normalized = str(policy or "").strip().lower()
+    if normalized in {"hard", "soft", "off"}:
+        return normalized
+    return "soft"
+
+
 def _table_units(record: dict[str, Any]) -> list[dict[str, Any]]:
     return [item for item in list(record.get("table_units", [])) if isinstance(item, dict)]
 
@@ -285,6 +292,16 @@ def _score_record(record: dict[str, Any], profile: dict[str, Any]) -> tuple[floa
     return score, best_unit
 
 
+def _source_hint_score(document_id: str, allowed_document_ids: set[str], source_files_policy: str) -> float:
+    if not allowed_document_ids or source_files_policy == "off":
+        return 0.0
+    if document_id in allowed_document_ids:
+        return 0.45 if source_files_policy == "soft" else 0.8
+    if source_files_policy == "hard":
+        return -10.0
+    return 0.0
+
+
 def search_officeqa_corpus_index(
     query: str,
     corpus_root: str | Path | None = None,
@@ -299,6 +316,7 @@ def search_officeqa_corpus_index(
     granularity_requirement: str = "",
     entity: str = "",
     metric: str = "",
+    source_files_policy: str = "soft",
 ) -> dict[str, Any]:
     root, records = _load_records(corpus_root, index_dir)
     if root is None or not records:
@@ -319,12 +337,15 @@ def search_officeqa_corpus_index(
         for item in resolve_source_files_to_manifest(source_files or [], corpus_root=corpus_root, index_dir=index_dir)
         if item.get("matched")
     }
+    normalized_source_files_policy = _normalize_source_files_policy(source_files_policy)
     candidate_records = _record_pool(records, profile, top_k)
     scored = []
     for record in candidate_records:
-        if allowed_document_ids and str(record.get("document_id", "")) not in allowed_document_ids:
+        document_id = str(record.get("document_id", ""))
+        if normalized_source_files_policy == "hard" and allowed_document_ids and document_id not in allowed_document_ids:
             continue
         score, best_unit = _score_record(record, profile)
+        score += _source_hint_score(document_id, allowed_document_ids, normalized_source_files_policy)
         if score <= 0:
             continue
         scored.append((score, record, best_unit))
@@ -378,7 +399,9 @@ def search_officeqa_corpus_index(
         "result_count": len(results),
         "index_mode": "officeqa_manifest",
         "candidate_pool_size": len(candidate_records),
-        "source_files_filter_applied": bool(allowed_document_ids),
+        "source_files_filter_applied": bool(allowed_document_ids) and normalized_source_files_policy == "hard",
+        "source_files_prior_applied": bool(allowed_document_ids) and normalized_source_files_policy in {"soft", "hard"},
+        "source_files_policy": normalized_source_files_policy,
     }
 
 
