@@ -574,9 +574,7 @@ def _build_query_plan(
     source_hint = ""
     if document_family == "treasury_bulletin":
         source_hint = "Treasury Bulletin"
-    elif document_family == "official_government_finance":
-        source_hint = "official government finance"
-    elif document_family:
+    elif document_family and document_family != "official_government_finance":
         source_hint = document_family.replace("_", " ")
 
     monthly_hint = "monthly" if granularity_requirement == "monthly_series" else ""
@@ -738,8 +736,6 @@ def build_retrieval_intent(
     must_include_terms: list[str] = []
     if document_family == "treasury_bulletin":
         must_include_terms.append("Treasury Bulletin")
-    elif document_family == "official_government_finance":
-        must_include_terms.append("official government finance")
     if entity:
         must_include_terms.append(entity)
     if retrieval_metric:

@@ -339,6 +339,107 @@ def _retrieval_tokens(text: str) -> list[str]:
     ]
 
 
+def _best_surface_match(text: str, phrase: str) -> float:
+    normalized_text = " ".join(_retrieval_tokens(text))
+    normalized_phrase = " ".join(_retrieval_tokens(phrase))
+    if not normalized_text or not normalized_phrase:
+        return 0.0
+    if normalized_phrase in normalized_text:
+        return 1.0
+    text_tokens = set(normalized_text.split())
+    phrase_tokens = set(normalized_phrase.split())
+    if not phrase_tokens:
+        return 0.0
+    return float(len(text_tokens & phrase_tokens)) / max(1, len(phrase_tokens))
+
+
+def _best_unit_text(best_unit: dict[str, Any]) -> str:
+    return " ".join(
+        [
+            str(best_unit.get("locator", "") or ""),
+            str(best_unit.get("context_text", "") or ""),
+            " ".join(str(item or "") for item in list(best_unit.get("heading_chain", []))),
+            " ".join(str(item or "") for item in list(best_unit.get("headers", []))),
+            " ".join(str(item or "") for item in list(best_unit.get("row_labels", []))),
+            " ".join(str(item or "") for item in list(best_unit.get("row_paths", []))),
+            " ".join(str(item or "") for item in list(best_unit.get("column_paths", []))),
+        ]
+    ).strip()
+
+
+def _family_terms(retrieval_intent: RetrievalIntent) -> tuple[set[str], set[str]]:
+    metric_tokens = _query_metric_tokens(retrieval_intent)
+    debt_terms = {"debt", "outstanding", "obligations", "liabilities", "securities", "guaranteed"}
+    flow_terms = {"expenditures", "receipts", "revenue", "revenues", "collections", "outlays", "spending"}
+    return metric_tokens & debt_terms, metric_tokens & flow_terms
+
+
+def _table_family_preference_score(table_family: str, retrieval_intent: RetrievalIntent) -> float:
+    family = str(table_family or "").strip().lower()
+    if not family:
+        return 0.0
+    if family == "navigation_or_contents":
+        return -1.5
+    debt_terms, flow_terms = _family_terms(retrieval_intent)
+    granularity = retrieval_intent.granularity_requirement
+    if granularity == "monthly_series":
+        if family == "monthly_series":
+            return 0.95
+        if family in {"annual_summary", "debt_or_balance_sheet"}:
+            return -0.45
+        return -0.12
+    if granularity == "fiscal_year":
+        if family == "fiscal_year_comparison":
+            return 0.72
+        if family == "category_breakdown":
+            return 0.18
+    if debt_terms:
+        if family == "debt_or_balance_sheet":
+            return 0.72
+        if family in {"category_breakdown", "annual_summary"}:
+            return -0.28
+    if flow_terms:
+        if family == "category_breakdown":
+            return 0.82
+        if family == "annual_summary":
+            return 0.2
+        if family == "debt_or_balance_sheet":
+            return -0.55
+    return 0.0
+
+
+def _best_unit_alignment_score(best_unit: dict[str, Any], retrieval_intent: RetrievalIntent) -> float:
+    if not best_unit:
+        return 0.0
+    heading_text = " ".join(str(item or "") for item in list(best_unit.get("heading_chain", [])))
+    row_text = " ".join(str(item or "") for item in list(best_unit.get("row_paths", [])) or list(best_unit.get("row_labels", [])))
+    header_text = " ".join(str(item or "") for item in list(best_unit.get("headers", [])))
+    column_text = " ".join(str(item or "") for item in list(best_unit.get("column_paths", [])))
+    locator_text = str(best_unit.get("locator", "") or "")
+    preview_text = str(best_unit.get("preview_text", "") or "")[:240]
+    entity_text = str(retrieval_intent.entity or "").strip()
+    metric_text = str(retrieval_intent.metric or "").strip()
+    score = 0.0
+    if entity_text:
+        score += 0.78 * _best_surface_match(row_text, entity_text)
+        score += 0.45 * _best_surface_match(heading_text, entity_text)
+        score += 0.16 * _best_surface_match(locator_text, entity_text)
+        if _best_surface_match(row_text, entity_text) < 0.34 and _best_surface_match(heading_text, entity_text) < 0.34:
+            score -= 0.3
+    if metric_text:
+        score += 0.52 * _best_surface_match(header_text, metric_text)
+        score += 0.46 * _best_surface_match(heading_text, metric_text)
+        score += 0.28 * _best_surface_match(column_text, metric_text)
+        score += 0.1 * _best_surface_match(preview_text, metric_text)
+        if _best_surface_match(header_text, metric_text) < 0.25 and _best_surface_match(heading_text, metric_text) < 0.25:
+            score -= 0.22
+    score += 0.16 * _best_surface_match(_best_unit_text(best_unit), retrieval_intent.period)
+    score += 0.1 * float(best_unit.get("ranking_score", 0.0) or 0.0)
+    score += 0.18 * float(best_unit.get("table_confidence", 0.0) or 0.0)
+    score += _table_family_preference_score(str(best_unit.get("table_family", "") or ""), retrieval_intent)
+    return score
+
+
 def _retrieval_focus_tokens(source_bundle: SourceBundle) -> list[str]:
     ordered: list[str] = []
     seen: set[str] = set()
@@ -1032,7 +1133,7 @@ def _search_candidate_score(
     score = 0.0
     rank = int(candidate.get("rank", 999) or 999)
     score += max(0.0, 0.4 - 0.05 * max(0, rank - 1))
-    score += min(1.2, float(candidate.get("score", 0.0) or 0.0) * 0.28)
+    score += min(1.0, float(candidate.get("score", 0.0) or 0.0) * 0.18)
 
     entity_tokens = _query_entity_tokens(retrieval_intent)
     metric_tokens = _query_metric_tokens(retrieval_intent)
@@ -1041,7 +1142,7 @@ def _search_candidate_score(
     query_tokens = set(_retrieval_focus_tokens(source_bundle))
 
     overlap = len((entity_tokens | metric_tokens | period_tokens | must_tokens | query_tokens) & tokens)
-    score += 0.18 * overlap
+    score += 0.12 * overlap
     score += 0.12 * len(entity_tokens & title_tokens)
     score += 0.08 * len(metric_tokens & title_tokens)
     score += 0.06 * len(period_tokens & title_tokens)
@@ -1050,7 +1151,8 @@ def _search_candidate_score(
     score += _category_fit_score(candidate, retrieval_intent)
     score += _exclusion_fit_score(candidate, retrieval_intent)
     score += _historical_family_fit_score(candidate, retrieval_intent)
-    score += 0.22 * float(best_unit.get("table_confidence", 0.0) or 0.0)
+    score += 0.12 * float(best_unit.get("table_confidence", 0.0) or 0.0)
+    score += _best_unit_alignment_score(best_unit, retrieval_intent)
 
     citation = str(candidate.get("citation", "")).lower()
     if any(host in citation for host in ("govinfo.gov", "census.gov", "va.gov", "fraser.stlouisfed.org", ".gov/")):
@@ -1182,7 +1284,7 @@ def _candidate_diagnostics(
             "metadata": metadata,
             "best_evidence_unit": best_unit,
         }
-        if index < 3:
+        if index < 5:
             kept.append(item)
         else:
             item["reason"] = _candidate_rejection_reason(candidate, score, retrieval_intent)
@@ -1232,6 +1334,56 @@ def _current_table_family(last_result: dict[str, Any]) -> str:
     if not tables:
         return ""
     return str(tables[0].get("table_family", "") or dict(facts.get("metadata", {}) or {}).get("table_family", "") or "").strip()
+
+
+def _table_candidates_from_result(last_result: dict[str, Any]) -> list[dict[str, Any]]:
+    facts = dict(last_result.get("facts") or {})
+    metadata = dict(facts.get("metadata") or {})
+    return [dict(item) for item in list(metadata.get("table_candidates", []) or []) if isinstance(item, dict)]
+
+
+def _current_table_locator(last_result: dict[str, Any]) -> str:
+    facts = dict(last_result.get("facts") or {})
+    tables = [item for item in list(facts.get("tables", [])) if isinstance(item, dict)]
+    if not tables:
+        return ""
+    current = dict(tables[0] or {})
+    return str(current.get("table_locator", "") or current.get("locator", "") or "").strip()
+
+
+def _best_same_document_table_candidate(
+    last_result: dict[str, Any],
+    retrieval_intent: RetrievalIntent,
+) -> tuple[dict[str, Any] | None, float, float]:
+    table_candidates = _table_candidates_from_result(last_result)
+    if len(table_candidates) < 2:
+        return None, 0.0, 0.0
+    current_locator = _current_table_locator(last_result).lower()
+    current_candidate = next(
+        (
+            item
+            for item in table_candidates
+            if str(item.get("locator", "") or "").strip().lower() == current_locator
+        ),
+        None,
+    )
+    current_score = _best_unit_alignment_score(current_candidate or {}, retrieval_intent)
+    scored = sorted(
+        (
+            (_best_unit_alignment_score(item, retrieval_intent), item)
+            for item in table_candidates
+        ),
+        key=lambda pair: pair[0],
+        reverse=True,
+    )
+    if not scored:
+        return None, current_score, current_score
+    best_score, best_candidate = scored[0]
+    if str(best_candidate.get("locator", "") or "").strip().lower() == current_locator:
+        return None, current_score, best_score
+    if best_score <= max(0.75, current_score + 0.3):
+        return None, current_score, best_score
+    return dict(best_candidate), current_score, best_score
 
 
 def _attach_retrieval_diagnostics(
@@ -1493,6 +1645,39 @@ def _fallback_retrieval_action(
             current_table_family = _current_table_family(last_result)
             wrong_table_family = bool(current_table_family) and not _table_family_matches_intent(current_table_family, retrieval_intent)
             next_ranked_candidate = _next_ranked_source_candidate(journal, retrieval_intent, source_bundle, benchmark_overrides)
+            alternate_table_candidate, current_table_score, alternate_table_score = _best_same_document_table_candidate(
+                last_result,
+                retrieval_intent,
+            )
+            if alternate_table_candidate and officeqa_table_tools:
+                alternate_query = _normalize_query(
+                    " ".join(
+                        part
+                        for part in (
+                            retrieval_intent.entity,
+                            retrieval_intent.metric,
+                            retrieval_intent.period,
+                            str(alternate_table_candidate.get("locator", "") or ""),
+                            " ".join(str(item or "") for item in list(alternate_table_candidate.get("headers", []))[:4]),
+                            " ".join(str(item or "") for item in list(alternate_table_candidate.get("row_labels", []))[:4]),
+                        )
+                        if part
+                    )
+                )
+                return RetrievalAction(
+                    action="tool",
+                    stage="locate_table",
+                    strategy=active_strategy,
+                    tool_name=officeqa_table_tools[0],
+                    document_id=current_document_id,
+                    path=current_path,
+                    query=alternate_query or str(alternate_table_candidate.get("locator", "") or "") or next_table_query or officeqa_table_query,
+                    evidence_gap="wrong row or column semantics",
+                    rationale=(
+                        "Retry table extraction inside the same document because another indexed table candidate has materially "
+                        f"stronger semantic alignment ({alternate_table_score:.2f} vs {current_table_score:.2f})."
+                    ),
+                )
             if wrong_table_family and officeqa_table_tools:
                 alternate_query = _next_table_query(journal, retrieval_intent, source_bundle)
                 if alternate_query and alternate_query.lower() != current_table_query.lower():

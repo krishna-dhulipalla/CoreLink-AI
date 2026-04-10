@@ -473,3 +473,46 @@ Rules:
 - Net effect: the system now uses honest heuristic scores that reflect actual confidence, and delegates tie-breaking to the fast LLM (`direct` lane) instead of hardcoded keyword math
 - Both modified files pass syntax validation
 
+### Chat 21: April 10 Smoke Audit Shows Handoff And Repair Failures After Hardcoded Bias Removal
+
+- Reviewed:
+  - `Results&traces/officeqa_regression_smoke_20260410T171751Z.json`
+  - `traces/2026-04-10_11-12-02/task_001__retrieval_public_debt_1945.json`
+  - `traces/2026-04-10_11-12-02/task_002__extraction_national_defense_1940.json`
+- Both smoke cases failed at `validation` with `repair_stall`.
+- Task 1 now reaches a plausible 1945 bulletin but selects the wrong debt-family table inside it:
+  - a savings-bonds table instead of a direct public-debt-outstanding table
+- Task 2 now surfaces later-year category tables in the candidate pool, including:
+  - `treasury_bulletin_1941_12.json`
+  - `treasury_bulletin_1942_04.json`
+  But the executor still commits to a weaker 1940 mixed summary table.
+- This means the strongest current blockers are no longer raw corpus access or simple year fencing. They are:
+  - evidence-unit handoff from ranked candidate pool to executor choice
+  - intra-document table admissibility
+  - repair activation after validator-directed revision
+  - provenance/domain-token leakage into semantic query text
+- No code changes were made in this audit.
+- Added:
+  - `docs/officeqa_smoke_review_20260410.md`
+  - a new failure-mode section in `docs/v5_runtime_walkthrough.md`
+
+### Chat 22: Phase 39 Completed With Semantic Handoff Consistency And Same-Document Reselection
+
+- Opened and completed Phase 39 to fix the generic boundary exposed by the April 10 failing smoke run:
+  - good candidates were already being surfaced
+  - but the executor was not preserving that semantic preference through the second-stage handoff
+- Removed provenance-only query contamination for generic government-finance cases:
+  - `official government finance` no longer leads the active semantic retrieval seed
+  - source-family identity remains metadata, not the primary lexical query
+- Rebalanced second-stage orchestrator ranking so it follows best evidence-unit quality more closely:
+  - stronger weight on best evidence-unit alignment
+  - stronger weight on row/heading/header/column fit
+  - lighter dependence on broad whole-document overlap and raw search score
+- Preserved more top candidate sources in diagnostics so rerank and repair can see the real alternative set instead of only a tiny shortlist.
+- Added deterministic same-document table reselection:
+  - when the current document is plausible but a different indexed table in that same document is materially better aligned, the executor now pivots before validator stall
+- Expanded fast source-rerank triggering so it can activate on top-candidate family mismatch when a better-family candidate is already visible.
+- Validation:
+  - targeted regressions passed
+  - broader OfficeQA slice passed
+  - smoke rerun returned green in `officeqa_regression_smoke_20260410T180403Z.json`

@@ -487,6 +487,98 @@ def test_officeqa_search_marks_temporally_local_candidate_pool_for_widening():
     assert action.query == retrieval_intent.query_candidates[1]
 
 
+def test_officeqa_plan_reselects_better_table_within_same_document():
+    source_bundle = SourceBundle(
+        task_text="According to the Treasury Bulletin, what was total public debt outstanding in 1945?",
+        focus_query="public debt outstanding 1945",
+        target_period="1945",
+        entities=[],
+    )
+    retrieval_intent = RetrievalIntent(
+        entity="",
+        metric="public debt outstanding",
+        period="1945",
+        period_type="point_lookup",
+        target_years=["1945"],
+        publication_year_window=["1944", "1945", "1946"],
+        preferred_publication_years=["1945", "1946", "1944"],
+        granularity_requirement="point_lookup",
+        document_family="treasury_bulletin",
+        aggregation_shape="point_lookup",
+        strategy="table_first",
+        answer_mode="deterministic_compute",
+        compute_policy="required",
+    )
+    tool_plan = ToolPlan(selected_tools=["fetch_officeqa_table", "lookup_officeqa_rows"])
+    registry = build_capability_registry(BUILTIN_RETRIEVAL_TOOLS)
+    journal = ExecutionJournal(
+        retrieval_iterations=1,
+        tool_results=[
+            {
+                "type": "fetch_officeqa_table",
+                "retrieval_status": "ok",
+                "assumptions": {
+                    "document_id": "treasury_bulletin_1945_08_json",
+                    "path": "treasury_bulletin_1945_08.json",
+                    "table_query": "public debt outstanding 1945",
+                },
+                "facts": {
+                    "document_id": "treasury_bulletin_1945_08_json",
+                    "citation": "treasury_bulletin_1945_08.json",
+                    "tables": [
+                        {
+                            "table_locator": "Treasury Bulletin | Table 5.- United States Savings Bonds Issued and Redeemed Through June 30, 1945",
+                            "table_family": "debt_or_balance_sheet",
+                            "headers": ["Row", "Amount issued 1/", "Amount redeemed 1/", "Amount outstanding 2/"],
+                            "row_labels": ["Series A-1935", "Series B-1936", "Series D-1941"],
+                        }
+                    ],
+                    "metadata": {
+                        "officeqa_status": "ok",
+                        "table_candidates": [
+                            {
+                                "locator": "Treasury Bulletin | Table 5.- United States Savings Bonds Issued and Redeemed Through June 30, 1945",
+                                "table_family": "debt_or_balance_sheet",
+                                "table_confidence": 0.91,
+                                "ranking_score": 5.17,
+                                "heading_chain": ["Treasury Bulletin", "Table 5.- United States Savings Bonds Issued and Redeemed Through June 30, 1945"],
+                                "headers": ["Row", "Amount issued 1/", "Amount redeemed 1/", "Amount outstanding 2/"],
+                                "row_labels": ["Series A-1935", "Series B-1936", "Series D-1941"],
+                                "column_paths": ["Amount issued 1/", "Amount redeemed 1/", "Amount outstanding 2/"],
+                            },
+                            {
+                                "locator": "Financial Operations of the United States Government During the Fiscal Year 1946 | Table 4.- Public Debt Outstanding, June 30, 1945 and 1946",
+                                "table_family": "debt_or_balance_sheet",
+                                "table_confidence": 0.88,
+                                "ranking_score": 6.4,
+                                "heading_chain": ["Financial Operations of the United States Government During the Fiscal Year 1946", "Table 4.- Public Debt Outstanding, June 30, 1945 and 1946"],
+                                "headers": ["June 30, 1945", "June 30, 1946", "Change"],
+                                "row_labels": ["Total public debt outstanding", "Marketable", "Nonmarketable"],
+                                "column_paths": ["June 30, 1945", "June 30, 1946", "Change"],
+                            },
+                        ],
+                    },
+                },
+            }
+        ],
+    )
+
+    action = _plan_retrieval_action(
+        execution_mode="document_grounded_analysis",
+        source_bundle=source_bundle,
+        retrieval_intent=retrieval_intent,
+        tool_plan=tool_plan,
+        journal=journal,
+        registry=registry,
+        benchmark_overrides={"benchmark_adapter": "officeqa"},
+    )
+
+    assert action.tool_name == "fetch_officeqa_table"
+    assert action.document_id == "treasury_bulletin_1945_08_json"
+    assert action.evidence_gap == "wrong row or column semantics"
+    assert "Public Debt Outstanding" in action.query
+
+
 def test_engine_solver_context_block_removes_redundant_objective_and_tool_query_noise():
     payload = solver_context_block(
         {

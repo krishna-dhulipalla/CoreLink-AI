@@ -25,7 +25,8 @@ def test_decomposition_extracts_calendar_year_category_slots():
     assert retrieval_intent.preferred_publication_years[:2] == ["1941", "1940"]
     assert retrieval_intent.publication_year_window == ["1939", "1940", "1941"]
     assert retrieval_intent.decomposition_confidence >= 0.7
-    assert retrieval_intent.query_plan.primary_semantic_query.startswith(("Treasury Bulletin", "official government finance"))
+    assert retrieval_intent.query_plan.primary_semantic_query.startswith("U.S. national defense")
+    assert "official government finance" not in retrieval_intent.query_plan.primary_semantic_query.lower()
     assert "1941" in retrieval_intent.query_plan.temporal_query
     assert "calendar year" in retrieval_intent.query_plan.granularity_query.lower()
 

@@ -1959,6 +1959,56 @@ Completion note:
 
 - Phase 38 completed by sanitizing source-cue entities out of the semantic plan, adding explicit family-fit weighting to evidence-unit scoring, and making fast source rerank back off when the top deterministic candidate is already semantically stable.
 
+## Phase 39: Semantic Handoff Consistency And Validator-Driven Reselection
+
+Objective:
+
+- make the executor follow the strongest surfaced evidence unit instead of drifting back to broad summary tables, and ensure validator-detected semantic misses trigger a real reselection path before stalling.
+
+Why now:
+
+- the April 10 failing smoke audit showed that later-year and same-document good evidence units were already present in the candidate universe
+- the system was still failing because:
+  - provenance/domain phrases such as `official government finance` were leaking into active semantic retrieval seeds
+  - second-stage candidate scoring still over-trusted broad document overlap relative to best evidence-unit quality
+  - same-document analytical alternatives were not being reselected before validator stall
+
+Tasks:
+
+- [x] `P39.1` Remove provenance-only family labels from active semantic OfficeQA query text for generic government-finance cases
+- [x] `P39.2` Keep source-family identity as metadata and constraints, but stop using it as the primary lexical retrieval seed
+- [x] `P39.3` Rebalance second-stage candidate scoring so best evidence-unit alignment matters more than broad document text overlap
+- [x] `P39.4` Add generic family-preference weighting at the orchestrator handoff layer using metric/granularity semantics rather than benchmark-case tokens
+- [x] `P39.5` Preserve more ranked source candidates in diagnostics so rerank and repair can see the real alternative set
+- [x] `P39.6` Add deterministic same-document table reselection when indexed table candidates in the current document materially outperform the currently selected table
+- [x] `P39.7` Expand fast source-rerank activation to fire on top-candidate family mismatch when a semantically better-family candidate is already present
+- [x] `P39.8` Add generic regressions for:
+  - provenance-free semantic query construction
+  - same-document table reselection
+  - source-rerank triggering on family mismatch
+  - focused evidence-unit ranking over broad mixed summaries
+
+Suggested code targets:
+
+- `src/agent/retrieval_reasoning.py`
+- `src/agent/nodes/orchestrator_retrieval.py`
+- `src/agent/llm_control.py`
+- `tests/test_question_decomposition.py`
+- `tests/test_engine_runtime.py`
+- `tests/test_llm_control.py`
+
+Exit criteria:
+
+- generic provenance labels no longer dominate active semantic retrieval seeds
+- second-stage source ranking prefers the candidate with the strongest evidence unit, not the broadest mixed-summary overlap
+- same-document better tables are reselected before validator stall when they are already indexed
+- source rerank can activate on family mismatch when a stronger alternative is already in the visible candidate set
+- OfficeQA smoke returns to green without task-specific source or keyword hacks
+
+Completion note:
+
+- Phase 39 completed by removing provenance-only query contamination, reweighting second-stage candidate scoring toward best evidence-unit alignment, preserving more candidate visibility for rerank, and adding deterministic same-document table reselection before validator stall.
+
 Execution order update:
 
 - do `Phase 32` before any further ranking cleanup
@@ -1969,6 +2019,7 @@ Execution order update:
 - use `Phase 36` to stop benchmark-linked source hints from silently becoming the candidate universe
 - use `Phase 37` to stop those hints from reappearing as the active search seed in soft-mode retrieval
 - use `Phase 38` to tighten semantic admissibility before the next retrieval/repair expansion
+- use `Phase 39` to make the surfaced evidence-unit ranking actually survive the executor handoff and trigger real reselection before validator stall
 
 ## Optional Backlog: Shared Global Workpad
 

@@ -125,6 +125,39 @@ def test_source_rerank_llm_skips_narrow_margin_when_top_candidate_is_semanticall
     assert reason == "deterministic_top_candidate_stable"
 
 
+def test_source_rerank_llm_triggers_when_top_candidate_family_mismatches_and_alternative_matches():
+    retrieval_intent = _base_retrieval_intent(metric="total expenditures")
+    needed, reason = should_use_source_rerank_llm(
+        retrieval_intent=retrieval_intent,
+        candidate_sources=[
+            {
+                "document_id": "treasury_bulletin_1940_08_json",
+                "score": 7.03,
+                "metadata": {"publication_year": "1940"},
+                "best_evidence_unit": {
+                    "table_confidence": 0.91,
+                    "period_type": "calendar_year",
+                    "table_family": "debt_or_balance_sheet",
+                },
+            },
+            {
+                "document_id": "treasury_bulletin_1941_12_json",
+                "score": 6.74,
+                "metadata": {"publication_year": "1941"},
+                "best_evidence_unit": {
+                    "table_confidence": 0.84,
+                    "period_type": "point_lookup",
+                    "table_family": "category_breakdown",
+                },
+            },
+        ],
+        evidence_gap="",
+    )
+
+    assert needed is True
+    assert reason == "top_candidate_family_mismatch"
+
+
 def test_source_rerank_llm_skips_large_downward_override_for_period_mismatch():
     retrieval_intent = _base_retrieval_intent(
         metric="public debt outstanding",

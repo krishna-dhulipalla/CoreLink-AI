@@ -187,7 +187,7 @@ def maybe_rerank_source_candidates(
         top_score = float(ranked_candidates[0].get("score", 0.0) or 0.0)
         selected_score = float(selected.get("score", 0.0) or 0.0)
         selected_rank = int(selected.get("rank", 999) or 999)
-        if selected_rank > 3:
+        if selected_rank > 5:
             return None
         if reason not in {"wrong document", "incomplete evidence", "wrong row or column semantics"} and (top_score - selected_score) > 0.45:
             return None
@@ -290,6 +290,19 @@ def _candidate_family(candidate: dict[str, Any]) -> str:
     return str(dict(candidate.get("best_evidence_unit") or {}).get("table_family", "") or "").strip().lower()
 
 
+def _required_family(retrieval_intent: RetrievalIntent) -> str:
+    metric_tokens = {token for token in retrieval_intent.metric.lower().split() if token}
+    if retrieval_intent.granularity_requirement == "monthly_series":
+        return "monthly_series"
+    if retrieval_intent.granularity_requirement == "fiscal_year":
+        return "fiscal_year_comparison"
+    if metric_tokens & {"debt", "outstanding", "obligations", "liabilities", "securities"}:
+        return "debt_or_balance_sheet"
+    if metric_tokens & {"expenditures", "receipts", "revenue", "revenues", "collections", "outlays", "spending"}:
+        return "category_breakdown"
+    return ""
+
+
 def should_use_source_rerank_llm(
     *,
     retrieval_intent: RetrievalIntent,
@@ -330,6 +343,12 @@ def should_use_source_rerank_llm(
     top_unit = dict(ranked[0].get("best_evidence_unit") or {})
     runner_unit = dict(ranked[1].get("best_evidence_unit") or {})
     top_confidence = float(top_unit.get("table_confidence", 0.0) or 0.0)
+    required_family = _required_family(retrieval_intent)
+    if required_family:
+        top_family = _candidate_family(ranked[0])
+        if top_family and top_family != required_family:
+            if any(_candidate_family(item) == required_family for item in ranked[1:5]):
+                return True, "top_candidate_family_mismatch"
     if requested_period:
         top_period = str(top_unit.get("period_type", "") or "").strip().lower()
         runner_period = str(runner_unit.get("period_type", "") or "").strip().lower()
