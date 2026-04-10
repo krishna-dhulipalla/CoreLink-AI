@@ -2021,6 +2021,23 @@ Execution order update:
 - use `Phase 38` to tighten semantic admissibility before the next retrieval/repair expansion
 - use `Phase 39` to make the surfaced evidence-unit ranking actually survive the executor handoff and trigger real reselection before validator stall
 
+## Phase 40: Safety Net Validation Pivot and Candidate Restoration
+
+Objective:
+
+- repair stalling behaviors caused when validator-detected semantic misses hit "valid" general table families without an explicit missing_row status, resulting in false-positive final returns.
+
+Why now:
+
+- the fast-LLM triggers were widened and the hardcoded keywords were removed, which exposed that the fallback loop logic couldn't correctly jump to the next document when a structural family matched but the domains didn't.
+- fixing payload truncation inside tool execution finally allows local re-selection.
+
+Tasks:
+
+- [x] `P40.1` Add safety net at the end of `decide_officeqa_retrieval_action` to unconditionally pivot to `next_ranked_candidate` when validator fails and no internal actions exist.
+- [x] `P40.2` Expand `fetch_officeqa_table`'s metadata payload to pass `candidate_tables` containing all identical-document tables for potential `_best_same_document_table_candidate` retrieval.
+- [x] `P40.3` Remove hardcoded token biases from table family gating in `orchestrator_retrieval.py`.
+
 ## Optional Backlog: Shared Global Workpad
 
 Recommendation:

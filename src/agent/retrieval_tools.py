@@ -1408,13 +1408,15 @@ def _table_payload(
     officeqa_status: str,
     tables: list[dict[str, Any]],
     chunks: list[dict[str, Any]] | None = None,
+    candidate_tables: list[dict[str, Any]] | None = None,
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     primary = tables[0] if tables else {}
     headers = list(primary.get("headers", [])) if isinstance(primary, dict) else []
     rows = list(primary.get("rows", [])) if isinstance(primary, dict) else []
     table_candidates = []
-    for item in tables[:5]:
+    candidates_source = (candidate_tables if candidate_tables is not None else tables)[:5]
+    for item in candidates_source:
         if not isinstance(item, dict):
             continue
         row_labels: list[str] = []
@@ -1701,6 +1703,7 @@ def fetch_officeqa_table(
         officeqa_status=officeqa_status,
         tables=[selected],
         chunks=[{"locator": str(selected.get("locator", "table 1")), "kind": "table_preview", "text": preview, "citation": citation}],
+        candidate_tables=tables,
         extra={"row_offset": max(0, row_offset), "row_limit": max(1, row_limit)},
     ) | {"officeqa_stage": "locate_table"}
 

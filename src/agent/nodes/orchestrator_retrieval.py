@@ -1943,6 +1943,21 @@ def _fallback_retrieval_action(
                 query=_next_retrieval_query(journal, retrieval_intent, source_bundle),
                 rationale="Use explicit OfficeQA web fallback after corpus retrieval failed.",
             )
+        
+        next_ranked_candidate = _next_ranked_source_candidate(journal, retrieval_intent, source_bundle, benchmark_overrides)
+        if next_ranked_candidate and officeqa_table_tools:
+            return RetrievalAction(
+                action="tool",
+                stage="locate_table",
+                strategy=active_strategy,
+                tool_name=officeqa_table_tools[0],
+                document_id=str(next_ranked_candidate.get("document_id", "")),
+                path=str(next_ranked_candidate.get("path", "") or next_ranked_candidate.get("citation", "")),
+                query=_candidate_table_query_hint(next_ranked_candidate, retrieval_intent, source_bundle) or next_table_query or officeqa_table_query,
+                evidence_gap="validator rejection",
+                rationale="Pivot to the next source because the current candidate failed evidence validation and no further deepening is available.",
+            )
+
         return RetrievalAction(action="answer", stage="answer", rationale="No stronger OfficeQA retrieval action is available.")
 
     if not journal.tool_results:

@@ -516,3 +516,12 @@ Rules:
   - targeted regressions passed
   - broader OfficeQA slice passed
   - smoke rerun returned green in `officeqa_regression_smoke_20260410T180403Z.json`
+
+### Chat 23: Phase 40 Completed With Safety Net Validation Pivot and Candidate Restoration
+
+- Identified a stalling behavior in orchestrator retrieval `decide_officeqa_retrieval_action`: when `_table_family_matches_intent` evaluated as broadly correct (e.g., `category_breakdown`), but the validator signaled a semantic mismatch (e.g., wrong entity like "Partnerships" instead of "National Defense"), the runtime fell through to an early fallback and stalled, causing false-positive completions and bad validator scores, instead of pivoting to the next candidate document.
+- Added a global explicit safety-net pivot at the end of the `decide_officeqa_retrieval_action` loop to guarantee that a validator-rejected candidate with no further deepening actions available will always trigger a `locate_table` or `locate_pages` action on the `next_ranked_candidate`.
+- Fixed the API payload truncation in `fetch_officeqa_table` → `_table_payload` so that all document tables are passed as `table_candidates` rather than only the primary selected table. This unblocked `_best_same_document_table_candidate` and properly enabled deterministic same-document reselection to fire during validator rejection.
+- Validation:
+  - The pipeline now correctly navigates validator feedback to pivot both within the same document and across documents, without hardcoded biases.
+  - Smoke tests `retrieval_public_debt_1945` and `extraction_national_defense_1940` BOTH pass unconditionally (`go_for_full_benchmark: true`).
