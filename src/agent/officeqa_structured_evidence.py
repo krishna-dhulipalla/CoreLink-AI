@@ -14,6 +14,7 @@ from agent.contracts import (
     ToolResult,
 )
 from agent.document_evidence import document_records_from_tool_result, merge_document_evidence_records
+from agent.tools.officeqa_typing import classify_table_typing
 
 _PAGE_LOCATOR_RE = re.compile(r"page\s+(\d+)", re.IGNORECASE)
 _YEAR_RE = re.compile(r"(?<!\d)((?:19|20)\d{2})(?!\d)")
@@ -276,6 +277,41 @@ def _structure_confidence_summary(tables: list[dict[str, Any]], values: list[dic
     }
 
 
+def _row_path_samples(canonical_table: dict[str, Any]) -> list[str]:
+    samples: list[str] = []
+    for row in list(canonical_table.get("row_records", []) or [])[:12]:
+        if not isinstance(row, dict):
+            continue
+        row_path = [str(item or "") for item in list(row.get("row_path", []) or []) if str(item or "").strip()]
+        if row_path:
+            samples.append(" > ".join(row_path))
+            continue
+        row_label = str(row.get("row_label", "") or "").strip()
+        if row_label:
+            samples.append(row_label)
+    return samples
+
+
+def _typing_consistency_summary(tables: list[dict[str, Any]]) -> dict[str, Any]:
+    family_drift = 0
+    period_drift = 0
+    ambiguous = 0
+    for table in tables:
+        ambiguities = [str(item or "") for item in list(table.get("typing_ambiguities", []) or []) if str(item or "").strip()]
+        if ambiguities:
+            ambiguous += 1
+        if any(item.startswith("family_drift:") for item in ambiguities):
+            family_drift += 1
+        if any(item.startswith("period_drift:") for item in ambiguities):
+            period_drift += 1
+    return {
+        "ambiguous_table_count": ambiguous,
+        "family_drift_count": family_drift,
+        "period_drift_count": period_drift,
+        "typing_consistent": ambiguous == 0,
+    }
+
+
 def build_officeqa_structured_evidence(tool_results: list[dict[str, Any]] | None) -> dict[str, Any]:
     merged_records: list[dict[str, Any]] = []
     for raw in tool_results or []:
@@ -311,6 +347,24 @@ def build_officeqa_structured_evidence(tool_results: list[dict[str, Any]] | None
             unit_hint = str(table.get("unit_hint", "") or metadata.get("unit_hint", "") or "")
             table_locator = str(table.get("locator", "")).strip()
             page_locator = _table_page_locator(table, record.chunks, metadata)
+            typing_profile = classify_table_typing(
+                text=" ".join(
+                    part
+                    for part in (
+                        str(table.get("context_text", "") or ""),
+                        " ".join(str(item or "") for item in list(table.get("heading_chain", []))),
+                        " ".join(headers),
+                    )
+                    if part
+                ),
+                headers=headers,
+                row_labels=[str(row[0]) for row in rows[:16] if row],
+                row_path_samples=_row_path_samples(canonical_table),
+                rows=rows,
+                heading_chain=[str(item or "") for item in list(table.get("heading_chain", []))],
+                declared_family=str(table.get("table_family", "") or ""),
+                declared_period_type=str(table.get("period_type", "") or ""),
+            )
             unit, multiplier, unit_kind = _unit_profile(unit_hint, " ".join(headers))
             if unit:
                 units_seen.add(unit)
@@ -319,7 +373,10 @@ def build_officeqa_structured_evidence(tool_results: list[dict[str, Any]] | None
                 citation=str(table.get("citation", "") or record.citation),
                 page_locator=page_locator,
                 table_locator=table_locator,
-                table_family=str(table.get("table_family", "") or ""),
+                table_family=str(typing_profile.get("table_family", "") or table.get("table_family", "") or ""),
+                table_family_confidence=float(typing_profile.get("table_family_confidence", table.get("table_family_confidence", 0.0)) or 0.0),
+                period_type=str(typing_profile.get("period_type", "") or table.get("period_type", "") or ""),
+                typing_ambiguities=list(typing_profile.get("typing_ambiguities", []) or []),
                 headers=headers,
                 header_rows=[list(row) for row in canonical_table.get("header_rows", []) if isinstance(row, list)],
                 column_paths=[list(path) for path in canonical_table.get("column_paths", []) if isinstance(path, list)],
@@ -354,7 +411,10 @@ def build_officeqa_structured_evidence(tool_results: list[dict[str, Any]] | None
                             citation=str(table.get("citation", "") or record.citation),
                             page_locator=page_locator,
                             table_locator=table_locator,
-                            table_family=str(table.get("table_family", "") or ""),
+                            table_family=str(typing_profile.get("table_family", "") or table.get("table_family", "") or ""),
+                            table_family_confidence=float(typing_profile.get("table_family_confidence", table.get("table_family_confidence", 0.0)) or 0.0),
+                            period_type=str(typing_profile.get("period_type", "") or table.get("period_type", "") or ""),
+                            typing_ambiguities=list(typing_profile.get("typing_ambiguities", []) or []),
                             row_index=int(row_record.get("row_index", -1)),
                             row_label=row_label,
                             row_path=row_path,
@@ -386,7 +446,10 @@ def build_officeqa_structured_evidence(tool_results: list[dict[str, Any]] | None
                         citation=str(table.get("citation", "") or record.citation),
                         page_locator=page_locator,
                         table_locator=table_locator,
-                        table_family=str(table.get("table_family", "") or ""),
+                        table_family=str(typing_profile.get("table_family", "") or table.get("table_family", "") or ""),
+                        table_family_confidence=float(typing_profile.get("table_family_confidence", table.get("table_family_confidence", 0.0)) or 0.0),
+                        period_type=str(typing_profile.get("period_type", "") or table.get("period_type", "") or ""),
+                        typing_ambiguities=list(typing_profile.get("typing_ambiguities", []) or []),
                         row_index=row_index,
                         row_label=row_label,
                         row_path=[row_label] if row_label else [],
@@ -406,6 +469,7 @@ def build_officeqa_structured_evidence(tool_results: list[dict[str, Any]] | None
 
     merged_series, alignment_summary = _merged_series(values)
     confidence_summary = _structure_confidence_summary(tables, values)
+    typing_summary = _typing_consistency_summary(tables)
 
     payload = OfficeQAStructuredEvidence(
         document_evidence=[record.model_dump() for record in document_records],
@@ -415,6 +479,7 @@ def build_officeqa_structured_evidence(tool_results: list[dict[str, Any]] | None
         merged_series=merged_series,
         alignment_summary=alignment_summary,
         structure_confidence_summary=confidence_summary,
+        typing_consistency_summary=typing_summary,
         units_seen=sorted(units_seen),
         value_count=len(values),
         provenance_complete=provenance_complete and bool(values or tables),
@@ -446,11 +511,20 @@ def compact_officeqa_structured_evidence(payload: dict[str, Any] | None) -> dict
             "low_confidence_table_count": int(dict(data.get("structure_confidence_summary", {})).get("low_confidence_table_count", 0) or 0),
             "table_confidence_gate_passed": bool(dict(data.get("structure_confidence_summary", {})).get("table_confidence_gate_passed", False)),
         },
+        "typing_consistency_summary": {
+            "ambiguous_table_count": int(dict(data.get("typing_consistency_summary", {})).get("ambiguous_table_count", 0) or 0),
+            "family_drift_count": int(dict(data.get("typing_consistency_summary", {})).get("family_drift_count", 0) or 0),
+            "period_drift_count": int(dict(data.get("typing_consistency_summary", {})).get("period_drift_count", 0) or 0),
+            "typing_consistent": bool(dict(data.get("typing_consistency_summary", {})).get("typing_consistent", True)),
+        },
         "tables": [
             {
                 "document_id": item.get("document_id", ""),
                 "page_locator": item.get("page_locator", ""),
                 "table_locator": item.get("table_locator", ""),
+                "table_family": item.get("table_family", ""),
+                "period_type": item.get("period_type", ""),
+                "typing_ambiguities": list(item.get("typing_ambiguities", []))[:4],
                 "headers": list(item.get("headers", []))[:6],
                 "column_paths": list(item.get("column_paths", []))[:4],
                 "unit": item.get("unit", ""),

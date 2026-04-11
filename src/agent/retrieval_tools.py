@@ -24,6 +24,7 @@ from agent.benchmarks.officeqa_manifest import (
     resolve_officeqa_corpus_root,
 )
 from agent.tools.officeqa_json_context import dedupe_context_parts, iter_stateful_table_nodes
+from agent.tools.officeqa_typing import classify_table_typing
 from agent.tools.table_normalization import normalize_dense_table_grid, normalize_flat_table
 from agent.tools.tsr_fallback import select_dense_table_normalization
 
@@ -319,7 +320,16 @@ def _coerce_table(
         "page_locator": page_locator,
         "context_text": context_text,
     }
-    table_family, family_confidence = _classify_table_family(provisional_payload)
+    typing_profile = classify_table_typing(
+        text=_table_text(provisional_payload),
+        headers=normalized_headers,
+        rows=normalized_rows,
+        heading_chain=[str(item or "") for item in list(provisional_payload.get("heading_chain", []))],
+        declared_family=str(provisional_payload.get("table_family", "") or ""),
+        declared_period_type=str(provisional_payload.get("period_type", "") or ""),
+    )
+    table_family = str(typing_profile.get("table_family", "") or "")
+    family_confidence = float(typing_profile.get("table_family_confidence", 0.0) or 0.0)
     payload = {
         "locator": locator,
         "headers": normalized_headers,
@@ -328,6 +338,8 @@ def _coerce_table(
         "unit_hint": unit_hint,
         "table_family": table_family,
         "table_family_confidence": round(family_confidence, 3),
+        "period_type": str(typing_profile.get("period_type", "") or ""),
+        "typing_ambiguities": list(typing_profile.get("typing_ambiguities", []) or []),
     }
     if page_locator:
         payload["page_locator"] = page_locator
@@ -1037,24 +1049,16 @@ def _table_confidence_value(table: dict[str, Any]) -> float:
 
 
 def _table_period_type(table: dict[str, Any]) -> str:
-    canonical_table = dict(table.get("canonical_table") or {})
-    explicit = str(table.get("period_type", "") or canonical_table.get("period_type", "")).strip().lower()
-    if explicit:
-        return explicit
-    family = str(table.get("table_family", "") or "").strip().lower()
-    if family == "monthly_series":
-        return "monthly_series"
-    if family == "fiscal_year_comparison":
-        return "fiscal_year"
-    text = _table_text(table).lower()
-    if "fiscal year" in text or re.search(r"\bfy\s+\d{4}\b", text):
-        return "fiscal_year"
-    if "calendar year" in text:
-        return "calendar_year"
-    month_hits = sum(1 for month in _MONTH_TOKENS if month in text)
-    if month_hits >= 4:
-        return "monthly_series"
-    return ""
+    profile = classify_table_typing(
+        text=_table_text(table),
+        headers=[str(item or "") for item in list(table.get("headers", []))],
+        row_path_samples=_table_row_path_samples(table, limit=16),
+        rows=[list(row) for row in list(table.get("rows", [])) if isinstance(row, list)],
+        heading_chain=[str(item or "") for item in list(table.get("heading_chain", []))],
+        declared_family=str(table.get("table_family", "") or ""),
+        declared_period_type=str(table.get("period_type", "") or dict(table.get("canonical_table") or {}).get("period_type", "")),
+    )
+    return str(profile.get("period_type", "") or "")
 
 
 def _financial_metric_group(text: str) -> str:
@@ -1130,53 +1134,16 @@ def _html_table_signature(
 
 
 def _classify_table_family(table: dict[str, Any]) -> tuple[str, float]:
-    if _is_navigational_table(table):
-        return "navigation_or_contents", 0.98
-
-    text = _table_text(table).lower()
-    rows = [list(row) for row in list(table.get("rows", []))[:60]]
-    headers = [str(item or "") for item in list(table.get("headers", []))]
-    headers_lower = " ".join(headers).lower()
-    row_path_samples = _table_row_path_samples(table, limit=16)
-    row_text = " ".join(" ".join(str(cell or "") for cell in row[:8]) for row in rows).lower()
-    row_path_text = " ".join(row_path_samples).lower()
-    month_hits = sum(1 for month in _MONTH_TOKENS if month in row_text or month in headers_lower or month in row_path_text)
-    year_hits = len(set(_YEAR_RE.findall(text)))
-    debt_terms = ("public debt", "debt outstanding", "guaranteed obligations", "balance sheet", "assets", "liabilities", "securities")
-    metric_group = _financial_metric_group(text)
-    canonical_table = dict(table.get("canonical_table") or {})
-    row_records = [item for item in list(canonical_table.get("row_records", [])) if isinstance(item, dict)]
-    data_row_count = sum(1 for row in row_records if str(row.get("row_type", "") or "") != "section_divider")
-    numeric_row_count = sum(1 for row in rows[:20] if any(re.search(r"\d", str(cell or "")) for cell in row[1:]))
-    year_header_hits = sum(1 for header in headers if _YEAR_RE.search(str(header or "")))
-    total_like_headers = sum(
-        1 for header in headers if any(token in str(header or "").lower() for token in ("total", "actual", "estimate", "calendar year", "fiscal year"))
+    profile = classify_table_typing(
+        text=_table_text(table),
+        headers=[str(item or "") for item in list(table.get("headers", []))],
+        row_path_samples=_table_row_path_samples(table, limit=16),
+        rows=[list(row) for row in list(table.get("rows", [])) if isinstance(row, list)],
+        heading_chain=[str(item or "") for item in list(table.get("heading_chain", []))],
+        declared_family=str(table.get("table_family", "") or ""),
+        declared_period_type=str(table.get("period_type", "") or dict(table.get("canonical_table") or {}).get("period_type", "")),
     )
-
-    if any(token in text for token in debt_terms):
-        return "debt_or_balance_sheet", 0.9
-    if "fiscal year" in text or "fy " in text or "end of fiscal years" in text:
-        return "fiscal_year_comparison", 0.88
-    if "month" in headers_lower and len(rows) >= 3:
-        return "monthly_series", min(0.92, 0.62 + 0.04 * len(rows))
-    if month_hits >= 4:
-        return "monthly_series", min(0.95, 0.55 + 0.06 * month_hits)
-    if (
-        (year_header_hits >= 1 or year_hits >= 1)
-        and data_row_count >= 2
-        and numeric_row_count >= 1
-        and metric_group in {"expenditures", "revenue"}
-    ):
-        return "category_breakdown", 0.78
-    if (
-        (year_header_hits >= 1 or year_hits >= 1)
-        and total_like_headers >= 1
-        and data_row_count <= 3
-    ):
-        return "annual_summary", 0.72
-    if (year_header_hits >= 1 or year_hits >= 1) and data_row_count >= 2 and row_path_samples:
-        return "category_breakdown", 0.66
-    return "generic_financial_table", 0.45
+    return str(profile.get("table_family", "") or ""), float(profile.get("table_family_confidence", 0.0) or 0.0)
 
 
 def _required_table_family(table_query: str) -> str:
@@ -1447,6 +1414,7 @@ def _table_payload(
                 "headers": list(item.get("headers", []))[:8],
                 "row_labels": row_labels[:8],
                 "period_type": _table_period_type(item),
+                "typing_ambiguities": list(item.get("typing_ambiguities", []) or []),
                 "table_confidence": round(_table_confidence_value(item), 4),
                 "unit_hint": str(item.get("unit_hint", "") or ""),
                 "structural_signature": _table_structural_signature(item),
@@ -1485,6 +1453,10 @@ def search_reference_corpus(
     target_years: list[str] | None = None,
     publication_year_window: list[str] | None = None,
     preferred_publication_years: list[str] | None = None,
+    acceptable_publication_lag_years: int = 0,
+    retrospective_evidence_allowed: bool = False,
+    retrospective_evidence_required: bool = False,
+    publication_scope_explicit: bool = False,
     period_type: str = "",
     granularity_requirement: str = "",
     entity: str = "",
@@ -1505,6 +1477,10 @@ def search_reference_corpus(
               target_years=target_years,
               publication_year_window=publication_year_window,
               preferred_publication_years=preferred_publication_years,
+              acceptable_publication_lag_years=acceptable_publication_lag_years,
+              retrospective_evidence_allowed=retrospective_evidence_allowed,
+              retrospective_evidence_required=retrospective_evidence_required,
+              publication_scope_explicit=publication_scope_explicit,
             period_type=period_type,
             granularity_requirement=granularity_requirement,
             entity=entity,
@@ -1572,6 +1548,10 @@ def search_officeqa_documents(
     target_years: list[str] | None = None,
     publication_year_window: list[str] | None = None,
     preferred_publication_years: list[str] | None = None,
+    acceptable_publication_lag_years: int = 0,
+    retrospective_evidence_allowed: bool = False,
+    retrospective_evidence_required: bool = False,
+    publication_scope_explicit: bool = False,
     period_type: str = "",
     granularity_requirement: str = "",
     entity: str = "",
@@ -1593,6 +1573,10 @@ def search_officeqa_documents(
           target_years=target_years,
           publication_year_window=publication_year_window,
           preferred_publication_years=preferred_publication_years,
+          acceptable_publication_lag_years=acceptable_publication_lag_years,
+          retrospective_evidence_allowed=retrospective_evidence_allowed,
+          retrospective_evidence_required=retrospective_evidence_required,
+          publication_scope_explicit=publication_scope_explicit,
         period_type=period_type,
         granularity_requirement=granularity_requirement,
         entity=entity,

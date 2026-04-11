@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from agent.tools.officeqa_json_context import dedupe_context_parts, iter_stateful_table_nodes
+from agent.tools.officeqa_typing import classify_table_typing
 from agent.tools.table_normalization import normalize_dense_table_grid, normalize_flat_table
 
 _CORPUS_ENV_NAMES = (
@@ -31,7 +32,7 @@ _SUPPORTED_EXTENSIONS = {".txt", ".md", ".json", ".csv", ".html", ".xml", ".tsv"
 _INDEX_DIR_NAME = ".officeqa_index"
 _MANIFEST_FILENAME = "manifest.jsonl"
 _METADATA_FILENAME = "index_metadata.json"
-_INDEX_SCHEMA_VERSION = 3
+_INDEX_SCHEMA_VERSION = 4
 _MAX_FILES = 4000
 _MONTHS = (
     "january",
@@ -238,37 +239,19 @@ def _month_coverage_from_text(text: str) -> list[str]:
 
 
 def _period_type_for_table(text: str, month_coverage: list[str], years: list[str]) -> str:
-    lowered = (text or "").lower()
-    if len(month_coverage) >= 4 or "monthly series" in lowered or "receipts expenditures and balances" in lowered:
-        return "monthly_series"
-    if "fiscal year" in lowered or "fy " in lowered or "end of fiscal years" in lowered:
-        return "fiscal_year"
-    if "calendar year" in lowered or "actual 6 months" in lowered or "estimate" in lowered or (years and len(years) >= 1 and "summary" in lowered):
-        return "calendar_year"
-    if "discussion" in lowered or "statement" in lowered or "commentary" in lowered:
-        return "narrative_support"
-    return "point_lookup"
+    profile = classify_table_typing(text=text, month_coverage=month_coverage, years=years)
+    return str(profile.get("period_type", "") or "")
 
 
 def _table_family_for_text(text: str, headers: list[str], row_labels: list[str], month_coverage: list[str], years: list[str]) -> tuple[str, float]:
-    lowered = (text or "").lower()
-    headers_text = " ".join(headers).lower()
-    row_text = " ".join(row_labels).lower()
-    if any(token in lowered for token in ("table of contents", "issue and page number", "contents", "page number", "index")):
-        return "navigation_or_contents", 0.98
-    if any(token in lowered for token in ("public debt", "debt outstanding", "guaranteed obligations", "assets", "liabilities", "securities")):
-        return "debt_or_balance_sheet", 0.9
-    if "fiscal year" in lowered or "end of fiscal years" in lowered:
-        return "fiscal_year_comparison", 0.88
-    if len(month_coverage) >= 4 or "month" in headers_text:
-        return "monthly_series", min(0.95, 0.55 + 0.04 * len(month_coverage))
-    if any(token in lowered for token in ("national defense", "veterans", "veterans administration", "agriculture", "receipts", "expenditures", "outlays", "department", "activities")) and years:
-        return "category_breakdown", 0.8
-    if any(token in lowered for token in ("actual", "estimate", "calendar year", "summary", "total 9/")) and years:
-        return "annual_summary", 0.74
-    if any(token in headers_text or token in row_text for token in ("expenditures", "receipts", "outlays", "veterans", "defense")):
-        return "category_breakdown", 0.62
-    return "generic_financial_table", 0.45
+    profile = classify_table_typing(
+        text=text,
+        headers=headers,
+        row_labels=row_labels,
+        month_coverage=month_coverage,
+        years=years,
+    )
+    return str(profile.get("table_family", "") or ""), float(profile.get("table_family_confidence", 0.0) or 0.0)
 
 
 def _table_confidence(canonical_table: dict[str, Any], family_confidence: float) -> float:
@@ -519,7 +502,15 @@ def _table_unit_from_canonical(
     ).strip()
     year_refs = list(dict.fromkeys(re.findall(r"\b((?:19|20)\d{2})\b", preview_text)[:8]))
     month_coverage = _month_coverage_from_text(preview_text)
-    table_family, family_confidence = _table_family_for_text(preview_text, display_headers, row_labels, month_coverage, year_refs)
+    typing_profile = classify_table_typing(
+        text=preview_text,
+        headers=display_headers,
+        row_labels=row_labels,
+        month_coverage=month_coverage,
+        years=year_refs,
+    )
+    table_family = str(typing_profile.get("table_family", "") or "")
+    family_confidence = float(typing_profile.get("table_family_confidence", 0.0) or 0.0)
     return {
         "locator": locator,
         "page_locator": page_locator,
@@ -527,7 +518,8 @@ def _table_unit_from_canonical(
         "heading_chain": heading_chain[:8],
         "table_family": table_family,
         "table_family_confidence": round(family_confidence, 4),
-        "period_type": _period_type_for_table(preview_text, month_coverage, year_refs),
+        "period_type": str(typing_profile.get("period_type", "") or ""),
+        "typing_ambiguities": list(typing_profile.get("typing_ambiguities", []) or []),
         "publication_year": publication_year,
         "publication_month": publication_month,
         "year_refs": year_refs,

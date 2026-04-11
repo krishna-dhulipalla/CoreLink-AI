@@ -2038,6 +2038,302 @@ Tasks:
 - [x] `P40.2` Expand `fetch_officeqa_table`'s metadata payload to pass `candidate_tables` containing all identical-document tables for potential `_best_same_document_table_candidate` retrieval.
 - [x] `P40.3` Remove hardcoded token biases from table family gating in `orchestrator_retrieval.py`.
 
+## Phase 41: Historical Period Resolution And Retrospective Evidence Retrieval
+
+Objective:
+
+- model the difference between the question's target period and the document's publication period so the runtime can answer historical questions whose evidence is published years later.
+
+Why now:
+
+- the original-benchmark slice exposed that target years such as `1934` cannot be solved by filename-year matching because the Treasury Bulletin corpus begins in `1939`
+- even when the right later bulletin is in the corpus, the current runtime still overweights publication-year and filename identity during source commitment
+- this is a system fault in period modeling, not a task-specific retrieval miss
+
+Tasks:
+
+- [x] `P41.1` Make `RetrievalIntent` carry separate typed concepts for:
+  - target evidence period
+  - publication period
+  - acceptable publication lag
+  - retrospective evidence allowed / required
+- [x] `P41.2` Extend indexed evidence units so ranking can use internal period coverage rather than relying mainly on filename year or publication year
+- [x] `P41.3` Add a generic retrospective-evidence eligibility model:
+  - questions about years before corpus start are treated as retrospective retrieval problems
+  - publication year becomes a weak prior unless the question explicitly asks for a bulletin issue or publication month
+- [x] `P41.4` Rework source ranking so:
+  - evidence-period match outranks filename-year match
+  - publication-year distance is only a secondary prior
+  - later bulletins that explicitly summarize the target period can outrank same-year but semantically weak documents
+- [x] `P41.5` Add generic regressions for:
+  - pre-corpus target years solved through later retrospective bulletins
+  - annual questions answered from later publication-year summaries
+  - cases where publication year and evidence year diverge but the evidence unit still covers the right period
+
+Suggested code targets:
+
+- `src/agent/context/extraction.py`
+- `src/agent/retrieval_reasoning.py`
+- `src/agent/benchmarks/officeqa_index.py`
+- `src/agent/nodes/orchestrator_retrieval.py`
+- `tests/test_question_decomposition.py`
+- `tests/test_officeqa_index.py`
+- `tests/test_engine_runtime.py`
+
+Exit criteria:
+
+- the runtime no longer assumes that a question about year `Y` should primarily retrieve documents published in year `Y`
+- questions about periods before `1939` can still retrieve admissible evidence from later Treasury Bulletins when the evidence unit explicitly covers the requested period
+- filename and publication-year signals remain useful provenance priors, but they no longer dominate source commitment
+
+Completion note:
+
+- Phase 41 completed by adding explicit retrospective-evidence semantics to decomposition and retrieval intent, propagating those signals through search tool args, and reweighting source ranking so evidence-period coverage can outrank publication-year identity for historical questions.
+
+## Phase 42: Constraint-Sensitive Semantic Decomposition And Benchmark Unit Contracts
+
+Objective:
+
+- stop losing benchmark-critical semantics during decomposition and make answer-unit expectations explicit before retrieval and compute begin.
+
+Why now:
+
+- the benchmark traces showed:
+  - empty entity slots
+  - dropped include/exclude constraints
+  - missing qualifier terms
+  - wrong local unit interpretation even when retrieval reached a plausible table
+- these are decomposition and contract failures that then poison retrieval and compute downstream
+
+Tasks:
+
+- [x] `P42.1` Promote typed decomposition fields for:
+  - include constraints
+  - exclude constraints
+  - qualifier terms
+  - unit basis expected by benchmark answer contract
+  - aggregation grain
+- [x] `P42.2` Treat `missing_core_slot`, `constraint_sensitive`, and historical-period questions as explicit triggers for the fast semantic-planning LLM instead of staying rule-only
+- [x] `P42.3` Make semantic query planning operate over typed slots rather than flattening everything back into one lexical query string
+- [x] `P42.4` Add benchmark-unit contract metadata so compute and validator know whether the expected answer should be:
+  - raw dollars
+  - millions
+  - normalized annual totals
+  - summed monthly values
+- [x] `P42.5` Add generic regressions for:
+  - preserving include/exclude constraints
+  - recovering missing entities with bounded fast LLM planning
+  - enforcing benchmark answer-unit expectations before final acceptance
+
+Suggested code targets:
+
+- `src/agent/context/extraction.py`
+- `src/agent/contracts.py`
+- `src/agent/retrieval_reasoning.py`
+- `src/agent/benchmarks/officeqa_compute.py`
+- `src/agent/benchmarks/officeqa_validator.py`
+- `tests/test_question_decomposition.py`
+- `tests/test_officeqa_compute.py`
+- `tests/test_officeqa_eval.py`
+
+Exit criteria:
+
+- hard benchmark questions no longer proceed with empty entity slots or dropped inclusion/exclusion qualifiers
+- decomposition can explicitly represent the answer-unit basis expected by the benchmark
+- locally coherent but benchmark-wrong unit answers are rejected before final output
+
+Completion note:
+
+- Phase 42 completed by promoting `expected_answer_unit_basis` into decomposition, semantic planning, evidence planning, retrieval intent, compute results, and validator checks.
+- Constraint extraction was widened to preserve benchmark-style `should include` / `should not contain` clauses, including curly-apostrophe variants.
+- Fast semantic-planning escalation now triggers explicitly for `constraint_sensitive` and historical-lag questions instead of relying only on low confidence.
+- Deterministic compute still keeps internal numeric totals unchanged, but benchmark-facing display values now respect explicit contracts like `in millions of nominal dollars`.
+- Validator now rejects semantically plausible but contract-wrong unit outputs before finalization.
+
+## Phase 43: Evidence-Unit Typing Consistency And Compute Admissibility Alignment
+
+Objective:
+
+- make evidence-unit family, period-type, and metric semantics stay consistent from index through fetch through compute and review.
+
+Why now:
+
+- the benchmark traces show the same or similar tables being typed differently across stages, which weakens both ranking and admissibility checks
+- task-level failures are now often caused by compute being run on a plausible but semantically wrong table, then being reviewed too loosely
+
+Tasks:
+
+- [x] `P43.1` Define one authoritative evidence-unit typing contract used by:
+  - manifest/index
+  - table fetch
+  - structured evidence projection
+  - compute admissibility
+  - validator review
+- [x] `P43.2` Add cross-stage consistency checks so a table cannot silently drift from one family/period interpretation to another without an explicit ambiguity record
+- [x] `P43.3` Tighten compute admissibility so supported numeric compute requires:
+  - metric-family match
+  - entity/category match
+  - period-slice match
+  - benchmark-unit basis match
+- [x] `P43.4` Make validator reject semantically wrong but numerically plausible answers even when local provenance is complete
+- [x] `P43.5` Add generic regressions for:
+  - stable evidence-unit family across stages
+  - reviewer rejection of benchmark-wrong but locally numeric answers
+  - blocking compute on category/period mismatches
+
+Suggested code targets:
+
+- `src/agent/benchmarks/officeqa_manifest.py`
+- `src/agent/benchmarks/officeqa_index.py`
+- `src/agent/retrieval_tools.py`
+- `src/agent/officeqa_structured_evidence.py`
+- `src/agent/benchmarks/officeqa_compute.py`
+- `src/agent/benchmarks/officeqa_validator.py`
+- `tests/test_officeqa_index.py`
+- `tests/test_officeqa_compute.py`
+- `tests/test_officeqa_eval.py`
+
+Exit criteria:
+
+- evidence-unit labels remain stable enough that ranking, compute, and review are operating on the same semantic object
+- the runtime no longer accepts benchmark-wrong numeric answers just because they came from a plausible table with complete provenance
+
+Completion note:
+
+- Phase 43 completed by introducing a shared evidence-unit typing helper used by manifest construction, table fetch, and structured-evidence projection.
+- Table family and period type now come from one canonical contract instead of separate stage-local classifiers.
+- Cross-stage drift is now surfaced explicitly as `typing_ambiguities` and `typing_consistency_summary`.
+- Deterministic compute now treats evidence-unit typing drift as a semantic failure instead of silently trusting the selected table.
+- Manifest/index schema was bumped to `4` because table-unit typing metadata now comes from the shared contract.
+
+## Phase 44: Regime-Changing Repair And Historical Search Expansion
+
+Objective:
+
+- make repair change the retrieval regime when the current evidence universe is semantically exhausted instead of looping inside the same weak source or table family.
+
+Why now:
+
+- benchmark traces show that repair often fires after the candidate pool is already contaminated by weak semantics
+- the current repair path rewrites queries and pivots sources, but it still does not reliably promote the run into a new evidence regime soon enough
+- this is where the heavier reasoning LLM should act as a bounded reviewer of the execution journal, not as a replacement for deterministic compute
+
+Tasks:
+
+- [x] `P44.1` Add explicit repair actions for:
+  - widen publication horizon
+  - switch to retrospective evidence mode
+  - restart from semantic plan
+  - re-run source ranking with relaxed provenance priors
+  - same-document reselection vs cross-document restart
+- [x] `P44.2` Make repair decisions consume an explicit execution journal containing:
+  - attempted queries
+  - candidate pools seen
+  - evidence-unit families rejected
+  - validator remediations
+  - compute admissibility failures
+- [x] `P44.3` Reserve the heavier reasoning LLM for regime mutation decisions after deterministic search/ranking has clearly stalled
+- [x] `P44.4` Keep the fast/small LLM lane for:
+  - semantic planning on hard questions
+  - source rerank
+  - table admissibility triage
+- [x] `P44.5` Add generic regressions for:
+  - historical search widening after semantic dead ends
+  - repair escaping the wrong evidence regime
+  - heavy repair changing the search universe rather than only rewriting local query text
+
+Suggested code targets:
+
+- `src/agent/llm_control.py`
+- `src/agent/llm_repair.py`
+- `src/agent/nodes/orchestrator.py`
+- `src/agent/nodes/orchestrator_retrieval.py`
+- `src/agent/benchmarks/officeqa_eval.py`
+- `tests/test_llm_control.py`
+- `tests/test_engine_runtime.py`
+- `tests/test_officeqa_eval.py`
+
+Completion note:
+
+- Phase 44 is implemented in the runtime and covered by targeted and broader OfficeQA regressions.
+- Heavy repair now sees explicit execution-journal context and can mutate regime with:
+  - publication-scope widening
+  - retrospective-evidence switching
+  - semantic-plan restart
+  - provenance-prior relaxation
+  - same-document vs cross-document restart scope
+- Integrated smoke is still not fully green after this phase. The remaining open boundary is later than repair-regime mutation: task 2 still stalls after entering validation, which means the next bottleneck is in post-repair evidence selection rather than lack of repair-regime tools.
+
+## Phase 45: Post-Repair Evidence Commitment Review
+
+Objective:
+
+- prevent the runtime from committing weak visible evidence to deterministic compute after retrieval has already widened or repaired into a better candidate universe.
+
+Why now:
+
+- traces show the system can now widen and redirect retrieval, but task 2 still stalls because visible alternatives are not always promoted into a compute-worthy commitment before validator catches the miss
+- this is the closest analogue to Purple's visible `VALIDATE -> targeted retry` control pattern: review the gathered evidence before final compute commit
+
+Tasks:
+
+- [x] `P45.1` Add an explicit evidence-commit review step between structured evidence readiness and deterministic compute
+- [x] `P45.2` Keep the review generic:
+  - no benchmark-specific entities
+  - no year-specific rules
+  - no department-specific keyword boosts
+- [x] `P45.3` Allow the review step to request:
+  - same-document restart
+  - cross-document restart
+  - semantic-plan restart
+  - search-pool widening
+  - provenance-prior relaxation
+- [x] `P45.4` Make the review prompt consume:
+  - current structured table summary
+  - typing and confidence summaries
+  - visible candidate sources
+  - current evidence-review status
+- [x] `P45.5` Add generic regressions for:
+  - redirecting to gather before compute when a better-family candidate is already visible
+  - preserving deterministic compute authority when evidence is already stable
+
+Suggested code targets:
+
+- `src/agent/llm_control.py`
+- `src/agent/nodes/orchestrator.py`
+- `src/agent/prompts.py`
+- `src/agent/model_config.py`
+- `tests/test_llm_control.py`
+- `tests/test_engine_runtime.py`
+
+Completion note:
+
+- Phase 45 is implemented and validated by targeted and broader OfficeQA regressions.
+- The new evidence-commit step does fire in integrated smoke traces and can redirect retrieval before compute.
+- Integrated smoke is still not fully green after this phase:
+  - task 1 passes
+  - task 2 still fails with `repair_applied_but_no_new_evidence`
+- That means the remaining live bottleneck is now narrower: the system can review and redirect, but some redirected paths still fail to surface materially new evidence after the restart.
+
+Exit criteria:
+
+- repair can explicitly switch from same-year or same-family search to retrospective evidence search when the current regime is exhausted
+- the heavier reasoning LLM is used as a bounded execution-reviewer for regime changes, not as free-form answer synthesis
+- the runtime stops burning budget on query rewrites inside a semantically exhausted candidate universe
+
+## Execution Order Update
+
+- do `Phase 41` before more source-ranking tuning, because publication year and filename identity are still over-weighted relative to evidence-period coverage
+- do `Phase 42` before more compute changes, because empty entities and dropped qualifiers are poisoning retrieval upstream
+- do `Phase 43` before widening benchmark evaluation again, because compute and review still need a stronger benchmark-unit and evidence-type contract
+- do `Phase 44` after `Phases 41-43`, so heavy repair can mutate the right retrieval regime instead of compensating for missing period modeling or broken decomposition
+
+Design note:
+
+- this sequence stays aligned with the repo's `Brain -> Act -> Learn` pattern from `docs/DESIGN.md`
+- small / fast LLM use belongs in semantic planning and bounded triage
+- heavier LLM use belongs in post-failure regime mutation after deterministic ranking and admissibility checks have already exposed the real gap
+
 ## Optional Backlog: Shared Global Workpad
 
 Recommendation:

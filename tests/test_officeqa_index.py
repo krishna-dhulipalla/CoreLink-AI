@@ -645,6 +645,77 @@ def test_search_officeqa_corpus_index_prefers_entity_focused_later_year_table_ov
     assert result["results"][0]["metadata"]["best_evidence_unit"]["table_family"] == "category_breakdown"
 
 
+def test_search_officeqa_corpus_index_prefers_retrospective_evidence_over_late_historical_mentions(tmp_path):
+    corpus_root = tmp_path / "treasury_bulletins_parsed"
+    corpus_root.mkdir(parents=True)
+    (corpus_root / "treasury_bulletin_1939_03.json").write_text(
+        json.dumps(
+            {
+                "document": {
+                    "elements": [
+                        {"type": "section_header", "content": "SUMMARY OF FISCAL STATISTICS", "bbox": [{"page_id": 14}]},
+                        {
+                            "type": "table",
+                            "description": "Veterans Administration expenditures by fiscal year",
+                            "bbox": [{"page_id": 14}],
+                            "content": (
+                                "<table>"
+                                "<tr><th>Agency</th><th>FY 1934</th></tr>"
+                                "<tr><td>Veterans Administration</td><td>507</td></tr>"
+                                "</table>"
+                            ),
+                        },
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (corpus_root / "treasury_bulletin_1959_09.json").write_text(
+        json.dumps(
+            {
+                "document": {
+                    "elements": [
+                        {
+                            "type": "table",
+                            "description": "Broad historical summary",
+                            "bbox": [{"page_id": 22}],
+                            "content": (
+                                "<table>"
+                                "<tr><th>Topic</th><th>Amount</th></tr>"
+                                "<tr><td>Veterans Administration historical discussion</td><td>900</td></tr>"
+                                "<tr><td>Fiscal year 1934 references</td><td>12</td></tr>"
+                                "</table>"
+                            ),
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    build_officeqa_index(corpus_root=corpus_root)
+
+    result = search_officeqa_corpus_index(
+        "What were the total expenditures of the Veterans Administration in FY 1934 excluding trust accounts?",
+        corpus_root=corpus_root,
+        target_years=["1934"],
+        publication_year_window=["1939", "1940", "1941", "1942"],
+        preferred_publication_years=["1939", "1940", "1941", "1942"],
+        acceptable_publication_lag_years=1,
+        retrospective_evidence_allowed=True,
+        retrospective_evidence_required=True,
+        period_type="fiscal_year",
+        granularity_requirement="fiscal_year",
+        entity="Veterans Administration",
+        metric="total expenditures",
+        top_k=2,
+    )
+
+    assert result["results"][0]["document_id"] == "treasury_bulletin_1939_03_json"
+    assert result["results"][0]["metadata"]["publication_year"] == "1939"
+
+
 def test_validate_officeqa_index_reports_partially_parsed_documents(tmp_path):
     corpus_root = tmp_path / "treasury_bulletins_parsed"
     corpus_root.mkdir(parents=True)
@@ -669,7 +740,7 @@ def test_verify_officeqa_corpus_bundle_succeeds_with_built_index(tmp_path):
     summary = verify_officeqa_corpus_bundle(corpus_root=corpus_root)
 
     assert summary["document_count"] == 1
-    assert summary["index_schema_version"] == 3
+    assert summary["index_schema_version"] == 4
 
 
 def test_verify_officeqa_corpus_bundle_requires_manifest_metadata(tmp_path):
@@ -922,6 +993,8 @@ def test_fetch_officeqa_table_prefers_monthly_series_over_annual_summary(monkeyp
 
     assert table_result["metadata"]["officeqa_status"] == "ok"
     assert table_result["tables"][0]["table_family"] == "monthly_series"
+    assert table_result["tables"][0]["period_type"] == "monthly_series"
+    assert table_result["tables"][0]["typing_ambiguities"] == []
     assert table_result["tables"][0]["page_locator"] == "page 18"
     assert table_result["tables"][0]["rows"][0][0] == "January"
 

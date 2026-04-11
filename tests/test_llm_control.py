@@ -1,6 +1,8 @@
 from agent.contracts import RetrievalIntent
 from agent.llm_control import (
+    maybe_review_evidence_commitment,
     officeqa_llm_control_budget,
+    should_use_evidence_commit_llm,
     should_use_source_rerank_llm,
     should_use_table_rerank_llm,
 )
@@ -35,6 +37,7 @@ def test_officeqa_llm_control_budget_expands_for_hard_semantic_cases():
 
     assert easy_budget["retrieval_rerank_calls"] == 2
     assert easy_budget["table_rerank_calls"] == 2
+    assert easy_budget["evidence_commit_calls"] == 1
     assert hard_budget["retrieval_rerank_calls"] == 3
     assert hard_budget["table_rerank_calls"] == 3
 
@@ -248,3 +251,65 @@ def test_table_rerank_llm_triggers_on_period_type_mismatch():
 
     assert needed is True
     assert reason == "table_period_type_mismatch"
+
+
+def test_evidence_commit_llm_triggers_when_better_family_is_visible_after_repair():
+    retrieval_intent = _base_retrieval_intent(metric="total expenditures")
+    needed, reason = should_use_evidence_commit_llm(
+        retrieval_intent=retrieval_intent,
+        structured_evidence={
+            "tables": [{"table_family": "debt_or_balance_sheet"}],
+            "typing_consistency_summary": {"typing_consistent": True},
+            "structure_confidence_summary": {"table_confidence_gate_passed": True},
+        },
+        candidate_sources=[
+            {
+                "document_id": "treasury_bulletin_1940_08_json",
+                "best_evidence_unit": {"table_family": "debt_or_balance_sheet"},
+            },
+            {
+                "document_id": "treasury_bulletin_1941_12_json",
+                "best_evidence_unit": {"table_family": "category_breakdown"},
+            },
+        ],
+        evidence_review={"predictive_gaps": []},
+        repair_history=[{"stage": "retrieval_repair"}],
+    )
+
+    assert needed is True
+    assert reason == "better_family_visible_in_candidate_pool"
+
+
+def test_evidence_commit_llm_can_request_same_document_restart(monkeypatch):
+    monkeypatch.setattr(
+        "agent.llm_control.invoke_structured_output",
+        lambda *args, **kwargs: (
+            {
+                "decision": "retune_table_query",
+                "restart_scope": "same_document",
+                "revised_table_query": "national defense expenditures calendar year 1940",
+                "confidence": 0.81,
+            },
+            "mock-reviewer",
+        ),
+    )
+
+    retrieval_intent = _base_retrieval_intent(metric="total expenditures")
+    decision = maybe_review_evidence_commitment(
+        task_text="What were the total expenditures for U.S. national defense in 1940?",
+        retrieval_intent=retrieval_intent,
+        structured_evidence={
+            "tables": [{"document_id": "treasury_bulletin_1940_07_json", "table_family": "mixed_summary", "table_locator": "table 5"}],
+            "typing_consistency_summary": {"typing_consistent": True},
+            "structure_confidence_summary": {"table_confidence_gate_passed": True},
+        },
+        candidate_sources=[
+            {"document_id": "treasury_bulletin_1940_07_json", "best_evidence_unit": {"table_family": "mixed_summary"}}
+        ],
+        evidence_review={"predictive_gaps": []},
+        reason="post_repair_commit_review",
+    )
+
+    assert decision is not None
+    assert decision.decision == "retune_table_query"
+    assert decision.restart_scope == "same_document"

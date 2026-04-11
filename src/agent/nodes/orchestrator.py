@@ -31,10 +31,12 @@ from agent.context.extraction import derive_market_snapshot
 from agent.model_config import ChatOpenAI, get_client_kwargs, get_model_name, get_model_name_for_task, get_model_runtime_kwargs, invoke_structured_output
 from agent.llm_control import (
     initial_officeqa_llm_control_state,
+    maybe_review_evidence_commitment,
     maybe_rerank_source_candidates,
     maybe_review_table_admissibility,
     officeqa_llm_control_budget,
     record_officeqa_llm_usage,
+    should_use_evidence_commit_llm,
     should_use_source_rerank_llm,
     should_use_table_rerank_llm,
 )
@@ -1013,9 +1015,16 @@ def _officeqa_evidence_signature(journal: ExecutionJournal, curated: CuratedCont
 
 def _officeqa_reroute_action(stage: str, trigger: str, decision: dict[str, Any]) -> str:
     action = str(decision.get("decision", "") or "").strip()
+    restart_scope = str(decision.get("restart_scope", "") or "").strip()
     normalized_trigger = " ".join([str(stage or "").strip().lower(), str(trigger or "").strip().lower()])
     if action == "widen_search_pool":
         return "search_pool_widening"
+    if restart_scope == "semantic_plan_restart":
+        return "semantic_plan_restart"
+    if restart_scope == "cross_document":
+        return "cross_document_restart"
+    if restart_scope == "same_document" and action != "rewrite_query":
+        return "same_document_restart"
     if action == "retune_table_query":
         if "unit" in normalized_trigger:
             return "unit_repair"
@@ -1033,9 +1042,16 @@ def _filter_tool_results_for_reroute_action(
     tool_results: list[dict[str, Any]],
     reroute_action: str,
 ) -> list[dict[str, Any]]:
-    if reroute_action in {"query_rewrite", "source_rerank", "strategy_shift", "search_pool_widening"}:
+    if reroute_action in {
+        "query_rewrite",
+        "source_rerank",
+        "strategy_shift",
+        "search_pool_widening",
+        "cross_document_restart",
+        "semantic_plan_restart",
+    }:
         return []
-    if reroute_action in {"table_query_rewrite", "unit_repair"}:
+    if reroute_action in {"table_query_rewrite", "unit_repair", "same_document_restart"}:
         return [dict(item) for item in tool_results if str(dict(item).get("type", "") or "") in _OFFICEQA_SEARCH_DISCOVER_TOOLS]
     return [dict(item) for item in tool_results]
 
@@ -1079,7 +1095,14 @@ def _invalidate_officeqa_repair_state(
     retained_tool_results = _filter_tool_results_for_reroute_action(list(updated_journal.tool_results or []), reroute_action)
     updated_journal.tool_results = retained_tool_results
     updated_journal.retrieved_citations = []
-    if reroute_action in {"query_rewrite", "source_rerank", "strategy_shift", "search_pool_widening"}:
+    if reroute_action in {
+        "query_rewrite",
+        "source_rerank",
+        "strategy_shift",
+        "search_pool_widening",
+        "cross_document_restart",
+        "semantic_plan_restart",
+    }:
         updated_journal.retrieval_queries = []
     updated_curated.structured_evidence = {}
     updated_curated.compute_result = {}
@@ -1155,6 +1178,58 @@ def _finalize_pending_officeqa_repair_transition(
     return updated
 
 
+def _normalize_officeqa_provenance_term(value: str) -> str:
+    return re.sub(r"\s+", " ", str(value or "").replace("_", " ").replace("-", " ").strip().lower())
+
+
+def _relax_officeqa_provenance_priors(retrieval_intent: RetrievalIntent) -> bool:
+    changed = False
+    normalized_source_file_query = _normalize_officeqa_provenance_term(retrieval_intent.query_plan.source_file_query)
+    provenance_terms = {
+        _normalize_officeqa_provenance_term(retrieval_intent.document_family),
+        _normalize_officeqa_provenance_term(retrieval_intent.document_family.replace("_", " ")),
+    }
+    if retrieval_intent.document_family == "treasury_bulletin":
+        provenance_terms.add("treasury bulletin")
+    relaxed_terms: list[str] = []
+    for term in list(retrieval_intent.must_include_terms or []):
+        normalized = _normalize_officeqa_provenance_term(term)
+        is_filename_hint = normalized.endswith("json") or ".json" in str(term or "").lower()
+        if normalized and (normalized in provenance_terms or normalized == normalized_source_file_query or is_filename_hint):
+            changed = True
+            continue
+        relaxed_terms.append(term)
+    deduped_terms = list(dict.fromkeys([item for item in relaxed_terms if str(item).strip()]))
+    if deduped_terms != list(retrieval_intent.must_include_terms):
+        retrieval_intent.must_include_terms = deduped_terms
+        changed = True
+    source_file_query = str(retrieval_intent.query_plan.source_file_query or "").strip()
+    if source_file_query:
+        retrieval_intent.query_plan.source_file_query = ""
+        retrieval_intent.query_candidates = [
+            item
+            for item in retrieval_intent.query_candidates
+            if str(item).strip() and str(item).strip() != source_file_query
+        ]
+        changed = True
+    return changed
+
+
+def _restart_officeqa_query_universe_from_semantic_plan(retrieval_intent: RetrievalIntent) -> bool:
+    base_queries = [
+        str(retrieval_intent.query_plan.primary_semantic_query or "").strip(),
+        str(retrieval_intent.query_plan.temporal_query or "").strip(),
+        str(retrieval_intent.query_plan.granularity_query or "").strip(),
+        str(retrieval_intent.query_plan.qualifier_query or "").strip(),
+        str(retrieval_intent.query_plan.alternate_lexical_query or "").strip(),
+    ]
+    rebuilt = [item for item in dict.fromkeys(base_queries) if item]
+    if rebuilt != list(retrieval_intent.query_candidates):
+        retrieval_intent.query_candidates = rebuilt
+        return True
+    return False
+
+
 def _apply_officeqa_llm_repair_decision(
     retrieval_intent: RetrievalIntent,
     workpad: dict[str, Any],
@@ -1163,6 +1238,9 @@ def _apply_officeqa_llm_repair_decision(
     updated_intent = retrieval_intent.model_copy(deep=True)
     updated_workpad = dict(workpad)
     action = str(decision.get("decision", "") or "").strip()
+    publication_scope_action = str(decision.get("publication_scope_action", "") or "").strip()
+    restart_scope = str(decision.get("restart_scope", "") or "").strip()
+    relax_provenance_priors = bool(decision.get("relax_provenance_priors", False))
     path_changed = False
     reroute_action = _officeqa_reroute_action("", "", decision)
 
@@ -1220,6 +1298,49 @@ def _apply_officeqa_llm_repair_decision(
                 if str(item).strip() and str(item).strip() != source_file_query
             ]
             path_changed = True
+
+    if publication_scope_action == "widen_publication_horizon":
+        expanded_window, expanded_preferred = _expanded_officeqa_publication_scope(updated_intent)
+        if expanded_window != list(updated_intent.publication_year_window):
+            updated_intent.publication_year_window = expanded_window
+            path_changed = True
+        if expanded_preferred != list(updated_intent.preferred_publication_years):
+            updated_intent.preferred_publication_years = expanded_preferred
+            path_changed = True
+    elif publication_scope_action == "switch_to_retrospective":
+        expanded_window, expanded_preferred = _expanded_officeqa_publication_scope(updated_intent)
+        if expanded_window != list(updated_intent.publication_year_window):
+            updated_intent.publication_year_window = expanded_window
+            path_changed = True
+        if expanded_preferred != list(updated_intent.preferred_publication_years):
+            updated_intent.preferred_publication_years = expanded_preferred
+            path_changed = True
+        if not updated_intent.retrospective_evidence_allowed:
+            updated_intent.retrospective_evidence_allowed = True
+            path_changed = True
+        if not updated_intent.retrospective_evidence_required:
+            updated_intent.retrospective_evidence_required = True
+            path_changed = True
+        if updated_intent.publication_scope_explicit:
+            updated_intent.publication_scope_explicit = False
+            path_changed = True
+
+    if relax_provenance_priors and _relax_officeqa_provenance_priors(updated_intent):
+        path_changed = True
+
+    if restart_scope == "semantic_plan_restart":
+        updated_workpad.pop("officeqa_override_query", None)
+        updated_workpad.pop("officeqa_override_table_query", None)
+        updated_workpad["officeqa_restart_from_semantic_plan"] = True
+        if _restart_officeqa_query_universe_from_semantic_plan(updated_intent):
+            path_changed = True
+    elif restart_scope == "cross_document":
+        updated_workpad.pop("officeqa_override_table_query", None)
+        if str(updated_workpad.get("officeqa_current_document_id", "") or "").strip():
+            updated_workpad.pop("officeqa_current_document_id", None)
+            path_changed = True
+    elif restart_scope == "same_document":
+        updated_workpad.pop("officeqa_override_table_query", None)
 
     return updated_intent, updated_workpad, path_changed, reroute_action
 
@@ -1489,6 +1610,9 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                 repair_decision = maybe_repair_from_validator(
                     task_text=task_text,
                     retrieval_intent=active_retrieval_intent,
+                    execution_journal=journal,
+                    workpad=workpad,
+                    curated_context=curated,
                     review_feedback=review_feedback,
                     candidate_sources=validator_candidate_sources,
                 )
@@ -1730,6 +1854,9 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                           task_text=task_text,
                           retrieval_intent=active_retrieval_intent,
                           source_bundle=source_bundle,
+                          execution_journal=journal,
+                          workpad=workpad,
+                          curated_context=curated,
                           retrieval_strategy=retrieval_action.strategy,
                           evidence_gap=retrieval_action.evidence_gap,
                           current_query=retrieval_action.query,
@@ -2032,6 +2159,100 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                     }
             else:
                 structured_for_compute = dict(curated.structured_evidence or {})
+                if officeqa_mode and llm_control_state.get("evidence_commit_calls", 0) < llm_control_budget.get("evidence_commit_calls", 0):
+                    evidence_commit_candidate_sources = list(dict(workpad.get("retrieval_diagnostics") or {}).get("candidate_sources") or [])
+                    evidence_commit_needed, evidence_commit_reason = should_use_evidence_commit_llm(
+                        retrieval_intent=active_retrieval_intent,
+                        structured_evidence=structured_for_compute,
+                        candidate_sources=evidence_commit_candidate_sources,
+                        evidence_review=dict(workpad.get("officeqa_evidence_review") or {}),
+                        repair_history=list(workpad.get("officeqa_llm_repair_history", []) or []),
+                    )
+                    if evidence_commit_needed:
+                        evidence_commit_decision = maybe_review_evidence_commitment(
+                            task_text=task_text,
+                            retrieval_intent=active_retrieval_intent,
+                            structured_evidence=structured_for_compute,
+                            candidate_sources=evidence_commit_candidate_sources,
+                            evidence_review=dict(workpad.get("officeqa_evidence_review") or {}),
+                            reason=evidence_commit_reason,
+                        )
+                        if evidence_commit_decision is not None:
+                            decision_payload = evidence_commit_decision.model_dump()
+                            current_retrieval_signature = _officeqa_retrieval_input_signature(active_retrieval_intent, workpad)
+                            active_retrieval_intent, workpad, path_changed, reroute_action = _apply_officeqa_llm_repair_decision(
+                                active_retrieval_intent,
+                                workpad,
+                                decision_payload,
+                            )
+                            reroute_action = _officeqa_reroute_action("evidence_commit_review", evidence_commit_reason, decision_payload)
+                            post_retrieval_signature = _officeqa_retrieval_input_signature(active_retrieval_intent, workpad)
+                            llm_control_state["evidence_commit_calls"] = int(llm_control_state.get("evidence_commit_calls", 0) or 0) + 1
+                            workpad["officeqa_llm_control_state"] = llm_control_state
+                            workpad["officeqa_evidence_commit_review"] = {
+                                "reason": evidence_commit_reason,
+                                "decision": decision_payload,
+                                "path_changed": path_changed,
+                                "reroute_action": reroute_action,
+                            }
+                            workpad = _record_llm_repair_decision(
+                                workpad,
+                                stage="evidence_commit_review",
+                                trigger=evidence_commit_reason,
+                                decision=decision_payload,
+                                path_changed=path_changed,
+                                reroute_action=reroute_action,
+                                pre_retrieval_signature=current_retrieval_signature,
+                                post_retrieval_signature=post_retrieval_signature,
+                            )
+                            workpad = record_officeqa_llm_usage(
+                                workpad,
+                                category="evidence_commit_llm",
+                                used=True,
+                                reason=evidence_commit_reason,
+                                model_name=str(decision_payload.get("model_name", "") or ""),
+                                confidence=float(decision_payload.get("confidence", 0.0) or 0.0),
+                                applied=path_changed,
+                                details={
+                                    "decision": decision_payload.get("decision", ""),
+                                    "restart_scope": decision_payload.get("restart_scope", ""),
+                                    "publication_scope_action": decision_payload.get("publication_scope_action", ""),
+                                },
+                            )
+                            if path_changed:
+                                workpad, journal, curated = _invalidate_officeqa_repair_state(
+                                    workpad=workpad,
+                                    journal=journal,
+                                    curated=curated,
+                                    stage="evidence_commit_review",
+                                    trigger=evidence_commit_reason,
+                                    decision=decision_payload,
+                                    reroute_action=reroute_action,
+                                    pre_retrieval_signature=current_retrieval_signature,
+                                    post_retrieval_signature=post_retrieval_signature,
+                                )
+                                tool_plan.pending_tools = []
+                                workpad["solver_llm_decision"] = {
+                                    "used_llm": True,
+                                    "reason": "evidence_commit_review_redirected_retrieval",
+                                }
+                                workpad = _record_event(
+                                    workpad,
+                                    "executor",
+                                    f"evidence commit review -> {decision_payload.get('decision', 'keep')}",
+                                )
+                                evidence_sufficiency = assess_evidence_sufficiency(task_text, source_bundle, journal.tool_results, benchmark_overrides)
+                                return {
+                                    "last_tool_result": journal.tool_results[-1] if journal.tool_results else None,
+                                    "task_intent": intent.model_dump(),
+                                    "retrieval_intent": active_retrieval_intent.model_dump(),
+                                    "tool_plan": tool_plan.model_dump(),
+                                    "execution_journal": journal.model_dump(),
+                                    "curated_context": curated.model_dump(),
+                                    "evidence_sufficiency": evidence_sufficiency.model_dump(),
+                                    "solver_stage": "GATHER",
+                                    "workpad": workpad,
+                                }
                 if officeqa_mode and targeted_compute_retry and not bool(workpad.get("officeqa_compute_reselection_attempted")):
                     reselected_structured, reselection_diagnostics = _reselect_officeqa_structured_evidence(
                         structured_for_compute,

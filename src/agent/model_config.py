@@ -291,30 +291,33 @@ def get_model_name_for_officeqa_control(
     answer_mode: str = "",
     analysis_modes: list[str] | None = None,
 ) -> str:
+    """Resolve model for OfficeQA sub-agents cleanly."""
     category_key = str(category or "").strip().lower()
+    
+    # 1. Environment overrides
     env_candidates = {
         "semantic_plan_llm": ["OFFICEQA_SEMANTIC_PLAN_MODEL", "SEMANTIC_PLAN_MODEL"],
         "retrieval_rerank_llm": ["OFFICEQA_RETRIEVAL_RERANK_MODEL", "RETRIEVAL_RERANK_MODEL"],
         "table_rerank_llm": ["OFFICEQA_TABLE_RERANK_MODEL", "TABLE_RERANK_MODEL"],
+        "evidence_commit_llm": ["OFFICEQA_EVIDENCE_COMMIT_MODEL", "EVIDENCE_COMMIT_MODEL"],
         "repair_llm": ["OFFICEQA_REPAIR_MODEL", "REPAIR_MODEL"],
     }.get(category_key, [])
+    
     for env_name in env_candidates:
         override = os.getenv(env_name, "").strip()
         if override:
             return override
 
+    # 2. Map logical OfficeQA roles directly to standard core roles
     if category_key == "semantic_plan_llm":
-        if answer_mode in {"grounded_synthesis", "hybrid_grounded"}:
-            return get_model_name_for_task("solver", answer_mode=answer_mode, analysis_modes=analysis_modes)
-        if {str(item).strip().lower() for item in analysis_modes or [] if str(item).strip()}.intersection({"statistical_analysis", "time_series_forecasting", "risk_metric"}):
-            return get_model_name_for_task("solver", answer_mode=answer_mode, analysis_modes=analysis_modes)
         return get_model_name("profiler")
-    if category_key == "retrieval_rerank_llm":
-        return get_model_name_for_task("direct", answer_mode=answer_mode, analysis_modes=analysis_modes)
-    if category_key == "table_rerank_llm":
-        return get_model_name_for_task("direct", answer_mode=answer_mode, analysis_modes=analysis_modes)
+    if category_key in {"retrieval_rerank_llm", "table_rerank_llm"}:
+        return get_model_name("direct")
+    if category_key == "evidence_commit_llm":
+        return get_model_name("reviewer")
     if category_key == "repair_llm":
-        return get_model_name_for_task("solver", answer_mode=answer_mode, analysis_modes=analysis_modes)
+        return get_model_name("solver")
+        
     return get_model_name("profiler")
 
 
@@ -324,26 +327,19 @@ def get_model_runtime_kwargs_for_officeqa_control(
     answer_mode: str = "",
     analysis_modes: list[str] | None = None,
 ) -> dict[str, Any]:
+    """Resolve model kwargs for OfficeQA sub-agents cleanly."""
     category_key = str(category or "").strip().lower()
+    
     if category_key in {"retrieval_rerank_llm", "table_rerank_llm"}:
-        return get_model_runtime_kwargs(
-            "direct",
-            answer_mode=answer_mode,
-            analysis_modes=analysis_modes,
-        )
+        return get_model_runtime_kwargs("direct")
+    if category_key == "evidence_commit_llm":
+        return get_model_runtime_kwargs("reviewer")
     if category_key == "repair_llm":
-        return get_model_runtime_kwargs(
-            "solver",
-            answer_mode=answer_mode,
-            analysis_modes=analysis_modes,
-        )
+        return get_model_runtime_kwargs("solver")
     if category_key == "semantic_plan_llm":
-        return get_model_runtime_kwargs(
-            "solver" if answer_mode in {"grounded_synthesis", "hybrid_grounded"} else "profiler",
-            answer_mode=answer_mode,
-            analysis_modes=analysis_modes,
-        )
-    return get_model_runtime_kwargs("profiler", answer_mode=answer_mode, analysis_modes=analysis_modes)
+        return get_model_runtime_kwargs("profiler")
+        
+    return get_model_runtime_kwargs("profiler")
 
 
 def _role_reasoning_effort_env_names(role: str) -> list[str]:

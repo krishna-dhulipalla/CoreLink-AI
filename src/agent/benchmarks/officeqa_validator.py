@@ -64,6 +64,7 @@ _SEMANTIC_COMPUTE_FAILURES = {
     "wrong column family": "aggregation correctness",
     "wrong period slice": "time scope correctness",
     "wrong aggregation grain": "aggregation correctness",
+    "typing ambiguity": "deterministic compute validation",
 }
 
 
@@ -71,6 +72,15 @@ def _requires_deterministic_compute(retrieval_intent: RetrievalIntent) -> bool:
     if retrieval_intent.compute_policy == "required":
         return True
     return False
+
+
+def _expected_answer_unit_basis(retrieval_intent: RetrievalIntent) -> str:
+    plan = retrieval_intent.evidence_plan
+    return str(
+        retrieval_intent.expected_answer_unit_basis
+        or getattr(plan, "expected_answer_unit_basis", "")
+        or ""
+    ).strip()
 
 
 def _append_unique(target: list[str], *items: str) -> None:
@@ -247,6 +257,7 @@ def validate_officeqa_final(
     units_seen = {str(item).strip().lower() for item in structured.units_seen if str(item).strip()}
     if len(units_seen) > 1:
         _append_unique(hard_failures, "unit consistency")
+    expected_answer_unit_basis = _expected_answer_unit_basis(retrieval_intent)
     if retrieval_intent.evidence_plan.requires_cross_source_alignment:
         if int(alignment_summary.get("aligned_document_count", 0) or 0) < 2:
             _append_unique(hard_failures, "time scope correctness")
@@ -260,6 +271,8 @@ def validate_officeqa_final(
             _append_unique(hard_failures, "deterministic compute support")
         if compute.validation_errors:
             _append_unique(hard_failures, "deterministic compute validation")
+        if expected_answer_unit_basis and compute.status == "ok" and compute.answer_unit_basis != expected_answer_unit_basis:
+            _append_unique(hard_failures, "unit consistency")
         semantic = dict(compute.semantic_diagnostics or {})
         if semantic and not bool(semantic.get("admissibility_passed", True)):
             _append_unique(hard_failures, "deterministic compute validation")
@@ -274,6 +287,8 @@ def validate_officeqa_final(
     elif compute.status == "ok":
         if compute.validation_errors:
             _append_unique(hard_failures, "deterministic compute validation")
+        if expected_answer_unit_basis and compute.answer_unit_basis != expected_answer_unit_basis:
+            _append_unique(hard_failures, "unit consistency")
         semantic = dict(compute.semantic_diagnostics or {})
         if semantic and not bool(semantic.get("admissibility_passed", True)):
             _append_unique(hard_failures, "deterministic compute validation")

@@ -343,6 +343,15 @@ def _expected_unit_kind(task_text: str, metric: str, analysis_modes: list[str]) 
     return "scalar"
 
 
+def _expected_answer_unit_basis(task_text: str, metric: str, analysis_modes: list[str]) -> str:
+    lowered = f"{task_text} {metric}".lower()
+    if "percent" in lowered or "%" in lowered:
+        return "percent"
+    if re.search(r"\bin\s+millions?\s+of\s+(?:nominal\s+)?dollars?\b", lowered):
+        return "millions_nominal_dollars"
+    return ""
+
+
 def _build_evidence_plan(
     task_text: str,
     source_bundle: SourceBundle,
@@ -352,6 +361,10 @@ def _build_evidence_plan(
     target_years: list[str],
     publication_year_window: list[str],
     preferred_publication_years: list[str],
+    acceptable_publication_lag_years: int,
+    retrospective_evidence_allowed: bool,
+    retrospective_evidence_required: bool,
+    publication_scope_explicit: bool,
     aggregation_shape: str,
     granularity_requirement: str,
     strategy: str,
@@ -469,17 +482,35 @@ def _build_evidence_plan(
                 rationale="Negative constraints should stay explicit so ranking and validation can reject mismatched evidence.",
             )
         )
+    expected_answer_unit_basis = _expected_answer_unit_basis(task_text, metric_identity, analysis_modes)
+    if expected_answer_unit_basis:
+        requirements.append(
+            EvidenceRequirement(
+                kind="answer_unit_basis",
+                label=f"Preserve the expected answer-unit basis: {expected_answer_unit_basis.replace('_', ' ')}.",
+                target_count=1,
+                metric=metric_identity,
+                years=years,
+                support_mode="table_or_text",
+                rationale="Benchmark-style financial questions often specify the answer-unit basis explicitly, and compute must preserve that contract.",
+            )
+        )
 
     required_series = [f"{metric_identity} {year}".strip() for year in years] if years else [metric_identity]
     return EvidencePlan(
         objective=_normalize_space(source_bundle.focus_query or task_text)[:240],
         metric_identity=metric_identity,
         expected_unit_kind=_expected_unit_kind(task_text, metric_identity, analysis_modes),
+        expected_answer_unit_basis=expected_answer_unit_basis,
         expected_value_count=expected_value_count,
         period_type=period_type,
         required_years=years,
         publication_year_window=publication_year_window,
         preferred_publication_years=preferred_publication_years,
+        acceptable_publication_lag_years=acceptable_publication_lag_years,
+        retrospective_evidence_allowed=retrospective_evidence_allowed,
+        retrospective_evidence_required=retrospective_evidence_required,
+        publication_scope_explicit=publication_scope_explicit,
         required_month_coverage=required_month_coverage,
         required_month_count=required_month_count,
         requires_table_support=requires_table_support,
@@ -512,9 +543,8 @@ def _extract_qualifier_terms(task_text: str) -> list[str]:
     qualifiers: list[str] = []
     patterns = (
         r"should include\s+(.+?)(?:,| and | but |\.|$)",
-        r"shouldn't contain\s+(.+?)(?:,| and | but |\.|$)",
-        r"should not contain\s+(.+?)(?:,| and | but |\.|$)",
-        r"excluding\s+(.+?)(?:,| and | but |\.|$)",
+        r"should(?:\s+not|n['’]t)\s+contain\s+(.+?)(?:,| but |\.|$)",
+        r"excluding\s+(.+?)(?:,| but |\.|$)",
     )
     for pattern in patterns:
         for match in re.finditer(pattern, task_text or "", re.IGNORECASE):
@@ -681,6 +711,10 @@ def build_retrieval_intent(
     target_years = list(semantic_plan.target_years)
     publication_year_window = list(semantic_plan.publication_year_window)
     preferred_publication_years = list(semantic_plan.preferred_publication_years)
+    acceptable_publication_lag_years = int(semantic_plan.acceptable_publication_lag_years or 0)
+    retrospective_evidence_allowed = bool(semantic_plan.retrospective_evidence_allowed)
+    retrospective_evidence_required = bool(semantic_plan.retrospective_evidence_required)
+    publication_scope_explicit = bool(semantic_plan.publication_scope_explicit)
     granularity_requirement = semantic_plan.granularity_requirement
     document_family = _document_family(task_text, source_bundle, benchmark_overrides)
     aggregation_shape = _aggregation_shape(task_text)
@@ -710,6 +744,10 @@ def build_retrieval_intent(
         target_years,
         publication_year_window,
         preferred_publication_years,
+        acceptable_publication_lag_years,
+        retrospective_evidence_allowed,
+        retrospective_evidence_required,
+        publication_scope_explicit,
         aggregation_shape,
         granularity_requirement,
         strategy,
@@ -771,8 +809,13 @@ def build_retrieval_intent(
         target_years=target_years,
         publication_year_window=publication_year_window,
         preferred_publication_years=preferred_publication_years,
+        acceptable_publication_lag_years=acceptable_publication_lag_years,
+        retrospective_evidence_allowed=retrospective_evidence_allowed,
+        retrospective_evidence_required=retrospective_evidence_required,
+        publication_scope_explicit=publication_scope_explicit,
         source_constraint_policy=source_constraint_policy,
         granularity_requirement=granularity_requirement,
+        expected_answer_unit_basis=semantic_plan.expected_answer_unit_basis or evidence_plan.expected_answer_unit_basis,
         document_family=document_family,
         aggregation_shape=aggregation_shape,
         analysis_modes=analysis_modes,

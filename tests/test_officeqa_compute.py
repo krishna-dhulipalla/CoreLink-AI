@@ -190,6 +190,45 @@ def test_compute_officeqa_fiscal_year_total_uses_cross_year_months():
     assert result.display_value == "180000000"
 
 
+def test_compute_officeqa_explicit_millions_contract_formats_display_in_millions():
+    values = []
+    for month in (
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ):
+        values.append(_monthly_value(1940, month, 10.0))
+    prompt = "What were the total expenditures (in millions of nominal dollars) for the calendar year 1940?"
+    retrieval_intent = RetrievalIntent(
+        entity="National Defense",
+        metric="total expenditures",
+        period="1940",
+        granularity_requirement="calendar_year",
+        expected_answer_unit_basis="millions_nominal_dollars",
+        document_family="treasury_bulletin",
+        aggregation_shape="calendar_year_total",
+        answer_mode="deterministic_compute",
+        compute_policy="required",
+        evidence_plan={"expected_answer_unit_basis": "millions_nominal_dollars"},
+    )
+
+    result = compute_officeqa_result(prompt, retrieval_intent, _structured(values))
+
+    assert result.status == "ok"
+    assert result.final_value == 120_000_000.0
+    assert result.display_value == "120"
+    assert result.answer_unit_basis == "millions_nominal_dollars"
+
+
 def test_compute_officeqa_inflation_adjusted_difference_uses_cpi_support():
     months = [
         "January",
@@ -464,6 +503,53 @@ def test_compute_officeqa_calendar_year_total_rejects_wrong_row_family():
     assert result.status == "insufficient"
     assert any("wrong row family" in item.lower() for item in result.validation_errors)
     assert result.semantic_diagnostics["row_family_status"] == "wrong row family"
+
+
+def test_compute_officeqa_rejects_typing_ambiguity_on_selected_value():
+    values = [
+        {
+            "document_id": "treasury_bulletin_1940_12_json",
+            "citation": "treasury_bulletin_1940_12.json",
+            "page_locator": "page 22",
+            "table_locator": "table 4",
+            "table_family": "category_breakdown",
+            "table_family_confidence": 0.72,
+            "period_type": "calendar_year",
+            "typing_ambiguities": ["family_drift:annual_summary->category_breakdown"],
+            "row_index": 2,
+            "row_label": "National defense and related activities",
+            "row_path": ["National defense and related activities"],
+            "column_index": 1,
+            "column_label": "Expenditures, calendar year 1940",
+            "column_path": ["Expenditures", "Calendar year 1940"],
+            "raw_value": "2602",
+            "numeric_value": 2602.0,
+            "normalized_value": 2602_000_000.0,
+            "unit": "million",
+            "unit_multiplier": 1_000_000.0,
+            "unit_kind": "currency",
+            "structure_confidence": 0.95,
+        }
+    ]
+    prompt = "What were the total expenditures (in millions of nominal dollars) for U.S national defense in the calendar year of 1940?"
+    retrieval_intent = RetrievalIntent(
+        entity="U.S national defense",
+        metric="total expenditures",
+        period="1940",
+        period_type="calendar_year",
+        granularity_requirement="calendar_year",
+        expected_answer_unit_basis="millions_nominal_dollars",
+        document_family="treasury_bulletin",
+        aggregation_shape="calendar_year_total",
+        answer_mode="deterministic_compute",
+        compute_policy="required",
+        evidence_plan={"expected_answer_unit_basis": "millions_nominal_dollars"},
+    )
+
+    result = compute_officeqa_result(prompt, retrieval_intent, _structured(values))
+
+    assert result.status == "insufficient"
+    assert any("typing ambiguity" in item.lower() for item in result.validation_errors)
 
 
 def test_executor_prefers_deterministic_officeqa_compute_without_llm(monkeypatch):

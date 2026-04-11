@@ -53,6 +53,7 @@ OFFICEQA_STRUCTURED_REPAIR_SYSTEM = (
     "Your job is to improve retrieval or table selection without answering the user question.\n"
     "Return only a structured repair decision.\n"
     "Allowed actions are: keep, rewrite_query, retune_table_query, change_strategy, widen_search_pool.\n"
+    "Use publication_scope_action, restart_scope, and relax_provenance_priors when the current retrieval regime is exhausted.\n"
     "Do not invent facts, numbers, or final answers.\n"
     "Only change the retrieval path if the current evidence is semantically weak or misaligned."
 )
@@ -78,6 +79,17 @@ FINANCIAL_TABLE_ADMISSIBILITY_SYSTEM = (
     "Judge whether the currently selected table is suitable for the requested entity, metric, period, and aggregation.\n"
     "If needed, choose a better table candidate from the provided metadata.\n"
     "Return only a structured table-selection decision.\n"
+    "Do not answer the user question."
+)
+
+FINANCIAL_EVIDENCE_COMMIT_SYSTEM = (
+    "You are an evidence-commit reviewer for document-grounded financial reasoning.\n"
+    "Decide whether the currently visible evidence is strong enough to commit to deterministic compute.\n"
+    "If the visible evidence is semantically weaker than an already-visible alternative, do not keep the current path.\n"
+    "Return only a structured repair-style decision.\n"
+    "Use same-document restart when a better table is visible in the current document.\n"
+    "Use cross-document restart when a better source is already visible.\n"
+    "Use widen_search_pool only when the visible evidence universe is still semantically exhausted.\n"
     "Do not answer the user question."
 )
 
@@ -216,6 +228,7 @@ def build_officeqa_structured_repair_prompt(
     current_query: str = "",
     current_table_query: str = "",
     candidate_sources: list[dict[str, Any]] | None = None,
+    execution_snapshot: dict[str, Any] | None = None,
     review_feedback: dict[str, Any] | None = None,
 ) -> str:
     candidates = []
@@ -233,6 +246,7 @@ def build_officeqa_structured_repair_prompt(
             }
         )
     feedback = dict(review_feedback or {})
+    snapshot = dict(execution_snapshot or {})
     return (
         f"TASK={task_text}\n"
         f"CURRENT_STRATEGY={retrieval_strategy}\n"
@@ -246,6 +260,13 @@ def build_officeqa_structured_repair_prompt(
         f"REVIEW_REPAIR_TARGET={feedback.get('repair_target', '')}\n"
         f"REVIEW_ORCHESTRATION={feedback.get('orchestration_strategy', '')}\n"
         f"REMEDIATION_CODES={list(feedback.get('remediation_codes', []) or [])}\n"
+        f"ATTEMPTED_QUERIES={list(snapshot.get('attempted_queries', []) or [])}\n"
+        f"CANDIDATE_POOLS_SEEN={list(snapshot.get('candidate_pools_seen', []) or [])}\n"
+        f"REJECTED_EVIDENCE_FAMILIES={list(snapshot.get('rejected_evidence_families', []) or [])}\n"
+        f"COMPUTE_ADMISSIBILITY_FAILURES={list(snapshot.get('compute_admissibility_failures', []) or [])}\n"
+        f"REPAIR_FAILURES={list(snapshot.get('repair_failures', []) or [])}\n"
+        f"REPAIR_HISTORY={list(snapshot.get('repair_history', []) or [])}\n"
+        f"STRUCTURED_EVIDENCE_SUMMARY={dict(snapshot.get('structured_evidence_summary', {}) or {})}\n"
         f"CANDIDATE_SOURCES={candidates}"
     )
 

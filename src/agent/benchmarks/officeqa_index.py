@@ -114,6 +114,10 @@ def _query_profile(
     target_years: list[str] | None = None,
     publication_year_window: list[str] | None = None,
     preferred_publication_years: list[str] | None = None,
+    acceptable_publication_lag_years: int = 0,
+    retrospective_evidence_allowed: bool = False,
+    retrospective_evidence_required: bool = False,
+    publication_scope_explicit: bool = False,
     period_type: str = "",
     granularity_requirement: str = "",
     entity: str = "",
@@ -134,6 +138,10 @@ def _query_profile(
         "target_years": normalized_target_years,
         "publication_year_window": _normalized_years(publication_year_window),
         "preferred_publication_years": _normalized_years(preferred_publication_years),
+        "acceptable_publication_lag_years": max(0, int(acceptable_publication_lag_years or 0)),
+        "retrospective_evidence_allowed": bool(retrospective_evidence_allowed),
+        "retrospective_evidence_required": bool(retrospective_evidence_required),
+        "publication_scope_explicit": bool(publication_scope_explicit),
         "period_type": str(period_type or "").strip().lower(),
         "granularity_requirement": str(granularity_requirement or "").strip().lower(),
     }
@@ -255,14 +263,64 @@ def _table_family_fit(unit: dict[str, Any], profile: dict[str, Any]) -> float:
 def _publication_year_fit(publication_year: str, profile: dict[str, Any]) -> float:
     if not publication_year:
         return 0.0
+    explicit_scope = bool(profile.get("publication_scope_explicit"))
     preferred = list(profile.get("preferred_publication_years", []))
     if publication_year in preferred:
         position = preferred.index(publication_year)
-        return max(0.2, 1.15 - (0.18 * position))
+        if explicit_scope:
+            return max(0.2, 1.15 - (0.18 * position))
+        return max(0.08, 0.34 - (0.04 * position))
     window = set(profile.get("publication_year_window", []))
     if publication_year in window:
-        return 0.25
-    return -0.18 if window else 0.0
+        return 0.25 if explicit_scope else 0.06
+    if not window:
+        return 0.0
+    if bool(profile.get("retrospective_evidence_required")):
+        return -0.04
+    if bool(profile.get("retrospective_evidence_allowed")):
+        return -0.08
+    return -0.18
+
+
+def _evidence_period_fit(unit: dict[str, Any], publication_year: str, profile: dict[str, Any]) -> float:
+    target_years = set(profile.get("target_years", []))
+    if not target_years:
+        return 0.0
+    year_refs = {str(item) for item in list(unit.get("year_refs", [])) if str(item)}
+    if not year_refs:
+        return 0.0
+    score = 0.0
+    if year_refs & target_years:
+        score += 1.05
+    else:
+        score -= 0.2
+    if not publication_year:
+        return score
+    try:
+        publication_year_int = int(publication_year)
+    except ValueError:
+        return score
+    acceptable_lag = max(0, int(profile.get("acceptable_publication_lag_years", 0) or 0))
+    target_year_ints = [int(year) for year in target_years if year.isdigit()]
+    if not target_year_ints:
+        return score
+    target_min = min(target_year_ints)
+    target_max = max(target_year_ints)
+    if bool(profile.get("retrospective_evidence_required")):
+        if publication_year_int >= target_max:
+            lag = publication_year_int - target_max
+            if lag <= max(acceptable_lag, 5):
+                score += max(0.18, 0.42 - (0.04 * lag))
+        return score
+    if bool(profile.get("retrospective_evidence_allowed")) and publication_year_int >= target_max:
+        lag = publication_year_int - target_max
+        if lag <= max(acceptable_lag, 1):
+            score += max(0.08, 0.24 - (0.05 * lag))
+        elif lag <= max(acceptable_lag + 2, 3):
+            score += 0.06
+    if publication_year_int < target_min - 1:
+        score -= 0.12
+    return score
 
 
 def _surface_family(tokens: set[str]) -> str:
@@ -384,10 +442,8 @@ def _table_unit_score(unit: dict[str, Any], profile: dict[str, Any]) -> float:
     if metric_tokens and not (metric_tokens & (header_tokens | column_tokens | heading_tokens)):
         score -= 0.28
     score += _surface_family_consistency_penalty(heading_tokens, body_tokens)
-    if target_years and year_refs & target_years:
-        score += 0.9
-    elif year_refs and target_years and not (year_refs & target_years):
-        score -= 0.18
+    publication_year = str(profile.get("record_publication_year", "") or "").strip()
+    score += _evidence_period_fit(unit, publication_year, profile)
     if profile.get("granularity_requirement") == "monthly_series":
         if len(month_coverage) >= 6:
             score += 0.7
@@ -499,6 +555,10 @@ def _score_record(record: dict[str, Any], profile: dict[str, Any]) -> tuple[floa
     if any(token in lowered_query for token in ("million", "billion", "percent", "nominal")):
         score += 0.12 * len(set(_tokenize(" ".join(record.get("unit_hints", [])))) & rank_tokens)
     publication_year = _record_publication_year(record)
+    profile = {
+        **profile,
+        "record_publication_year": publication_year,
+    }
     score += _publication_year_fit(publication_year, profile)
 
     best_unit: dict[str, Any] | None = None
@@ -533,6 +593,10 @@ def search_officeqa_corpus_index(
     target_years: list[str] | None = None,
     publication_year_window: list[str] | None = None,
     preferred_publication_years: list[str] | None = None,
+    acceptable_publication_lag_years: int = 0,
+    retrospective_evidence_allowed: bool = False,
+    retrospective_evidence_required: bool = False,
+    publication_scope_explicit: bool = False,
     period_type: str = "",
     granularity_requirement: str = "",
     entity: str = "",
@@ -547,6 +611,10 @@ def search_officeqa_corpus_index(
         target_years=target_years,
         publication_year_window=publication_year_window,
         preferred_publication_years=preferred_publication_years,
+        acceptable_publication_lag_years=acceptable_publication_lag_years,
+        retrospective_evidence_allowed=retrospective_evidence_allowed,
+        retrospective_evidence_required=retrospective_evidence_required,
+        publication_scope_explicit=publication_scope_explicit,
         period_type=period_type,
         granularity_requirement=granularity_requirement,
         entity=entity,

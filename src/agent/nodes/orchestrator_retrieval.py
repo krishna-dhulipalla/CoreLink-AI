@@ -149,6 +149,10 @@ def _structured_tool_args(state: RuntimeState, registry: dict[str, dict[str, Any
             "target_years": list(retrieval_intent.target_years),
             "publication_year_window": list(retrieval_intent.publication_year_window),
             "preferred_publication_years": list(retrieval_intent.preferred_publication_years),
+            "acceptable_publication_lag_years": retrieval_intent.acceptable_publication_lag_years,
+            "retrospective_evidence_allowed": retrieval_intent.retrospective_evidence_allowed,
+            "retrospective_evidence_required": retrieval_intent.retrospective_evidence_required,
+            "publication_scope_explicit": retrieval_intent.publication_scope_explicit,
             "period_type": retrieval_intent.period_type,
             "granularity_requirement": retrieval_intent.granularity_requirement,
             "entity": retrieval_intent.entity,
@@ -165,6 +169,10 @@ def _structured_tool_args(state: RuntimeState, registry: dict[str, dict[str, Any
             "target_years": list(retrieval_intent.target_years),
             "publication_year_window": list(retrieval_intent.publication_year_window),
             "preferred_publication_years": list(retrieval_intent.preferred_publication_years),
+            "acceptable_publication_lag_years": retrieval_intent.acceptable_publication_lag_years,
+            "retrospective_evidence_allowed": retrieval_intent.retrospective_evidence_allowed,
+            "retrospective_evidence_required": retrieval_intent.retrospective_evidence_required,
+            "publication_scope_explicit": retrieval_intent.publication_scope_explicit,
             "period_type": retrieval_intent.period_type,
             "granularity_requirement": retrieval_intent.granularity_requirement,
             "entity": retrieval_intent.entity,
@@ -1002,24 +1010,48 @@ def _year_fit_score(candidate: dict[str, Any], retrieval_intent: RetrievalIntent
         return 0.0
     preferred_publication_years = list(retrieval_intent.preferred_publication_years)
     publication_window = set(retrieval_intent.publication_year_window)
+    explicit_scope = bool(retrieval_intent.publication_scope_explicit)
     score = 0.0
     for publication_year in publication_years:
         if publication_year in preferred_publication_years:
             position = preferred_publication_years.index(publication_year)
-            score = max(score, max(0.2, 1.1 - (0.18 * position)))
+            if explicit_scope:
+                score = max(score, max(0.2, 1.1 - (0.18 * position)))
+            else:
+                score = max(score, max(0.08, 0.34 - (0.04 * position)))
         elif publication_year in publication_window:
-            score = max(score, 0.25)
+            score = max(score, 0.25 if explicit_scope else 0.06)
         elif publication_window:
-            score -= 0.22
+            if retrieval_intent.retrospective_evidence_required:
+                score -= 0.04
+            elif retrieval_intent.retrospective_evidence_allowed:
+                score -= 0.08
+            else:
+                score -= 0.22
     if candidate_years and required_years & candidate_years:
         score += 0.95
     if candidate_years and not (required_years & candidate_years):
         score -= 0.28
+    if candidate_years and required_years & candidate_years and publication_years:
+        acceptable_lag = max(0, int(retrieval_intent.acceptable_publication_lag_years or 0))
+        required_year_ints = [int(year) for year in required_years if year.isdigit()]
+        publication_year_ints = [int(year) for year in publication_years if year.isdigit()]
+        if required_year_ints and publication_year_ints:
+            target_max = max(required_year_ints)
+            publication_min = min(publication_year_ints)
+            if retrieval_intent.retrospective_evidence_required and publication_min >= target_max:
+                lag = publication_min - target_max
+                if lag <= max(acceptable_lag, 5):
+                    score += max(0.18, 0.42 - (0.04 * lag))
+            elif retrieval_intent.retrospective_evidence_allowed and publication_min >= target_max:
+                lag = publication_min - target_max
+                if lag <= max(acceptable_lag, 1):
+                    score += max(0.08, 0.24 - (0.05 * lag))
     text = f"{_search_candidate_text(candidate)} {_candidate_metadata_text(candidate)}"
     text_years = set(re.findall(r"\b((?:19|20)\d{2})\b", text))
     if required_years & text_years:
         score += 0.35
-    if text_years:
+    if text_years and not (required_years & text_years):
         score -= 0.12
     return score
 
@@ -2160,6 +2192,10 @@ def _tool_args_from_retrieval_action(
             "target_years": list(retrieval_intent.target_years),
             "publication_year_window": list(retrieval_intent.publication_year_window),
             "preferred_publication_years": list(retrieval_intent.preferred_publication_years),
+            "acceptable_publication_lag_years": retrieval_intent.acceptable_publication_lag_years,
+            "retrospective_evidence_allowed": retrieval_intent.retrospective_evidence_allowed,
+            "retrospective_evidence_required": retrieval_intent.retrospective_evidence_required,
+            "publication_scope_explicit": retrieval_intent.publication_scope_explicit,
             "period_type": retrieval_intent.period_type,
             "granularity_requirement": retrieval_intent.granularity_requirement,
             "entity": retrieval_intent.entity,
@@ -2175,6 +2211,10 @@ def _tool_args_from_retrieval_action(
             "target_years": list(retrieval_intent.target_years),
             "publication_year_window": list(retrieval_intent.publication_year_window),
             "preferred_publication_years": list(retrieval_intent.preferred_publication_years),
+            "acceptable_publication_lag_years": retrieval_intent.acceptable_publication_lag_years,
+            "retrospective_evidence_allowed": retrieval_intent.retrospective_evidence_allowed,
+            "retrospective_evidence_required": retrieval_intent.retrospective_evidence_required,
+            "publication_scope_explicit": retrieval_intent.publication_scope_explicit,
             "period_type": retrieval_intent.period_type,
             "granularity_requirement": retrieval_intent.granularity_requirement,
             "entity": retrieval_intent.entity,

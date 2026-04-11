@@ -397,6 +397,83 @@ def test_officeqa_repair_can_widen_search_pool_without_task_specific_rules():
     assert "officeqa_override_table_query" not in updated_workpad
 
 
+def test_officeqa_repair_can_switch_to_retrospective_and_relax_provenance_priors():
+    retrieval_intent = RetrievalIntent(
+        entity="Veterans Administration",
+        metric="total expenditures",
+        period="1934",
+        period_type="fiscal_year",
+        target_years=["1934"],
+        publication_year_window=["1939", "1940"],
+        preferred_publication_years=["1939", "1940"],
+        source_constraint_policy="soft",
+        granularity_requirement="fiscal_year",
+        document_family="treasury_bulletin",
+        aggregation_shape="fiscal_year_total",
+        strategy="table_first",
+        must_include_terms=["Treasury Bulletin", "Veterans Administration", "treasury_bulletin_1940_01.json"],
+        query_plan={"source_file_query": "treasury_bulletin_1940_01.json"},
+    )
+
+    updated_intent, _, changed, _ = _apply_officeqa_llm_repair_decision(
+        retrieval_intent,
+        {},
+        {
+            "decision": "keep",
+            "publication_scope_action": "switch_to_retrospective",
+            "relax_provenance_priors": True,
+        },
+    )
+
+    assert changed is True
+    assert updated_intent.retrospective_evidence_allowed is True
+    assert updated_intent.retrospective_evidence_required is True
+    assert updated_intent.query_plan.source_file_query == ""
+    assert "Treasury Bulletin" not in updated_intent.must_include_terms
+    assert "Veterans Administration" in updated_intent.must_include_terms
+
+
+def test_officeqa_repair_can_restart_query_universe_from_semantic_plan():
+    retrieval_intent = RetrievalIntent(
+        entity="Public debt",
+        metric="public debt outstanding",
+        period="1945",
+        period_type="point_lookup",
+        target_years=["1945"],
+        publication_year_window=["1944", "1945", "1946"],
+        preferred_publication_years=["1945", "1946", "1944"],
+        granularity_requirement="point_lookup",
+        document_family="treasury_bulletin",
+        aggregation_shape="point_lookup",
+        strategy="table_first",
+        query_plan={
+            "primary_semantic_query": "Treasury Bulletin public debt outstanding 1945",
+            "temporal_query": "Treasury Bulletin public debt outstanding 1945 1945 1946",
+            "alternate_lexical_query": "\"Public debt\" \"1945\"",
+            "granularity_query": "public debt outstanding 1945 point lookup",
+            "qualifier_query": "public debt 1945",
+            "source_file_query": "treasury_bulletin_1945_08.json",
+        },
+        query_candidates=["bad override", "Treasury Bulletin public debt outstanding 1945"],
+    )
+
+    updated_intent, updated_workpad, changed, reroute_action = _apply_officeqa_llm_repair_decision(
+        retrieval_intent,
+        {"officeqa_override_query": "bad override", "officeqa_override_table_query": "bad table"},
+        {
+            "decision": "keep",
+            "restart_scope": "semantic_plan_restart",
+        },
+    )
+
+    assert changed is True
+    assert reroute_action == "semantic_plan_restart"
+    assert updated_workpad["officeqa_restart_from_semantic_plan"] is True
+    assert "officeqa_override_query" not in updated_workpad
+    assert "bad override" not in updated_intent.query_candidates
+    assert updated_intent.query_candidates[0] == "Treasury Bulletin public debt outstanding 1945"
+
+
 def test_officeqa_search_marks_temporally_local_candidate_pool_for_widening():
     source_bundle = SourceBundle(
         task_text="What were the total expenditures for U.S. national defense in the calendar year 1940?",
@@ -956,6 +1033,7 @@ def test_officeqa_structured_evidence_projects_normalized_table_values(monkeypat
     assert structured["value_count"] >= 2
     assert structured["units_seen"] == ["million"]
     assert structured["structure_confidence_summary"]["table_confidence_gate_passed"] is True
+    assert structured["typing_consistency_summary"]["typing_consistent"] is True
     february_value = next(
         item
         for item in structured["values"]
@@ -963,6 +1041,7 @@ def test_officeqa_structured_evidence_projects_normalized_table_values(monkeypat
     )
     assert february_value["numeric_value"] == 101.5
     assert february_value["normalized_value"] == 101_500_000.0
+    assert february_value["period_type"] == "monthly_series"
     assert february_value["row_path"] == ["February"]
     assert february_value["column_path"] == ["Expenditures (million dollars)"]
     assert february_value["table_locator"]
@@ -1013,6 +1092,172 @@ def test_officeqa_structured_evidence_builds_cross_document_alignment_summary():
     assert structured["alignment_summary"]["cross_document_series_count"] >= 1
     assert set(structured["alignment_summary"]["aligned_years"]) == {"1940", "1953"}
     assert any(len(item["document_ids"]) == 2 for item in structured["merged_series"])
+
+
+def test_officeqa_evidence_commit_review_redirects_to_gather_before_compute(monkeypatch):
+    prompt = "What were the total expenditures for U.S. national defense in the calendar year 1940?"
+    registry = build_capability_registry([CALCULATOR_TOOL, SEARCH_TOOL, *BUILTIN_RETRIEVAL_TOOLS])
+    executor = make_executor(registry)
+
+    monkeypatch.setattr("agent.nodes.orchestrator.predictive_evidence_gaps", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        "agent.nodes.orchestrator.should_use_evidence_commit_llm",
+        lambda **kwargs: (True, "better_family_visible_in_candidate_pool"),
+    )
+    monkeypatch.setattr(
+        "agent.nodes.orchestrator.maybe_review_evidence_commitment",
+        lambda **kwargs: OfficeQALLMRepairDecision(
+            decision="retune_table_query",
+            restart_scope="same_document",
+            revised_table_query="national defense expenditures calendar year 1940",
+            confidence=0.84,
+            model_name="mock-reviewer",
+        ),
+    )
+    monkeypatch.setattr(
+        "agent.nodes.orchestrator.assess_evidence_sufficiency",
+        lambda *args, **kwargs: EvidenceSufficiency(
+            source_family="official_government_finance",
+            period_scope="matched",
+            aggregation_type="matched",
+            entity_scope="matched",
+            is_sufficient=True,
+            missing_dimensions=[],
+            rationale="ok",
+        ),
+    )
+
+    state = make_state(
+        prompt,
+        task_profile="document_qa",
+        task_intent={
+            "task_family": "document_qa",
+            "execution_mode": "document_grounded_analysis",
+            "complexity_tier": "structured_analysis",
+            "tool_families_needed": ["document_retrieval", "exact_compute"],
+            "evidence_strategy": "document_first",
+            "review_mode": "document_grounded",
+            "completion_mode": "document_grounded",
+            "planner_source": "heuristic",
+        },
+        benchmark_overrides={"benchmark_adapter": "officeqa"},
+        execution_journal={
+            "events": [],
+            "tool_results": [
+                {
+                    "type": "fetch_officeqa_table",
+                    "facts": {
+                        "document_id": "treasury_bulletin_1940_07_json",
+                        "citation": "treasury_bulletin_1940_07.json",
+                        "table_locator": "table 5",
+                        "page_locator": "page 18",
+                    },
+                }
+            ],
+            "routed_tool_families": ["document_retrieval"],
+            "revision_count": 0,
+            "self_reflection_count": 0,
+            "retrieval_iterations": 2,
+            "retrieval_queries": ["national defense expenditures 1940"],
+            "retrieved_citations": ["treasury_bulletin_1940_07.json"],
+            "final_artifact_signature": "",
+            "progress_signatures": [],
+            "stop_reason": "",
+            "contract_collapse_attempts": 0,
+        },
+        curated_context={
+            "objective": "Find the exact national defense expenditures value.",
+            "facts_in_use": [],
+            "open_questions": [],
+            "assumptions": [],
+            "requested_output": {"format": "text"},
+            "structured_evidence": {
+                "tables": [
+                    {
+                        "document_id": "treasury_bulletin_1940_07_json",
+                        "citation": "treasury_bulletin_1940_07.json",
+                        "table_locator": "table 5",
+                        "page_locator": "page 18",
+                        "table_family": "mixed_summary",
+                    }
+                ],
+                "values": [
+                    {
+                        "document_id": "treasury_bulletin_1940_07_json",
+                        "citation": "treasury_bulletin_1940_07.json",
+                        "table_locator": "table 5",
+                        "page_locator": "page 18",
+                        "table_family": "mixed_summary",
+                        "row_label": "Expenditures",
+                        "column_label": "Calendar year 1940",
+                        "raw_value": "4748",
+                    }
+                ],
+                "typing_consistency_summary": {"typing_consistent": True},
+                "structure_confidence_summary": {"table_confidence_gate_passed": True},
+            },
+            "compute_result": {},
+            "provenance_summary": {},
+        },
+        workpad={
+            "retrieval_diagnostics": {
+                "candidate_sources": [
+                    {
+                        "document_id": "treasury_bulletin_1940_07_json",
+                        "best_evidence_unit": {"table_family": "mixed_summary"},
+                    },
+                    {
+                        "document_id": "treasury_bulletin_1941_12_json",
+                        "best_evidence_unit": {"table_family": "category_breakdown"},
+                    },
+                ]
+            },
+            "officeqa_evidence_review": {
+                "status": "ready",
+                "predictive_gaps": [],
+                "compute_policy": "required",
+                "answer_mode": "deterministic_compute",
+                "strategy": "table_first",
+            },
+            "officeqa_llm_control_state": {},
+            "officeqa_llm_repair_history": [{"stage": "retrieval_repair"}],
+        },
+    )
+    state["evidence_sufficiency"] = {
+        "source_family": "official_government_finance",
+        "period_scope": "matched",
+        "aggregation_type": "matched",
+        "entity_scope": "matched",
+        "is_sufficient": True,
+        "missing_dimensions": [],
+        "rationale": "ok",
+    }
+    state["retrieval_intent"] = {
+        "entity": "U.S. national defense",
+        "metric": "total expenditures",
+        "period": "1940",
+        "period_type": "calendar_year",
+        "target_years": ["1940"],
+        "publication_year_window": ["1939", "1940", "1941"],
+        "preferred_publication_years": ["1941", "1940", "1939"],
+        "granularity_requirement": "calendar_year",
+        "document_family": "treasury_bulletin",
+        "aggregation_shape": "calendar_year_total",
+        "answer_mode": "deterministic_compute",
+        "compute_policy": "required",
+        "strategy": "table_first",
+        "strategy_confidence": 0.6,
+        "analysis_modes": [],
+        "semantic_plan": {"used_llm": False},
+        "query_candidates": ["national defense expenditures 1940"],
+        "query_plan": {"primary_semantic_query": "national defense expenditures 1940"},
+    }
+
+    result = asyncio.run(executor(state))
+
+    assert result["solver_stage"] == "GATHER"
+    assert result["workpad"]["officeqa_evidence_commit_review"]["path_changed"] is True
+    assert result["workpad"]["officeqa_llm_usage"][-1]["category"] == "evidence_commit_llm"
 
 
 def test_solver_context_block_includes_compact_structured_evidence_for_officeqa(monkeypatch, tmp_path):
@@ -4688,6 +4933,76 @@ def test_officeqa_validator_rejects_semantically_wrong_but_numeric_compute():
     assert result.verdict == "revise"
     assert "entity/category correctness" in result.hard_failures
     assert "time scope correctness" in result.hard_failures
+
+
+def test_officeqa_validator_rejects_benchmark_unit_basis_mismatch():
+    result = validate_officeqa_final(
+        task_text="What were the total expenditures (in millions of nominal dollars) for U.S. national defense in the calendar year 1940?",
+        retrieval_intent=RetrievalIntent(
+            entity="National defense",
+            metric="total expenditures",
+            period="1940",
+            granularity_requirement="calendar_year",
+            expected_answer_unit_basis="millions_nominal_dollars",
+            document_family="treasury_bulletin",
+            aggregation_shape="calendar_year_total",
+            answer_mode="deterministic_compute",
+            compute_policy="required",
+            strategy="table_first",
+            analysis_modes=[],
+            evidence_plan={
+                "requires_table_support": True,
+                "requires_text_support": False,
+                "requires_cross_source_alignment": False,
+                "join_keys": [],
+                "expected_answer_unit_basis": "millions_nominal_dollars",
+            },
+        ),
+        curated_context={
+            "objective": "What were the total expenditures (in millions of nominal dollars) for U.S. national defense in the calendar year 1940?",
+            "facts_in_use": [],
+            "open_questions": [],
+            "assumptions": [],
+            "requested_output": {"format": "xml"},
+            "structured_evidence": {
+                "tables": [{"document_id": "treasury_1940_json", "table_locator": "Summary of expenditures", "headers": ["Calendar year 1940"], "header_rows": []}],
+                "values": [{"document_id": "treasury_1940_json"}],
+                "page_chunks": [],
+                "provenance_complete": True,
+                "units_seen": ["million dollars"],
+            },
+            "compute_result": {
+                "status": "ok",
+                "operation": "calendar_year_total",
+                "display_value": "1657000000",
+                "answer_unit_basis": "",
+                "provenance_complete": True,
+                "ledger": [{"operator": "calendar_year_total", "description": "1940 calendar-year total", "provenance_refs": [{"citation": "treasury_1941.json"}]}],
+                "semantic_diagnostics": {
+                    "admissibility_passed": True,
+                    "issues": [],
+                    "row_family_status": "matched",
+                    "period_slice_status": "matched",
+                    "column_family_status": "matched",
+                    "aggregation_grain_status": "matched",
+                },
+            },
+        },
+        evidence_sufficiency={
+            "source_family": "official_government_finance",
+            "period_scope": "matched",
+            "aggregation_type": "matched",
+            "entity_scope": "matched",
+            "is_sufficient": True,
+            "missing_dimensions": [],
+            "rationale": "Looks structurally sufficient.",
+        },
+        citations=["treasury_1941.json"],
+    )
+
+    assert result.verdict == "revise"
+    assert "unit consistency" in result.hard_failures
+    assert "NORMALIZE_UNITS" in result.remediation_codes
 
 
 def test_failed_reviewer_path_uses_one_bounded_salvage_pass():

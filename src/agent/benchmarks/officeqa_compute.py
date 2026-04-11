@@ -314,6 +314,13 @@ def _semantic_admissibility(
         for item in deduped
         if str(item.get("table_family", "") or "").strip()
     }
+    period_types = {
+        str(item.get("period_type", "") or "").strip().lower()
+        for item in deduped
+        if str(item.get("period_type", "") or "").strip()
+    }
+    if any(list(item.get("typing_ambiguities", []) or []) for item in deduped):
+        issue_set.add("typing ambiguity")
 
     if entity_tokens:
         entity_matched = False
@@ -336,10 +343,16 @@ def _semantic_admissibility(
     if operation == "monthly_sum":
         if families and families != {"monthly_series"}:
             issue_set.add("wrong aggregation grain")
+        if period_types and period_types != {"monthly_series"}:
+            issue_set.add("wrong aggregation grain")
     elif operation in {"monthly_sum_percent_change", "inflation_adjusted_monthly_difference"}:
         if families and any(family != "monthly_series" for family in families):
             issue_set.add("wrong aggregation grain")
+        if period_types and any(period_type != "monthly_series" for period_type in period_types):
+            issue_set.add("wrong aggregation grain")
     elif operation in {"calendar_year_total", "point_lookup"} and families and "navigation_or_contents" in families:
+        issue_set.add("wrong aggregation grain")
+    elif operation == "fiscal_year_total" and period_types and "fiscal_year" not in period_types:
         issue_set.add("wrong aggregation grain")
 
     if target_years:
@@ -361,6 +374,7 @@ def _semantic_admissibility(
         "column_family_status": _semantic_status(issues, "wrong column family"),
         "period_slice_status": _semantic_status(issues, "wrong period slice"),
         "aggregation_grain_status": _semantic_status(issues, "wrong aggregation grain"),
+        "period_types": sorted(period_types),
         "table_families": sorted(families),
         "value_count": len(deduped),
     }
@@ -379,6 +393,8 @@ def _semantic_validation_errors(semantic_diagnostics: dict[str, Any]) -> list[st
             messages.append("Wrong aggregation grain: selected evidence uses the wrong table or aggregation grain for the task.")
         elif issue == "missing semantic support":
             messages.append("Missing semantic support: no candidate values were available for admissibility checks.")
+        elif issue == "typing ambiguity":
+            messages.append("Typing ambiguity: evidence-unit family or period interpretation drifted across stages.")
     return messages
 
 
@@ -403,6 +419,52 @@ def _format_numeric(value: float, task_text: str, *, percent: bool = False) -> s
     if percent:
         return f"{value:.2f}"
     return format_scalar_number(value)
+
+
+def _expected_answer_unit_basis(retrieval_intent: RetrievalIntent) -> str:
+    plan = retrieval_intent.evidence_plan
+    return str(
+        retrieval_intent.expected_answer_unit_basis
+        or getattr(plan, "expected_answer_unit_basis", "")
+        or ""
+    ).strip()
+
+
+def _common_currency_unit_multiplier(values: list[dict[str, Any]]) -> float | None:
+    multipliers: list[float] = []
+    for item in values:
+        if str(item.get("unit_kind", "") or "").strip().lower() != "currency":
+            continue
+        raw_multiplier = item.get("unit_multiplier")
+        if isinstance(raw_multiplier, (int, float)) and float(raw_multiplier) > 0:
+            multipliers.append(float(raw_multiplier))
+    if not multipliers:
+        return None
+    baseline = multipliers[0]
+    if all(abs(value - baseline) < 1e-9 for value in multipliers[1:]):
+        return baseline
+    return None
+
+
+def _display_contract_value(
+    value: float,
+    task_text: str,
+    retrieval_intent: RetrievalIntent,
+    *,
+    selected_values: list[dict[str, Any]] | None = None,
+    percent: bool = False,
+) -> tuple[str, str]:
+    if percent:
+        return _format_numeric(value, task_text, percent=True), "percent"
+    expected_basis = _expected_answer_unit_basis(retrieval_intent)
+    if expected_basis == "millions_nominal_dollars":
+        multiplier = _common_currency_unit_multiplier(list(selected_values or []))
+        if multiplier and multiplier > 1.0:
+            return _format_numeric(value / multiplier, task_text), expected_basis
+        return _format_numeric(value, task_text), ""
+    if expected_basis:
+        return _format_numeric(value, task_text, percent=expected_basis == "percent"), expected_basis
+    return _format_numeric(value, task_text), ""
 
 
 def _group_values(
@@ -577,6 +639,7 @@ def compact_officeqa_compute_result(payload: dict[str, Any] | None) -> dict[str,
         "status": str(data.get("status", "")),
         "operation": str(data.get("operation", "")),
         "display_value": str(data.get("display_value", "")),
+        "answer_unit_basis": str(data.get("answer_unit_basis", "")),
         "selection_reasoning": str(data.get("selection_reasoning", "")),
         "rejected_alternative_count": len(list(data.get("rejected_alternatives", []))),
         "validation_errors": list(data.get("validation_errors", []))[:6],
@@ -684,7 +747,12 @@ def compute_officeqa_result(
                 provenance_refs=refs,
             )
         )
-        display_value = _format_numeric(total, task_text)
+        display_value, answer_unit_basis = _display_contract_value(
+            total,
+            task_text,
+            retrieval_intent,
+            selected_values=selected_values,
+        )
         return _result_with_diagnostics(
             status="ok",
             operation=operation,
@@ -692,6 +760,7 @@ def compute_officeqa_result(
             years=years,
             final_value=total,
             display_value=display_value,
+            answer_unit_basis=answer_unit_basis,
             answer_text=_build_answer_text(operation, display_value, ledger),
             citations=citations,
             ledger=[step.model_dump() for step in ledger],
@@ -753,7 +822,12 @@ def compute_officeqa_result(
                 provenance_refs=refs,
             )
         )
-        display_value = _format_numeric(total, task_text)
+        display_value, answer_unit_basis = _display_contract_value(
+            total,
+            task_text,
+            retrieval_intent,
+            selected_values=selected_values,
+        )
         return _result_with_diagnostics(
             status="ok",
             operation=operation,
@@ -761,6 +835,7 @@ def compute_officeqa_result(
             years=years,
             final_value=total,
             display_value=display_value,
+            answer_unit_basis=answer_unit_basis,
             answer_text=_build_answer_text(operation, display_value, ledger),
             citations=citations,
             ledger=[step.model_dump() for step in ledger],
@@ -822,7 +897,12 @@ def compute_officeqa_result(
                 provenance_refs=refs,
             )
         )
-        display_value = _format_numeric(total, task_text)
+        display_value, answer_unit_basis = _display_contract_value(
+            total,
+            task_text,
+            retrieval_intent,
+            selected_values=selected_values,
+        )
         return _result_with_diagnostics(
             status="ok",
             operation=operation,
@@ -830,6 +910,7 @@ def compute_officeqa_result(
             years=years,
             final_value=total,
             display_value=display_value,
+            answer_unit_basis=answer_unit_basis,
             answer_text=_build_answer_text(operation, display_value, ledger),
             citations=citations,
             ledger=[step.model_dump() for step in ledger],
@@ -949,7 +1030,12 @@ def compute_officeqa_result(
                     provenance_refs=[*base_refs, *target_refs],
                 )
             )
-            display_value = _format_numeric(final_value, task_text)
+            display_value, answer_unit_basis = _display_contract_value(
+                final_value,
+                task_text,
+                retrieval_intent,
+                selected_values=[*base_values, *target_values],
+            )
             return _result_with_diagnostics(
                 status="ok",
                 operation=operation,
@@ -957,6 +1043,7 @@ def compute_officeqa_result(
                 years=years,
                 final_value=final_value,
                 display_value=display_value,
+                answer_unit_basis=answer_unit_basis,
                 answer_text=_build_answer_text(operation, display_value, ledger),
                 citations=citations,
                 ledger=[step.model_dump() for step in ledger],
@@ -983,7 +1070,13 @@ def compute_officeqa_result(
                     provenance_refs=[*base_refs, *target_refs],
                 )
             )
-            display_value = _format_numeric(final_value, task_text, percent=True)
+            display_value, answer_unit_basis = _display_contract_value(
+                final_value,
+                task_text,
+                retrieval_intent,
+                selected_values=[*base_values, *target_values],
+                percent=True,
+            )
             return _result_with_diagnostics(
                 status="ok",
                 operation=operation,
@@ -993,6 +1086,7 @@ def compute_officeqa_result(
                 display_value=display_value,
                 answer_text=_build_answer_text(operation, display_value, ledger),
                 unit="percent",
+                answer_unit_basis=answer_unit_basis,
                 citations=citations,
                 ledger=[step.model_dump() for step in ledger],
                 semantic_diagnostics=semantic_diagnostics,
@@ -1009,7 +1103,12 @@ def compute_officeqa_result(
                 provenance_refs=[*base_refs, *target_refs],
             )
         )
-        display_value = _format_numeric(final_value, task_text)
+        display_value, answer_unit_basis = _display_contract_value(
+            final_value,
+            task_text,
+            retrieval_intent,
+            selected_values=[*base_values, *target_values],
+        )
         return _result_with_diagnostics(
             status="ok",
             operation=operation or "absolute_difference",
@@ -1017,6 +1116,7 @@ def compute_officeqa_result(
             years=years,
             final_value=final_value,
             display_value=display_value,
+            answer_unit_basis=answer_unit_basis,
             answer_text=_build_answer_text(operation or "absolute_difference", display_value, ledger),
             citations=citations,
             ledger=[step.model_dump() for step in ledger],
@@ -1123,7 +1223,12 @@ def compute_officeqa_result(
                     provenance_refs=refs,
                 )
             )
-            display_value = _format_numeric(numeric_value, task_text)
+            display_value, answer_unit_basis = _display_contract_value(
+                numeric_value,
+                task_text,
+                retrieval_intent,
+                selected_values=[chosen],
+            )
             return _result_with_diagnostics(
                 status="ok",
                 operation=operation,
@@ -1131,6 +1236,7 @@ def compute_officeqa_result(
                 years=years,
                 final_value=numeric_value,
                 display_value=display_value,
+                answer_unit_basis=answer_unit_basis,
                 answer_text=_build_answer_text(operation, display_value, ledger),
                 citations=citations,
                 ledger=[step.model_dump() for step in ledger],

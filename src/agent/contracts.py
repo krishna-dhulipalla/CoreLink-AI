@@ -172,6 +172,9 @@ class OfficeQATableEvidence(BaseModel):
     page_locator: str = ""
     table_locator: str = ""
     table_family: str = ""
+    table_family_confidence: float = 0.0
+    period_type: str = ""
+    typing_ambiguities: list[str] = Field(default_factory=list)
     headers: list[str] = Field(default_factory=list)
     header_rows: list[list[str]] = Field(default_factory=list)
     column_paths: list[list[str]] = Field(default_factory=list)
@@ -189,6 +192,9 @@ class OfficeQAValueEvidence(BaseModel):
     page_locator: str = ""
     table_locator: str = ""
     table_family: str = ""
+    table_family_confidence: float = 0.0
+    period_type: str = ""
+    typing_ambiguities: list[str] = Field(default_factory=list)
     row_index: int = -1
     row_label: str = ""
     row_path: list[str] = Field(default_factory=list)
@@ -225,6 +231,7 @@ class OfficeQAStructuredEvidence(BaseModel):
     merged_series: list[dict[str, Any]] = Field(default_factory=list)
     alignment_summary: dict[str, Any] = Field(default_factory=dict)
     structure_confidence_summary: dict[str, Any] = Field(default_factory=dict)
+    typing_consistency_summary: dict[str, Any] = Field(default_factory=dict)
     units_seen: list[str] = Field(default_factory=list)
     value_count: int = 0
     provenance_complete: bool = False
@@ -245,6 +252,7 @@ class OfficeQAComputeResult(BaseModel):
     display_value: str = ""
     answer_text: str = ""
     unit: str = ""
+    answer_unit_basis: str = ""
     selection_reasoning: str = ""
     rejected_alternatives: list[str] = Field(default_factory=list)
     validation_errors: list[str] = Field(default_factory=list)
@@ -376,6 +384,7 @@ OfficeQALLLMUsageCategory = Literal[
     "semantic_plan_llm",
     "retrieval_rerank_llm",
     "table_rerank_llm",
+    "evidence_commit_llm",
     "repair_llm",
     "final_synthesis_llm",
 ]
@@ -453,11 +462,16 @@ class EvidencePlan(BaseModel):
     objective: str = ""
     metric_identity: str = ""
     expected_unit_kind: str = ""
+    expected_answer_unit_basis: str = ""
     expected_value_count: int = 1
     period_type: str = ""
     required_years: list[str] = Field(default_factory=list)
     publication_year_window: list[str] = Field(default_factory=list)
     preferred_publication_years: list[str] = Field(default_factory=list)
+    acceptable_publication_lag_years: int = 0
+    retrospective_evidence_allowed: bool = False
+    retrospective_evidence_required: bool = False
+    publication_scope_explicit: bool = False
     required_month_coverage: bool = False
     required_month_count: int = 0
     requires_table_support: bool = False
@@ -488,7 +502,12 @@ class QuestionDecomposition(BaseModel):
     target_years: list[str] = Field(default_factory=list)
     publication_year_window: list[str] = Field(default_factory=list)
     preferred_publication_years: list[str] = Field(default_factory=list)
+    acceptable_publication_lag_years: int = 0
+    retrospective_evidence_allowed: bool = False
+    retrospective_evidence_required: bool = False
+    publication_scope_explicit: bool = False
     granularity_requirement: str = ""
+    expected_answer_unit_basis: str = ""
     include_constraints: list[str] = Field(default_factory=list)
     exclude_constraints: list[str] = Field(default_factory=list)
     qualifier_terms: list[str] = Field(default_factory=list)
@@ -505,7 +524,12 @@ class QuestionSemanticPlan(BaseModel):
     target_years: list[str] = Field(default_factory=list)
     publication_year_window: list[str] = Field(default_factory=list)
     preferred_publication_years: list[str] = Field(default_factory=list)
+    acceptable_publication_lag_years: int = 0
+    retrospective_evidence_allowed: bool = False
+    retrospective_evidence_required: bool = False
+    publication_scope_explicit: bool = False
     granularity_requirement: str = ""
+    expected_answer_unit_basis: str = ""
     include_constraints: list[str] = Field(default_factory=list)
     exclude_constraints: list[str] = Field(default_factory=list)
     qualifier_terms: list[str] = Field(default_factory=list)
@@ -524,8 +548,13 @@ class RetrievalIntent(BaseModel):
     target_years: list[str] = Field(default_factory=list)
     publication_year_window: list[str] = Field(default_factory=list)
     preferred_publication_years: list[str] = Field(default_factory=list)
+    acceptable_publication_lag_years: int = 0
+    retrospective_evidence_allowed: bool = False
+    retrospective_evidence_required: bool = False
+    publication_scope_explicit: bool = False
     source_constraint_policy: Literal["soft", "hard", "off"] = "off"
     granularity_requirement: str = ""
+    expected_answer_unit_basis: str = ""
     document_family: str = ""
     aggregation_shape: str = ""
     analysis_modes: list[str] = Field(default_factory=list)
@@ -551,6 +580,9 @@ class RetrievalIntent(BaseModel):
 
 class OfficeQALLMRepairDecision(BaseModel):
     decision: Literal["keep", "rewrite_query", "retune_table_query", "change_strategy", "widen_search_pool"] = "keep"
+    publication_scope_action: Literal["keep", "widen_publication_horizon", "switch_to_retrospective"] = "keep"
+    restart_scope: Literal["none", "same_document", "cross_document", "semantic_plan_restart"] = "none"
+    relax_provenance_priors: bool = False
     revised_query: str = ""
     revised_table_query: str = ""
     preferred_strategy: Literal["table_first", "text_first", "hybrid", "multi_table", "multi_document", ""] = ""

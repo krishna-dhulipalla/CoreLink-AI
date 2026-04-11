@@ -525,3 +525,137 @@ Rules:
 - Validation:
   - The pipeline now correctly navigates validator feedback to pivot both within the same document and across documents, without hardcoded biases.
   - Smoke tests `retrieval_public_debt_1945` and `extraction_national_defense_1940` BOTH pass unconditionally (`go_for_full_benchmark: true`).
+
+### Chat 24: Benchmark Diagnosis Rebased Into Historical-Evidence System Phases
+
+- Reviewed the latest original-benchmark diagnosis and converted it into a new system-phase plan instead of treating the three benchmark tasks as isolated bugs.
+- Main architectural correction:
+  - Treasury Bulletin publication year is not the same thing as the target evidence period
+  - this matters especially because the available bulletin corpus begins in `1939`, while benchmark questions can ask about earlier years such as `1934`
+  - later retrospective bulletins must therefore be treated as valid primary evidence, not as ranking accidents
+- Added four new phases to `docs/officeqa_execution_plan.md`:
+  - `Phase 41`: historical period resolution and retrospective evidence retrieval
+  - `Phase 42`: constraint-sensitive semantic decomposition and benchmark unit contracts
+  - `Phase 43`: evidence-unit typing consistency and compute admissibility alignment
+  - `Phase 44`: regime-changing repair and historical search expansion
+- Updated `docs/v5_runtime_walkthrough.md` to explain the new system boundary explicitly:
+  - publication year is provenance
+  - evidence-period coverage is semantics
+  - retrieval must follow evidence-unit period coverage rather than filename-year intuition
+- This pass intentionally made no code changes. It only rebased the backlog so the next implementation work targets:
+  - pre-corpus target years
+  - dropped decomposition constraints
+  - benchmark-unit contract failures
+  - repair loops that fail to escape a semantically exhausted evidence regime
+
+### Chat 25: Phase 41 Completed With Retrospective-Evidence Period Modeling
+
+- Implemented Phase 41 at the decomposition, retrieval-intent, and ranking layers.
+- `RetrievalIntent`, `QuestionDecomposition`, `QuestionSemanticPlan`, and `EvidencePlan` now carry explicit historical-period fields:
+  - `acceptable_publication_lag_years`
+  - `retrospective_evidence_allowed`
+  - `retrospective_evidence_required`
+  - `publication_scope_explicit`
+- Added a generic retrospective-evidence model in `src/agent/context/extraction.py`:
+  - pre-`1939` target years are marked as retrospective-evidence-required
+  - publication-year preferences are shifted to the earliest available Treasury Bulletin publication range instead of impossible same-year targets
+  - explicit issue/month requests keep publication year as a stronger prior
+- Reweighted OfficeQA source ranking in `src/agent/benchmarks/officeqa_index.py` and `src/agent/nodes/orchestrator_retrieval.py` so evidence-period coverage matters more than filename/publication year identity for historical questions.
+- Propagated the new period-modeling fields through the OfficeQA search tool boundary in `src/agent/retrieval_tools.py`.
+- Added generic regressions for:
+  - pre-corpus target years becoming retrospective-evidence questions
+  - retrospective source ranking preferring early valid retrospective bulletins over much later historical mentions
+
+### Chat 26: Phase 42 Completed With Constraint-Sensitive Decomposition And Benchmark Unit Contracts
+
+- Implemented Phase 42 across decomposition, retrieval intent, compute, and validator layers.
+- Added `expected_answer_unit_basis` as a typed OfficeQA field carried through:
+  - `QuestionDecomposition`
+  - `QuestionSemanticPlan`
+  - `EvidencePlan`
+  - `RetrievalIntent`
+  - `OfficeQAComputeResult`
+- Broadened generic constraint extraction so benchmark-style qualifiers survive intake:
+  - `should include ...`
+  - `should not contain ...`
+  - `shouldn't contain ...`
+  - curly-apostrophe variants like `shouldn’t`
+- Fast semantic-planning escalation now triggers explicitly for:
+  - `missing_core_slot`
+  - `constraint_sensitive`
+  - historical publication-lag risk
+- Deterministic compute still keeps internal numeric totals unchanged, but benchmark-facing display values now honor explicit contracts like `in millions of nominal dollars` when the selected evidence carries a consistent currency multiplier.
+- Validator now hard-fails explicit benchmark unit-contract mismatches as `unit consistency` instead of allowing a locally coherent but benchmark-wrong answer through.
+- Added generic regressions for:
+  - preserving include/exclude constraints and explicit unit contracts
+  - bounded semantic-plan escalation for constraint-sensitive questions
+  - benchmark unit-basis validation before final acceptance
+
+### Chat 27: Phase 43 Completed With Shared Evidence-Unit Typing And Drift Diagnostics
+
+- Implemented Phase 43 across manifest construction, table fetch, structured evidence projection, compute admissibility, and validator semantics.
+- Added a shared OfficeQA evidence-unit typing helper so table family and period type no longer come from separate local classifiers in different stages.
+- The runtime now records explicit drift instead of silently reinterpreting the same table:
+  - `typing_ambiguities`
+  - `typing_consistency_summary`
+- Structured evidence now carries stable per-table and per-value typing metadata:
+  - `table_family`
+  - `table_family_confidence`
+  - `period_type`
+  - `typing_ambiguities`
+- Deterministic compute now treats selected evidence with typing drift as semantically inadmissible instead of accepting numerically plausible but unstable table interpretations.
+- Manifest/index schema was bumped to `4` because table-unit typing metadata is now produced from the shared contract and should not reuse older cached index metadata.
+- Added generic regressions for:
+  - stable family and period typing across fetch and structured evidence
+  - blocking compute on evidence-unit typing ambiguity
+  - preserving consistent monthly-series typing for short monthly fragments
+
+### Chat 28: Phase 44 Completed With Regime-Changing Repair And Explicit Execution-Journal Mutation
+
+- Implemented Phase 44 across the heavy repair prompt, repair controller, and executor reroute path.
+- Expanded the repair decision contract so the heavier repair lane can now mutate regime explicitly with:
+  - `publication_scope_action`
+  - `restart_scope`
+  - `relax_provenance_priors`
+- Heavy repair prompts now include an execution-journal snapshot rather than only the current query:
+  - attempted queries
+  - candidate pools seen
+  - rejected evidence families
+  - compute admissibility failures
+  - recent repair history and repair failures
+- The executor now distinguishes same-document restart, cross-document restart, semantic-plan restart, and search-pool widening when invalidating stale state.
+- Added generic regressions for:
+  - retrospective regime mutation without task-specific logic
+  - semantic-plan restarts rebuilding the query universe
+  - heavy repair consuming explicit execution-journal context
+  - suppressing heavy repair when there is no regime-stall evidence yet
+- Integrated smoke after this phase is still not fully green:
+  - `retrieval_public_debt_1945` passes
+  - `extraction_national_defense_1940` still stalls at validation
+- That means the next live bottleneck is no longer repair-breadth. It is post-repair evidence selection and validation follow-through after the search regime has already widened.
+
+### Chat 29: Phase 45 Completed With Post-Repair Evidence Commitment Review
+
+- Implemented a new bounded evidence-commit review step between structured evidence readiness and deterministic compute.
+- This review is generic and does not depend on benchmark-specific entities, years, or department names.
+- The new review step consumes:
+  - current structured tables
+  - typing consistency summary
+  - structure confidence summary
+  - visible candidate sources
+  - current evidence-review state
+- The runtime can now redirect before compute with:
+  - same-document restart
+  - cross-document restart
+  - semantic-plan restart
+  - search-pool widening
+  - provenance-prior relaxation
+- Added generic regressions for:
+  - redirecting to gather before compute when a better-family candidate is already visible
+  - preserving deterministic compute when evidence is already stable
+- The latest integrated smoke confirms the new step is active:
+  - task 2 records `evidence_commit_review_redirected_retrieval`
+  - task 1 still passes
+- Integrated smoke is still not fully green:
+  - task 2 now fails later with `repair_applied_but_no_new_evidence`
+- That narrows the remaining live issue further: the system can now review and redirect after widening, but some redirected paths still do not yield materially new evidence.

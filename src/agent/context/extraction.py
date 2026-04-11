@@ -5,6 +5,7 @@ Prompt extraction helpers used during intake and context assembly.
 from __future__ import annotations
 
 from datetime import datetime
+import os
 import re
 from typing import Any
 
@@ -45,13 +46,27 @@ _INCLUSION_PATTERNS = (
     r"(monthly series)",
     r"(narrative discussion)",
     r"(reported values only)",
+    r"should include\s+(.+?)(?:,| and | but |\.|$)",
+    r"must include\s+(.+?)(?:,| and | but |\.|$)",
 )
 _EXCLUSION_PATTERNS = (
-    r"excluding\s+(.+?)(?:,| and | but |\.|$)",
-    r"except\s+(.+?)(?:,| and | but |\.|$)",
-    r"not including\s+(.+?)(?:,| and | but |\.|$)",
-    r"without\s+(.+?)(?:,| and | but |\.|$)",
+    r"excluding\s+(.+?)(?:,| but |\.|$)",
+    r"except\s+(.+?)(?:,| but |\.|$)",
+    r"not including\s+(.+?)(?:,| but |\.|$)",
+    r"without\s+(.+?)(?:,| but |\.|$)",
+    r"should(?:\s+not|n['’]t)\s+contain\s+(.+?)(?:,| but |\.|$)",
+    r"should(?:\s+not|n['’]t)\s+include\s+(.+?)(?:,| but |\.|$)",
+    r"must not contain\s+(.+?)(?:,| but |\.|$)",
 )
+
+
+def _officeqa_corpus_start_year() -> int:
+    raw = str(os.getenv("OFFICEQA_CORPUS_START_YEAR", "1939") or "1939").strip()
+    try:
+        year = int(raw)
+    except ValueError:
+        return 1939
+    return max(1900, min(2100, year))
 
 
 def _normalize_space(value: str) -> str:
@@ -152,9 +167,36 @@ def _target_years(period: str, task_text: str, source_bundle: SourceBundle) -> l
     return list(dict.fromkeys(years[:4]))
 
 
-def _publication_year_preferences(target_years: list[str], granularity_requirement: str, period_type: str) -> tuple[list[str], list[str]]:
+def _publication_scope_explicit(task_text: str, source_bundle: SourceBundle) -> bool:
+    lowered = _normalize_space(task_text).lower()
+    if len(source_bundle.source_files_expected) == 1:
+        return True
+    if re.search(
+        r"\b(?:in|from|using|according to)\s+(?:the\s+)?(?:jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|aug|august|sep|sept|september|oct|october|nov|november|dec|december)\s+\d{4}\s+treasury bulletin\b",
+        lowered,
+    ):
+        return True
+    if re.search(r"\b(?:issue|edition)\s+of\s+(?:the\s+)?treasury bulletin\b", lowered):
+        return True
+    return False
+
+
+def _acceptable_publication_lag_years(granularity_requirement: str, period_type: str) -> int:
+    if granularity_requirement == "monthly_series" or period_type == "monthly_series":
+        return 1
+    if granularity_requirement in {"calendar_year", "fiscal_year"} or period_type in {"calendar_year", "fiscal_year"}:
+        return 1
+    return 0
+
+
+def _publication_year_preferences(
+    target_years: list[str],
+    granularity_requirement: str,
+    period_type: str,
+    publication_scope_explicit: bool,
+) -> tuple[list[str], list[str], int, bool, bool]:
     if not target_years:
-        return [], []
+        return [], [], 0, False, False
     years = []
     for year in target_years:
         try:
@@ -162,7 +204,23 @@ def _publication_year_preferences(target_years: list[str], granularity_requireme
         except ValueError:
             continue
     if not years:
-        return [], []
+        return [], [], 0, False, False
+
+    acceptable_lag = _acceptable_publication_lag_years(granularity_requirement, period_type)
+    corpus_start_year = _officeqa_corpus_start_year()
+    retrospective_evidence_allowed = bool(years) and not publication_scope_explicit
+    retrospective_evidence_required = min(years) < corpus_start_year and retrospective_evidence_allowed
+
+    if retrospective_evidence_required:
+        preferred = [str(corpus_start_year + offset) for offset in range(0, max(acceptable_lag, 3) + 1)]
+        window = [str(corpus_start_year + offset) for offset in range(0, max(acceptable_lag, 3) + 1)]
+        return (
+            _dedupe_strings(preferred, limit=12),
+            _dedupe_strings(window, limit=12),
+            acceptable_lag,
+            retrospective_evidence_allowed,
+            retrospective_evidence_required,
+        )
 
     if granularity_requirement in {"calendar_year", "fiscal_year"} or period_type in {"calendar_year", "fiscal_year"}:
         preferred = [str(year + 1) for year in years] + [str(year) for year in years] + [str(year - 1) for year in years]
@@ -172,7 +230,13 @@ def _publication_year_preferences(target_years: list[str], granularity_requireme
         preferred = [str(year) for year in years] + [str(year + 1) for year in years] + [str(year - 1) for year in years]
 
     window = [str(year - 1) for year in years] + [str(year) for year in years] + [str(year + 1) for year in years]
-    return _dedupe_strings(preferred, limit=12), _dedupe_strings(window, limit=12)
+    return (
+        _dedupe_strings(preferred, limit=12),
+        _dedupe_strings(window, limit=12),
+        acceptable_lag,
+        retrospective_evidence_allowed,
+        retrospective_evidence_required,
+    )
 
 
 def _extract_include_constraints(task_text: str) -> list[str]:
@@ -191,6 +255,15 @@ def _extract_exclude_constraints(task_text: str) -> list[str]:
         for match in re.finditer(pattern, task_text or "", re.IGNORECASE):
             found.append(match.group(1))
     return _dedupe_strings(found, limit=6)
+
+
+def _extract_expected_answer_unit_basis(task_text: str, metric: str) -> str:
+    lowered = _normalize_space(f"{task_text} {metric}").lower()
+    if "percent" in lowered or "%" in lowered:
+        return "percent"
+    if re.search(r"\bin\s+millions?\s+of\s+(?:nominal\s+)?dollars?\b", lowered):
+        return "millions_nominal_dollars"
+    return ""
 
 
 def _extract_metric_identity(task_text: str) -> str:
@@ -276,13 +349,22 @@ def _rule_based_decomposition(task_text: str, source_bundle: SourceBundle) -> Qu
     granularity_requirement = _extract_granularity_requirement(task_text)
     period_type = _period_type(task_text, granularity_requirement)
     target_years = _target_years(period, task_text, source_bundle)
-    preferred_publication_years, publication_year_window = _publication_year_preferences(
+    publication_scope_explicit = _publication_scope_explicit(task_text, source_bundle)
+    (
+        preferred_publication_years,
+        publication_year_window,
+        acceptable_publication_lag_years,
+        retrospective_evidence_allowed,
+        retrospective_evidence_required,
+    ) = _publication_year_preferences(
         target_years,
         granularity_requirement,
         period_type,
+        publication_scope_explicit,
     )
     include_constraints = _extract_include_constraints(task_text)
     exclude_constraints = _extract_exclude_constraints(task_text)
+    expected_answer_unit_basis = _extract_expected_answer_unit_basis(task_text, metric)
     qualifier_terms = _dedupe_strings([*include_constraints, *exclude_constraints], limit=6)
     entity = _sanitize_source_cue_entity(
         _extract_entity_identity(task_text, source_bundle, metric),
@@ -312,7 +394,12 @@ def _rule_based_decomposition(task_text: str, source_bundle: SourceBundle) -> Qu
         target_years=target_years,
         publication_year_window=publication_year_window,
         preferred_publication_years=preferred_publication_years,
+        acceptable_publication_lag_years=acceptable_publication_lag_years,
+        retrospective_evidence_allowed=retrospective_evidence_allowed,
+        retrospective_evidence_required=retrospective_evidence_required,
+        publication_scope_explicit=publication_scope_explicit,
         granularity_requirement=granularity_requirement,
+        expected_answer_unit_basis=expected_answer_unit_basis,
         include_constraints=include_constraints,
         exclude_constraints=exclude_constraints,
         qualifier_terms=qualifier_terms,
@@ -329,7 +416,12 @@ def _merge_decomposition(primary: QuestionDecomposition, fallback: QuestionDecom
         target_years=list(dict.fromkeys([*primary.target_years, *fallback.target_years]))[:4],
         publication_year_window=list(dict.fromkeys([*primary.publication_year_window, *fallback.publication_year_window]))[:12],
         preferred_publication_years=list(dict.fromkeys([*primary.preferred_publication_years, *fallback.preferred_publication_years]))[:12],
+        acceptable_publication_lag_years=max(primary.acceptable_publication_lag_years, fallback.acceptable_publication_lag_years),
+        retrospective_evidence_allowed=bool(primary.retrospective_evidence_allowed or fallback.retrospective_evidence_allowed),
+        retrospective_evidence_required=bool(primary.retrospective_evidence_required or fallback.retrospective_evidence_required),
+        publication_scope_explicit=bool(primary.publication_scope_explicit or fallback.publication_scope_explicit),
         granularity_requirement=primary.granularity_requirement or fallback.granularity_requirement,
+        expected_answer_unit_basis=primary.expected_answer_unit_basis or fallback.expected_answer_unit_basis,
         include_constraints=_dedupe_strings([*primary.include_constraints, *fallback.include_constraints], limit=6),
         exclude_constraints=_dedupe_strings([*primary.exclude_constraints, *fallback.exclude_constraints], limit=6),
         qualifier_terms=_dedupe_strings([*primary.qualifier_terms, *fallback.qualifier_terms], limit=6),
@@ -345,10 +437,10 @@ def _fallback_decomposition(task_text: str, source_bundle: SourceBundle) -> Ques
         SystemMessage(
             content=(
                 "Extract a typed financial-document question decomposition. "
-                "Return only the target entity or program, metric identity, period, granularity requirement, "
-                "include constraints, exclude constraints, qualifier terms, and confidence. "
-                "Do not provide reasoning."
-            )
+                    "Return only the target entity or program, metric identity, period, granularity requirement, "
+                    "expected answer unit basis, include constraints, exclude constraints, qualifier terms, and confidence. "
+                    "Do not provide reasoning."
+                )
         ),
         HumanMessage(
             content=_normalize_space(
@@ -401,7 +493,15 @@ def _semantic_ambiguity_flags(task_text: str, decomposition: QuestionDecompositi
 
 def _needs_semantic_plan_llm(task_text: str, decomposition: QuestionDecomposition) -> bool:
     flags = _semantic_ambiguity_flags(task_text, decomposition)
-    if "missing_core_slot" in flags or "advanced_financial_reasoning" in flags:
+    if any(
+        flag in flags
+        for flag in (
+            "missing_core_slot",
+            "advanced_financial_reasoning",
+            "constraint_sensitive",
+            "temporal_publication_lag_risk",
+        )
+    ):
         return True
     return decomposition.confidence < 0.8 or len(flags) >= 2
 
@@ -421,7 +521,12 @@ def _semantic_plan_from_decomposition(
         target_years=list(decomposition.target_years),
         publication_year_window=list(decomposition.publication_year_window),
         preferred_publication_years=list(decomposition.preferred_publication_years),
+        acceptable_publication_lag_years=decomposition.acceptable_publication_lag_years,
+        retrospective_evidence_allowed=decomposition.retrospective_evidence_allowed,
+        retrospective_evidence_required=decomposition.retrospective_evidence_required,
+        publication_scope_explicit=decomposition.publication_scope_explicit,
         granularity_requirement=decomposition.granularity_requirement,
+        expected_answer_unit_basis=decomposition.expected_answer_unit_basis,
         include_constraints=list(decomposition.include_constraints),
         exclude_constraints=list(decomposition.exclude_constraints),
         qualifier_terms=list(decomposition.qualifier_terms),
@@ -442,7 +547,12 @@ def _merge_semantic_plan(primary: QuestionSemanticPlan, fallback: QuestionSemant
         target_years=list(dict.fromkeys([*primary.target_years, *fallback.target_years]))[:4],
         publication_year_window=list(dict.fromkeys([*primary.publication_year_window, *fallback.publication_year_window]))[:12],
         preferred_publication_years=list(dict.fromkeys([*primary.preferred_publication_years, *fallback.preferred_publication_years]))[:12],
+        acceptable_publication_lag_years=max(primary.acceptable_publication_lag_years, fallback.acceptable_publication_lag_years),
+        retrospective_evidence_allowed=bool(primary.retrospective_evidence_allowed or fallback.retrospective_evidence_allowed),
+        retrospective_evidence_required=bool(primary.retrospective_evidence_required or fallback.retrospective_evidence_required),
+        publication_scope_explicit=bool(primary.publication_scope_explicit or fallback.publication_scope_explicit),
         granularity_requirement=primary.granularity_requirement or fallback.granularity_requirement,
+        expected_answer_unit_basis=primary.expected_answer_unit_basis or fallback.expected_answer_unit_basis,
         include_constraints=_dedupe_strings([*primary.include_constraints, *fallback.include_constraints], limit=6),
         exclude_constraints=_dedupe_strings([*primary.exclude_constraints, *fallback.exclude_constraints], limit=6),
         qualifier_terms=_dedupe_strings([*primary.qualifier_terms, *fallback.qualifier_terms], limit=6),
@@ -464,7 +574,7 @@ def _fallback_semantic_plan(task_text: str, source_bundle: SourceBundle, decompo
                 f"TASK={task_text}\nFOCUS_QUERY={source_bundle.focus_query}\nTARGET_PERIOD={source_bundle.target_period}\n"
                 f"ENTITIES={source_bundle.entities}\nSOURCE_FILES={source_bundle.source_files_expected}\n"
                 f"RULE_ENTITY={decomposition.entity}\nRULE_METRIC={decomposition.metric}\nRULE_PERIOD={decomposition.period}\n"
-                f"RULE_GRANULARITY={decomposition.granularity_requirement}\nRULE_INCLUDE={decomposition.include_constraints}\n"
+                f"RULE_GRANULARITY={decomposition.granularity_requirement}\nRULE_ANSWER_UNIT_BASIS={decomposition.expected_answer_unit_basis}\nRULE_INCLUDE={decomposition.include_constraints}\n"
                 f"RULE_EXCLUDE={decomposition.exclude_constraints}\nRULE_QUALIFIERS={decomposition.qualifier_terms}"
             )
         ),
