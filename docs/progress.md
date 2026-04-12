@@ -738,3 +738,26 @@ Rules:
   - rotation to next strategy after gather retry
   - exhaustion-proof emission when every admissible strategy would repeat the same regime
   - OfficeQA report surfacing of the new proof object
+
+### Chat 33: V6 Phase 3 Completed With LLM-Authoritative Evidence Arbitration
+
+- Completed Phase 3 in the V6 architecture track by transitioning from a heuristic-first, LLM-optional evidence selection model to a heuristic-shortlist → LLM-authoritative-selector model.
+- `src/agent/contracts.py`:
+  - Added `EvidenceCandidatePacket` model — unified candidate representation across source, table, and commit arbitration stages.
+  - Added `source_arbiter_llm` and `table_arbiter_llm` to `OfficeQALLLMUsageCategory`.
+- `src/agent/llm_control.py`: Major restructure (P3.1 through P3.6):
+  - Added `_build_source_candidate_packet()` and `_build_table_candidate_packet()` projecting raw candidate dicts into the unified `EvidenceCandidatePacket` format with heading chain, row/column paths, table family, period type, unit basis, evidence-period fit, provenance priors, row count, column count, density.
+  - Added `shortlist_source_candidates()` and `shortlist_table_candidates()` wrapping old `should_use_*` heuristic gating to produce filtered candidate lists instead of bool+reason.
+  - Added `arbitrate_source_selection()` and `arbitrate_table_selection()` — LLM-authoritative selection with no post-hoc score-gap thresholds, rank caps, or secondary confidence gates.
+  - Added `select_source_candidate()` and `select_table_candidate()` as the new authoritative entry points replacing the two-step `should_use → maybe_*` pattern.
+  - Added `ArbiterResult` frozen dataclass as unified return type.
+  - Added `_LLM_ARBITER_ENABLED` policy flag (`OFFICEQA_LLM_ARBITER` env var) for full reversibility — when disabled, falls back to the legacy path.
+  - Confidence floor lowered from 0.52 to 0.35 (Option A) — the LLM is authoritative but must express at least 35% confidence.
+  - Budget includes backward-compatible aliases (`retrieval_rerank_calls` / `table_rerank_calls` kept alongside `source_arbiter_calls` / `table_arbiter_calls`).
+- `src/agent/prompts.py`: Updated `FINANCIAL_SOURCE_RERANK_SYSTEM` and `FINANCIAL_TABLE_ADMISSIBILITY_SYSTEM` system prompts — LLM now told it is the authoritative selector ("Your selection will be used directly") and given the full unified feature space.
+- `src/agent/nodes/orchestrator.py`: Replaced the two-step `if should_use → if maybe_*` blocks with single `select_source_candidate()` / `select_table_candidate()` calls. Trace categories updated to `source_arbiter_llm` / `table_arbiter_llm` with backward-compatible budget alias writes. `shortlist_count` added to trace details.
+- P3.7 confirmed clean — audit found no benchmark-shaped score boosts in `orchestrator_retrieval.py`.
+- All Phase 3 module imports verified:
+  - `EvidenceCandidatePacket` construction test passed
+  - `ArbiterResult` construction test passed
+  - Full orchestrator import chain verified (no circular imports, no missing symbols)

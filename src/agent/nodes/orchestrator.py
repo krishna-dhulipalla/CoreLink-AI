@@ -37,6 +37,8 @@ from agent.llm_control import (
     maybe_review_table_admissibility,
     officeqa_llm_control_budget,
     record_officeqa_llm_usage,
+    select_source_candidate,
+    select_table_candidate,
     should_use_evidence_commit_llm,
     should_use_source_rerank_llm,
     should_use_table_rerank_llm,
@@ -1819,50 +1821,50 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                 if budget and budget.tool_calls_exhausted():
                     budget.log_budget_exit("tool_budget_exhausted", f"Blocked tool '{retrieval_action.tool_name}' after reaching tool-call cap.")
                 else:
+                  # Phase 3: Source arbitration via unified entry point
                   if (
                       officeqa_mode
                       and retrieval_action.candidate_sources
                       and retrieval_action.tool_name in {"fetch_officeqa_table", "fetch_officeqa_pages", "fetch_corpus_document"}
-                      and llm_control_state.get("retrieval_rerank_calls", 0) < llm_control_budget.get("retrieval_rerank_calls", 0)
+                      and llm_control_state.get("source_arbiter_calls", llm_control_state.get("retrieval_rerank_calls", 0)) < llm_control_budget.get("source_arbiter_calls", llm_control_budget.get("retrieval_rerank_calls", 0))
                   ):
-                      source_review_needed, source_review_reason = should_use_source_rerank_llm(
+                      source_arbiter_result = select_source_candidate(
+                          task_text=task_text,
                           retrieval_intent=active_retrieval_intent,
                           candidate_sources=retrieval_action.candidate_sources,
                           evidence_gap=retrieval_action.evidence_gap,
                       )
-                      if source_review_needed:
-                          rerank_decision = maybe_rerank_source_candidates(
-                              task_text=task_text,
-                              retrieval_intent=active_retrieval_intent,
-                              candidate_sources=retrieval_action.candidate_sources,
-                              reason=source_review_reason,
+                      if source_arbiter_result.used_llm and source_arbiter_result.decision is not None:
+                          rerank_decision = source_arbiter_result.decision
+                          retrieval_action, rerank_applied = _apply_source_rerank_decision(
+                              retrieval_action,
+                              retrieval_action.candidate_sources,
+                              rerank_decision.preferred_document_id,
                           )
-                          if rerank_decision is not None:
-                              retrieval_action, rerank_applied = _apply_source_rerank_decision(
-                                  retrieval_action,
-                                  retrieval_action.candidate_sources,
-                                  rerank_decision.preferred_document_id,
-                              )
-                              llm_control_state["retrieval_rerank_calls"] = int(llm_control_state.get("retrieval_rerank_calls", 0) or 0) + 1
-                              workpad["officeqa_llm_control_state"] = llm_control_state
-                              workpad = record_officeqa_llm_usage(
-                                  workpad,
-                                  category="retrieval_rerank_llm",
-                                  used=True,
-                                  reason=source_review_reason,
-                                  model_name=rerank_decision.model_name,
-                                  confidence=rerank_decision.confidence,
-                                  applied=rerank_applied,
-                                  details={
-                                      "preferred_document_id": rerank_decision.preferred_document_id,
-                                      "decision": rerank_decision.decision,
-                                  },
-                              )
+                          llm_control_state["source_arbiter_calls"] = int(llm_control_state.get("source_arbiter_calls", 0) or 0) + 1
+                          # Backward-compatible alias
+                          llm_control_state["retrieval_rerank_calls"] = int(llm_control_state.get("retrieval_rerank_calls", 0) or 0) + 1
+                          workpad["officeqa_llm_control_state"] = llm_control_state
+                          workpad = record_officeqa_llm_usage(
+                              workpad,
+                              category="source_arbiter_llm",
+                              used=True,
+                              reason=source_arbiter_result.reason,
+                              model_name=rerank_decision.model_name,
+                              confidence=rerank_decision.confidence,
+                              applied=rerank_applied,
+                              details={
+                                  "preferred_document_id": rerank_decision.preferred_document_id,
+                                  "decision": rerank_decision.decision,
+                                  "shortlist_count": source_arbiter_result.shortlist_count,
+                              },
+                          )
+                  # Phase 3: Table arbitration via unified entry point
                   if (
                       officeqa_mode
                       and journal.tool_results
                       and retrieval_action.tool_name in {"lookup_officeqa_rows", "lookup_officeqa_cells", "fetch_officeqa_pages"}
-                      and llm_control_state.get("table_rerank_calls", 0) < llm_control_budget.get("table_rerank_calls", 0)
+                      and llm_control_state.get("table_arbiter_calls", llm_control_state.get("table_rerank_calls", 0)) < llm_control_budget.get("table_arbiter_calls", llm_control_budget.get("table_rerank_calls", 0))
                   ):
                       last_tool_result = dict(journal.tool_results[-1] or {})
                       last_tool_type = str(last_tool_result.get("type", "") or "")
@@ -1870,42 +1872,40 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                       if (
                           last_tool_type == "fetch_officeqa_table"
                       ):
-                          table_review_needed, table_review_reason = should_use_table_rerank_llm(
+                          table_arbiter_result = select_table_candidate(
+                              task_text=task_text,
                               retrieval_intent=active_retrieval_intent,
+                              document_id=str(dict(last_tool_result.get("facts") or {}).get("document_id", "") or retrieval_action.document_id),
                               table_candidates=table_candidates,
                               evidence_gap=retrieval_action.evidence_gap,
                           )
-                          if table_review_needed:
-                              table_decision = maybe_review_table_admissibility(
-                                  task_text=task_text,
-                                  retrieval_intent=active_retrieval_intent,
-                                  document_id=str(dict(last_tool_result.get("facts") or {}).get("document_id", "") or retrieval_action.document_id),
-                                  table_candidates=table_candidates,
-                                  reason=table_review_reason,
+                          if table_arbiter_result.used_llm and table_arbiter_result.decision is not None:
+                              table_decision = table_arbiter_result.decision
+                              retrieval_action, table_overrides, table_applied = _apply_table_review_decision(
+                                  retrieval_action,
+                                  table_decision.model_dump(),
                               )
-                              if table_decision is not None:
-                                  retrieval_action, table_overrides, table_applied = _apply_table_review_decision(
-                                      retrieval_action,
-                                      table_decision.model_dump(),
-                                  )
-                                  if table_overrides:
-                                      workpad.update(table_overrides)
-                                  llm_control_state["table_rerank_calls"] = int(llm_control_state.get("table_rerank_calls", 0) or 0) + 1
-                                  workpad["officeqa_llm_control_state"] = llm_control_state
-                                  workpad = record_officeqa_llm_usage(
-                                      workpad,
-                                      category="table_rerank_llm",
-                                      used=True,
-                                      reason=table_review_reason,
-                                      model_name=table_decision.model_name,
-                                      confidence=table_decision.confidence,
-                                      applied=table_applied,
-                                      details={
-                                          "decision": table_decision.decision,
-                                          "preferred_table_locator": table_decision.preferred_table_locator,
-                                          "preferred_table_family": table_decision.preferred_table_family,
-                                      },
-                                  )
+                              if table_overrides:
+                                  workpad.update(table_overrides)
+                              llm_control_state["table_arbiter_calls"] = int(llm_control_state.get("table_arbiter_calls", 0) or 0) + 1
+                              # Backward-compatible alias
+                              llm_control_state["table_rerank_calls"] = int(llm_control_state.get("table_rerank_calls", 0) or 0) + 1
+                              workpad["officeqa_llm_control_state"] = llm_control_state
+                              workpad = record_officeqa_llm_usage(
+                                  workpad,
+                                  category="table_arbiter_llm",
+                                  used=True,
+                                  reason=table_arbiter_result.reason,
+                                  model_name=table_decision.model_name,
+                                  confidence=table_decision.confidence,
+                                  applied=table_applied,
+                                  details={
+                                      "decision": table_decision.decision,
+                                      "preferred_table_locator": table_decision.preferred_table_locator,
+                                      "preferred_table_family": table_decision.preferred_table_family,
+                                      "shortlist_count": table_arbiter_result.shortlist_count,
+                                  },
+                              )
                   if officeqa_mode and llm_repair_state.get("query_rewrite_calls", 0) < llm_repair_budget.get("query_rewrite_calls", 0):
                       current_retrieval_signature = _officeqa_retrieval_input_signature(active_retrieval_intent, workpad)
                       repair_decision = maybe_rewrite_retrieval_path(

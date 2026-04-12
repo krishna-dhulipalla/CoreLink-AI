@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import os
+from dataclasses import dataclass
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from agent.contracts import (
+    EvidenceCandidatePacket,
     OfficeQALLLMUsageRecord,
     OfficeQALLMRepairDecision,
     OfficeQASourceRerankDecision,
@@ -22,13 +25,35 @@ from agent.prompts import (
     FINANCIAL_TABLE_ADMISSIBILITY_SYSTEM,
 )
 
+# ---------------------------------------------------------------------------
+# Phase 3 policy flag — when disabled, falls back to the old should_use/maybe path
+# ---------------------------------------------------------------------------
+_LLM_ARBITER_ENABLED = os.getenv("OFFICEQA_LLM_ARBITER", "1").strip().lower() in {"1", "true", "yes", "on"}
+
+# Phase 3 arbiter confidence floor (Option A — lowered from 0.52)
+_ARBITER_CONFIDENCE_FLOOR = 0.35
+
 _MAX_SEMANTIC_PLAN_CALLS = 1
 _BASE_RETRIEVAL_RERANK_CALLS = 2
 _HARD_RETRIEVAL_RERANK_CALLS = 3
 _BASE_TABLE_RERANK_CALLS = 2
 _HARD_TABLE_RERANK_CALLS = 3
+# Phase 3 arbiter budgets (aliases for the old rerank budgets)
+_BASE_SOURCE_ARBITER_CALLS = 2
+_HARD_SOURCE_ARBITER_CALLS = 3
+_BASE_TABLE_ARBITER_CALLS = 2
+_HARD_TABLE_ARBITER_CALLS = 3
 _MAX_EVIDENCE_COMMIT_CALLS = 1
 _MAX_FINAL_SYNTHESIS_CALLS = 1
+
+
+@dataclass(frozen=True)
+class ArbiterResult:
+    """Unified result from source or table arbitration."""
+    used_llm: bool = False
+    decision: OfficeQASourceRerankDecision | OfficeQATableAdmissibilityDecision | None = None
+    reason: str = ""
+    shortlist_count: int = 0
 
 
 def _requires_hard_semantic_control(retrieval_intent: RetrievalIntent | None) -> bool:
@@ -53,8 +78,11 @@ def officeqa_llm_control_budget(retrieval_intent: RetrievalIntent | None = None)
     hard_mode = _requires_hard_semantic_control(retrieval_intent)
     return {
         "semantic_plan_calls": _MAX_SEMANTIC_PLAN_CALLS,
+        # Phase 3: arbiter budgets (backward-compatible aliases)
         "retrieval_rerank_calls": _HARD_RETRIEVAL_RERANK_CALLS if hard_mode else _BASE_RETRIEVAL_RERANK_CALLS,
         "table_rerank_calls": _HARD_TABLE_RERANK_CALLS if hard_mode else _BASE_TABLE_RERANK_CALLS,
+        "source_arbiter_calls": _HARD_SOURCE_ARBITER_CALLS if hard_mode else _BASE_SOURCE_ARBITER_CALLS,
+        "table_arbiter_calls": _HARD_TABLE_ARBITER_CALLS if hard_mode else _BASE_TABLE_ARBITER_CALLS,
         "evidence_commit_calls": _MAX_EVIDENCE_COMMIT_CALLS,
         "final_synthesis_calls": _MAX_FINAL_SYNTHESIS_CALLS,
     }
@@ -601,3 +629,390 @@ def should_use_evidence_commit_llm(
         return True, "post_repair_commit_review"
 
     return False, "evidence_commit_stable"
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Unified candidate packet builders (P3.1, P3.5, P3.6)
+# ---------------------------------------------------------------------------
+
+def _build_source_candidate_packet(candidate: dict[str, Any]) -> EvidenceCandidatePacket:
+    """Project a raw source-candidate dict into the unified packet format."""
+    best_unit = dict(candidate.get("best_evidence_unit") or {})
+    meta = dict(candidate.get("metadata") or {})
+    return EvidenceCandidatePacket(
+        candidate_id=str(candidate.get("document_id", "") or ""),
+        title=str(candidate.get("title", "") or ""),
+        score=float(candidate.get("score", 0.0) or 0.0),
+        heading_chain=list(best_unit.get("heading_chain", []))[:6],
+        row_path=list(best_unit.get("row_paths", []) or best_unit.get("row_labels", []))[:8],
+        column_path=list(best_unit.get("column_paths", []) or best_unit.get("headers", []))[:8],
+        table_family=str(best_unit.get("table_family", "") or ""),
+        table_family_confidence=float(best_unit.get("table_family_confidence", 0.0) or 0.0),
+        period_type=str(best_unit.get("period_type", "") or ""),
+        unit_basis=str(best_unit.get("unit_hint", "") or best_unit.get("unit", "") or ""),
+        evidence_period_fit=str(best_unit.get("evidence_period_fit", "") or ""),
+        provenance_priors={"publication_year": str(meta.get("publication_year", "") or "")},
+        row_count=int(best_unit.get("row_count", 0) or 0),
+        column_count=int(best_unit.get("column_count", 0) or 0),
+        density=float(best_unit.get("density", 0.0) or 0.0),
+        metadata=meta,
+    )
+
+
+def _build_table_candidate_packet(candidate: dict[str, Any]) -> EvidenceCandidatePacket:
+    """Project a raw table-candidate dict into the unified packet format."""
+    return EvidenceCandidatePacket(
+        candidate_id=str(candidate.get("locator", "") or ""),
+        title=str(candidate.get("structural_signature", "") or ""),
+        score=float(candidate.get("ranking_score", 0.0) or 0.0),
+        heading_chain=list(candidate.get("heading_chain", []))[:6],
+        row_path=list(candidate.get("row_labels", []))[:8],
+        column_path=list(candidate.get("headers", []))[:8],
+        table_family=str(candidate.get("table_family", "") or ""),
+        table_family_confidence=float(candidate.get("table_family_confidence", 0.0) or 0.0),
+        period_type=str(candidate.get("period_type", "") or ""),
+        unit_basis=str(candidate.get("unit_hint", "") or candidate.get("unit", "") or ""),
+        evidence_period_fit="",
+        provenance_priors={"page_locator": str(candidate.get("page_locator", "") or "")},
+        row_count=int(candidate.get("row_count", 0) or 0),
+        column_count=int(candidate.get("column_count", 0) or 0),
+        density=float(candidate.get("density", 0.0) or 0.0),
+        metadata={"table_confidence": float(candidate.get("table_confidence", 0.0) or 0.0)},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Shortlist generators (P3.2) — wraps old should_use_* logic
+# ---------------------------------------------------------------------------
+
+def shortlist_source_candidates(
+    *,
+    retrieval_intent: RetrievalIntent,
+    candidate_sources: list[dict[str, Any]],
+    evidence_gap: str = "",
+) -> tuple[list[dict[str, Any]], str]:
+    """Return (shortlisted_candidates, reason) using heuristic signals.
+
+    Unlike should_use_source_rerank_llm which returns (bool, reason),
+    this always returns the candidate list so the arbiter can inspect it.
+    """
+    should_call, reason = should_use_source_rerank_llm(
+        retrieval_intent=retrieval_intent,
+        candidate_sources=candidate_sources,
+        evidence_gap=evidence_gap,
+    )
+    if not should_call:
+        return [], reason
+    # Return up to 5 candidates for LLM arbitration
+    ranked = [dict(item) for item in list(candidate_sources or []) if isinstance(item, dict)]
+    return ranked[:5], reason
+
+
+def shortlist_table_candidates(
+    *,
+    retrieval_intent: RetrievalIntent,
+    table_candidates: list[dict[str, Any]],
+    evidence_gap: str = "",
+) -> tuple[list[dict[str, Any]], str]:
+    """Return (shortlisted_candidates, reason) using heuristic signals."""
+    should_call, reason = should_use_table_rerank_llm(
+        retrieval_intent=retrieval_intent,
+        table_candidates=table_candidates,
+        evidence_gap=evidence_gap,
+    )
+    if not should_call:
+        return [], reason
+    candidates = [dict(item) for item in list(table_candidates or []) if isinstance(item, dict)]
+    return candidates[:5], reason
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Authoritative arbitration (P3.3, P3.4) — LLM is the final authority
+# ---------------------------------------------------------------------------
+
+def arbitrate_source_selection(
+    *,
+    task_text: str,
+    retrieval_intent: RetrievalIntent,
+    candidate_sources: list[dict[str, Any]],
+    reason: str,
+) -> OfficeQASourceRerankDecision | None:
+    """LLM-authoritative source selection with no post-hoc heuristic overrides.
+
+    Unlike maybe_rerank_source_candidates, this does NOT apply score-gap
+    thresholds, rank-5 caps, or secondary confidence gates after the LLM
+    decides. The only gate is the arbiter confidence floor.
+    """
+    if len(candidate_sources) < 2:
+        return None
+    # Build unified packets for prompt context
+    packets = [_build_source_candidate_packet(item) for item in candidate_sources[:5]]
+    model_name = get_model_name_for_officeqa_control(
+        "retrieval_rerank_llm",
+        answer_mode=retrieval_intent.answer_mode,
+        analysis_modes=retrieval_intent.analysis_modes,
+    )
+    runtime_kwargs = get_model_runtime_kwargs_for_officeqa_control(
+        "retrieval_rerank_llm",
+        answer_mode=retrieval_intent.answer_mode,
+        analysis_modes=retrieval_intent.analysis_modes,
+    )
+    # Build prompt using unified packets
+    compact_candidates: list[dict[str, Any]] = []
+    for packet in packets:
+        compact_candidates.append({
+            "document_id": packet.candidate_id,
+            "title": packet.title,
+            "score": packet.score,
+            "heading_chain": packet.heading_chain,
+            "row_path": packet.row_path,
+            "column_path": packet.column_path,
+            "table_family": packet.table_family,
+            "table_family_confidence": packet.table_family_confidence,
+            "period_type": packet.period_type,
+            "unit_basis": packet.unit_basis,
+            "evidence_period_fit": packet.evidence_period_fit,
+            "provenance_priors": packet.provenance_priors,
+            "row_count": packet.row_count,
+            "column_count": packet.column_count,
+        })
+    prompt = (
+        f"TASK={task_text}\n"
+        f"ENTITY={retrieval_intent.entity}\n"
+        f"METRIC={retrieval_intent.metric}\n"
+        f"PERIOD={retrieval_intent.period}\n"
+        f"PERIOD_TYPE={retrieval_intent.period_type}\n"
+        f"GRANULARITY={retrieval_intent.granularity_requirement}\n"
+        f"SOURCE_CONSTRAINT_POLICY={retrieval_intent.source_constraint_policy}\n"
+        f"PREFERRED_PUBLICATION_YEARS={list(retrieval_intent.preferred_publication_years)}\n"
+        f"PUBLICATION_YEAR_WINDOW={list(retrieval_intent.publication_year_window)}\n"
+        f"ARBITRATION_REASON={reason}\n"
+        f"CANDIDATE_SOURCES={compact_candidates}"
+    )
+    messages = [
+        SystemMessage(content=FINANCIAL_SOURCE_RERANK_SYSTEM),
+        HumanMessage(content=prompt),
+    ]
+    try:
+        parsed, resolved_model = invoke_structured_output(
+            "direct",
+            OfficeQASourceRerankDecision,
+            messages,
+            temperature=0,
+            max_tokens=220,
+            model_name_override=model_name,
+            runtime_kwargs_override=runtime_kwargs,
+        )
+        decision = OfficeQASourceRerankDecision.model_validate(parsed)
+    except Exception:
+        return None
+    decision.model_name = resolved_model
+    # Phase 3: Only the confidence floor gate remains — no score-gap or rank overrides
+    if decision.confidence < _ARBITER_CONFIDENCE_FLOOR:
+        return None
+    if decision.decision == "select_candidate" and not decision.preferred_document_id.strip():
+        return None
+    # Validate the selected document_id exists in the candidate set
+    if decision.decision == "select_candidate":
+        candidate_ids = {
+            str(item.get("document_id", "") or "").strip()
+            for item in candidate_sources[:5]
+            if isinstance(item, dict)
+        }
+        if decision.preferred_document_id.strip() not in candidate_ids:
+            return None
+    return decision
+
+
+def arbitrate_table_selection(
+    *,
+    task_text: str,
+    retrieval_intent: RetrievalIntent,
+    document_id: str,
+    table_candidates: list[dict[str, Any]],
+    reason: str,
+) -> OfficeQATableAdmissibilityDecision | None:
+    """LLM-authoritative table selection with no post-hoc heuristic overrides."""
+    if len(table_candidates) < 2:
+        return None
+    # Build unified packets for prompt context
+    packets = [_build_table_candidate_packet(item) for item in table_candidates[:5]]
+    model_name = get_model_name_for_officeqa_control(
+        "table_rerank_llm",
+        answer_mode=retrieval_intent.answer_mode,
+        analysis_modes=retrieval_intent.analysis_modes,
+    )
+    runtime_kwargs = get_model_runtime_kwargs_for_officeqa_control(
+        "table_rerank_llm",
+        answer_mode=retrieval_intent.answer_mode,
+        analysis_modes=retrieval_intent.analysis_modes,
+    )
+    compact_candidates: list[dict[str, Any]] = []
+    for packet in packets:
+        compact_candidates.append({
+            "locator": packet.candidate_id,
+            "table_family": packet.table_family,
+            "table_family_confidence": packet.table_family_confidence,
+            "heading_chain": packet.heading_chain,
+            "row_labels": packet.row_path,
+            "headers": packet.column_path,
+            "period_type": packet.period_type,
+            "unit_hint": packet.unit_basis,
+            "row_count": packet.row_count,
+            "column_count": packet.column_count,
+            "ranking_score": packet.score,
+            "page_locator": packet.provenance_priors.get("page_locator", ""),
+            "structural_signature": packet.title,
+            "table_confidence": packet.metadata.get("table_confidence", 0.0),
+        })
+    prompt = (
+        f"TASK={task_text}\n"
+        f"DOCUMENT_ID={document_id}\n"
+        f"ENTITY={retrieval_intent.entity}\n"
+        f"METRIC={retrieval_intent.metric}\n"
+        f"PERIOD={retrieval_intent.period}\n"
+        f"PERIOD_TYPE={retrieval_intent.period_type}\n"
+        f"GRANULARITY={retrieval_intent.granularity_requirement}\n"
+        f"ARBITRATION_REASON={reason}\n"
+        f"TABLE_CANDIDATES={compact_candidates}"
+    )
+    messages = [
+        SystemMessage(content=FINANCIAL_TABLE_ADMISSIBILITY_SYSTEM),
+        HumanMessage(content=prompt),
+    ]
+    try:
+        parsed, resolved_model = invoke_structured_output(
+            "direct",
+            OfficeQATableAdmissibilityDecision,
+            messages,
+            temperature=0,
+            max_tokens=220,
+            model_name_override=model_name,
+            runtime_kwargs_override=runtime_kwargs,
+        )
+        decision = OfficeQATableAdmissibilityDecision.model_validate(parsed)
+    except Exception:
+        return None
+    decision.model_name = resolved_model
+    # Phase 3: Only the confidence floor gate
+    if decision.confidence < _ARBITER_CONFIDENCE_FLOOR:
+        return None
+    if decision.decision == "select_candidate" and not (
+        decision.preferred_table_locator.strip() or decision.suggested_table_query.strip()
+    ):
+        return None
+    return decision
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Entry points (replace the two-step should_use + maybe pattern)
+# ---------------------------------------------------------------------------
+
+def select_source_candidate(
+    *,
+    task_text: str,
+    retrieval_intent: RetrievalIntent,
+    candidate_sources: list[dict[str, Any]],
+    evidence_gap: str = "",
+) -> ArbiterResult:
+    """Authoritative source selection: heuristic shortlist -> LLM arbiter.
+
+    When _LLM_ARBITER_ENABLED is False, falls back to the legacy
+    should_use/maybe path for full reversibility.
+    """
+    if not _LLM_ARBITER_ENABLED:
+        # Legacy path — delegate to old functions
+        should_call, reason = should_use_source_rerank_llm(
+            retrieval_intent=retrieval_intent,
+            candidate_sources=candidate_sources,
+            evidence_gap=evidence_gap,
+        )
+        if not should_call:
+            return ArbiterResult(used_llm=False, reason=reason)
+        decision = maybe_rerank_source_candidates(
+            task_text=task_text,
+            retrieval_intent=retrieval_intent,
+            candidate_sources=candidate_sources,
+            reason=reason,
+        )
+        return ArbiterResult(
+            used_llm=decision is not None,
+            decision=decision,
+            reason=reason,
+            shortlist_count=min(len(candidate_sources), 5),
+        )
+
+    # Phase 3 path: shortlist -> arbitrate
+    shortlisted, reason = shortlist_source_candidates(
+        retrieval_intent=retrieval_intent,
+        candidate_sources=candidate_sources,
+        evidence_gap=evidence_gap,
+    )
+    if len(shortlisted) < 2:
+        return ArbiterResult(used_llm=False, reason=reason)
+    decision = arbitrate_source_selection(
+        task_text=task_text,
+        retrieval_intent=retrieval_intent,
+        candidate_sources=shortlisted,
+        reason=reason,
+    )
+    return ArbiterResult(
+        used_llm=decision is not None,
+        decision=decision,
+        reason=reason,
+        shortlist_count=len(shortlisted),
+    )
+
+
+def select_table_candidate(
+    *,
+    task_text: str,
+    retrieval_intent: RetrievalIntent,
+    document_id: str,
+    table_candidates: list[dict[str, Any]],
+    evidence_gap: str = "",
+) -> ArbiterResult:
+    """Authoritative table selection: heuristic shortlist -> LLM arbiter."""
+    if not _LLM_ARBITER_ENABLED:
+        should_call, reason = should_use_table_rerank_llm(
+            retrieval_intent=retrieval_intent,
+            table_candidates=table_candidates,
+            evidence_gap=evidence_gap,
+        )
+        if not should_call:
+            return ArbiterResult(used_llm=False, reason=reason)
+        decision = maybe_review_table_admissibility(
+            task_text=task_text,
+            retrieval_intent=retrieval_intent,
+            document_id=document_id,
+            table_candidates=table_candidates,
+            reason=reason,
+        )
+        return ArbiterResult(
+            used_llm=decision is not None,
+            decision=decision,
+            reason=reason,
+            shortlist_count=min(len(table_candidates), 5),
+        )
+
+    # Phase 3 path
+    shortlisted, reason = shortlist_table_candidates(
+        retrieval_intent=retrieval_intent,
+        table_candidates=table_candidates,
+        evidence_gap=evidence_gap,
+    )
+    if len(shortlisted) < 2:
+        return ArbiterResult(used_llm=False, reason=reason)
+    decision = arbitrate_table_selection(
+        task_text=task_text,
+        retrieval_intent=retrieval_intent,
+        document_id=document_id,
+        table_candidates=shortlisted,
+        reason=reason,
+    )
+    return ArbiterResult(
+        used_llm=decision is not None,
+        decision=decision,
+        reason=reason,
+        shortlist_count=len(shortlisted),
+    )

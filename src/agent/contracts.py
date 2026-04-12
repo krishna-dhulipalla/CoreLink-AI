@@ -384,6 +384,8 @@ OfficeQALLLMUsageCategory = Literal[
     "semantic_plan_llm",
     "retrieval_rerank_llm",
     "table_rerank_llm",
+    "source_arbiter_llm",
+    "table_arbiter_llm",
     "evidence_commit_llm",
     "repair_llm",
     "final_synthesis_llm",
@@ -608,6 +610,26 @@ class OfficeQATableAdmissibilityDecision(BaseModel):
     rationale: str = ""
     confidence: float = 0.0
     model_name: str = ""
+
+
+class EvidenceCandidatePacket(BaseModel):
+    """Unified candidate representation seen by all LLM arbitration stages."""
+    candidate_id: str = ""
+    title: str = ""
+    score: float = 0.0
+    heading_chain: list[str] = Field(default_factory=list)
+    row_path: list[str] = Field(default_factory=list)
+    column_path: list[str] = Field(default_factory=list)
+    table_family: str = ""
+    table_family_confidence: float = 0.0
+    period_type: str = ""
+    unit_basis: str = ""
+    evidence_period_fit: str = ""
+    provenance_priors: dict[str, Any] = Field(default_factory=dict)
+    row_count: int = 0
+    column_count: int = 0
+    density: float = 0.0
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class OfficeQALLLMUsageRecord(BaseModel):

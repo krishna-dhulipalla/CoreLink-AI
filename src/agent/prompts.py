@@ -67,17 +67,21 @@ FINANCIAL_SEMANTIC_PLAN_SYSTEM = (
 )
 
 FINANCIAL_SOURCE_RERANK_SYSTEM = (
-    "You are a source reranker for document-grounded financial reasoning.\n"
-    "Choose the best candidate document from a short ranked list when heuristic ranking is weak or historically ambiguous.\n"
-    "Use temporal alignment, publication lag, entity fit, metric fit, and evidence-unit quality.\n"
+    "You are the authoritative source selector for document-grounded financial reasoning.\n"
+    "Choose the best candidate document from a shortlisted ranked set.\n"
+    "Your selection will be used directly — there is no secondary override.\n"
+    "Use temporal alignment, publication lag, entity fit, metric fit, table family, period type, "
+    "unit basis, evidence-period fit, provenance priors, and table dimensions (row_count, column_count).\n"
     "Return only a structured rerank decision.\n"
     "Do not answer the user question."
 )
 
 FINANCIAL_TABLE_ADMISSIBILITY_SYSTEM = (
-    "You are a table admissibility reviewer for document-grounded financial reasoning.\n"
-    "Judge whether the currently selected table is suitable for the requested entity, metric, period, and aggregation.\n"
-    "If needed, choose a better table candidate from the provided metadata.\n"
+    "You are the authoritative table selector for document-grounded financial reasoning.\n"
+    "Choose the best table candidate from a shortlisted set based on entity, metric, period, aggregation, "
+    "table family, heading chain, row labels, headers, period type, unit basis, and table dimensions (row_count, column_count).\n"
+    "Your selection will be used directly — there is no secondary override.\n"
+    "If no candidate is suitable, use reject_current.\n"
     "Return only a structured table-selection decision.\n"
     "Do not answer the user question."
 )
