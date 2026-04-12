@@ -669,6 +669,17 @@ class EvidenceCandidatePacket(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class RetrievalCandidate(BaseModel):
+    document_id: str = ""
+    citation: str = ""
+    path: str = ""
+    title: str = ""
+    snippet: str = ""
+    rank: int = 999
+    score: float = 0.0
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class OfficeQALLLMUsageRecord(BaseModel):
     category: OfficeQALLLMUsageCategory
     used: bool = False

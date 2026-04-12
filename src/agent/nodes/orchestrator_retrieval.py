@@ -7,7 +7,6 @@ import re
 from typing import Any
 
 from agent.benchmarks import benchmark_runtime_policy
-from agent.context.extraction import derive_market_snapshot
 from agent.contracts import ExecutionJournal, RetrievalAction, RetrievalIntent, SourceBundle, ToolPlan
 from agent.officeqa_strategy_planner import (
     OfficeQAPlannerOps,
@@ -19,16 +18,44 @@ from agent.officeqa_strategy_planner import (
     plan_search_followup,
     plan_table_followup,
 )
+from agent.retrieval_candidates import (
+    candidate_best_evidence_unit as candidate_best_evidence_unit_impl,
+    candidate_metadata_text as candidate_metadata_text_impl,
+    dedupe_search_candidates as dedupe_search_candidates_impl,
+    rank_search_candidates as rank_search_candidates_impl,
+    retrieval_focus_tokens as retrieval_focus_tokens_impl,
+    retrieval_tokens as retrieval_tokens_impl,
+    search_candidate_score as search_candidate_score_impl,
+    search_candidate_text as search_candidate_text_impl,
+    search_result_candidates as search_result_candidates_impl,
+    table_family_matches_intent as table_family_matches_intent_impl,
+)
 from agent.retrieval_strategy_kernel import FunctionRetrievalStrategyHandler, RetrievalStrategyContext, RetrievalStrategyKernel
+from agent.retrieval_retry_policy import (
+    build_retrieval_exhaustion_proof as build_retrieval_exhaustion_proof_impl,
+    last_officeqa_statuses as last_officeqa_statuses_impl,
+    last_regime_change as last_regime_change_impl,
+    retrieval_action_material_input_signature as retrieval_action_material_input_signature_impl,
+    retrieval_planning_signature as retrieval_planning_signature_impl,
+    retrieval_strategy_attempts as retrieval_strategy_attempts_impl,
+    strategy_rotation_requested as strategy_rotation_requested_impl,
+)
+from agent.retrieval_tool_runtime import (
+    filter_args_for_tool as filter_args_for_tool_impl,
+    generic_tool_args as generic_tool_args_impl,
+    invoke_tool as invoke_tool_impl,
+    run_tool_step as run_tool_step_impl,
+    run_tool_step_with_args as run_tool_step_with_args_impl,
+    structured_tool_args as structured_tool_args_impl,
+    tool_args_from_retrieval_action as tool_args_from_retrieval_action_impl,
+    tool_descriptor as tool_descriptor_impl,
+    tool_family as tool_family_impl,
+    tool_lookup as tool_lookup_impl,
+    tool_role as tool_role_impl,
+)
 from agent.retrieval_reasoning import assess_evidence_sufficiency
 from agent.strategy_journal import recommend_strategy_order
-from agent.solver.options import (
-    deterministic_policy_options_tool_call,
-    deterministic_standard_options_tool_call,
-    scenario_args_from_primary_tool,
-)
 from agent.state import AgentState
-from agent.tools.normalization import normalize_tool_output
 
 RuntimeState = AgentState
 IS_COMPETITION_MODE = os.getenv("COMPETITION_MODE", "").strip().lower() in {"1", "true", "yes", "on"} or os.getenv("BENCHMARK_NAME", "").strip().lower() == "officeqa"
@@ -53,29 +80,23 @@ _RETRIEVAL_STOP_WORDS = {
 
 
 def _tool_lookup(registry: dict[str, dict[str, Any]], tool_name: str) -> Any | None:
-    payload = registry.get(tool_name) or {}
-    return payload.get("tool")
+    return tool_lookup_impl(registry, tool_name)
 
 
 def _tool_descriptor(registry: dict[str, dict[str, Any]], tool_name: str) -> dict[str, Any]:
-    payload = registry.get(tool_name) or {}
-    return dict(payload.get("descriptor") or {})
+    return tool_descriptor_impl(registry, tool_name)
 
 
 def _tool_family(registry: dict[str, dict[str, Any]], tool_name: str) -> str:
-    return str(_tool_descriptor(registry, tool_name).get("tool_family", "") or "")
+    return tool_family_impl(registry, tool_name)
 
 
 def _tool_role(registry: dict[str, dict[str, Any]], tool_name: str) -> str:
-    return str(_tool_descriptor(registry, tool_name).get("tool_role", "") or "")
+    return tool_role_impl(registry, tool_name)
 
 
 def _filter_args_for_tool(registry: dict[str, dict[str, Any]], tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
-    tool_obj = _tool_lookup(registry, tool_name)
-    arg_schema = dict(getattr(tool_obj, "args", {}) or {})
-    if not arg_schema:
-        return dict(args)
-    return {key: value for key, value in dict(args).items() if key in arg_schema}
+    return filter_args_for_tool_impl(registry, tool_name, args)
 
 
 def _generic_tool_args(
@@ -84,189 +105,30 @@ def _generic_tool_args(
     source_bundle: SourceBundle,
     retrieval_intent: RetrievalIntent | None = None,
 ) -> dict[str, Any]:
-    tool_obj = _tool_lookup(registry, tool_name)
-    descriptor = _tool_descriptor(registry, tool_name)
-    arg_schema = dict(getattr(tool_obj, "args", {}) or {})
-    if not arg_schema:
-        return {}
-
-    task_text = source_bundle.task_text
-    focus_query = (
-        _derive_retrieval_seed_query(source_bundle, retrieval_intent)
-        or source_bundle.focus_query
-        or task_text[:240]
-    )
-    args: dict[str, Any] = {}
-    tool_role = str(descriptor.get("tool_role", "") or "")
-
-    for field_name in arg_schema.keys():
-        lowered = str(field_name).lower()
-        if lowered in {"query", "search_query", "q", "question"}:
-            args[field_name] = focus_query
-        elif lowered in {"prompt_text", "task", "task_text", "text", "input"}:
-            args[field_name] = task_text
-        elif lowered in {"url", "document_url", "source_url", "file_url"} and source_bundle.urls:
-            args[field_name] = source_bundle.urls[0]
-        elif lowered in {"top_k", "k", "limit", "max_results"} and tool_role == "search":
-            args[field_name] = 5
-        elif lowered in {"snippet_chars", "max_chars"} and tool_role == "search":
-            args[field_name] = 700
-        elif lowered == "page_start":
-            args[field_name] = 0
-        elif lowered == "page_limit":
-            args[field_name] = 5
-        elif lowered == "row_offset":
-            args[field_name] = 0
-        elif lowered == "row_limit":
-            args[field_name] = 200
-    return args
+    return generic_tool_args_impl(registry, tool_name, source_bundle, retrieval_intent, _derive_retrieval_seed_query)
 
 
 def _structured_tool_args(state: RuntimeState, registry: dict[str, dict[str, Any]], tool_name: str) -> dict[str, Any]:
     source_bundle = SourceBundle.model_validate(state.get("source_bundle") or {})
     retrieval_intent = RetrievalIntent.model_validate(state.get("retrieval_intent") or {})
-    task_text = source_bundle.task_text
-    if tool_name == "legal_playbook_retrieval":
-        return {"query": source_bundle.focus_query or task_text[:240], "deal_size_hint": "", "urgency": ""}
-    if tool_name == "transaction_structure_checklist":
-        return {
-            "consideration_preference": "stock" if "stock" in task_text.lower() else "",
-            "liability_goal": "minimize inherited liabilities" if "liabil" in task_text.lower() else "",
-            "urgency": "accelerated" if "quick" in task_text.lower() else "",
-        }
-    if tool_name == "regulatory_execution_checklist":
-        jurisdictions = []
-        lowered = task_text.lower()
-        if "eu" in lowered:
-            jurisdictions.append("EU")
-        if re.search(r"\bus\b|\bunited states\b", lowered):
-            jurisdictions.append("US")
-        return {"jurisdictions_json": json.dumps(jurisdictions), "regulatory_gaps": "regulatory compliance gaps" if "compliance gap" in lowered or "regulatory" in lowered else ""}
-    if tool_name == "tax_structure_checklist":
-        lowered = task_text.lower()
-        return {
-            "consideration_preference": "stock" if "stock" in lowered else "",
-            "cross_border": bool("eu" in lowered and ("us" in lowered or "united states" in lowered)),
-        }
-    if tool_name == "internet_search":
-        query = _derive_retrieval_seed_query(source_bundle, retrieval_intent) or source_bundle.focus_query or task_text[:240]
-        return {"query": query}
-    if tool_name == "search_reference_corpus":
-        query = _derive_retrieval_seed_query(source_bundle, retrieval_intent) or source_bundle.focus_query or task_text[:240]
-        return {
-            "query": query,
-            "top_k": 5,
-            "snippet_chars": 700,
-            "source_files": list(source_bundle.source_files_expected),
-            "source_files_policy": retrieval_intent.source_constraint_policy,
-            "target_years": list(retrieval_intent.target_years),
-            "publication_year_window": list(retrieval_intent.publication_year_window),
-            "preferred_publication_years": list(retrieval_intent.preferred_publication_years),
-            "acceptable_publication_lag_years": retrieval_intent.acceptable_publication_lag_years,
-            "retrospective_evidence_allowed": retrieval_intent.retrospective_evidence_allowed,
-            "retrospective_evidence_required": retrieval_intent.retrospective_evidence_required,
-            "publication_scope_explicit": retrieval_intent.publication_scope_explicit,
-            "period_type": retrieval_intent.period_type,
-            "granularity_requirement": retrieval_intent.granularity_requirement,
-            "entity": retrieval_intent.entity,
-            "metric": retrieval_intent.metric,
-        }
-    if tool_name == "search_officeqa_documents":
-        query = _derive_retrieval_seed_query(source_bundle, retrieval_intent) or source_bundle.focus_query or task_text[:240]
-        return {
-            "query": query,
-            "top_k": 8,
-            "snippet_chars": 700,
-            "source_files": list(source_bundle.source_files_expected),
-            "source_files_policy": retrieval_intent.source_constraint_policy,
-            "target_years": list(retrieval_intent.target_years),
-            "publication_year_window": list(retrieval_intent.publication_year_window),
-            "preferred_publication_years": list(retrieval_intent.preferred_publication_years),
-            "acceptable_publication_lag_years": retrieval_intent.acceptable_publication_lag_years,
-            "retrospective_evidence_allowed": retrieval_intent.retrospective_evidence_allowed,
-            "retrospective_evidence_required": retrieval_intent.retrospective_evidence_required,
-            "publication_scope_explicit": retrieval_intent.publication_scope_explicit,
-            "period_type": retrieval_intent.period_type,
-            "granularity_requirement": retrieval_intent.granularity_requirement,
-            "entity": retrieval_intent.entity,
-            "metric": retrieval_intent.metric,
-        }
-    if tool_name == "fetch_reference_file":
-        if source_bundle.urls:
-            return {"url": source_bundle.urls[0], "page_start": 0, "page_limit": 5, "row_offset": 0, "row_limit": 200}
-        return {}
-    if tool_name == "fetch_officeqa_pages":
-        return {}
-    if tool_name == "fetch_officeqa_table":
-        query = " ".join(part for part in [retrieval_intent.entity, retrieval_intent.metric, retrieval_intent.period] if part).strip()
-        return {"table_query": query, "row_offset": 0, "row_limit": 200}
-    if tool_name == "lookup_officeqa_rows":
-        table_query = " ".join(part for part in [retrieval_intent.entity, retrieval_intent.metric, retrieval_intent.period] if part).strip()
-        return {
-            "table_query": table_query,
-            "row_query": retrieval_intent.entity or retrieval_intent.metric or table_query,
-            "row_offset": 0,
-            "row_limit": 120,
-        }
-    if tool_name == "lookup_officeqa_cells":
-        table_query = " ".join(part for part in [retrieval_intent.entity, retrieval_intent.metric, retrieval_intent.period] if part).strip()
-        return {
-            "table_query": table_query,
-            "row_query": retrieval_intent.entity or retrieval_intent.metric or table_query,
-            "column_query": retrieval_intent.metric or retrieval_intent.period or table_query,
-            "row_offset": 0,
-            "row_limit": 60,
-        }
-    if tool_name == "list_reference_files":
-        return {"prompt_text": source_bundle.task_text}
-    if tool_name == "fetch_corpus_document":
-        return {}
-    if tool_name == "analyze_strategy":
-        inline_facts = dict(source_bundle.inline_facts)
-        market_snapshot, derived = derive_market_snapshot(source_bundle.task_text, inline_facts)
-        prompt_facts = dict(inline_facts)
-        if market_snapshot:
-            prompt_facts["market_snapshot"] = market_snapshot
-        compat_state = {
-            "messages": state.get("messages", []),
-            "evidence_pack": {
-                "prompt_facts": prompt_facts,
-                "derived_facts": derived,
-                "policy_context": {},
-            },
-            "workpad": {"tool_results": []},
-            "assumption_ledger": state.get("assumption_ledger", []),
-        }
-        tool_call = deterministic_policy_options_tool_call(compat_state) or deterministic_standard_options_tool_call(compat_state)
-        if tool_call:
-            return dict(tool_call.get("arguments", {}))
-        return {}
-    if tool_name == "scenario_pnl":
-        journal = ExecutionJournal.model_validate(state.get("execution_journal") or {})
-        for result in reversed(journal.tool_results):
-            args = scenario_args_from_primary_tool(result)
-            if args:
-                return args
-        return {}
-    return _generic_tool_args(registry, tool_name, source_bundle, retrieval_intent)
+    return structured_tool_args_impl(
+        state,
+        registry,
+        tool_name,
+        source_bundle,
+        retrieval_intent,
+        _derive_retrieval_seed_query,
+    )
 
 
 async def _invoke_tool(tool_obj: Any, args: dict[str, Any]) -> Any:
-    if hasattr(tool_obj, "ainvoke"):
-        return await tool_obj.ainvoke(args)
-    return tool_obj.invoke(args)
+    return await invoke_tool_impl(tool_obj, args)
 
 
 async def _run_tool_step(state: RuntimeState, registry: dict[str, dict[str, Any]], tool_name: str) -> tuple[dict[str, Any], Any]:
-    tool_obj = _tool_lookup(registry, tool_name)
-    args = _filter_args_for_tool(registry, tool_name, _structured_tool_args(state, registry, tool_name))
-    if tool_obj is None:
-        return args, normalize_tool_output(tool_name, {"error": f"Tool '{tool_name}' is not registered."}, args)
-    try:
-        raw = await _invoke_tool(tool_obj, args)
-    except Exception as exc:
-        raw = {"error": f"Error executing tool {tool_name}: {exc}"}
-    return args, normalize_tool_output(tool_name, raw, args)
+    source_bundle = SourceBundle.model_validate(state.get("source_bundle") or {})
+    retrieval_intent = RetrievalIntent.model_validate(state.get("retrieval_intent") or {})
+    return await run_tool_step_impl(state, registry, tool_name, source_bundle, retrieval_intent, _derive_retrieval_seed_query)
 
 
 async def _run_tool_step_with_args(
@@ -275,15 +137,8 @@ async def _run_tool_step_with_args(
     tool_name: str,
     args_override: dict[str, Any],
 ) -> tuple[dict[str, Any], Any]:
-    tool_obj = _tool_lookup(registry, tool_name)
-    args_override = _filter_args_for_tool(registry, tool_name, args_override)
-    if tool_obj is None:
-        return args_override, normalize_tool_output(tool_name, {"error": f"Tool '{tool_name}' is not registered."}, args_override)
-    try:
-        raw = await _invoke_tool(tool_obj, args_override)
-    except Exception as exc:
-        raw = {"error": f"Error executing tool {tool_name}: {exc}"}
-    return args_override, normalize_tool_output(tool_name, raw, args_override)
+    _ = state
+    return await run_tool_step_with_args_impl(registry, tool_name, args_override)
 
 
 def _retrieval_tools_available(
@@ -353,11 +208,7 @@ def _next_retrieval_query(journal: ExecutionJournal, retrieval_intent: Retrieval
 
 
 def _retrieval_tokens(text: str) -> list[str]:
-    return [
-        token
-        for token in re.findall(r"[a-z0-9]+", (text or "").lower())
-        if len(token) > 1 and token not in _RETRIEVAL_STOP_WORDS
-    ]
+    return retrieval_tokens_impl(text)
 
 
 def _best_surface_match(text: str, phrase: str) -> float:
@@ -462,15 +313,7 @@ def _best_unit_alignment_score(best_unit: dict[str, Any], retrieval_intent: Retr
 
 
 def _retrieval_focus_tokens(source_bundle: SourceBundle) -> list[str]:
-    ordered: list[str] = []
-    seen: set[str] = set()
-    for part in [source_bundle.focus_query, *source_bundle.entities[:6], source_bundle.target_period]:
-        for token in _retrieval_tokens(str(part or "")):
-            if token in seen:
-                continue
-            seen.add(token)
-            ordered.append(token)
-    return ordered[:14]
+    return retrieval_focus_tokens_impl(source_bundle)[:14]
 
 
 def _officeqa_table_query(retrieval_intent: RetrievalIntent, source_bundle: SourceBundle) -> str:
@@ -813,43 +656,7 @@ def _tool_result_citations(tool_result: dict[str, Any]) -> list[str]:
 
 
 def _search_result_candidates(tool_result: dict[str, Any]) -> list[dict[str, Any]]:
-    facts = dict(tool_result.get("facts") or {})
-    candidates: list[dict[str, Any]] = []
-    for item in facts.get("documents", []):
-        if isinstance(item, dict):
-            candidates.append(
-                {
-                    "document_id": str(item.get("document_id", "")),
-                    "citation": str(item.get("citation", "") or item.get("url", "") or item.get("path", "")),
-                      "path": str(item.get("path", "")),
-                      "title": str(item.get("title", "") or item.get("document_id", "")),
-                      "snippet": str(item.get("snippet", "")),
-                      "rank": int(item.get("rank", 999) or 999),
-                      "score": float(item.get("score", 0.0) or 0.0),
-                      "metadata": dict(item.get("metadata", {}) or {}),
-                  }
-              )
-    for item in facts.get("results", []):
-        if isinstance(item, dict):
-            candidates.append(
-                {
-                    "document_id": str(item.get("document_id", "")),
-                    "citation": str(item.get("url", "") or item.get("citation", "")),
-                      "path": str(item.get("path", "")),
-                      "title": str(item.get("title", "")),
-                      "snippet": str(item.get("snippet", "")),
-                      "rank": int(item.get("rank", 999) or 999),
-                      "score": float(item.get("score", 0.0) or 0.0),
-                      "metadata": dict(item.get("metadata", {}) or {}),
-                  }
-                  )
-    return _dedupe_search_candidates(
-        [
-            candidate
-            for candidate in candidates
-            if candidate.get("citation") or candidate.get("document_id") or candidate.get("path")
-        ]
-    )
+    return search_result_candidates_impl(tool_result)
 
 
 def _candidate_identity(candidate: dict[str, Any]) -> tuple[str, str, str]:
@@ -914,37 +721,11 @@ def _dedupe_search_candidates(candidates: list[dict[str, Any]]) -> list[dict[str
 
 
 def _search_candidate_text(candidate: dict[str, Any]) -> str:
-    return " ".join(
-        str(candidate.get(key, "") or "")
-        for key in ("title", "snippet", "citation", "path", "document_id")
-    ).strip()
+    return search_candidate_text_impl(candidate)
 
 
 def _candidate_metadata_text(candidate: dict[str, Any]) -> str:
-    metadata = dict(candidate.get("metadata", {}) or {})
-    best_unit = dict(metadata.get("best_evidence_unit", {}) or {})
-    return " ".join(
-        [
-            " ".join(str(item or "") for item in list(metadata.get("years", []))),
-            str(metadata.get("publication_year", "") or ""),
-            str(metadata.get("publication_month", "") or ""),
-            " ".join(str(item or "") for item in list(metadata.get("page_markers", []))),
-            " ".join(str(item or "") for item in list(metadata.get("section_titles", []))),
-            " ".join(str(item or "") for item in list(metadata.get("table_headers", []))),
-            " ".join(str(item or "") for item in list(metadata.get("row_labels", []))),
-            " ".join(str(item or "") for item in list(metadata.get("unit_hints", []))),
-            " ".join(str(item or "") for item in list(metadata.get("month_coverage", []))),
-            " ".join(str(item or "") for item in list(metadata.get("period_types", []))),
-            str(best_unit.get("locator", "") or ""),
-            str(best_unit.get("table_family", "") or ""),
-            str(best_unit.get("period_type", "") or ""),
-            " ".join(str(item or "") for item in list(best_unit.get("headers", []))),
-            " ".join(str(item or "") for item in list(best_unit.get("row_labels", []))),
-            " ".join(str(item or "") for item in list(best_unit.get("year_refs", []))),
-            " ".join(str(item or "") for item in list(best_unit.get("month_coverage", []))),
-            str(best_unit.get("preview_text", "") or ""),
-        ]
-    ).strip()
+    return candidate_metadata_text_impl(candidate)
 
 
 def _query_years(retrieval_intent: RetrievalIntent) -> set[str]:
@@ -968,8 +749,7 @@ def _candidate_publication_years(candidate: dict[str, Any]) -> set[str]:
 
 
 def _candidate_best_evidence_unit(candidate: dict[str, Any]) -> dict[str, Any]:
-    metadata = dict(candidate.get("metadata", {}) or {})
-    return dict(metadata.get("best_evidence_unit", {}) or {})
+    return candidate_best_evidence_unit_impl(candidate)
 
 
 def _query_entity_tokens(retrieval_intent: RetrievalIntent) -> set[str]:
@@ -1173,17 +953,7 @@ def _next_ranked_source_candidate(
 
 
 def _table_family_matches_intent(table_family: str, retrieval_intent: RetrievalIntent) -> bool:
-    family = (table_family or "").strip().lower()
-    if not family:
-        return True
-    if family == "navigation_or_contents":
-        return False
-    granularity = retrieval_intent.granularity_requirement
-    if granularity == "monthly_series":
-        return family == "monthly_series"
-    if granularity == "fiscal_year":
-        return family in {"fiscal_year_comparison", "category_breakdown"}
-    return family in {"category_breakdown", "annual_summary", "fiscal_year_comparison", "debt_or_balance_sheet", "generic_financial_table"}
+    return table_family_matches_intent_impl(table_family, retrieval_intent)
 
 
 def _search_candidate_score(
@@ -1192,70 +962,7 @@ def _search_candidate_score(
     source_bundle: SourceBundle,
     benchmark_overrides: dict[str, Any] | None = None,
 ) -> float:
-    text = _search_candidate_text(candidate).lower()
-    metadata_text = _candidate_metadata_text(candidate).lower()
-    best_unit = _candidate_best_evidence_unit(candidate)
-    combined_text = f"{text} {metadata_text}".strip()
-    tokens = set(_retrieval_tokens(combined_text))
-    title_tokens = set(_retrieval_tokens(str(candidate.get("title", ""))))
-    score = 0.0
-    rank = int(candidate.get("rank", 999) or 999)
-    score += max(0.0, 0.4 - 0.05 * max(0, rank - 1))
-    score += min(1.0, float(candidate.get("score", 0.0) or 0.0) * 0.18)
-
-    entity_tokens = _query_entity_tokens(retrieval_intent)
-    metric_tokens = _query_metric_tokens(retrieval_intent)
-    period_tokens = {token for token in _retrieval_tokens(retrieval_intent.period)}
-    must_tokens = {token for term in retrieval_intent.must_include_terms for token in _retrieval_tokens(term)}
-    query_tokens = set(_retrieval_focus_tokens(source_bundle))
-
-    overlap = len((entity_tokens | metric_tokens | period_tokens | must_tokens | query_tokens) & tokens)
-    score += 0.12 * overlap
-    score += 0.12 * len(entity_tokens & title_tokens)
-    score += 0.08 * len(metric_tokens & title_tokens)
-    score += 0.06 * len(period_tokens & title_tokens)
-    score += _year_fit_score(candidate, retrieval_intent)
-    score += _granularity_fit_score(candidate, retrieval_intent)
-    score += _category_fit_score(candidate, retrieval_intent)
-    score += _exclusion_fit_score(candidate, retrieval_intent)
-    score += _historical_family_fit_score(candidate, retrieval_intent)
-    score += 0.12 * float(best_unit.get("table_confidence", 0.0) or 0.0)
-    score += _best_unit_alignment_score(best_unit, retrieval_intent)
-
-    citation = str(candidate.get("citation", "")).lower()
-    if any(host in citation for host in ("govinfo.gov", "census.gov", "va.gov", "fraser.stlouisfed.org", ".gov/")):
-        score += 0.45
-    if citation.endswith(".pdf"):
-        score += 0.08
-
-    if retrieval_intent.aggregation_shape.startswith("monthly"):
-        if any(token in combined_text for token in ("monthly", "month", "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")):
-            score += 0.45
-        if "receipts expenditures and balances" in combined_text or "monthly treasury statement" in combined_text:
-            score += 0.6
-    if retrieval_intent.aggregation_shape == "inflation_adjusted_monthly_difference" and any(token in combined_text for token in ("cpi", "inflation", "price index")):
-        score += 0.4
-    if retrieval_intent.document_family == "treasury_bulletin" and "treasury bulletin" in combined_text:
-        score += 0.5
-
-    if any(term in combined_text for term in retrieval_intent.must_exclude_terms):
-        score -= 0.7
-    if any(
-        bad in combined_text
-        for bad in (
-            "monthly catalog",
-            "public documents",
-            "depository invoice",
-            "federal register",
-            "internal revenue bulletin",
-            "cumulative bulletin",
-            "flashcards",
-            "quiz",
-            "public law",
-        )
-    ):
-        score -= 1.1
-    return score
+    return search_candidate_score_impl(candidate, retrieval_intent, source_bundle, benchmark_overrides)
 
 
 def _rank_search_candidates(
@@ -1264,14 +971,7 @@ def _rank_search_candidates(
     source_bundle: SourceBundle,
     benchmark_overrides: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    return sorted(
-        candidates,
-        key=lambda item: (
-            _search_candidate_score(item, retrieval_intent, source_bundle, benchmark_overrides),
-            -int(item.get("rank", 999) or 999),
-        ),
-        reverse=True,
-    )
+    return rank_search_candidates_impl(candidates, retrieval_intent, source_bundle, benchmark_overrides)
 
 
 def _strategy_reason(retrieval_intent: RetrievalIntent) -> str:
@@ -2071,133 +1771,20 @@ def _tool_args_from_retrieval_action(
     registry: dict[str, dict[str, Any]],
     retrieval_intent: RetrievalIntent,
 ) -> dict[str, Any]:
-    if action.tool_name == "internet_search":
-        return {"query": action.query or _derive_retrieval_seed_query(source_bundle, retrieval_intent)}
-    if action.tool_name == "search_officeqa_documents":
-        return {
-            "query": action.query or _derive_retrieval_seed_query(source_bundle, retrieval_intent),
-            "top_k": 5,
-            "snippet_chars": 700,
-            "source_files": list(source_bundle.source_files_expected),
-            "source_files_policy": retrieval_intent.source_constraint_policy,
-            "target_years": list(retrieval_intent.target_years),
-            "publication_year_window": list(retrieval_intent.publication_year_window),
-            "preferred_publication_years": list(retrieval_intent.preferred_publication_years),
-            "acceptable_publication_lag_years": retrieval_intent.acceptable_publication_lag_years,
-            "retrospective_evidence_allowed": retrieval_intent.retrospective_evidence_allowed,
-            "retrospective_evidence_required": retrieval_intent.retrospective_evidence_required,
-            "publication_scope_explicit": retrieval_intent.publication_scope_explicit,
-            "period_type": retrieval_intent.period_type,
-            "granularity_requirement": retrieval_intent.granularity_requirement,
-            "entity": retrieval_intent.entity,
-            "metric": retrieval_intent.metric,
-        }
-    if action.tool_name == "search_reference_corpus":
-        return {
-            "query": action.query or _derive_retrieval_seed_query(source_bundle, retrieval_intent),
-            "top_k": 5,
-            "snippet_chars": 700,
-            "source_files": list(source_bundle.source_files_expected),
-            "source_files_policy": retrieval_intent.source_constraint_policy,
-            "target_years": list(retrieval_intent.target_years),
-            "publication_year_window": list(retrieval_intent.publication_year_window),
-            "preferred_publication_years": list(retrieval_intent.preferred_publication_years),
-            "acceptable_publication_lag_years": retrieval_intent.acceptable_publication_lag_years,
-            "retrospective_evidence_allowed": retrieval_intent.retrospective_evidence_allowed,
-            "retrospective_evidence_required": retrieval_intent.retrospective_evidence_required,
-            "publication_scope_explicit": retrieval_intent.publication_scope_explicit,
-            "period_type": retrieval_intent.period_type,
-            "granularity_requirement": retrieval_intent.granularity_requirement,
-            "entity": retrieval_intent.entity,
-            "metric": retrieval_intent.metric,
-        }
-    if action.tool_name == "list_reference_files":
-        return {"prompt_text": source_bundle.task_text}
-    if action.tool_name == "fetch_reference_file":
-        args = {
-            "url": action.url,
-            "page_start": action.page_start,
-            "page_limit": max(2, action.page_limit),
-            "row_offset": action.row_offset,
-            "row_limit": max(100, action.row_limit),
-        }
-        tool_obj = _tool_lookup(registry, action.tool_name)
-        arg_schema = {str(key).lower(): key for key in dict(getattr(tool_obj, "args", {}) or {}).keys()}
-        hint = action.query or _derive_retrieval_seed_query(source_bundle, retrieval_intent)
-        if "search_hint" in arg_schema and hint:
-            args[arg_schema["search_hint"]] = hint
-        return args
-    if action.tool_name == "fetch_corpus_document":
-        return {
-            "document_id": action.document_id,
-            "path": action.path,
-            "chunk_start": action.chunk_start,
-            "chunk_limit": max(1, action.chunk_limit),
-        }
-    if action.tool_name == "fetch_officeqa_pages":
-        return {
-            "document_id": action.document_id,
-            "path": action.path,
-            "page_start": action.page_start,
-            "page_limit": max(1, action.page_limit),
-        }
-    if action.tool_name == "fetch_officeqa_table":
-        return {
-            "document_id": action.document_id,
-            "path": action.path,
-            "table_query": action.query or _officeqa_table_query(retrieval_intent, source_bundle),
-            "row_offset": action.row_offset,
-            "row_limit": max(50, action.row_limit or 200),
-        }
-    if action.tool_name == "lookup_officeqa_rows":
-        return {
-            "document_id": action.document_id,
-            "path": action.path,
-            "table_query": _officeqa_table_query(retrieval_intent, source_bundle),
-            "row_query": action.query or _officeqa_row_query(retrieval_intent, source_bundle),
-            "row_offset": action.row_offset,
-            "row_limit": max(20, action.row_limit or 120),
-        }
-    if action.tool_name == "lookup_officeqa_cells":
-        return {
-            "document_id": action.document_id,
-            "path": action.path,
-            "table_query": _officeqa_table_query(retrieval_intent, source_bundle),
-            "row_query": _officeqa_row_query(retrieval_intent, source_bundle),
-            "column_query": action.query or _officeqa_column_query(retrieval_intent),
-            "row_offset": action.row_offset,
-            "row_limit": max(10, action.row_limit or 60),
-        }
-    args = _generic_tool_args(registry, action.tool_name, source_bundle, retrieval_intent)
-    tool_obj = _tool_lookup(registry, action.tool_name)
-    arg_schema = dict(getattr(tool_obj, "args", {}) or {})
-    for field_name in arg_schema.keys():
-        lowered = str(field_name).lower()
-        if lowered in {"query", "search_query", "q", "question"} and action.query:
-            args[field_name] = action.query
-        elif lowered in {"url", "document_url", "source_url", "file_url"} and action.url:
-            args[field_name] = action.url
-        elif lowered in {"document_id", "doc_id"} and action.document_id:
-            args[field_name] = action.document_id
-        elif lowered in {"path", "file_path", "citation"} and action.path:
-            args[field_name] = action.path
-        elif lowered == "page_start":
-            args[field_name] = action.page_start
-        elif lowered == "page_limit":
-            args[field_name] = max(2, action.page_limit)
-        elif lowered == "row_offset":
-            args[field_name] = action.row_offset
-        elif lowered == "row_limit":
-            args[field_name] = max(100, action.row_limit)
-        elif lowered == "chunk_start":
-            args[field_name] = action.chunk_start
-        elif lowered == "chunk_limit":
-            args[field_name] = max(1, action.chunk_limit)
-    return args
+    return tool_args_from_retrieval_action_impl(
+        action,
+        source_bundle,
+        registry,
+        retrieval_intent,
+        _derive_retrieval_seed_query,
+        _officeqa_table_query,
+        _officeqa_row_query,
+        _officeqa_column_query,
+    )
 
 
 def _retrieval_strategy_attempts(workpad: dict[str, Any] | None) -> list[dict[str, Any]]:
-    return [dict(item) for item in list(dict(workpad or {}).get("retrieval_strategy_attempts", []) or []) if isinstance(item, dict)]
+    return retrieval_strategy_attempts_impl(workpad)
 
 
 def _retrieval_planning_signature(
@@ -2205,94 +1792,23 @@ def _retrieval_planning_signature(
     retrieval_intent: RetrievalIntent,
     workpad: dict[str, Any] | None = None,
 ) -> str:
-    padded_workpad = dict(workpad or {})
-    payload = {
-        "focus_query": source_bundle.focus_query,
-        "target_period": source_bundle.target_period,
-        "source_files_expected": list(source_bundle.source_files_expected or []),
-        "entity": retrieval_intent.entity,
-        "metric": retrieval_intent.metric,
-        "period": retrieval_intent.period,
-        "period_type": retrieval_intent.period_type,
-        "target_years": list(retrieval_intent.target_years or []),
-        "publication_year_window": list(retrieval_intent.publication_year_window or []),
-        "preferred_publication_years": list(retrieval_intent.preferred_publication_years or []),
-        "source_constraint_policy": retrieval_intent.source_constraint_policy,
-        "granularity_requirement": retrieval_intent.granularity_requirement,
-        "document_family": retrieval_intent.document_family,
-        "aggregation_shape": retrieval_intent.aggregation_shape,
-        "must_include_terms": list(retrieval_intent.must_include_terms or []),
-        "must_exclude_terms": list(retrieval_intent.must_exclude_terms or []),
-        "query_plan": retrieval_intent.query_plan.model_dump(),
-        "override_query": str(padded_workpad.get("officeqa_override_query", "") or ""),
-        "override_table_query": str(padded_workpad.get("officeqa_override_table_query", "") or ""),
-    }
-    return hashlib.sha1(json.dumps(payload, sort_keys=True, ensure_ascii=True).encode("utf-8")).hexdigest()[:16]
+    return retrieval_planning_signature_impl(source_bundle, retrieval_intent, workpad)
 
 
 def _retrieval_action_material_input_signature(action: RetrievalAction) -> str:
-    payload = {
-        "requested_strategy": str(action.requested_strategy or ""),
-        "strategy": str(action.strategy or ""),
-        "stage": str(action.stage or ""),
-        "tool_name": str(action.tool_name or ""),
-        "query": str(action.query or ""),
-        "document_id": str(action.document_id or ""),
-        "path": str(action.path or ""),
-        "page_start": int(action.page_start or 0),
-        "page_limit": int(action.page_limit or 0),
-        "row_offset": int(action.row_offset or 0),
-        "row_limit": int(action.row_limit or 0),
-        "chunk_start": int(action.chunk_start or 0),
-        "chunk_limit": int(action.chunk_limit or 0),
-        "evidence_gap": str(action.evidence_gap or ""),
-    }
-    return hashlib.sha1(json.dumps(payload, sort_keys=True, ensure_ascii=True).encode("utf-8")).hexdigest()[:16]
+    return retrieval_action_material_input_signature_impl(action)
 
 
 def _strategy_rotation_requested(workpad: dict[str, Any] | None) -> tuple[bool, str]:
-    padded_workpad = dict(workpad or {})
-    retry_policy = dict(padded_workpad.get("officeqa_retry_policy") or {})
-    repair_transition = dict(
-        padded_workpad.get("officeqa_pending_repair_transition")
-        or padded_workpad.get("officeqa_latest_repair_transition")
-        or {}
-    )
-    repair_failures = [dict(item) for item in list(padded_workpad.get("officeqa_repair_failures", []) or []) if isinstance(item, dict)]
-    evidence_commit_review = dict(padded_workpad.get("officeqa_evidence_commit_review") or {})
-    if bool(retry_policy.get("retry_allowed")) and str(retry_policy.get("recommended_repair_target", "") or "") == "gather":
-        return True, "validator_gather_retry"
-    if evidence_commit_review:
-        return True, "evidence_commit_review"
-    if repair_transition:
-        return True, str(repair_transition.get("reroute_action", "") or "repair_transition")
-    if any(str(item.get("code", "") or "") in {"repair_applied_but_no_new_evidence", "repair_reused_stale_state"} for item in repair_failures):
-        return True, "repair_stall"
-    return False, ""
+    return strategy_rotation_requested_impl(workpad)
 
 
 def _last_regime_change(workpad: dict[str, Any] | None) -> str:
-    padded_workpad = dict(workpad or {})
-    transition = dict(
-        padded_workpad.get("officeqa_pending_repair_transition")
-        or padded_workpad.get("officeqa_latest_repair_transition")
-        or {}
-    )
-    if transition:
-        return str(transition.get("reroute_action", "") or transition.get("status", "") or "")
-    latest_attempt = dict(padded_workpad.get("latest_retrieval_strategy_attempt") or {})
-    return str(latest_attempt.get("regime_change", "") or "")
+    return last_regime_change_impl(workpad)
 
 
 def _last_officeqa_statuses(journal: ExecutionJournal) -> set[str]:
-    statuses: set[str] = set()
-    for result in list(journal.tool_results or []):
-        facts = dict(dict(result).get("facts") or {})
-        metadata = dict(facts.get("metadata") or {})
-        status = str(metadata.get("officeqa_status", "") or "").strip().lower()
-        if status:
-            statuses.add(status)
-    return statuses
+    return last_officeqa_statuses_impl(journal)
 
 
 def _build_retrieval_exhaustion_proof(
@@ -2304,53 +1820,19 @@ def _build_retrieval_exhaustion_proof(
     planning_signature: str,
     terminal_reason: str = "",
 ) -> dict[str, Any]:
-    attempts = _retrieval_strategy_attempts(workpad)
-    attempted_total = [
-        str(item.get("applied_strategy", "") or item.get("requested_strategy", "") or "").strip()
-        for item in attempts
-        if str(item.get("applied_strategy", "") or item.get("requested_strategy", "") or "").strip()
-    ]
-    attempted_current = [
-        str(item.get("applied_strategy", "") or item.get("requested_strategy", "") or "").strip()
-        for item in attempts
-        if str(item.get("material_input_signature", "") or "") == planning_signature
-        and str(item.get("applied_strategy", "") or item.get("requested_strategy", "") or "").strip()
-    ]
-    untried_current = [item for item in admissible_strategies if item not in attempted_current]
-    statuses = _last_officeqa_statuses(journal)
-    retry_policy = dict(dict(workpad or {}).get("officeqa_retry_policy") or {})
-    repair_failures = [dict(item) for item in list(dict(workpad or {}).get("officeqa_repair_failures", []) or []) if isinstance(item, dict)]
-    failure_codes = {str(item.get("code", "") or "").strip() for item in repair_failures if str(item.get("code", "") or "").strip()}
-    retrieval_diagnostics = dict(dict(workpad or {}).get("retrieval_diagnostics") or {})
-    candidate_sources = [dict(item) for item in list(retrieval_diagnostics.get("candidate_sources", []) or []) if isinstance(item, dict)]
-    parser_or_extraction_gap = bool(statuses & {"missing_table", "partial_table", "missing_row", "missing_month_coverage", "unit_ambiguity"})
-    compute_capability_missing = str(retry_policy.get("recommended_repair_target", "") or "") == "compute"
-    candidate_universe_exhausted = bool(journal.retrieval_iterations) and not candidate_sources and not parser_or_extraction_gap
-    no_material_change = bool(failure_codes & {"repair_applied_but_no_new_evidence", "repair_reused_stale_state"})
-    strategies_exhausted = len(untried_current) == 0
-    benchmark_terminal_allowed = bool(
-        strategies_exhausted
-        and (
-            candidate_universe_exhausted
-            or parser_or_extraction_gap
-            or compute_capability_missing
-            or no_material_change
-            or journal.retrieval_iterations >= MAX_RETRIEVAL_HOPS
-        )
+    proof = build_retrieval_exhaustion_proof_impl(
+        admissible_strategies=admissible_strategies,
+        journal=journal,
+        retrieval_intent=retrieval_intent,
+        workpad=workpad,
+        planning_signature=planning_signature,
+        terminal_reason=terminal_reason,
     )
-    return {
-        "admissible_strategies": list(admissible_strategies),
-        "attempted_strategies_total": list(dict.fromkeys(attempted_total)),
-        "attempted_strategies_current_regime": list(dict.fromkeys(attempted_current)),
-        "untried_strategies": untried_current,
-        "material_input_signature": planning_signature,
-        "last_regime_change": _last_regime_change(workpad),
-        "strategies_exhausted": strategies_exhausted,
-        "candidate_universe_exhausted": candidate_universe_exhausted,
-        "compute_capability_missing": compute_capability_missing,
-        "parser_or_extraction_gap": parser_or_extraction_gap,
-        "no_material_change": no_material_change,
-        "benchmark_terminal_allowed": benchmark_terminal_allowed,
-        "terminal_reason": str(terminal_reason or ""),
-        "recommended_repair_target": str(retry_policy.get("recommended_repair_target", "") or ""),
-    }
+    proof["last_regime_change"] = last_regime_change_impl(workpad)
+    proof["untried_strategies"] = list(proof.pop("untried_strategies_current_regime", proof.get("untried_strategies", [])))
+    proof["no_material_change"] = bool(
+        set(str(item.get("code", "") or "") for item in list(dict(workpad or {}).get("officeqa_repair_failures", []) or []) if isinstance(item, dict))
+        & {"repair_applied_but_no_new_evidence", "repair_reused_stale_state"}
+    )
+    proof["recommended_repair_target"] = str(dict(dict(workpad or {}).get("officeqa_retry_policy") or {}).get("recommended_repair_target", "") or "")
+    return proof

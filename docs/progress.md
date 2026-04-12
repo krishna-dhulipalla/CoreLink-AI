@@ -913,3 +913,34 @@ Rules:
   - typed mutation metadata
   - rollback after no-op mutation
 - Broader OfficeQA retrieval, repair, and strategy-journal slices remained green after the Phase 7 changes.
+
+### Chat 39: V6 Phase 8 Completed With Retrieval Module Decomposition
+
+- Completed Phase 8 by extracting major retrieval logic out of `src/agent/nodes/orchestrator_retrieval.py` into dedicated modules.
+- Added `src/agent/retrieval_candidates.py`:
+  - typed `RetrievalCandidate` normalization
+  - candidate extraction from search results
+  - candidate dedupe
+  - candidate ranking
+  - table-family alignment checks
+- Added `src/agent/retrieval_tool_runtime.py`:
+  - tool lookup and descriptor helpers
+  - arg filtering
+  - structured retrieval arg construction
+  - retrieval tool invocation wrappers
+  - retrieval-action to tool-args translation
+- Added `src/agent/retrieval_retry_policy.py`:
+  - planning signatures
+  - action material-input signatures
+  - strategy rotation trigger checks
+  - last-regime helpers
+  - retrieval exhaustion proof assembly
+- Added a shared `RetrievalCandidate` contract in `src/agent/contracts.py`.
+- `src/agent/nodes/orchestrator_retrieval.py` now delegates those concerns to the extracted modules and acts more like composition glue than a single retrieval monolith.
+- Added direct module tests:
+  - `tests/test_retrieval_candidates.py`
+  - `tests/test_retrieval_tool_runtime.py`
+- Focused and broader validation stayed green for:
+  - candidate extraction and ranking
+  - retrieval tool arg generation
+  - retrieval strategy and repair slices through the existing OfficeQA runtime
