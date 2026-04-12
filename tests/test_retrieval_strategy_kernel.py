@@ -84,3 +84,23 @@ def test_retrieval_strategy_kernel_infers_hybrid_from_constraints():
     )
 
     assert kernel.select_strategy(retrieval_intent) == "hybrid"
+
+
+def test_retrieval_strategy_kernel_returns_next_untried_strategy_in_admissible_order():
+    kernel = RetrievalStrategyKernel(
+        [
+            FunctionRetrievalStrategyHandler(name="table_first", planner=lambda context: RetrievalAction(action="tool", tool_name="fetch_officeqa_table")),
+            FunctionRetrievalStrategyHandler(name="hybrid", planner=lambda context: RetrievalAction(action="tool", tool_name="search_officeqa_documents")),
+            FunctionRetrievalStrategyHandler(name="multi_table", planner=lambda context: RetrievalAction(action="tool", tool_name="fetch_officeqa_table")),
+            FunctionRetrievalStrategyHandler(name="text_first", planner=lambda context: RetrievalAction(action="tool", tool_name="fetch_officeqa_pages")),
+            FunctionRetrievalStrategyHandler(name="multi_document", planner=lambda context: RetrievalAction(action="tool", tool_name="search_officeqa_documents")),
+        ]
+    )
+
+    retrieval_intent = RetrievalIntent(
+        strategy="table_first",
+        fallback_chain=["multi_table", "hybrid"],
+    )
+
+    assert kernel.admissible_strategies(retrieval_intent)[:3] == ["table_first", "multi_table", "hybrid"]
+    assert kernel.next_strategy(retrieval_intent, {"table_first"}) == "multi_table"

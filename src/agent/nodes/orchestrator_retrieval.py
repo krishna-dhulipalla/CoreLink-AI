@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -1915,36 +1916,138 @@ def _plan_retrieval_action(
     journal: ExecutionJournal,
     registry: dict[str, dict[str, Any]],
     benchmark_overrides: dict[str, Any] | None = None,
+    workpad: dict[str, Any] | None = None,
 ) -> RetrievalAction:
     available_tools = _retrieval_tools_available(tool_plan, registry)
-    if not available_tools or journal.retrieval_iterations >= MAX_RETRIEVAL_HOPS:
-        return RetrievalAction(action="answer", rationale="No remaining retrieval capacity.")
-
-    requested_strategy = _RETRIEVAL_STRATEGY_KERNEL.select_strategy(retrieval_intent)
-    heuristic = _RETRIEVAL_STRATEGY_KERNEL.plan_action(
-        _strategy_context(
-            execution_mode=execution_mode,
-            source_bundle=source_bundle,
-            retrieval_intent=retrieval_intent,
-            tool_plan=tool_plan,
-            journal=journal,
-            registry=registry,
-            benchmark_overrides=benchmark_overrides,
-            requested_strategy=requested_strategy,
-        )
+    planning_signature = _retrieval_planning_signature(source_bundle, retrieval_intent, workpad)
+    admissible_strategies = _RETRIEVAL_STRATEGY_KERNEL.admissible_strategies(retrieval_intent)
+    exhaustion_proof = _build_retrieval_exhaustion_proof(
+        admissible_strategies=admissible_strategies,
+        journal=journal,
+        retrieval_intent=retrieval_intent,
+        workpad=workpad,
+        planning_signature=planning_signature,
     )
-    planned = _validate_retrieval_action(heuristic, tool_plan, registry)
-    if not planned.requested_strategy:
-        planned.requested_strategy = requested_strategy
-    if not planned.strategy:
-        planned.strategy = retrieval_intent.strategy
-    return _attach_retrieval_diagnostics(
-        planned,
+    if not available_tools or journal.retrieval_iterations >= MAX_RETRIEVAL_HOPS:
+        exhaustion_proof["terminal_reason"] = "no_remaining_retrieval_capacity"
+        exhaustion_proof["candidate_universe_exhausted"] = True
+        exhaustion_proof["benchmark_terminal_allowed"] = bool(exhaustion_proof.get("strategies_exhausted")) or journal.retrieval_iterations >= MAX_RETRIEVAL_HOPS
+        return RetrievalAction(
+            action="answer",
+            rationale="No remaining retrieval capacity.",
+            regime_change="strategy_exhausted",
+            no_material_change=True,
+            material_input_signature=planning_signature,
+            exhaustion_proof=exhaustion_proof,
+        )
+
+    attempts = _retrieval_strategy_attempts(workpad)
+    attempted_current_regime = {
+        str(item.get("applied_strategy", "") or item.get("requested_strategy", "") or "").strip()
+        for item in attempts
+        if str(item.get("material_input_signature", "") or "") == planning_signature
+        and str(item.get("applied_strategy", "") or item.get("requested_strategy", "") or "").strip()
+    }
+    rotation_requested, rotation_reason = _strategy_rotation_requested(workpad)
+    preferred_strategy = _RETRIEVAL_STRATEGY_KERNEL.select_strategy(retrieval_intent)
+    ordered_candidates = list(admissible_strategies)
+    if rotation_requested and preferred_strategy in attempted_current_regime:
+        rotated_strategy = _RETRIEVAL_STRATEGY_KERNEL.next_strategy(retrieval_intent, attempted_current_regime)
+        if rotated_strategy:
+            ordered_candidates = [rotated_strategy, *[item for item in admissible_strategies if item != rotated_strategy]]
+    if not ordered_candidates:
+        exhaustion_proof["terminal_reason"] = "no_admissible_retrieval_strategy"
+        exhaustion_proof["strategies_exhausted"] = True
+        exhaustion_proof["benchmark_terminal_allowed"] = True
+        return RetrievalAction(
+            action="answer",
+            rationale="No admissible retrieval strategy is available.",
+            regime_change="strategy_exhausted",
+            no_material_change=True,
+            material_input_signature=planning_signature,
+            exhaustion_proof=exhaustion_proof,
+        )
+
+    duplicate_requested = False
+    last_duplicate_signature = ""
+    selected_action: RetrievalAction | None = None
+    for index, requested_strategy in enumerate(ordered_candidates):
+        heuristic = _RETRIEVAL_STRATEGY_KERNEL.plan_action(
+            _strategy_context(
+                execution_mode=execution_mode,
+                source_bundle=source_bundle,
+                retrieval_intent=retrieval_intent,
+                tool_plan=tool_plan,
+                journal=journal,
+                registry=registry,
+                benchmark_overrides=benchmark_overrides,
+                requested_strategy=requested_strategy,
+            )
+        )
+        planned = _validate_retrieval_action(heuristic, tool_plan, registry)
+        if not planned.requested_strategy:
+            planned.requested_strategy = requested_strategy
+        if not planned.strategy:
+            planned.strategy = requested_strategy or retrieval_intent.strategy
+        planned.material_input_signature = _retrieval_action_material_input_signature(planned)
+        strategy_name = str(planned.strategy or planned.requested_strategy or requested_strategy or "").strip()
+        duplicate_requested = any(
+            str(item.get("material_input_signature", "") or "") == planned.material_input_signature
+            and str(item.get("applied_strategy", "") or item.get("requested_strategy", "") or "").strip() == strategy_name
+            for item in attempts
+        )
+        if duplicate_requested:
+            last_duplicate_signature = planned.material_input_signature
+            continue
+        if index > 0 or (rotation_requested and strategy_name != preferred_strategy):
+            planned.regime_change = "strategy_rotation"
+            planned.no_material_change = True
+            if not planned.strategy_reason:
+                planned.strategy_reason = rotation_reason or "Rotated to the next admissible retrieval strategy."
+        elif not attempts:
+            planned.regime_change = "initial_strategy"
+        selected_action = planned
+        break
+
+    if selected_action is None:
+        exhaustion_proof["terminal_reason"] = "strategies_exhausted_without_material_change"
+        exhaustion_proof["strategies_exhausted"] = True
+        exhaustion_proof["no_material_change"] = True
+        exhaustion_proof["benchmark_terminal_allowed"] = True
+        selected_action = RetrievalAction(
+            action="answer",
+            stage="answer",
+            requested_strategy=ordered_candidates[0] if ordered_candidates else preferred_strategy,
+            strategy=ordered_candidates[0] if ordered_candidates else preferred_strategy,
+            strategy_reason=rotation_reason or "All admissible retrieval strategies would repeat materially identical inputs.",
+            regime_change="strategy_exhausted",
+            query=_derive_retrieval_seed_query(source_bundle, retrieval_intent),
+            material_input_signature=last_duplicate_signature or planning_signature,
+            no_material_change=True,
+            exhaustion_proof=exhaustion_proof,
+            rationale="No untried retrieval strategy remains for the current regime.",
+        )
+
+    if not selected_action.exhaustion_proof:
+        selected_action.exhaustion_proof = exhaustion_proof
+    if not selected_action.material_input_signature:
+        selected_action.material_input_signature = planning_signature
+    selected_action = _attach_retrieval_diagnostics(
+        selected_action,
         retrieval_intent=retrieval_intent,
         journal=journal,
         source_bundle=source_bundle,
         benchmark_overrides=benchmark_overrides,
     )
+    selected_action.exhaustion_proof = _build_retrieval_exhaustion_proof(
+        admissible_strategies=admissible_strategies,
+        journal=journal,
+        retrieval_intent=retrieval_intent,
+        workpad=workpad,
+        planning_signature=planning_signature,
+        terminal_reason=str(selected_action.exhaustion_proof.get("terminal_reason", "") or ""),
+    )
+    return selected_action
 
 
 def _tool_args_from_retrieval_action(
@@ -2076,3 +2179,163 @@ def _tool_args_from_retrieval_action(
         elif lowered == "chunk_limit":
             args[field_name] = max(1, action.chunk_limit)
     return args
+
+
+def _retrieval_strategy_attempts(workpad: dict[str, Any] | None) -> list[dict[str, Any]]:
+    return [dict(item) for item in list(dict(workpad or {}).get("retrieval_strategy_attempts", []) or []) if isinstance(item, dict)]
+
+
+def _retrieval_planning_signature(
+    source_bundle: SourceBundle,
+    retrieval_intent: RetrievalIntent,
+    workpad: dict[str, Any] | None = None,
+) -> str:
+    padded_workpad = dict(workpad or {})
+    payload = {
+        "focus_query": source_bundle.focus_query,
+        "target_period": source_bundle.target_period,
+        "source_files_expected": list(source_bundle.source_files_expected or []),
+        "entity": retrieval_intent.entity,
+        "metric": retrieval_intent.metric,
+        "period": retrieval_intent.period,
+        "period_type": retrieval_intent.period_type,
+        "target_years": list(retrieval_intent.target_years or []),
+        "publication_year_window": list(retrieval_intent.publication_year_window or []),
+        "preferred_publication_years": list(retrieval_intent.preferred_publication_years or []),
+        "source_constraint_policy": retrieval_intent.source_constraint_policy,
+        "granularity_requirement": retrieval_intent.granularity_requirement,
+        "document_family": retrieval_intent.document_family,
+        "aggregation_shape": retrieval_intent.aggregation_shape,
+        "must_include_terms": list(retrieval_intent.must_include_terms or []),
+        "must_exclude_terms": list(retrieval_intent.must_exclude_terms or []),
+        "query_plan": retrieval_intent.query_plan.model_dump(),
+        "override_query": str(padded_workpad.get("officeqa_override_query", "") or ""),
+        "override_table_query": str(padded_workpad.get("officeqa_override_table_query", "") or ""),
+    }
+    return hashlib.sha1(json.dumps(payload, sort_keys=True, ensure_ascii=True).encode("utf-8")).hexdigest()[:16]
+
+
+def _retrieval_action_material_input_signature(action: RetrievalAction) -> str:
+    payload = {
+        "requested_strategy": str(action.requested_strategy or ""),
+        "strategy": str(action.strategy or ""),
+        "stage": str(action.stage or ""),
+        "tool_name": str(action.tool_name or ""),
+        "query": str(action.query or ""),
+        "document_id": str(action.document_id or ""),
+        "path": str(action.path or ""),
+        "page_start": int(action.page_start or 0),
+        "page_limit": int(action.page_limit or 0),
+        "row_offset": int(action.row_offset or 0),
+        "row_limit": int(action.row_limit or 0),
+        "chunk_start": int(action.chunk_start or 0),
+        "chunk_limit": int(action.chunk_limit or 0),
+        "evidence_gap": str(action.evidence_gap or ""),
+    }
+    return hashlib.sha1(json.dumps(payload, sort_keys=True, ensure_ascii=True).encode("utf-8")).hexdigest()[:16]
+
+
+def _strategy_rotation_requested(workpad: dict[str, Any] | None) -> tuple[bool, str]:
+    padded_workpad = dict(workpad or {})
+    retry_policy = dict(padded_workpad.get("officeqa_retry_policy") or {})
+    repair_transition = dict(
+        padded_workpad.get("officeqa_pending_repair_transition")
+        or padded_workpad.get("officeqa_latest_repair_transition")
+        or {}
+    )
+    repair_failures = [dict(item) for item in list(padded_workpad.get("officeqa_repair_failures", []) or []) if isinstance(item, dict)]
+    evidence_commit_review = dict(padded_workpad.get("officeqa_evidence_commit_review") or {})
+    if bool(retry_policy.get("retry_allowed")) and str(retry_policy.get("recommended_repair_target", "") or "") == "gather":
+        return True, "validator_gather_retry"
+    if evidence_commit_review:
+        return True, "evidence_commit_review"
+    if repair_transition:
+        return True, str(repair_transition.get("reroute_action", "") or "repair_transition")
+    if any(str(item.get("code", "") or "") in {"repair_applied_but_no_new_evidence", "repair_reused_stale_state"} for item in repair_failures):
+        return True, "repair_stall"
+    return False, ""
+
+
+def _last_regime_change(workpad: dict[str, Any] | None) -> str:
+    padded_workpad = dict(workpad or {})
+    transition = dict(
+        padded_workpad.get("officeqa_pending_repair_transition")
+        or padded_workpad.get("officeqa_latest_repair_transition")
+        or {}
+    )
+    if transition:
+        return str(transition.get("reroute_action", "") or transition.get("status", "") or "")
+    latest_attempt = dict(padded_workpad.get("latest_retrieval_strategy_attempt") or {})
+    return str(latest_attempt.get("regime_change", "") or "")
+
+
+def _last_officeqa_statuses(journal: ExecutionJournal) -> set[str]:
+    statuses: set[str] = set()
+    for result in list(journal.tool_results or []):
+        facts = dict(dict(result).get("facts") or {})
+        metadata = dict(facts.get("metadata") or {})
+        status = str(metadata.get("officeqa_status", "") or "").strip().lower()
+        if status:
+            statuses.add(status)
+    return statuses
+
+
+def _build_retrieval_exhaustion_proof(
+    *,
+    admissible_strategies: list[str],
+    journal: ExecutionJournal,
+    retrieval_intent: RetrievalIntent,
+    workpad: dict[str, Any] | None,
+    planning_signature: str,
+    terminal_reason: str = "",
+) -> dict[str, Any]:
+    attempts = _retrieval_strategy_attempts(workpad)
+    attempted_total = [
+        str(item.get("applied_strategy", "") or item.get("requested_strategy", "") or "").strip()
+        for item in attempts
+        if str(item.get("applied_strategy", "") or item.get("requested_strategy", "") or "").strip()
+    ]
+    attempted_current = [
+        str(item.get("applied_strategy", "") or item.get("requested_strategy", "") or "").strip()
+        for item in attempts
+        if str(item.get("material_input_signature", "") or "") == planning_signature
+        and str(item.get("applied_strategy", "") or item.get("requested_strategy", "") or "").strip()
+    ]
+    untried_current = [item for item in admissible_strategies if item not in attempted_current]
+    statuses = _last_officeqa_statuses(journal)
+    retry_policy = dict(dict(workpad or {}).get("officeqa_retry_policy") or {})
+    repair_failures = [dict(item) for item in list(dict(workpad or {}).get("officeqa_repair_failures", []) or []) if isinstance(item, dict)]
+    failure_codes = {str(item.get("code", "") or "").strip() for item in repair_failures if str(item.get("code", "") or "").strip()}
+    retrieval_diagnostics = dict(dict(workpad or {}).get("retrieval_diagnostics") or {})
+    candidate_sources = [dict(item) for item in list(retrieval_diagnostics.get("candidate_sources", []) or []) if isinstance(item, dict)]
+    parser_or_extraction_gap = bool(statuses & {"missing_table", "partial_table", "missing_row", "missing_month_coverage", "unit_ambiguity"})
+    compute_capability_missing = str(retry_policy.get("recommended_repair_target", "") or "") == "compute"
+    candidate_universe_exhausted = bool(journal.retrieval_iterations) and not candidate_sources and not parser_or_extraction_gap
+    no_material_change = bool(failure_codes & {"repair_applied_but_no_new_evidence", "repair_reused_stale_state"})
+    strategies_exhausted = len(untried_current) == 0
+    benchmark_terminal_allowed = bool(
+        strategies_exhausted
+        and (
+            candidate_universe_exhausted
+            or parser_or_extraction_gap
+            or compute_capability_missing
+            or no_material_change
+            or journal.retrieval_iterations >= MAX_RETRIEVAL_HOPS
+        )
+    )
+    return {
+        "admissible_strategies": list(admissible_strategies),
+        "attempted_strategies_total": list(dict.fromkeys(attempted_total)),
+        "attempted_strategies_current_regime": list(dict.fromkeys(attempted_current)),
+        "untried_strategies": untried_current,
+        "material_input_signature": planning_signature,
+        "last_regime_change": _last_regime_change(workpad),
+        "strategies_exhausted": strategies_exhausted,
+        "candidate_universe_exhausted": candidate_universe_exhausted,
+        "compute_capability_missing": compute_capability_missing,
+        "parser_or_extraction_gap": parser_or_extraction_gap,
+        "no_material_change": no_material_change,
+        "benchmark_terminal_allowed": benchmark_terminal_allowed,
+        "terminal_reason": str(terminal_reason or ""),
+        "recommended_repair_target": str(retry_policy.get("recommended_repair_target", "") or ""),
+    }

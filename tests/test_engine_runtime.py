@@ -289,9 +289,13 @@ def test_record_retrieval_strategy_attempt_persists_requested_and_applied_strate
         tool_name="fetch_officeqa_pages",
         evidence_gap="narrative support",
         strategy_reason="hybrid strategy selected because narrative support is likely necessary",
+        regime_change="strategy_rotation",
         query="national defense 1940",
         document_id="treasury_bulletin_1941_11_json",
         candidate_sources=[{"document_id": "treasury_bulletin_1941_11_json"}],
+        material_input_signature="sig-123",
+        no_material_change=True,
+        exhaustion_proof={"strategies_exhausted": False, "untried_strategies": ["multi_table"]},
     )
 
     updated = _record_retrieval_strategy_attempt(workpad, journal, action)
@@ -301,6 +305,118 @@ def test_record_retrieval_strategy_attempt_persists_requested_and_applied_strate
     assert latest["requested_strategy"] == "text_first"
     assert latest["applied_strategy"] == "hybrid"
     assert latest["tool_name"] == "fetch_officeqa_pages"
+    assert latest["regime_change"] == "strategy_rotation"
+    assert latest["material_input_signature"] == "sig-123"
+    assert latest["no_material_change"] is True
+    assert updated["officeqa_strategy_exhaustion_proof"]["strategies_exhausted"] is False
+
+
+def test_plan_retrieval_action_rotates_to_next_strategy_after_validator_retry_request():
+    registry = build_capability_registry(BUILTIN_RETRIEVAL_TOOLS)
+    tool_plan = ToolPlan(selected_tools=["search_officeqa_documents", "fetch_officeqa_table", "fetch_officeqa_pages"])
+    source_bundle = SourceBundle(
+        task_text="What were the total expenditures for U.S. national defense in the calendar year 1940?",
+        focus_query="U.S. national defense total expenditures calendar year 1940",
+        target_period="1940",
+        entities=["U.S. national defense"],
+    )
+    retrieval_intent = RetrievalIntent(
+        entity="U.S. national defense",
+        metric="total expenditures",
+        period="1940",
+        strategy="table_first",
+        fallback_chain=["hybrid", "text_first"],
+        source_constraint_policy="off",
+    )
+
+    first_action = _plan_retrieval_action(
+        execution_mode="document_grounded_analysis",
+        source_bundle=source_bundle,
+        retrieval_intent=retrieval_intent,
+        tool_plan=tool_plan,
+        journal=ExecutionJournal(),
+        registry=registry,
+        benchmark_overrides={"benchmark_adapter": "officeqa"},
+        workpad={},
+    )
+
+    rotated = _plan_retrieval_action(
+        execution_mode="document_grounded_analysis",
+        source_bundle=source_bundle,
+        retrieval_intent=retrieval_intent,
+        tool_plan=tool_plan,
+        journal=ExecutionJournal(),
+        registry=registry,
+        benchmark_overrides={"benchmark_adapter": "officeqa"},
+        workpad={
+            "officeqa_retry_policy": {"retry_allowed": True, "recommended_repair_target": "gather"},
+            "retrieval_strategy_attempts": [
+                {
+                    "applied_strategy": first_action.strategy,
+                    "requested_strategy": first_action.requested_strategy,
+                    "material_input_signature": first_action.exhaustion_proof["material_input_signature"],
+                }
+            ],
+        },
+    )
+
+    assert rotated.requested_strategy == "hybrid"
+    assert rotated.regime_change == "strategy_rotation"
+    assert rotated.no_material_change is True
+
+
+def test_plan_retrieval_action_emits_exhaustion_proof_when_all_strategies_repeat_same_regime():
+    registry = build_capability_registry(BUILTIN_RETRIEVAL_TOOLS)
+    tool_plan = ToolPlan(selected_tools=["search_officeqa_documents", "fetch_officeqa_table", "fetch_officeqa_pages"])
+    source_bundle = SourceBundle(
+        task_text="What were the total expenditures for U.S. national defense in the calendar year 1940?",
+        focus_query="U.S. national defense total expenditures calendar year 1940",
+        target_period="1940",
+        entities=["U.S. national defense"],
+    )
+    retrieval_intent = RetrievalIntent(
+        entity="U.S. national defense",
+        metric="total expenditures",
+        period="1940",
+        strategy="table_first",
+        fallback_chain=["hybrid", "text_first"],
+        source_constraint_policy="off",
+    )
+
+    first_action = _plan_retrieval_action(
+        execution_mode="document_grounded_analysis",
+        source_bundle=source_bundle,
+        retrieval_intent=retrieval_intent,
+        tool_plan=tool_plan,
+        journal=ExecutionJournal(),
+        registry=registry,
+        benchmark_overrides={"benchmark_adapter": "officeqa"},
+        workpad={},
+    )
+    duplicate_signature = first_action.exhaustion_proof["material_input_signature"]
+    exhausted = _plan_retrieval_action(
+        execution_mode="document_grounded_analysis",
+        source_bundle=source_bundle,
+        retrieval_intent=retrieval_intent,
+        tool_plan=tool_plan,
+        journal=ExecutionJournal(retrieval_iterations=2),
+        registry=registry,
+        benchmark_overrides={"benchmark_adapter": "officeqa"},
+        workpad={
+            "officeqa_retry_policy": {"retry_allowed": True, "recommended_repair_target": "gather"},
+            "officeqa_repair_failures": [{"code": "repair_applied_but_no_new_evidence"}],
+            "retrieval_strategy_attempts": [
+                {"applied_strategy": "table_first", "material_input_signature": duplicate_signature},
+                {"applied_strategy": "hybrid", "material_input_signature": duplicate_signature},
+                {"applied_strategy": "text_first", "material_input_signature": duplicate_signature},
+            ],
+        },
+    )
+
+    assert exhausted.action == "answer"
+    assert exhausted.regime_change == "strategy_exhausted"
+    assert exhausted.exhaustion_proof["strategies_exhausted"] is True
+    assert exhausted.exhaustion_proof["benchmark_terminal_allowed"] is True
 
 
 def test_search_ranking_ignores_generic_domain_tokens_and_prefers_entity_focused_table_family():
@@ -4236,7 +4352,17 @@ def test_officeqa_reviewer_routes_structured_failure_into_targeted_gather_retry_
                 "provenance_complete": False,
             },
         },
-        workpad={"events": [], "stage_outputs": {}, "tool_results": [], "review_ready": True},
+        workpad={
+            "events": [],
+            "stage_outputs": {},
+            "tool_results": [],
+            "review_ready": True,
+            "officeqa_strategy_exhaustion_proof": {
+                "strategies_exhausted": True,
+                "benchmark_terminal_allowed": True,
+                "candidate_universe_exhausted": True,
+            },
+        },
     )
     state["retrieval_intent"] = {
         "entity": "National Defense",
@@ -4323,7 +4449,17 @@ def test_officeqa_reviewer_stops_when_validator_retry_path_is_exhausted():
             "structured_evidence": {},
             "compute_result": {"status": "insufficient", "operation": "monthly_sum_percent_change", "validation_errors": ["Missing comparable period totals for 1940 and 1953."]},
         },
-        workpad={"events": [], "stage_outputs": {}, "tool_results": [], "review_ready": True},
+        workpad={
+            "events": [],
+            "stage_outputs": {},
+            "tool_results": [],
+            "review_ready": True,
+            "officeqa_strategy_exhaustion_proof": {
+                "strategies_exhausted": True,
+                "benchmark_terminal_allowed": True,
+                "parser_or_extraction_gap": True,
+            },
+        },
     )
     state["retrieval_intent"] = {
         "entity": "National Defense",

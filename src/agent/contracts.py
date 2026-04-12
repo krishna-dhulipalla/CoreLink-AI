@@ -662,6 +662,7 @@ class RetrievalAction(BaseModel):
     requested_strategy: str = ""
     strategy: str = ""
     strategy_reason: str = ""
+    regime_change: str = ""
     tool_name: str = ""
     query: str = ""
     url: str = ""
@@ -674,8 +675,11 @@ class RetrievalAction(BaseModel):
     chunk_start: int = 0
     chunk_limit: int = 3
     evidence_gap: str = ""
+    material_input_signature: str = ""
+    no_material_change: bool = False
     candidate_sources: list[dict[str, Any]] = Field(default_factory=list)
     rejected_candidates: list[dict[str, Any]] = Field(default_factory=list)
+    exhaustion_proof: dict[str, Any] = Field(default_factory=dict)
     rationale: str = ""
 
 
@@ -687,9 +691,12 @@ class RetrievalStrategyAttempt(BaseModel):
     tool_name: str = ""
     evidence_gap: str = ""
     strategy_reason: str = ""
+    regime_change: str = ""
     query: str = ""
     document_id: str = ""
     candidate_source_count: int = 0
+    material_input_signature: str = ""
+    no_material_change: bool = False
 
 
 class ProgressSignature(BaseModel):

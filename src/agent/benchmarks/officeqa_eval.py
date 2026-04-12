@@ -446,6 +446,8 @@ def capture_officeqa_artifacts(trace: dict[str, Any] | None) -> dict[str, Any]:
         "llm_usage": list(workpad.get("officeqa_llm_usage", []) or [])[:10],
         "llm_repair_history": list(workpad.get("officeqa_llm_repair_history", []) or [])[:6],
         "repair_failures": list(workpad.get("officeqa_repair_failures", []) or [])[:6],
+        "strategy_exhaustion_proof": dict(workpad.get("officeqa_strategy_exhaustion_proof") or {}),
+        "retrieval_strategy_attempts": list(workpad.get("retrieval_strategy_attempts", []) or [])[:10],
         "latest_repair_transition": dict(
             workpad.get("officeqa_latest_repair_transition")
             or workpad.get("officeqa_pending_repair_transition")

@@ -717,6 +717,7 @@ def _record_llm_repair_decision(
             "document_pivot_triggered": False,
             "effective_retrieval_change": path_changed,
             "reroute_action": reroute_action,
+            "regime_change": _officeqa_regime_change(reroute_action),
             "pre_retrieval_signature": pre_retrieval_signature,
             "post_retrieval_signature": post_retrieval_signature,
             "decision": dict(decision or {}),
@@ -856,15 +857,20 @@ def _record_retrieval_strategy_attempt(
         tool_name=str(retrieval_action.tool_name or ""),
         evidence_gap=str(retrieval_action.evidence_gap or ""),
         strategy_reason=str(retrieval_action.strategy_reason or ""),
+        regime_change=str(retrieval_action.regime_change or ""),
         query=str(retrieval_action.query or ""),
         document_id=str(retrieval_action.document_id or ""),
         candidate_source_count=len(list(retrieval_action.candidate_sources or [])),
+        material_input_signature=str(retrieval_action.material_input_signature or ""),
+        no_material_change=bool(retrieval_action.no_material_change),
     ).model_dump()
     updated = dict(workpad)
     attempts = [dict(item) for item in list(updated.get("retrieval_strategy_attempts", []) or []) if isinstance(item, dict)]
     attempts.append(payload)
     updated["retrieval_strategy_attempts"] = attempts[-16:]
     updated["latest_retrieval_strategy_attempt"] = payload
+    if isinstance(retrieval_action.exhaustion_proof, dict) and retrieval_action.exhaustion_proof:
+        updated["officeqa_strategy_exhaustion_proof"] = dict(retrieval_action.exhaustion_proof)
     return updated
 
 
@@ -1064,6 +1070,23 @@ def _officeqa_reroute_action(stage: str, trigger: str, decision: dict[str, Any])
     return action or "keep"
 
 
+def _officeqa_regime_change(reroute_action: str) -> str:
+    normalized = str(reroute_action or "").strip().lower()
+    if normalized in {"table_query_rewrite", "unit_repair"}:
+        return "local_reselection"
+    if normalized == "same_document_restart":
+        return "same_document_restart"
+    if normalized in {"cross_document_restart", "search_pool_widening", "source_rerank", "query_rewrite", "semantic_plan_restart"}:
+        return "cross_document_restart"
+    if normalized == "strategy_shift":
+        return "strategy_rotation"
+    if normalized == "capability_acquisition":
+        return "capability_acquisition"
+    if normalized in {"final_synthesis_fallback", "grounded_synthesis_fallback"}:
+        return "final_synthesis_fallback"
+    return normalized or "same_regime_retry"
+
+
 def _filter_tool_results_for_reroute_action(
     tool_results: list[dict[str, Any]],
     reroute_action: str,
@@ -1154,6 +1177,7 @@ def _invalidate_officeqa_repair_state(
         "trigger": trigger,
         "decision": str(decision.get("decision", "") or "").strip(),
         "reroute_action": reroute_action,
+        "regime_change": _officeqa_regime_change(reroute_action),
         "pre_retrieval_signature": pre_retrieval_signature,
         "post_retrieval_signature": post_retrieval_signature,
         "pre_evidence_signature": pre_evidence_signature,
@@ -1187,6 +1211,7 @@ def _finalize_pending_officeqa_repair_transition(
     pending["post_evidence_signature"] = post_evidence_signature
     if post_evidence_signature == str(pending.get("pre_evidence_signature", "") or ""):
         pending["status"] = "repair_applied_but_no_new_evidence"
+        pending["no_material_change"] = True
         updated = _record_officeqa_repair_failure(
             updated,
             code="repair_applied_but_no_new_evidence",
@@ -1199,6 +1224,7 @@ def _finalize_pending_officeqa_repair_transition(
         )
     else:
         pending["status"] = "fresh_evidence_observed"
+        pending["no_material_change"] = False
     updated["officeqa_latest_repair_transition"] = pending
     updated.pop("officeqa_pending_repair_transition", None)
     return updated
@@ -1377,12 +1403,16 @@ def _officeqa_retry_policy(
     journal: ExecutionJournal,
     tool_plan: ToolPlan,
     retrieval_intent: RetrievalIntent,
+    workpad: dict[str, Any] | None = None,
 ) -> tuple[bool, str]:
     repair_target = str(getattr(officeqa_validation, "recommended_repair_target", "") or "none")
     orchestration_strategy = str(getattr(officeqa_validation, "orchestration_strategy", "") or officeqa_orchestration_strategy(retrieval_intent))
+    exhaustion_proof = dict(dict(workpad or {}).get("officeqa_strategy_exhaustion_proof") or {})
     if repair_target == "none":
         return False, "officeqa_no_repair_target"
     if repair_target == "gather":
+        if exhaustion_proof and not bool(exhaustion_proof.get("benchmark_terminal_allowed")):
+            return True, ""
         if journal.retrieval_iterations >= _MAX_RETRIEVAL_HOPS:
             return False, "officeqa_retry_exhausted"
         retrieval_tools = [
@@ -1782,6 +1812,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                 journal=journal,
                 registry=registry,
                 benchmark_overrides=benchmark_overrides,
+                workpad=workpad,
             )
             workpad = _record_retrieval_strategy_attempt(workpad, journal, retrieval_action)
             if retrieval_action.action == "tool":
@@ -1920,6 +1951,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                                   journal=journal,
                                   registry=registry,
                                   benchmark_overrides=benchmark_overrides,
+                                  workpad=workpad,
                               )
                           llm_repair_state["query_rewrite_calls"] = int(llm_repair_state.get("query_rewrite_calls", 0) or 0) + 1
                           workpad["officeqa_llm_repair_state"] = llm_repair_state
@@ -2705,6 +2737,7 @@ def reviewer(state: RuntimeState) -> dict[str, Any]:
                 journal=journal,
                 tool_plan=tool_plan,
                 retrieval_intent=retrieval_intent,
+                workpad=workpad,
             )
             officeqa_validation.retry_allowed = retry_allowed
             officeqa_validation.retry_stop_reason = retry_stop_reason
@@ -2714,11 +2747,14 @@ def reviewer(state: RuntimeState) -> dict[str, Any]:
                 "remediation_codes": list(officeqa_validation.remediation_codes),
                 "retry_allowed": retry_allowed,
                 "retry_stop_reason": retry_stop_reason,
+                "strategy_exhaustion_proof": dict(workpad.get("officeqa_strategy_exhaustion_proof") or {}),
             }
-            if not retry_allowed and officeqa_validation.insufficiency_answer:
+            benchmark_terminal_allowed = bool(dict(workpad.get("officeqa_strategy_exhaustion_proof") or {}).get("benchmark_terminal_allowed"))
+            if not retry_allowed and officeqa_validation.insufficiency_answer and benchmark_terminal_allowed:
                 answer = officeqa_validation.insufficiency_answer
         validator_result = officeqa_validation.model_dump()
-        if officeqa_validation.replace_answer and officeqa_validation.insufficiency_answer:
+        benchmark_terminal_allowed = bool(dict(workpad.get("officeqa_strategy_exhaustion_proof") or {}).get("benchmark_terminal_allowed"))
+        if officeqa_validation.replace_answer and officeqa_validation.insufficiency_answer and benchmark_terminal_allowed:
             answer = officeqa_validation.insufficiency_answer
     review_packet = build_review_packet(
         task_text=latest_human_text(state["messages"]),

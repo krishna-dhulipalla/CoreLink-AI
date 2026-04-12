@@ -553,3 +553,54 @@ def test_build_case_report_includes_classification_and_artifacts():
     assert report["execution_summary"]["execution_mode"] == "document_grounded_analysis"
     assert report["execution_summary"]["retrieval_strategy"] == "hybrid"
     assert report["execution_summary"]["answer_mode"] == "hybrid_grounded"
+
+
+def test_build_case_report_includes_strategy_exhaustion_proof():
+    state = make_state(
+        "OfficeQA task",
+        benchmark_overrides={"benchmark_adapter": "officeqa"},
+        task_intent={"task_family": "document_qa", "execution_mode": "document_grounded_analysis"},
+        workpad={
+            "officeqa_strategy_exhaustion_proof": {
+                "admissible_strategies": ["table_first", "hybrid"],
+                "attempted_strategies_current_regime": ["table_first", "hybrid"],
+                "untried_strategies": [],
+                "strategies_exhausted": True,
+                "benchmark_terminal_allowed": True,
+            },
+            "retrieval_strategy_attempts": [
+                {"requested_strategy": "table_first", "applied_strategy": "table_first", "material_input_signature": "abc"},
+                {"requested_strategy": "hybrid", "applied_strategy": "hybrid", "material_input_signature": "abc"},
+            ],
+        },
+        execution_journal={
+            "events": [],
+            "tool_results": [],
+            "routed_tool_families": [],
+            "revision_count": 0,
+            "self_reflection_count": 0,
+            "retrieval_iterations": 2,
+            "retrieval_queries": [],
+            "retrieved_citations": [],
+            "final_artifact_signature": "",
+            "progress_signatures": [],
+            "stop_reason": "officeqa_retry_exhausted",
+            "contract_collapse_attempts": 0,
+        },
+        review_packet={
+            "validator_result": {
+                "verdict": "revise",
+                "retry_allowed": False,
+                "retry_stop_reason": "officeqa_retry_exhausted",
+                "remediation_codes": ["RETRIEVE_EXACT_PERIOD"],
+            }
+        },
+    )
+
+    report = build_case_report(
+        {"id": "case", "prompt": "OfficeQA task", "case_kind": "benchmark_regression"},
+        _trace(state, "<FINAL_ANSWER>Cannot calculate</FINAL_ANSWER>"),
+    )
+
+    assert report["artifacts"]["strategy_exhaustion_proof"]["strategies_exhausted"] is True
+    assert len(report["artifacts"]["retrieval_strategy_attempts"]) == 2

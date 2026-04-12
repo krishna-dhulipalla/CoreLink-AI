@@ -707,3 +707,34 @@ Rules:
   - strategy-kernel tests
   - OfficeQA planner tests
   - search-ranking and requested-strategy coverage
+
+### Chat 32: V6 Phase 2 Completed With Strategy Rotation, Exhaustion Proof, And Benchmark-Gated Insufficiency
+
+- Completed Phase 2 in the V6 architecture track by adding explicit admissible strategy ordering and next-strategy selection to `src/agent/retrieval_strategy_kernel.py`.
+- Retrieval planning now computes a regime-level material-input signature and uses it to block repeated strategy replays with materially identical retrieval inputs.
+- `src/agent/nodes/orchestrator_retrieval.py` now does three new things before committing the next retrieval hop:
+  - computes admissible strategies for the current task shape
+  - rotates to the next untried strategy when validator or evidence-commit state requests another gather attempt
+  - emits a typed exhaustion proof object when no materially new strategy remains
+- `RetrievalAction` and `RetrievalStrategyAttempt` now record:
+  - `regime_change`
+  - `material_input_signature`
+  - `no_material_change`
+- The executor now persists `officeqa_strategy_exhaustion_proof` in workpad state, and OfficeQA regression reporting exposes both:
+  - `strategy_exhaustion_proof`
+  - `retrieval_strategy_attempts`
+- Immediate repair state now carries a typed regime-change vocabulary instead of only freeform reroute labels. The current mapping includes:
+  - local reselection
+  - same-document restart
+  - cross-document restart
+  - strategy rotation
+  - capability acquisition
+  - final synthesis fallback
+- Reviewer behavior changed at the benchmark boundary:
+  - benchmark-mode insufficiency answers are no longer accepted just because a retry path said “stop”
+  - they now require an explicit exhaustion proof with `benchmark_terminal_allowed = true`
+- Focused validation stayed green for:
+  - admissible strategy ordering
+  - rotation to next strategy after gather retry
+  - exhaustion-proof emission when every admissible strategy would repeat the same regime
+  - OfficeQA report surfacing of the new proof object
