@@ -602,11 +602,26 @@ class RetrievalIntent(BaseModel):
     query_candidates: list[str] = Field(default_factory=list)
 
 
+RepairMutationClass = Literal[
+    "none",
+    "local_reselection",
+    "same_document_restart",
+    "cross_document_restart",
+    "strategy_rotation",
+    "search_expansion",
+    "semantic_plan_restart",
+]
+
+
 class OfficeQALLMRepairDecision(BaseModel):
     decision: Literal["keep", "rewrite_query", "retune_table_query", "change_strategy", "widen_search_pool"] = "keep"
     publication_scope_action: Literal["keep", "widen_publication_horizon", "switch_to_retrospective"] = "keep"
     restart_scope: Literal["none", "same_document", "cross_document", "semantic_plan_restart"] = "none"
     relax_provenance_priors: bool = False
+    mutation_class: RepairMutationClass = "none"
+    prior_regime_exhausted: bool = False
+    candidate_universe_signature: str = ""
+    rollback_on_no_material_change: bool = True
     revised_query: str = ""
     revised_table_query: str = ""
     preferred_strategy: Literal["table_first", "text_first", "hybrid", "multi_table", "multi_document", ""] = ""
@@ -741,6 +756,33 @@ class RetrievalStrategyAttempt(BaseModel):
     candidate_source_count: int = 0
     material_input_signature: str = ""
     no_material_change: bool = False
+
+
+class StrategyJournalEntry(BaseModel):
+    journal_key: str = ""
+    broader_key: str = ""
+    task_family: str = ""
+    semantic_signature: str = ""
+    aggregation_shape: str = ""
+    table_family: str = ""
+    requested_strategy: str = ""
+    applied_strategy: str = ""
+    evidence_ready: bool = False
+    evidence_missing_count: int = 0
+    compute_status: str = ""
+    validator_verdict: str = ""
+    final_verdict: str = ""
+    success: bool = False
+    stop_reason: str = ""
+    sequence_id: int = 0
+
+
+class StrategyJournalRecommendation(BaseModel):
+    journal_key: str = ""
+    broader_key: str = ""
+    ordered_strategies: list[str] = Field(default_factory=list)
+    strategy_scores: dict[str, float] = Field(default_factory=dict)
+    supporting_entries: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ProgressSignature(BaseModel):

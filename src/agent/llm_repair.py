@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -11,9 +13,12 @@ from agent.model_config import (
     invoke_structured_output,
 )
 from agent.prompts import OFFICEQA_STRUCTURED_REPAIR_SYSTEM, build_officeqa_structured_repair_prompt
+from agent.strategy_journal import recommend_strategy_order, strategy_journal_snapshot
 
 _MAX_QUERY_REWRITE_CALLS = 2
 _MAX_VALIDATOR_REPAIR_CALLS = 2
+_REPAIR_JOURNAL_TASK_FAMILY = "document_qa"
+_ALL_REPAIR_STRATEGIES = ["table_first", "text_first", "hybrid", "multi_table", "multi_document"]
 _SUPPORTED_RETRIEVAL_GAPS = {
     "wrong document",
     "wrong table family",
@@ -51,6 +56,81 @@ def _repairable_gap(evidence_gap: str) -> bool:
     if normalized in _SUPPORTED_RETRIEVAL_GAPS:
         return True
     return any(fragment in normalized for fragment in _SUPPORTED_RETRIEVAL_GAPS)
+
+
+def _repair_mutation_class(decision: OfficeQALLMRepairDecision) -> str:
+    if decision.mutation_class != "none":
+        return str(decision.mutation_class)
+    if decision.decision == "retune_table_query":
+        return "local_reselection"
+    if decision.decision == "change_strategy":
+        return "strategy_rotation"
+    if decision.restart_scope == "same_document":
+        return "same_document_restart"
+    if decision.restart_scope == "cross_document":
+        return "cross_document_restart"
+    if decision.restart_scope == "semantic_plan_restart":
+        return "semantic_plan_restart"
+    if decision.decision == "widen_search_pool" or decision.publication_scope_action in {"widen_publication_horizon", "switch_to_retrospective"}:
+        return "search_expansion"
+    if decision.decision == "rewrite_query":
+        return "cross_document_restart"
+    return "none"
+
+
+def officeqa_repair_universe_signature(
+    *,
+    retrieval_intent: RetrievalIntent,
+    execution_journal: ExecutionJournal | None = None,
+    current_query: str = "",
+    current_table_query: str = "",
+    candidate_sources: list[dict[str, Any]] | None = None,
+    review_feedback: dict[str, Any] | None = None,
+) -> str:
+    journal = execution_journal or ExecutionJournal()
+    feedback = dict(review_feedback or {})
+    candidates = [dict(item) for item in list(candidate_sources or []) if isinstance(item, dict)]
+    payload = {
+        "strategy": str(retrieval_intent.strategy or "").strip().lower(),
+        "source_constraint_policy": str(retrieval_intent.source_constraint_policy or "").strip().lower(),
+        "target_years": list(retrieval_intent.target_years or []),
+        "publication_year_window": list(retrieval_intent.publication_year_window or []),
+        "preferred_publication_years": list(retrieval_intent.preferred_publication_years or []),
+        "current_query": str(current_query or "").strip().lower(),
+        "current_table_query": str(current_table_query or "").strip().lower(),
+        "attempted_queries": list(dict.fromkeys(str(item or "").strip().lower() for item in list(journal.retrieval_queries or []) if str(item).strip()))[-6:],
+        "candidate_documents": [
+            {
+                "document_id": str(item.get("document_id", "") or "").strip().lower(),
+                "title": str(item.get("title", "") or "").strip().lower(),
+                "table_family": str(dict(item.get("best_evidence_unit") or {}).get("table_family", "") or "").strip().lower(),
+            }
+            for item in candidates[:6]
+        ],
+        "repair_target": str(feedback.get("repair_target", "") or "").strip().lower(),
+        "missing_dimensions": sorted(str(item or "").strip().lower() for item in list(feedback.get("missing_dimensions", []) or []) if str(item).strip()),
+    }
+    return hashlib.sha1(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+
+
+def officeqa_repair_universe_is_exhausted(workpad: dict[str, Any] | None, universe_signature: str) -> bool:
+    signature = str(universe_signature or "").strip()
+    if not signature:
+        return False
+    exhausted = [dict(item) for item in list(dict(workpad or {}).get("officeqa_exhausted_repair_universes", []) or []) if isinstance(item, dict)]
+    return any(str(item.get("candidate_universe_signature", "") or "").strip() == signature for item in exhausted)
+
+
+def _strategy_journal_context(retrieval_intent: RetrievalIntent) -> dict[str, Any]:
+    recommendation = recommend_strategy_order(
+        task_family=_REPAIR_JOURNAL_TASK_FAMILY,
+        retrieval_intent=retrieval_intent,
+        admissible_strategies=list(_ALL_REPAIR_STRATEGIES),
+    )
+    return {
+        "recommendation": recommendation.model_dump(),
+        "recent_entries": strategy_journal_snapshot(limit=6),
+    }
 
 
 def _structured_evidence_summary(curated_context: CuratedContext | None) -> dict[str, Any]:
@@ -138,12 +218,21 @@ def _rejected_evidence_families(
 
 def _execution_snapshot(
     *,
+    retrieval_intent: RetrievalIntent,
     execution_journal: ExecutionJournal,
     workpad: dict[str, Any],
     candidate_sources: list[dict[str, Any]] | None,
     review_feedback: dict[str, Any] | None,
     curated_context: CuratedContext | None,
 ) -> dict[str, Any]:
+    candidate_universe_signature = officeqa_repair_universe_signature(
+        retrieval_intent=retrieval_intent,
+        execution_journal=execution_journal,
+        current_query=str(retrieval_intent.query_plan.primary_semantic_query or ""),
+        current_table_query=str(dict(workpad or {}).get("officeqa_override_table_query", "") or ""),
+        candidate_sources=candidate_sources,
+        review_feedback=review_feedback,
+    )
     return {
         "attempted_queries": list(dict.fromkeys([str(item).strip() for item in list(execution_journal.retrieval_queries or []) if str(item).strip()]))[-6:],
         "candidate_pools_seen": _candidate_pools_seen(execution_journal),
@@ -151,7 +240,9 @@ def _execution_snapshot(
         "compute_admissibility_failures": _compute_admissibility_failures(workpad, review_feedback),
         "repair_failures": [dict(item) for item in list(workpad.get("officeqa_repair_failures", []) or [])[-4:] if isinstance(item, dict)],
         "repair_history": [dict(item) for item in list(workpad.get("officeqa_llm_repair_history", []) or [])[-4:] if isinstance(item, dict)],
+        "candidate_universe_signature": candidate_universe_signature,
         "structured_evidence_summary": _structured_evidence_summary(curated_context),
+        "strategy_journal": _strategy_journal_context(retrieval_intent),
     }
 
 
@@ -184,6 +275,8 @@ def _regime_stall_detected(
     if list(workpad.get("officeqa_llm_repair_history", []) or []):
         return True
     if list(workpad.get("officeqa_repair_failures", []) or []):
+        return True
+    if list(workpad.get("officeqa_exhausted_repair_universes", []) or []):
         return True
     feedback = dict(review_feedback or {})
     if list(feedback.get("remediation_codes", []) or []) or list(feedback.get("missing_dimensions", []) or []):
@@ -220,6 +313,9 @@ def _invoke_repair_decision(prompt: str) -> OfficeQALLMRepairDecision | None:
         return None
     if decision.decision == "change_strategy" and not decision.preferred_strategy:
         return None
+    decision.mutation_class = _repair_mutation_class(decision)  # type: ignore[assignment]
+    if decision.mutation_class in {"strategy_rotation", "cross_document_restart", "search_expansion", "semantic_plan_restart"}:
+        decision.prior_regime_exhausted = True
     return decision
 
 
@@ -248,6 +344,16 @@ def maybe_rewrite_retrieval_path(
         review_feedback=None,
     ):
         return None
+    universe_signature = officeqa_repair_universe_signature(
+        retrieval_intent=retrieval_intent,
+        execution_journal=journal,
+        current_query=current_query or source_bundle.focus_query,
+        current_table_query=current_table_query,
+        candidate_sources=candidate_sources,
+        review_feedback=None,
+    )
+    if officeqa_repair_universe_is_exhausted(workpad_payload, universe_signature):
+        return None
     prompt = build_officeqa_structured_repair_prompt(
         task_text=task_text,
         retrieval_strategy=retrieval_strategy,
@@ -260,6 +366,7 @@ def maybe_rewrite_retrieval_path(
         current_table_query=current_table_query,
         candidate_sources=candidate_sources,
         execution_snapshot=_execution_snapshot(
+            retrieval_intent=retrieval_intent,
             execution_journal=journal,
             workpad=workpad_payload,
             candidate_sources=candidate_sources,
@@ -268,7 +375,13 @@ def maybe_rewrite_retrieval_path(
         ),
         review_feedback=None,
     )
-    return _invoke_repair_decision(prompt)
+    decision = _invoke_repair_decision(prompt)
+    if decision is not None:
+        decision.mutation_class = _repair_mutation_class(decision)  # type: ignore[assignment]
+        if decision.mutation_class in {"strategy_rotation", "cross_document_restart", "search_expansion", "semantic_plan_restart"}:
+            decision.prior_regime_exhausted = True
+        decision.candidate_universe_signature = universe_signature
+    return decision
 
 
 def maybe_repair_from_validator(
@@ -293,6 +406,16 @@ def maybe_repair_from_validator(
         review_feedback=review_feedback,
     ):
         return None
+    universe_signature = officeqa_repair_universe_signature(
+        retrieval_intent=retrieval_intent,
+        execution_journal=journal,
+        current_query=(retrieval_intent.query_plan.primary_semantic_query or ""),
+        current_table_query="",
+        candidate_sources=candidate_sources,
+        review_feedback=review_feedback,
+    )
+    if officeqa_repair_universe_is_exhausted(workpad_payload, universe_signature):
+        return None
     missing_dimensions = [str(item or "") for item in list(review_feedback.get("missing_dimensions", []) or [])]
     evidence_gap = ", ".join(missing_dimensions[:4]) or ", ".join(str(item or "") for item in list(review_feedback.get("remediation_codes", []) or [])[:4])
     prompt = build_officeqa_structured_repair_prompt(
@@ -307,6 +430,7 @@ def maybe_repair_from_validator(
         current_table_query="",
         candidate_sources=candidate_sources,
         execution_snapshot=_execution_snapshot(
+            retrieval_intent=retrieval_intent,
             execution_journal=journal,
             workpad=workpad_payload,
             candidate_sources=candidate_sources,
@@ -315,4 +439,10 @@ def maybe_repair_from_validator(
         ),
         review_feedback=review_feedback,
     )
-    return _invoke_repair_decision(prompt)
+    decision = _invoke_repair_decision(prompt)
+    if decision is not None:
+        decision.mutation_class = _repair_mutation_class(decision)  # type: ignore[assignment]
+        if decision.mutation_class in {"strategy_rotation", "cross_document_restart", "search_expansion", "semantic_plan_restart"}:
+            decision.prior_regime_exhausted = True
+        decision.candidate_universe_signature = universe_signature
+    return decision

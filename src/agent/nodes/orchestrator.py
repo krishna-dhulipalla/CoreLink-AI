@@ -46,6 +46,8 @@ from agent.llm_control import (
 )
 from agent.llm_repair import (
     initial_officeqa_llm_repair_state,
+    officeqa_repair_universe_is_exhausted,
+    officeqa_repair_universe_signature,
     maybe_repair_from_validator,
     maybe_rewrite_retrieval_path,
     officeqa_llm_repair_budget,
@@ -57,6 +59,7 @@ from agent.solver.options import (
     deterministic_policy_options_final_answer,
 )
 from agent.solver.quant import deterministic_quant_final_answer
+from agent.strategy_journal import record_strategy_outcome, strategy_journal_snapshot
 from agent.tracer import format_messages_for_trace, get_tracer
 from agent.capabilities import resolve_tool_plan
 from agent.benchmarks.officeqa_validator import officeqa_orchestration_strategy
@@ -721,6 +724,10 @@ def _record_llm_repair_decision(
             "effective_retrieval_change": path_changed,
             "reroute_action": reroute_action,
             "regime_change": _officeqa_regime_change(reroute_action),
+            "mutation_class": str(decision.get("mutation_class", "") or ""),
+            "candidate_universe_signature": str(decision.get("candidate_universe_signature", "") or ""),
+            "prior_regime_exhausted": bool(decision.get("prior_regime_exhausted", False)),
+            "rollback_on_no_material_change": bool(decision.get("rollback_on_no_material_change", False)),
             "pre_retrieval_signature": pre_retrieval_signature,
             "post_retrieval_signature": post_retrieval_signature,
             "decision": dict(decision or {}),
@@ -951,6 +958,30 @@ def _record_retrieval_strategy_attempt(
     if isinstance(retrieval_action.exhaustion_proof, dict) and retrieval_action.exhaustion_proof:
         updated["officeqa_strategy_exhaustion_proof"] = dict(retrieval_action.exhaustion_proof)
     return updated
+
+
+def _latest_strategy_choice(workpad: dict[str, Any], retrieval_intent: RetrievalIntent) -> tuple[str, str]:
+    latest_attempt = dict(workpad.get("latest_retrieval_strategy_attempt") or {})
+    requested = str(latest_attempt.get("requested_strategy", "") or "").strip() or str(retrieval_intent.strategy or "").strip()
+    applied = str(latest_attempt.get("applied_strategy", "") or "").strip() or requested
+    return requested, applied
+
+
+def _current_structured_table_family(curated: CuratedContext) -> str:
+    structured = dict(curated.structured_evidence or {})
+    for item in list(structured.get("tables", []) or []):
+        if not isinstance(item, dict):
+            continue
+        family = str(item.get("table_family", "") or "").strip().lower()
+        if family:
+            return family
+    for item in list(structured.get("values", []) or []):
+        if not isinstance(item, dict):
+            continue
+        family = str(item.get("table_family", "") or "").strip().lower()
+        if family:
+            return family
+    return ""
 
 
 def _apply_table_review_decision(
@@ -1204,6 +1235,89 @@ def _record_officeqa_repair_failure(
     return updated
 
 
+def _register_exhausted_repair_universe(
+    workpad: dict[str, Any],
+    *,
+    candidate_universe_signature: str,
+    mutation_class: str,
+    stage: str,
+    trigger: str,
+) -> dict[str, Any]:
+    signature = str(candidate_universe_signature or "").strip()
+    if not signature:
+        return workpad
+    updated = dict(workpad)
+    exhausted = [dict(item) for item in list(updated.get("officeqa_exhausted_repair_universes", []) or []) if isinstance(item, dict)]
+    payload = {
+        "candidate_universe_signature": signature,
+        "mutation_class": str(mutation_class or "").strip(),
+        "stage": str(stage or "").strip(),
+        "trigger": str(trigger or "").strip(),
+        "repair_epoch": int(updated.get("officeqa_repair_epoch", 0) or 0),
+    }
+    if payload not in exhausted:
+        exhausted.append(payload)
+    updated["officeqa_exhausted_repair_universes"] = exhausted[-16:]
+    updated["officeqa_latest_exhausted_repair_universe"] = payload
+    return updated
+
+
+def _snapshot_officeqa_repair_rollback_state(
+    retrieval_intent: RetrievalIntent,
+    workpad: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "retrieval_intent": retrieval_intent.model_dump(),
+        "workpad_fields": {
+            "officeqa_override_query": workpad.get("officeqa_override_query"),
+            "officeqa_override_table_query": workpad.get("officeqa_override_table_query"),
+            "officeqa_current_document_id": workpad.get("officeqa_current_document_id"),
+            "officeqa_restart_from_semantic_plan": workpad.get("officeqa_restart_from_semantic_plan"),
+            "officeqa_last_retrieval_input_signature": workpad.get("officeqa_last_retrieval_input_signature"),
+        },
+    }
+
+
+def _restore_officeqa_repair_rollback_if_needed(
+    retrieval_intent: RetrievalIntent,
+    workpad: dict[str, Any],
+) -> tuple[RetrievalIntent, dict[str, Any], bool]:
+    rollback_payload = dict(workpad.get("officeqa_pending_repair_rollback") or {})
+    snapshot = dict(rollback_payload.get("rollback_snapshot") or {})
+    if not snapshot:
+        return retrieval_intent, workpad, False
+    restored_intent = RetrievalIntent.model_validate(snapshot.get("retrieval_intent") or retrieval_intent.model_dump())
+    updated = dict(workpad)
+    field_snapshot = dict(snapshot.get("workpad_fields") or {})
+    for key in (
+        "officeqa_override_query",
+        "officeqa_override_table_query",
+        "officeqa_current_document_id",
+        "officeqa_restart_from_semantic_plan",
+        "officeqa_last_retrieval_input_signature",
+    ):
+        if key in field_snapshot and field_snapshot.get(key) is not None:
+            updated[key] = field_snapshot.get(key)
+        else:
+            updated.pop(key, None)
+    latest_transition = dict(updated.get("officeqa_latest_repair_transition") or {})
+    if latest_transition:
+        latest_transition["rollback_applied"] = True
+        latest_transition["rollback_reason"] = str(rollback_payload.get("reason", "") or "repair_mutation_underperformed")
+        updated["officeqa_latest_repair_transition"] = latest_transition
+    updated.pop("officeqa_pending_repair_rollback", None)
+    updated = _record_officeqa_repair_failure(
+        updated,
+        code="repair_mutation_rolled_back",
+        details={
+            "reason": str(rollback_payload.get("reason", "") or "repair_mutation_underperformed"),
+            "stage": str(rollback_payload.get("stage", "") or ""),
+            "trigger": str(rollback_payload.get("trigger", "") or ""),
+        },
+    )
+    return restored_intent, updated, True
+
+
 def _invalidate_officeqa_repair_state(
     *,
     workpad: dict[str, Any],
@@ -1257,6 +1371,10 @@ def _invalidate_officeqa_repair_state(
         "decision": str(decision.get("decision", "") or "").strip(),
         "reroute_action": reroute_action,
         "regime_change": _officeqa_regime_change(reroute_action),
+        "mutation_class": str(decision.get("mutation_class", "") or "").strip(),
+        "candidate_universe_signature": str(decision.get("candidate_universe_signature", "") or "").strip(),
+        "prior_regime_exhausted": bool(decision.get("prior_regime_exhausted", False)),
+        "rollback_on_no_material_change": bool(decision.get("rollback_on_no_material_change", False)),
         "pre_retrieval_signature": pre_retrieval_signature,
         "post_retrieval_signature": post_retrieval_signature,
         "pre_evidence_signature": pre_evidence_signature,
@@ -1264,6 +1382,10 @@ def _invalidate_officeqa_repair_state(
         "requires_fresh_retrieval": True,
         "status": "pending_fresh_retrieval",
     }
+    rollback_snapshot = dict(updated_workpad.get("officeqa_pending_repair_rollback_snapshot") or {})
+    if rollback_snapshot:
+        transition["rollback_snapshot"] = rollback_snapshot
+        updated_workpad.pop("officeqa_pending_repair_rollback_snapshot", None)
     updated_workpad["officeqa_repair_epoch"] = repair_epoch
     updated_workpad["officeqa_pending_repair_transition"] = transition
     updated_workpad["officeqa_latest_repair_transition"] = transition
@@ -1291,6 +1413,13 @@ def _finalize_pending_officeqa_repair_transition(
     if post_evidence_signature == str(pending.get("pre_evidence_signature", "") or ""):
         pending["status"] = "repair_applied_but_no_new_evidence"
         pending["no_material_change"] = True
+        updated = _register_exhausted_repair_universe(
+            updated,
+            candidate_universe_signature=str(pending.get("candidate_universe_signature", "") or ""),
+            mutation_class=str(pending.get("mutation_class", "") or ""),
+            stage=str(pending.get("stage", "") or ""),
+            trigger=str(pending.get("trigger", "") or ""),
+        )
         updated = _record_officeqa_repair_failure(
             updated,
             code="repair_applied_but_no_new_evidence",
@@ -1301,6 +1430,14 @@ def _finalize_pending_officeqa_repair_transition(
                 "trigger": pending.get("trigger", ""),
             },
         )
+        rollback_snapshot = dict(pending.get("rollback_snapshot") or {})
+        if rollback_snapshot and bool(pending.get("rollback_on_no_material_change", False)):
+            updated["officeqa_pending_repair_rollback"] = {
+                "reason": "repair_applied_but_no_new_evidence",
+                "stage": str(pending.get("stage", "") or ""),
+                "trigger": str(pending.get("trigger", "") or ""),
+                "rollback_snapshot": rollback_snapshot,
+            }
     else:
         pending["status"] = "fresh_evidence_observed"
         pending["no_material_change"] = False
@@ -1374,6 +1511,8 @@ def _apply_officeqa_llm_repair_decision(
     relax_provenance_priors = bool(decision.get("relax_provenance_priors", False))
     path_changed = False
     reroute_action = _officeqa_reroute_action("", "", decision)
+    if not str(decision.get("mutation_class", "") or "").strip():
+        decision["mutation_class"] = "none"
 
     if action == "rewrite_query":
         revised_query = str(decision.get("revised_query", "") or "").strip()
@@ -1472,6 +1611,14 @@ def _apply_officeqa_llm_repair_decision(
             path_changed = True
     elif restart_scope == "same_document":
         updated_workpad.pop("officeqa_override_table_query", None)
+
+    if bool(decision.get("rollback_on_no_material_change", False)) and path_changed:
+        updated_workpad["officeqa_pending_repair_rollback_snapshot"] = _snapshot_officeqa_repair_rollback_state(
+            retrieval_intent,
+            workpad,
+        )
+    else:
+        updated_workpad.pop("officeqa_pending_repair_rollback_snapshot", None)
 
     return updated_intent, updated_workpad, path_changed, reroute_action
 
@@ -1600,6 +1747,17 @@ def make_executor(registry: dict[str, dict[str, Any]]):
             and review_feedback.get("retry_allowed", True)
         )
         active_retrieval_intent = _apply_review_orchestration(retrieval_intent, review_feedback)
+        if officeqa_mode:
+            active_retrieval_intent, workpad, rollback_applied = _restore_officeqa_repair_rollback_if_needed(
+                active_retrieval_intent,
+                workpad,
+            )
+            if rollback_applied:
+                workpad = _record_event(
+                    workpad,
+                    "executor",
+                    "repair mutation rolled back after no material evidence change",
+                )
         llm_control_state = (
             dict(workpad.get("officeqa_llm_control_state") or initial_officeqa_llm_control_state(active_retrieval_intent))
             if officeqa_mode
@@ -1762,7 +1920,25 @@ def make_executor(registry: dict[str, dict[str, Any]]):
             last_validator_repair_signature = str(workpad.get("officeqa_last_validator_repair_signature", "") or "").strip()
             validator_candidate_sources = list(dict(workpad.get("retrieval_diagnostics") or {}).get("candidate_sources") or [])
             repair_decision = None
-            if current_retrieval_signature != last_validator_repair_signature:
+            validator_universe_signature = officeqa_repair_universe_signature(
+                retrieval_intent=active_retrieval_intent,
+                execution_journal=journal,
+                current_query=(active_retrieval_intent.query_plan.primary_semantic_query or ""),
+                current_table_query=str(workpad.get("officeqa_override_table_query", "") or ""),
+                candidate_sources=validator_candidate_sources,
+                review_feedback=review_feedback,
+            )
+            if officeqa_repair_universe_is_exhausted(workpad, validator_universe_signature):
+                workpad = _record_officeqa_repair_failure(
+                    workpad,
+                    code="repair_exhausted_candidate_universe",
+                    details={
+                        "stage": "validator_repair",
+                        "trigger": str(review_feedback.get("orchestration_strategy", "") or review_feedback.get("repair_target", "") or "validator_retry"),
+                        "candidate_universe_signature": validator_universe_signature,
+                    },
+                )
+            elif current_retrieval_signature != last_validator_repair_signature:
                 repair_decision = maybe_repair_from_validator(
                     task_text=task_text,
                     retrieval_intent=active_retrieval_intent,
@@ -1906,6 +2082,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
         if intent.execution_mode in _RETRIEVAL_EXECUTION_MODES and (not review_feedback or targeted_retrieval_retry) and journal.retrieval_iterations < _MAX_RETRIEVAL_HOPS:
             retrieval_action = _plan_retrieval_action(
                 execution_mode=intent.execution_mode,
+                task_family=intent.task_family,
                 source_bundle=source_bundle,
                 retrieval_intent=active_retrieval_intent,
                 tool_plan=tool_plan,
@@ -2006,19 +2183,40 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                               )
                   if officeqa_mode and llm_repair_state.get("query_rewrite_calls", 0) < llm_repair_budget.get("query_rewrite_calls", 0):
                       current_retrieval_signature = _officeqa_retrieval_input_signature(active_retrieval_intent, workpad)
-                      repair_decision = maybe_rewrite_retrieval_path(
-                          task_text=task_text,
+                      retrieval_table_query = _officeqa_table_query(active_retrieval_intent, source_bundle) if retrieval_action.tool_name in {"fetch_officeqa_table", "lookup_officeqa_rows", "lookup_officeqa_cells"} else ""
+                      retrieval_universe_signature = officeqa_repair_universe_signature(
                           retrieval_intent=active_retrieval_intent,
-                          source_bundle=source_bundle,
                           execution_journal=journal,
-                          workpad=workpad,
-                          curated_context=curated,
-                          retrieval_strategy=retrieval_action.strategy,
-                          evidence_gap=retrieval_action.evidence_gap,
                           current_query=retrieval_action.query,
-                          current_table_query=_officeqa_table_query(active_retrieval_intent, source_bundle) if retrieval_action.tool_name in {"fetch_officeqa_table", "lookup_officeqa_rows", "lookup_officeqa_cells"} else "",
+                          current_table_query=retrieval_table_query,
                           candidate_sources=retrieval_action.candidate_sources,
+                          review_feedback=None,
                       )
+                      repair_decision = None
+                      if officeqa_repair_universe_is_exhausted(workpad, retrieval_universe_signature):
+                          workpad = _record_officeqa_repair_failure(
+                              workpad,
+                              code="repair_exhausted_candidate_universe",
+                              details={
+                                  "stage": "retrieval_repair",
+                                  "trigger": retrieval_action.evidence_gap or retrieval_action.stage or "retrieval_gap",
+                                  "candidate_universe_signature": retrieval_universe_signature,
+                              },
+                          )
+                      else:
+                          repair_decision = maybe_rewrite_retrieval_path(
+                              task_text=task_text,
+                              retrieval_intent=active_retrieval_intent,
+                              source_bundle=source_bundle,
+                              execution_journal=journal,
+                              workpad=workpad,
+                              curated_context=curated,
+                              retrieval_strategy=retrieval_action.strategy,
+                              evidence_gap=retrieval_action.evidence_gap,
+                              current_query=retrieval_action.query,
+                              current_table_query=retrieval_table_query,
+                              candidate_sources=retrieval_action.candidate_sources,
+                          )
                       if repair_decision is not None:
                           decision_payload = repair_decision.model_dump()
                           repair_trigger = retrieval_action.evidence_gap or retrieval_action.stage or "retrieval_gap"
@@ -2043,6 +2241,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                               )
                               retrieval_action = _plan_retrieval_action(
                                   execution_mode=intent.execution_mode,
+                                  task_family=intent.task_family,
                                   source_bundle=source_bundle,
                                   retrieval_intent=active_retrieval_intent,
                                   tool_plan=tool_plan,
@@ -3026,8 +3225,26 @@ def reviewer(state: RuntimeState) -> dict[str, Any]:
         stop_reason=stop_reason,
     )
 
+    requested_strategy, applied_strategy = _latest_strategy_choice(workpad, retrieval_intent)
+    journal_entry = record_strategy_outcome(
+        task_family=intent.task_family,
+        retrieval_intent=retrieval_intent,
+        requested_strategy=requested_strategy,
+        applied_strategy=applied_strategy,
+        evidence_ready=bool(evidence_sufficiency.is_sufficient),
+        evidence_missing_count=len(list(evidence_sufficiency.missing_dimensions or [])),
+        compute_status=compute_status,
+        validator_verdict=str(dict(validator_result or {}).get("verdict", "") or ""),
+        final_verdict=report.verdict,
+        success=report.verdict == "pass",
+        stop_reason=report.stop_reason,
+        table_family=_current_structured_table_family(curated),
+    )
+
     workpad["review_ready"] = False
     workpad["review_mode"] = intent.review_mode
+    workpad["strategy_journal_latest"] = journal_entry.model_dump()
+    workpad["strategy_journal_snapshot"] = strategy_journal_snapshot(limit=8)
     workpad = _record_event(workpad, "reviewer", f"{verdict.upper()}: {reasoning}")
     tracer = get_tracer()
     if tracer:
@@ -3048,6 +3265,7 @@ def reviewer(state: RuntimeState) -> dict[str, Any]:
                 "retry_stop_reason": dict(validator_result or {}).get("retry_stop_reason", ""),
                 "answer_mode": retrieval_intent.answer_mode,
                 "compute_policy": retrieval_intent.compute_policy,
+                "strategy_journal_latest": journal_entry.model_dump(),
                 "used_llm": False,
                 "llm_decision_reason": "rule_based_validator_review",
             },

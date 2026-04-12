@@ -53,7 +53,9 @@ OFFICEQA_STRUCTURED_REPAIR_SYSTEM = (
     "Your job is to improve retrieval or table selection without answering the user question.\n"
     "Return only a structured repair decision.\n"
     "Allowed actions are: keep, rewrite_query, retune_table_query, change_strategy, widen_search_pool.\n"
-    "Use publication_scope_action, restart_scope, and relax_provenance_priors when the current retrieval regime is exhausted.\n"
+    "Use publication_scope_action, restart_scope, relax_provenance_priors, and mutation_class when the current retrieval regime is exhausted.\n"
+    "Prefer materially different regime changes over small rewrites when the visible candidate universe has already failed.\n"
+    "Use the provided strategy journal and candidate universe signature to avoid repeating a failed repair universe.\n"
     "Do not invent facts, numbers, or final answers.\n"
     "Only change the retrieval path if the current evidence is semantically weak or misaligned."
 )
@@ -282,6 +284,8 @@ def build_officeqa_structured_repair_prompt(
         f"COMPUTE_ADMISSIBILITY_FAILURES={list(snapshot.get('compute_admissibility_failures', []) or [])}\n"
         f"REPAIR_FAILURES={list(snapshot.get('repair_failures', []) or [])}\n"
         f"REPAIR_HISTORY={list(snapshot.get('repair_history', []) or [])}\n"
+        f"CANDIDATE_UNIVERSE_SIGNATURE={str(snapshot.get('candidate_universe_signature', '') or '')}\n"
+        f"STRATEGY_JOURNAL={dict(snapshot.get('strategy_journal', {}) or {})}\n"
         f"STRUCTURED_EVIDENCE_SUMMARY={dict(snapshot.get('structured_evidence_summary', {}) or {})}\n"
         f"CANDIDATE_SOURCES={candidates}"
     )

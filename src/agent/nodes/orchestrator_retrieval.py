@@ -21,6 +21,7 @@ from agent.officeqa_strategy_planner import (
 )
 from agent.retrieval_strategy_kernel import FunctionRetrievalStrategyHandler, RetrievalStrategyContext, RetrievalStrategyKernel
 from agent.retrieval_reasoning import assess_evidence_sufficiency
+from agent.strategy_journal import recommend_strategy_order
 from agent.solver.options import (
     deterministic_policy_options_tool_call,
     deterministic_standard_options_tool_call,
@@ -1910,6 +1911,7 @@ _RETRIEVAL_STRATEGY_KERNEL = RetrievalStrategyKernel(
 def _plan_retrieval_action(
     *,
     execution_mode: str,
+    task_family: str = "",
     source_bundle: SourceBundle,
     retrieval_intent: RetrievalIntent,
     tool_plan: ToolPlan,
@@ -1921,6 +1923,17 @@ def _plan_retrieval_action(
     available_tools = _retrieval_tools_available(tool_plan, registry)
     planning_signature = _retrieval_planning_signature(source_bundle, retrieval_intent, workpad)
     admissible_strategies = _RETRIEVAL_STRATEGY_KERNEL.admissible_strategies(retrieval_intent)
+    journal_recommendation = recommend_strategy_order(
+        task_family=task_family,
+        retrieval_intent=retrieval_intent,
+        admissible_strategies=admissible_strategies,
+    )
+    if journal_recommendation.ordered_strategies:
+        admissible_strategies = [
+            str(item)
+            for item in journal_recommendation.ordered_strategies
+            if str(item) in admissible_strategies
+        ] + [item for item in admissible_strategies if item not in journal_recommendation.ordered_strategies]
     exhaustion_proof = _build_retrieval_exhaustion_proof(
         admissible_strategies=admissible_strategies,
         journal=journal,
@@ -1928,6 +1941,7 @@ def _plan_retrieval_action(
         workpad=workpad,
         planning_signature=planning_signature,
     )
+    exhaustion_proof["strategy_journal"] = journal_recommendation.model_dump()
     if not available_tools or journal.retrieval_iterations >= MAX_RETRIEVAL_HOPS:
         exhaustion_proof["terminal_reason"] = "no_remaining_retrieval_capacity"
         exhaustion_proof["candidate_universe_exhausted"] = True
@@ -2047,6 +2061,7 @@ def _plan_retrieval_action(
         planning_signature=planning_signature,
         terminal_reason=str(selected_action.exhaustion_proof.get("terminal_reason", "") or ""),
     )
+    selected_action.exhaustion_proof["strategy_journal"] = journal_recommendation.model_dump()
     return selected_action
 
 

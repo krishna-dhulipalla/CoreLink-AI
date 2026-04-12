@@ -19,11 +19,12 @@ from agent.benchmarks import (
 )
 from agent.benchmarks.officeqa_validator import validate_officeqa_final
 from agent.benchmarks.officeqa_index import build_officeqa_index
-from agent.contracts import EvidenceSufficiency, ExecutionJournal, OfficeQAComputeResult, OfficeQALLMRepairDecision, OfficeQASourceRerankDecision, OfficeQAValidationResult, ProgressSignature, RetrievalAction, RetrievalIntent, SourceBundle, TaskIntent, ToolPlan
+from agent.contracts import CuratedContext, EvidenceSufficiency, ExecutionJournal, OfficeQAComputeResult, OfficeQALLMRepairDecision, OfficeQASourceRerankDecision, OfficeQAValidationResult, ProgressSignature, RetrievalAction, RetrievalIntent, SourceBundle, TaskIntent, ToolPlan
 from agent.officeqa_structured_evidence import build_officeqa_structured_evidence
 from agent.retrieval_tools import fetch_corpus_document as fetch_corpus_document_tool
 from agent.retrieval_tools import fetch_officeqa_table, lookup_officeqa_cells, search_reference_corpus
 from agent.retrieval_reasoning import assess_evidence_sufficiency, build_retrieval_intent, predictive_evidence_gaps
+from agent.strategy_journal import clear_strategy_journal, record_strategy_outcome
 from agent.tools.normalization import normalize_tool_output
 from agent.nodes.intake import intake
 from agent.nodes.output_adapter import output_adapter
@@ -41,7 +42,10 @@ from agent.nodes.orchestrator_retrieval import _tool_args_from_retrieval_action
 from agent.nodes.orchestrator import (
     _MAX_RETRIEVAL_HOPS,
     _apply_officeqa_llm_repair_decision,
+    _finalize_pending_officeqa_repair_transition,
+    _invalidate_officeqa_repair_state,
     _record_retrieval_strategy_attempt,
+    _restore_officeqa_repair_rollback_if_needed,
     _officeqa_retrieval_input_signature,
     context_curator,
     fast_path_gate,
@@ -363,6 +367,57 @@ def test_plan_retrieval_action_rotates_to_next_strategy_after_validator_retry_re
     assert rotated.requested_strategy == "hybrid"
     assert rotated.regime_change == "strategy_rotation"
     assert rotated.no_material_change is True
+
+
+def test_plan_retrieval_action_uses_strategy_journal_prior():
+    clear_strategy_journal()
+    retrieval_intent = RetrievalIntent(
+        entity="National defense",
+        metric="total expenditures",
+        period="1940",
+        strategy="table_first",
+        fallback_chain=["hybrid", "text_first"],
+        source_constraint_policy="off",
+        aggregation_shape="calendar_year_total",
+        period_type="calendar_year",
+        granularity_requirement="calendar_year",
+    )
+    record_strategy_outcome(
+        task_family="document_qa",
+        retrieval_intent=retrieval_intent,
+        requested_strategy="hybrid",
+        applied_strategy="hybrid",
+        evidence_ready=True,
+        evidence_missing_count=0,
+        compute_status="ok",
+        validator_verdict="pass",
+        final_verdict="pass",
+        success=True,
+        table_family="category_breakdown",
+    )
+    source_bundle = SourceBundle(
+        task_text="What were the total expenditures for U.S. national defense in the calendar year 1940?",
+        focus_query="U.S. national defense total expenditures calendar year 1940",
+        target_period="1940",
+        entities=["U.S. national defense"],
+    )
+    tool_plan = ToolPlan(selected_tools=["search_officeqa_documents", "fetch_officeqa_table", "fetch_officeqa_pages"])
+    registry = build_capability_registry(BUILTIN_RETRIEVAL_TOOLS)
+
+    action = _plan_retrieval_action(
+        execution_mode="document_grounded_analysis",
+        task_family="document_qa",
+        source_bundle=source_bundle,
+        retrieval_intent=retrieval_intent,
+        tool_plan=tool_plan,
+        journal=ExecutionJournal(),
+        registry=registry,
+        benchmark_overrides={"benchmark_adapter": "officeqa"},
+        workpad={},
+    )
+
+    assert action.requested_strategy == "hybrid"
+    assert action.exhaustion_proof["strategy_journal"]["ordered_strategies"][0] == "hybrid"
 
 
 def test_plan_retrieval_action_emits_exhaustion_proof_when_all_strategies_repeat_same_regime():
@@ -3671,6 +3726,104 @@ def test_officeqa_retrieval_repair_records_document_pivot_separately_from_llm_pa
     assert repair_entry["resolved_document_id"] == "treasury_bulletin_1940_03_json"
 
 
+def test_officeqa_repair_no_material_change_marks_universe_exhausted_and_queues_rollback():
+    retrieval_intent = RetrievalIntent(
+        entity="Public debt",
+        metric="public debt outstanding",
+        period="1945",
+        granularity_requirement="point_lookup",
+        strategy="table_first",
+    )
+    pre_signature = _officeqa_retrieval_input_signature(retrieval_intent, {})
+    updated_intent, updated_workpad, changed, reroute_action = _apply_officeqa_llm_repair_decision(
+        retrieval_intent,
+        {},
+        {
+            "decision": "rewrite_query",
+            "mutation_class": "cross_document_restart",
+            "revised_query": "Treasury Bulletin total public debt outstanding 1945 year-end",
+            "candidate_universe_signature": "universe-123",
+            "rollback_on_no_material_change": True,
+        },
+    )
+
+    workpad, journal, curated = _invalidate_officeqa_repair_state(
+        workpad=updated_workpad,
+        journal=ExecutionJournal(
+            retrieval_iterations=1,
+            tool_results=[{"type": "search_officeqa_documents", "facts": {"document_id": "treasury_bulletin_1945_08_json"}}],
+        ),
+        curated=CuratedContext(),
+        stage="retrieval_repair",
+        trigger="wrong document",
+        decision={
+            "decision": "rewrite_query",
+            "mutation_class": "cross_document_restart",
+            "candidate_universe_signature": "universe-123",
+            "rollback_on_no_material_change": True,
+        },
+        reroute_action=reroute_action,
+        pre_retrieval_signature=pre_signature,
+        post_retrieval_signature=_officeqa_retrieval_input_signature(updated_intent, updated_workpad),
+    )
+
+    finalized = _finalize_pending_officeqa_repair_transition(
+        workpad,
+        journal=journal,
+        curated=curated,
+        tool_name="search_officeqa_documents",
+    )
+
+    assert changed is True
+    assert finalized["officeqa_latest_repair_transition"]["status"] == "repair_applied_but_no_new_evidence"
+    assert finalized["officeqa_exhausted_repair_universes"][-1]["candidate_universe_signature"] == "universe-123"
+    assert finalized["officeqa_pending_repair_rollback"]["reason"] == "repair_applied_but_no_new_evidence"
+
+
+def test_officeqa_pending_repair_rollback_restores_prior_regime():
+    retrieval_intent = RetrievalIntent(
+        entity="Public debt",
+        metric="public debt outstanding",
+        period="1945",
+        granularity_requirement="point_lookup",
+        strategy="hybrid",
+    )
+    restored_intent, restored_workpad, applied = _restore_officeqa_repair_rollback_if_needed(
+        retrieval_intent,
+        {
+            "officeqa_override_query": "bad override",
+            "officeqa_pending_repair_rollback": {
+                "reason": "repair_applied_but_no_new_evidence",
+                "stage": "retrieval_repair",
+                "trigger": "wrong document",
+                "rollback_snapshot": {
+                    "retrieval_intent": RetrievalIntent(
+                        entity="Public debt",
+                        metric="public debt outstanding",
+                        period="1945",
+                        granularity_requirement="point_lookup",
+                        strategy="table_first",
+                    ).model_dump(),
+                    "workpad_fields": {
+                        "officeqa_override_query": None,
+                        "officeqa_override_table_query": None,
+                        "officeqa_current_document_id": None,
+                        "officeqa_restart_from_semantic_plan": None,
+                        "officeqa_last_retrieval_input_signature": "sig-1",
+                    },
+                },
+            },
+            "officeqa_latest_repair_transition": {"status": "repair_applied_but_no_new_evidence"},
+        },
+    )
+
+    assert applied is True
+    assert restored_intent.strategy == "table_first"
+    assert "officeqa_pending_repair_rollback" not in restored_workpad
+    assert restored_workpad["officeqa_latest_repair_transition"]["rollback_applied"] is True
+    assert restored_workpad["officeqa_repair_failures"][-1]["code"] == "repair_mutation_rolled_back"
+
+
 def test_officeqa_validator_repair_does_not_repeat_without_retrieval_input_change(monkeypatch):
     prompt = "According to the Treasury Bulletin, what was total public debt outstanding in 1945?"
     registry = build_capability_registry([CALCULATOR_TOOL, SEARCH_TOOL, *BUILTIN_RETRIEVAL_TOOLS])
@@ -4544,6 +4697,108 @@ def test_engine_reviewer_flags_missing_grounding_for_document_answers():
 
     assert result["solver_stage"] == "REVISE"
     assert "source attribution" in " ".join(result["review_feedback"]["missing_dimensions"]).lower()
+
+
+def test_officeqa_reviewer_records_strategy_journal_entry():
+    clear_strategy_journal()
+    prompt = (
+        "Using specifically only the reported values for all individual calendar months in 1953, "
+        "what trend does the retrieved evidence support?"
+    )
+    state = make_state(
+        prompt,
+        task_profile="document_qa",
+        task_intent={
+            "task_family": "document_qa",
+            "execution_mode": "document_grounded_analysis",
+            "complexity_tier": "structured_analysis",
+            "tool_families_needed": ["document_retrieval"],
+            "evidence_strategy": "document_first",
+            "review_mode": "document_grounded",
+            "completion_mode": "document_grounded",
+            "routing_rationale": "",
+            "confidence": 0.84,
+            "planner_source": "heuristic",
+        },
+        benchmark_overrides={"benchmark_adapter": "officeqa"},
+        execution_journal={
+            "events": [],
+            "tool_results": [
+                {
+                    "type": "fetch_officeqa_pages",
+                    "facts": {
+                        "document_id": "treasury_1953_json",
+                        "citation": "treasury_1953.json",
+                        "metadata": {"officeqa_status": "ok"},
+                    },
+                }
+            ],
+            "routed_tool_families": [],
+            "revision_count": 0,
+            "self_reflection_count": 0,
+            "retrieval_iterations": 1,
+            "retrieval_queries": [],
+            "retrieved_citations": ["treasury_1953.json"],
+            "final_artifact_signature": "sig-det",
+            "progress_signatures": [],
+            "stop_reason": "",
+            "contract_collapse_attempts": 0,
+        },
+        curated_context={
+            "objective": prompt,
+            "facts_in_use": [],
+            "open_questions": [],
+            "assumptions": [],
+            "requested_output": {"format": "xml"},
+            "provenance_summary": {"source_bundle": {"urls": []}},
+            "structured_evidence": {
+                "tables": [],
+                "values": [],
+                "page_chunks": [{"document_id": "treasury_1953_json", "citation": "treasury_1953.json", "page_locator": "page 4"}],
+                "value_count": 0,
+                "provenance_complete": True,
+            },
+            "compute_result": {
+                "status": "unsupported",
+                "operation": "point_lookup",
+                "validation_errors": ["Deterministic OfficeQA compute does not yet support aggregation shape 'point_lookup'."],
+                "citations": [],
+                "ledger": [],
+                "provenance_complete": False,
+            },
+        },
+        workpad={"events": [], "stage_outputs": {}, "tool_results": [], "review_ready": True, "latest_retrieval_strategy_attempt": {"requested_strategy": "table_first", "applied_strategy": "table_first"}},
+    )
+    state["retrieval_intent"] = {
+        "entity": "Expenditures",
+        "metric": "weighted average expenditures",
+        "period": "1953",
+        "document_family": "official_government_finance",
+        "aggregation_shape": "point_lookup",
+        "analysis_modes": ["weighted_average", "time_series_forecasting"],
+        "answer_mode": "hybrid_grounded",
+        "compute_policy": "preferred",
+        "partial_answer_allowed": True,
+        "strategy": "table_first",
+        "must_include_terms": [],
+        "must_exclude_terms": [],
+        "query_candidates": [],
+    }
+    state["messages"].append(
+        AIMessage(
+            content=(
+                "Grounded partial answer: based on the retrieved evidence, monthly expenditures rose through mid-year before flattening. "
+                "An exact weighted average calculation is not supported by the currently retrieved values, so the remaining unsupported remainder is the exact weighted-average amount. "
+                "[Source: treasury_1953.json]"
+            )
+        )
+    )
+
+    result = reviewer(state)
+
+    assert result["workpad"]["strategy_journal_latest"]["final_verdict"] in {"pass", "revise", "fail"}
+    assert result["workpad"]["strategy_journal_latest"]["applied_strategy"] == "table_first"
+    assert len(result["workpad"]["strategy_journal_snapshot"]) >= 1
 
 
 def test_officeqa_reviewer_routes_structured_failure_into_targeted_gather_retry_and_records_validator_result():

@@ -852,3 +852,64 @@ Rules:
   - compute-capability repair retry
   - semantic replan before retrieval
   - broader OfficeQA semantic-plan / compute-capability runtime slices
+
+### Chat 37: V6 Phase 6 Completed With A Bounded Cross-Task Strategy Journal
+
+- Completed Phase 6 by adding `src/agent/strategy_journal.py` as a new bounded, process-local runtime surface for cross-task strategy learning.
+- The journal now records one outcome entry per completed task with:
+  - task family
+  - semantic signature
+  - aggregation shape
+  - optional table family
+  - requested strategy
+  - applied strategy
+  - evidence readiness
+  - compute status
+  - validator verdict
+  - final success/failure
+- Reviewer now writes the latest journal entry and bounded snapshot into `workpad` so the behavior is visible outside raw traces.
+- Retrieval planning now consumes journal recommendations before strategy dispatch:
+  - recent successful strategies are promoted
+  - repeated failed strategies are downranked
+  - original admissible-order tie-breakers remain intact when the journal has no strong signal
+- The recommendation payload is also attached to retrieval exhaustion diagnostics so later debugging can see:
+  - journal key
+  - broader key
+  - ordered strategies
+  - per-strategy scores
+  - supporting recent entries
+- The journal is bounded and resettable:
+  - capped total entry count
+  - bounded snapshot size
+  - explicit `clear_strategy_journal()` for tests or cold-start runs
+- This keeps the first Phase 6 version intentionally simple and local while leaving a clean seam for later UCB-style exploration or more advanced policy learning.
+- Focused and broader validation stayed green for:
+  - direct journal scoring and snapshot behavior
+  - journal-informed retrieval planning
+  - reviewer-side journal recording
+  - broader OfficeQA runtime slices that include semantic planning and compute-capability behavior
+
+### Chat 38: V6 Phase 7 Completed With Typed Repair Mutation, Universe Exhaustion Blocking, And Rollback
+
+- Completed Phase 7 by hardening the repair boundary in `src/agent/llm_repair.py`, `src/agent/nodes/orchestrator.py`, `src/agent/contracts.py`, and `src/agent/prompts.py`.
+- Repair decisions now carry explicit mutation metadata instead of acting like plain query rewrites:
+  - `mutation_class`
+  - `prior_regime_exhausted`
+  - `candidate_universe_signature`
+  - `rollback_on_no_material_change`
+- The repair prompt now consumes stronger runtime context:
+  - execution-journal query history
+  - candidate pools seen
+  - prior repair failures and repair history
+  - structured evidence summary
+  - strategy-journal recommendation and recent entries
+  - candidate-universe signature
+- Repair is now blocked when the current candidate universe has already been proven exhausted, instead of spending another LLM call inside the same failed regime.
+- The orchestrator now snapshots pre-mutation retrieval state and rolls back if a repair mutation produces no material evidence change after fresh retrieval.
+- Exhausted repair universes are now recorded explicitly in `workpad`, making the stop condition visible without reading long raw traces.
+- Added focused validation for:
+  - journal-aware repair prompt context
+  - exhausted-universe repair blocking
+  - typed mutation metadata
+  - rollback after no-op mutation
+- Broader OfficeQA retrieval, repair, and strategy-journal slices remained green after the Phase 7 changes.
