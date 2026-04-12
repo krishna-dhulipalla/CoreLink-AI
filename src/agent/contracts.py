@@ -260,6 +260,19 @@ class OfficeQAComputeResult(BaseModel):
     citations: list[str] = Field(default_factory=list)
     ledger: list[dict[str, Any]] = Field(default_factory=list)
     provenance_complete: bool = False
+    capability_source: Literal["native", "synthesized", "cached"] = "native"
+    capability_signature: str = ""
+    capability_validated: bool = False
+
+
+class OfficeQAComputeCapabilitySpec(BaseModel):
+    operation_signature: str = ""
+    function_name: str = "compute_capability"
+    function_code: str = ""
+    rationale: str = ""
+    required_record_fields: list[str] = Field(default_factory=list)
+    validation_checks: list[str] = Field(default_factory=list)
+    model_name: str = ""
 
 
 class OfficeQAValidationResult(BaseModel):
@@ -386,6 +399,7 @@ OfficeQALLLMUsageCategory = Literal[
     "table_rerank_llm",
     "source_arbiter_llm",
     "table_arbiter_llm",
+    "compute_capability_llm",
     "evidence_commit_llm",
     "repair_llm",
     "final_synthesis_llm",

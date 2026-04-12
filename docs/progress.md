@@ -761,3 +761,37 @@ Rules:
   - `EvidenceCandidatePacket` construction test passed
   - `ArbiterResult` construction test passed
   - Full orchestrator import chain verified (no circular imports, no missing symbols)
+
+### Chat 34: V6 Phase 4 Completed With Bounded Compute Capability Acquisition
+
+- Completed Phase 4 in the V6 architecture track by adding a new `src/agent/compute_capability.py` boundary for unsupported numeric compute operations.
+- `src/agent/contracts.py`:
+  - Added `OfficeQAComputeCapabilitySpec`.
+  - Extended `OfficeQAComputeResult` with:
+    - `capability_source`
+    - `capability_signature`
+    - `capability_validated`
+  - Added `compute_capability_llm` to `OfficeQALLLMUsageCategory`.
+- `src/agent/prompts.py`:
+  - Added `FINANCIAL_COMPUTE_CAPABILITY_SYSTEM` with a fixed `compute_capability(records, context)` contract and explicit safety constraints.
+- `src/agent/model_config.py` and `src/agent/llm_control.py`:
+  - Added a dedicated OfficeQA control category and budget slot for compute capability acquisition.
+  - Routed it to the solver-class model path with trace-visible accounting.
+- `src/agent/compute_capability.py` now owns:
+  - operation-signature construction
+  - bounded synthesized-function generation
+  - AST-level safety checks
+  - safe execution globals limited to:
+    - `math`
+    - `statistics`
+    - `Decimal`
+    - safe builtins
+  - validation on real structured evidence plus order-invariance replay
+  - cache by operation signature
+- `src/agent/retrieval_reasoning.py` was updated so capability-acquirable numeric tasks can stay on deterministic or hybrid-grounded compute paths instead of being forced straight into grounded synthesis.
+- `src/agent/nodes/orchestrator.py` now routes `OfficeQAComputeResult(status="unsupported")` through capability acquisition before falling to insufficiency or synthesis.
+- Focused and broader OfficeQA validation stayed green after the Phase 4 changes, including:
+  - compute-capability acquisition and cache behavior
+  - retrieval-intent widening for advanced numeric tasks
+  - executor handoff before required-compute insufficiency
+  - OfficeQA compute/model-control/runtime slices

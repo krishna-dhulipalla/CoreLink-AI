@@ -19,7 +19,7 @@ from agent.benchmarks import (
 )
 from agent.benchmarks.officeqa_validator import validate_officeqa_final
 from agent.benchmarks.officeqa_index import build_officeqa_index
-from agent.contracts import EvidenceSufficiency, ExecutionJournal, OfficeQALLMRepairDecision, OfficeQASourceRerankDecision, OfficeQAValidationResult, ProgressSignature, RetrievalAction, RetrievalIntent, SourceBundle, TaskIntent, ToolPlan
+from agent.contracts import EvidenceSufficiency, ExecutionJournal, OfficeQAComputeResult, OfficeQALLMRepairDecision, OfficeQASourceRerankDecision, OfficeQAValidationResult, ProgressSignature, RetrievalAction, RetrievalIntent, SourceBundle, TaskIntent, ToolPlan
 from agent.officeqa_structured_evidence import build_officeqa_structured_evidence
 from agent.retrieval_tools import fetch_corpus_document as fetch_corpus_document_tool
 from agent.retrieval_tools import fetch_officeqa_table, lookup_officeqa_cells, search_reference_corpus
@@ -1630,8 +1630,8 @@ def test_officeqa_retrieval_intent_selects_hybrid_strategy_for_statistical_forec
 
     assert retrieval_intent.strategy == "hybrid"
     assert retrieval_intent.answer_mode == "hybrid_grounded"
-    assert retrieval_intent.compute_policy == "preferred"
-    assert retrieval_intent.partial_answer_allowed is True
+    assert retrieval_intent.compute_policy == "required"
+    assert retrieval_intent.partial_answer_allowed is False
     assert retrieval_intent.evidence_plan.requires_table_support is True
     assert retrieval_intent.evidence_plan.requires_text_support is True
     assert retrieval_intent.evidence_plan.requires_forecast_support is True
@@ -1676,12 +1676,209 @@ def test_officeqa_retrieval_intent_selects_multi_table_for_inflation_adjusted_we
     retrieval_intent = build_retrieval_intent(prompt, source_bundle, intake(make_state(prompt))["benchmark_overrides"])
 
     assert retrieval_intent.strategy == "multi_table"
-    assert retrieval_intent.answer_mode == "grounded_synthesis"
-    assert retrieval_intent.compute_policy == "preferred"
-    assert retrieval_intent.partial_answer_allowed is True
+    assert retrieval_intent.answer_mode == "deterministic_compute"
+    assert retrieval_intent.compute_policy == "required"
+    assert retrieval_intent.partial_answer_allowed is False
     assert retrieval_intent.evidence_plan.requires_inflation_support is True
     assert retrieval_intent.evidence_plan.join_keys
     assert "join_ready_support" in {item.kind for item in retrieval_intent.evidence_plan.requirements}
+
+
+def test_officeqa_executor_uses_compute_capability_acquisition_before_required_insufficiency(monkeypatch):
+    prompt = "Using Treasury Bulletin data, calculate the standard deviation of monthly expenditures for 1953."
+    registry = build_capability_registry([CALCULATOR_TOOL, SEARCH_TOOL, *BUILTIN_RETRIEVAL_TOOLS])
+    executor = make_executor(registry)
+    monkeypatch.setattr(
+        "agent.nodes.orchestrator.assess_evidence_sufficiency",
+        lambda *args, **kwargs: EvidenceSufficiency(
+            source_family="official_government_document",
+            period_scope="match",
+            aggregation_type="match",
+            entity_scope="match",
+            is_sufficient=True,
+            missing_dimensions=[],
+            rationale="Structured evidence is sufficient.",
+        ),
+    )
+    monkeypatch.setattr(
+        "agent.nodes.orchestrator.benchmark_compute_result",
+        lambda *args, **kwargs: OfficeQAComputeResult(
+            status="unsupported",
+            operation="point_lookup",
+            validation_errors=["Deterministic OfficeQA compute does not yet support this aggregation shape."],
+        ),
+    )
+    monkeypatch.setattr(
+        "agent.nodes.orchestrator.maybe_acquire_officeqa_compute_result",
+        lambda **kwargs: (
+            OfficeQAComputeResult(
+                status="ok",
+                operation="point_lookup",
+                final_value=42.0,
+                display_value="42",
+                answer_text="Deterministic OfficeQA compute: point lookup.\n- Validated synthesized compute = 42.\nFinal answer: 42",
+                citations=["treasury_1953.json"],
+                capability_source="synthesized",
+                capability_signature="cap-stddev",
+                capability_validated=True,
+            ),
+            dict(kwargs["workpad"]),
+            dict(kwargs["llm_control_state"]),
+        ),
+    )
+    monkeypatch.setattr(
+        "agent.nodes.orchestrator._plan_retrieval_action",
+        lambda **kwargs: RetrievalAction(action="answer", stage="compute_ready", strategy="multi_table"),
+    )
+    state = make_state(
+        prompt,
+        task_profile="document_qa",
+        task_intent={
+            "task_family": "document_qa",
+            "execution_mode": "document_grounded_analysis",
+            "complexity_tier": "structured_analysis",
+            "tool_families_needed": ["document_retrieval", "exact_compute"],
+            "evidence_strategy": "document_first",
+            "review_mode": "document_grounded",
+            "completion_mode": "document_grounded",
+            "routing_rationale": "",
+            "confidence": 0.95,
+            "planner_source": "heuristic",
+        },
+        benchmark_overrides={"benchmark_adapter": "officeqa"},
+        tool_plan={
+            "tool_families_needed": ["document_retrieval", "exact_compute"],
+            "widened_families": [],
+            "selected_tools": ["fetch_officeqa_table"],
+            "pending_tools": [],
+            "blocked_families": [],
+            "ace_events": [],
+            "notes": [],
+            "stop_reason": "",
+        },
+        source_bundle={
+            "task_text": prompt,
+            "focus_query": "standard deviation monthly expenditures 1953",
+            "target_period": "1953",
+            "entities": ["Expenditures"],
+            "urls": [],
+            "inline_facts": {},
+            "tables": [],
+            "formulas": [],
+        },
+        curated_context={
+            "objective": prompt,
+            "facts_in_use": [],
+            "open_questions": [],
+            "assumptions": [],
+            "requested_output": {"format": "text"},
+            "provenance_summary": {},
+            "structured_evidence": {
+                "tables": [],
+                "values": [
+                    {
+                        "document_id": "treasury_1953_json",
+                        "citation": "treasury_1953.json",
+                        "page_locator": "page 1",
+                        "table_locator": "Monthly Expenditures",
+                        "row_label": "January",
+                        "row_path": ["January"],
+                        "column_label": "Expenditures",
+                        "column_path": ["Expenditures"],
+                        "raw_value": "10",
+                        "numeric_value": 10.0,
+                        "normalized_value": 10.0,
+                        "unit": "million",
+                        "unit_multiplier": 1.0,
+                        "unit_kind": "currency",
+                        "structure_confidence": 0.95,
+                    },
+                    {
+                        "document_id": "treasury_1953_json",
+                        "citation": "treasury_1953.json",
+                        "page_locator": "page 1",
+                        "table_locator": "Monthly Expenditures",
+                        "row_label": "February",
+                        "row_path": ["February"],
+                        "column_label": "Expenditures",
+                        "column_path": ["Expenditures"],
+                        "raw_value": "20",
+                        "numeric_value": 20.0,
+                        "normalized_value": 20.0,
+                        "unit": "million",
+                        "unit_multiplier": 1.0,
+                        "unit_kind": "currency",
+                        "structure_confidence": 0.95,
+                    },
+                ],
+                "page_chunks": [],
+                "provenance_complete": True,
+                "structure_confidence_summary": {
+                    "min_confidence": 0.95,
+                    "avg_confidence": 0.95,
+                    "max_confidence": 0.95,
+                    "low_confidence_value_count": 0,
+                    "low_confidence_table_count": 0,
+                    "table_confidence_gate_passed": True,
+                },
+            },
+            "compute_result": {},
+        },
+        execution_journal={
+            "events": [],
+            "tool_results": [
+                {
+                    "type": "fetch_officeqa_table",
+                    "facts": {"document_id": "treasury_1953_json", "citation": "treasury_1953.json", "metadata": {"officeqa_status": "ok"}},
+                }
+            ],
+            "routed_tool_families": [],
+            "revision_count": 0,
+            "self_reflection_count": 0,
+            "retrieval_iterations": 1,
+            "retrieval_queries": [],
+            "retrieved_citations": ["treasury_1953.json"],
+            "final_artifact_signature": "",
+            "progress_signatures": [],
+            "stop_reason": "",
+            "contract_collapse_attempts": 0,
+        },
+    )
+    state["retrieval_intent"] = {
+        "entity": "Expenditures",
+        "metric": "standard deviation of expenditures",
+        "period": "1953",
+        "period_type": "calendar_year",
+        "target_years": ["1953"],
+        "document_family": "official_government_finance",
+        "aggregation_shape": "point_lookup",
+        "analysis_modes": ["statistical_analysis"],
+        "answer_mode": "deterministic_compute",
+        "compute_policy": "required",
+        "partial_answer_allowed": False,
+        "strategy": "multi_table",
+        "strategy_confidence": 0.82,
+        "evidence_requirements": [],
+        "fallback_chain": ["hybrid", "text_first"],
+        "join_requirements": [],
+        "evidence_plan": {
+            "requires_table_support": True,
+            "requires_text_support": False,
+            "requires_cross_source_alignment": False,
+            "required_years": ["1953"],
+            "join_keys": [],
+        },
+        "must_include_terms": ["expenditures", "1953"],
+        "must_exclude_terms": [],
+        "query_candidates": ["standard deviation monthly expenditures 1953"],
+    }
+
+    result = asyncio.run(executor(state))
+
+    assert result["solver_stage"] == "SYNTHESIZE"
+    assert "Final answer: 42" in str(result["messages"][0].content)
+    assert result["workpad"]["officeqa_compute"]["capability_source"] == "synthesized"
+    assert result["workpad"]["officeqa_compute"]["capability_validated"] is True
 
 
 def test_officeqa_context_curator_carries_retrieval_plan_summary(monkeypatch):
@@ -3208,14 +3405,23 @@ def test_officeqa_executor_applies_llm_source_rerank_before_fetch(monkeypatch):
         ),
     )
     monkeypatch.setattr(
-        "agent.nodes.orchestrator.maybe_rerank_source_candidates",
-        lambda **kwargs: OfficeQASourceRerankDecision(
-            decision="select_candidate",
-            preferred_document_id="treasury_bulletin_1941_11_json",
-            rationale="Later publication-year summary is a better semantic fit.",
-            confidence=0.83,
-            model_name="rerank-model",
-        ),
+        "agent.nodes.orchestrator.select_source_candidate",
+        lambda **kwargs: type(
+            "ArbiterResult",
+            (),
+            {
+                "used_llm": True,
+                "reason": "wrong document",
+                "shortlist_count": 2,
+                "decision": OfficeQASourceRerankDecision(
+                    decision="select_candidate",
+                    preferred_document_id="treasury_bulletin_1941_11_json",
+                    rationale="Later publication-year summary is a better semantic fit.",
+                    confidence=0.83,
+                    model_name="rerank-model",
+                ),
+            },
+        )(),
     )
     monkeypatch.setattr("agent.nodes.orchestrator.maybe_rewrite_retrieval_path", lambda **kwargs: None)
     monkeypatch.setattr("agent.nodes.orchestrator.maybe_repair_from_validator", lambda **kwargs: None)
@@ -3323,7 +3529,7 @@ def test_officeqa_executor_applies_llm_source_rerank_before_fetch(monkeypatch):
     assert result["solver_stage"] == "GATHER"
     assert captured["tool_name"] == "fetch_officeqa_table"
     assert dict(captured["tool_args"])["document_id"] == "treasury_bulletin_1941_11_json"
-    assert result["workpad"]["officeqa_llm_usage"][-1]["category"] == "retrieval_rerank_llm"
+    assert result["workpad"]["officeqa_llm_usage"][-1]["category"] == "source_arbiter_llm"
     assert result["workpad"]["officeqa_llm_usage"][-1]["applied"] is True
 
 

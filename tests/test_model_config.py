@@ -253,7 +253,7 @@ class TestModelConfig:
 
         monkeypatch.setattr(
             model_config,
-            "get_model_name_for_task",
+            "get_model_name",
             lambda role, **kwargs: f"{role}-model",
         )
         monkeypatch.setattr(
@@ -264,6 +264,8 @@ class TestModelConfig:
 
         assert model_config.get_model_name_for_officeqa_control("retrieval_rerank_llm") == "direct-model"
         assert model_config.get_model_name_for_officeqa_control("table_rerank_llm") == "direct-model"
+        assert model_config.get_model_name_for_officeqa_control("compute_capability_llm") == "solver-model"
         assert model_config.get_model_name_for_officeqa_control("repair_llm") == "solver-model"
         assert model_config.get_model_runtime_kwargs_for_officeqa_control("retrieval_rerank_llm") == {"role": "direct"}
+        assert model_config.get_model_runtime_kwargs_for_officeqa_control("compute_capability_llm") == {"role": "solver"}
         assert model_config.get_model_runtime_kwargs_for_officeqa_control("repair_llm") == {"role": "solver"}

@@ -37,9 +37,11 @@ def test_officeqa_llm_control_budget_expands_for_hard_semantic_cases():
 
     assert easy_budget["retrieval_rerank_calls"] == 2
     assert easy_budget["table_rerank_calls"] == 2
+    assert easy_budget["compute_capability_calls"] == 1
     assert easy_budget["evidence_commit_calls"] == 1
     assert hard_budget["retrieval_rerank_calls"] == 3
     assert hard_budget["table_rerank_calls"] == 3
+    assert hard_budget["compute_capability_calls"] == 1
 
 
 def test_source_rerank_llm_triggers_on_publication_year_mismatch():

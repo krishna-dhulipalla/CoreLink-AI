@@ -29,6 +29,7 @@ from agent.contracts import (
 )
 from agent.context.evidence import _extract_policy_context
 from agent.context.extraction import derive_market_snapshot
+from agent.compute_capability import maybe_acquire_officeqa_compute_result
 from agent.model_config import ChatOpenAI, get_client_kwargs, get_model_name, get_model_name_for_task, get_model_runtime_kwargs, invoke_structured_output
 from agent.llm_control import (
     initial_officeqa_llm_control_state,
@@ -2334,6 +2335,33 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                 )
                 if compute_result is None:
                     raise RuntimeError("Benchmark compute hook is unavailable for the active benchmark adapter.")
+                if (
+                    officeqa_mode
+                    and compute_result.status == "unsupported"
+                    and active_retrieval_intent.compute_policy in {"required", "preferred"}
+                ):
+                    acquired_compute_result, workpad, llm_control_state = maybe_acquire_officeqa_compute_result(
+                        task_text=task_text,
+                        retrieval_intent=active_retrieval_intent,
+                        structured_evidence=structured_for_compute,
+                        workpad=workpad,
+                        llm_control_state=llm_control_state,
+                        llm_control_budget=llm_control_budget,
+                    )
+                    workpad["officeqa_llm_control_state"] = llm_control_state
+                    if acquired_compute_result is not None:
+                        compute_result = acquired_compute_result
+                        workpad["officeqa_compute_capability"] = {
+                            "status": compute_result.status,
+                            "source": compute_result.capability_source,
+                            "signature": compute_result.capability_signature,
+                            "validated": compute_result.capability_validated,
+                        }
+                        workpad = _record_event(
+                            workpad,
+                            "executor",
+                            f"compute capability acquisition -> {compute_result.status}",
+                        )
                 curated = attach_compute_result(curated, compute_result.model_dump(), benchmark_overrides)
                 workpad["officeqa_compute"] = compute_result.model_dump()
                 provenance_summary = dict(curated.provenance_summary or {})

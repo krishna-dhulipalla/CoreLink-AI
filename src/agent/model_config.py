@@ -299,6 +299,7 @@ def get_model_name_for_officeqa_control(
         "semantic_plan_llm": ["OFFICEQA_SEMANTIC_PLAN_MODEL", "SEMANTIC_PLAN_MODEL"],
         "retrieval_rerank_llm": ["OFFICEQA_RETRIEVAL_RERANK_MODEL", "RETRIEVAL_RERANK_MODEL"],
         "table_rerank_llm": ["OFFICEQA_TABLE_RERANK_MODEL", "TABLE_RERANK_MODEL"],
+        "compute_capability_llm": ["OFFICEQA_COMPUTE_CAPABILITY_MODEL", "COMPUTE_CAPABILITY_MODEL"],
         "evidence_commit_llm": ["OFFICEQA_EVIDENCE_COMMIT_MODEL", "EVIDENCE_COMMIT_MODEL"],
         "repair_llm": ["OFFICEQA_REPAIR_MODEL", "REPAIR_MODEL"],
     }.get(category_key, [])
@@ -313,6 +314,8 @@ def get_model_name_for_officeqa_control(
         return get_model_name("profiler")
     if category_key in {"retrieval_rerank_llm", "table_rerank_llm"}:
         return get_model_name("direct")
+    if category_key == "compute_capability_llm":
+        return get_model_name("solver")
     if category_key == "evidence_commit_llm":
         return get_model_name("reviewer")
     if category_key == "repair_llm":
@@ -332,6 +335,8 @@ def get_model_runtime_kwargs_for_officeqa_control(
     
     if category_key in {"retrieval_rerank_llm", "table_rerank_llm"}:
         return get_model_runtime_kwargs("direct")
+    if category_key == "compute_capability_llm":
+        return get_model_runtime_kwargs("solver")
     if category_key == "evidence_commit_llm":
         return get_model_runtime_kwargs("reviewer")
     if category_key == "repair_llm":

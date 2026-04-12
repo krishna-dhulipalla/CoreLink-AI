@@ -211,6 +211,22 @@ def _supports_deterministic_compute(aggregation_shape: str, analysis_modes: list
     }
 
 
+def _supports_compute_capability_acquisition(aggregation_shape: str, analysis_modes: list[str]) -> bool:
+    advanced_modes = {"statistical_analysis", "time_series_forecasting", "risk_metric", "weighted_average"}
+    if advanced_modes.intersection(set(analysis_modes)):
+        return True
+    if aggregation_shape and aggregation_shape not in {
+        "monthly_sum",
+        "calendar_year_total",
+        "fiscal_year_total",
+        "monthly_sum_percent_change",
+        "inflation_adjusted_monthly_difference",
+        "point_lookup",
+    }:
+        return True
+    return False
+
+
 def _needs_numeric_core(task_text: str, aggregation_shape: str, analysis_modes: list[str]) -> bool:
     lowered = (task_text or "").lower()
     if aggregation_shape != "point_lookup":
@@ -259,10 +275,14 @@ def _classify_answer_mode(
     narrative_support = _needs_narrative_support(task_text, analysis_modes)
     numeric_core = _needs_numeric_core(task_text, aggregation_shape, analysis_modes)
     deterministic_supported = _supports_deterministic_compute(aggregation_shape, analysis_modes)
+    acquirable_compute = _supports_compute_capability_acquisition(aggregation_shape, analysis_modes)
+    compute_capable = deterministic_supported or acquirable_compute
 
     if aggregation_shape == "point_lookup":
-        if deterministic_supported and numeric_core and not narrative_support:
+        if compute_capable and numeric_core and not narrative_support:
             return "deterministic_compute", "required", False
+        if narrative_support and numeric_core and compute_capable:
+            return "hybrid_grounded", "required", False
         if narrative_support and numeric_core:
             return "hybrid_grounded", "preferred", True
         if numeric_core:
@@ -272,9 +292,9 @@ def _classify_answer_mode(
             return "grounded_synthesis", "preferred", synthesis_heavy
         return "grounded_synthesis", "not_applicable", False
 
-    if deterministic_supported and numeric_core and narrative_support:
+    if compute_capable and numeric_core and narrative_support:
         return "hybrid_grounded", "required", False
-    if deterministic_supported and numeric_core:
+    if compute_capable and numeric_core:
         return "deterministic_compute", "required", False
     if numeric_core and narrative_support:
         return "hybrid_grounded", "preferred", True

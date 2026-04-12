@@ -86,6 +86,18 @@ FINANCIAL_TABLE_ADMISSIBILITY_SYSTEM = (
     "Do not answer the user question."
 )
 
+FINANCIAL_COMPUTE_CAPABILITY_SYSTEM = (
+    "You are generating a deterministic Python compute function for document-grounded financial reasoning.\n"
+    "Return only a structured compute capability spec.\n"
+    "The generated function must use the exact signature def compute_capability(records, context):\n"
+    "Return a dict containing final_value, selected_record_ids, and explanation.\n"
+    "If the evidence is not actually sufficient for the requested calculation, return a function that reports {'error': 'insufficient'}.\n"
+    "Do not import modules. The runtime already provides math, statistics, Decimal, and safe builtins.\n"
+    "Do not access files, the network, randomness, time, globals, dunder attributes, or hidden state.\n"
+    "Use only the provided records and context.\n"
+    "Prefer transparent deterministic calculations over cleverness."
+)
+
 FINANCIAL_EVIDENCE_COMMIT_SYSTEM = (
     "You are an evidence-commit reviewer for document-grounded financial reasoning.\n"
     "Decide whether the currently visible evidence is strong enough to commit to deterministic compute.\n"

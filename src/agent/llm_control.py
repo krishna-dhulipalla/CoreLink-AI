@@ -43,6 +43,7 @@ _BASE_SOURCE_ARBITER_CALLS = 2
 _HARD_SOURCE_ARBITER_CALLS = 3
 _BASE_TABLE_ARBITER_CALLS = 2
 _HARD_TABLE_ARBITER_CALLS = 3
+_MAX_COMPUTE_CAPABILITY_CALLS = 1
 _MAX_EVIDENCE_COMMIT_CALLS = 1
 _MAX_FINAL_SYNTHESIS_CALLS = 1
 
@@ -83,6 +84,7 @@ def officeqa_llm_control_budget(retrieval_intent: RetrievalIntent | None = None)
         "table_rerank_calls": _HARD_TABLE_RERANK_CALLS if hard_mode else _BASE_TABLE_RERANK_CALLS,
         "source_arbiter_calls": _HARD_SOURCE_ARBITER_CALLS if hard_mode else _BASE_SOURCE_ARBITER_CALLS,
         "table_arbiter_calls": _HARD_TABLE_ARBITER_CALLS if hard_mode else _BASE_TABLE_ARBITER_CALLS,
+        "compute_capability_calls": _MAX_COMPUTE_CAPABILITY_CALLS,
         "evidence_commit_calls": _MAX_EVIDENCE_COMMIT_CALLS,
         "final_synthesis_calls": _MAX_FINAL_SYNTHESIS_CALLS,
     }
@@ -94,6 +96,7 @@ def initial_officeqa_llm_control_state(retrieval_intent: RetrievalIntent) -> dic
         "semantic_plan_calls": 1 if semantic_plan.used_llm else 0,
         "retrieval_rerank_calls": 0,
         "table_rerank_calls": 0,
+        "compute_capability_calls": 0,
         "evidence_commit_calls": 0,
         "final_synthesis_calls": 0,
     }
