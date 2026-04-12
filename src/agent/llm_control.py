@@ -43,7 +43,8 @@ _BASE_SOURCE_ARBITER_CALLS = 2
 _HARD_SOURCE_ARBITER_CALLS = 3
 _BASE_TABLE_ARBITER_CALLS = 2
 _HARD_TABLE_ARBITER_CALLS = 3
-_MAX_COMPUTE_CAPABILITY_CALLS = 1
+_BASE_COMPUTE_CAPABILITY_CALLS = 1
+_COMPLEX_COMPUTE_CAPABILITY_CALLS = 2
 _MAX_EVIDENCE_COMMIT_CALLS = 1
 _MAX_FINAL_SYNTHESIS_CALLS = 1
 
@@ -75,8 +76,24 @@ def _requires_hard_semantic_control(retrieval_intent: RetrievalIntent | None) ->
     return False
 
 
+def _requires_complex_compute_capability_control(retrieval_intent: RetrievalIntent | None) -> bool:
+    if retrieval_intent is None:
+        return False
+    analysis_modes = {str(item or "").strip().lower() for item in list(retrieval_intent.analysis_modes or []) if str(item).strip()}
+    if analysis_modes & {"statistical_analysis", "risk_metric", "weighted_average", "regression", "forecast"}:
+        return True
+    aggregation_shape = str(retrieval_intent.aggregation_shape or "").strip().lower()
+    return aggregation_shape in {
+        "weighted_average",
+        "distribution_summary",
+        "statistical_summary",
+        "risk_metric",
+    }
+
+
 def officeqa_llm_control_budget(retrieval_intent: RetrievalIntent | None = None) -> dict[str, int]:
     hard_mode = _requires_hard_semantic_control(retrieval_intent)
+    complex_compute = _requires_complex_compute_capability_control(retrieval_intent)
     return {
         "semantic_plan_calls": _MAX_SEMANTIC_PLAN_CALLS,
         # Phase 3: arbiter budgets (backward-compatible aliases)
@@ -84,7 +101,7 @@ def officeqa_llm_control_budget(retrieval_intent: RetrievalIntent | None = None)
         "table_rerank_calls": _HARD_TABLE_RERANK_CALLS if hard_mode else _BASE_TABLE_RERANK_CALLS,
         "source_arbiter_calls": _HARD_SOURCE_ARBITER_CALLS if hard_mode else _BASE_SOURCE_ARBITER_CALLS,
         "table_arbiter_calls": _HARD_TABLE_ARBITER_CALLS if hard_mode else _BASE_TABLE_ARBITER_CALLS,
-        "compute_capability_calls": _MAX_COMPUTE_CAPABILITY_CALLS,
+        "compute_capability_calls": _COMPLEX_COMPUTE_CAPABILITY_CALLS if complex_compute else _BASE_COMPUTE_CAPABILITY_CALLS,
         "evidence_commit_calls": _MAX_EVIDENCE_COMMIT_CALLS,
         "final_synthesis_calls": _MAX_FINAL_SYNTHESIS_CALLS,
     }

@@ -177,3 +177,81 @@ def test_compute_capability_rejects_unsafe_generated_code(monkeypatch):
     assert workpad["officeqa_latest_llm_usage"]["category"] == "compute_capability_llm"
     assert workpad["officeqa_latest_llm_usage"]["used"] is True
     assert llm_state["compute_capability_calls"] == 1
+
+
+def test_compute_capability_can_repair_after_first_generation_failure(monkeypatch):
+    clear_compute_capability_cache()
+    retrieval_intent = RetrievalIntent(
+        entity="Expenditures",
+        metric="weighted average expenditures",
+        period="1953",
+        period_type="calendar_year",
+        target_years=["1953"],
+        aggregation_shape="weighted_average",
+        analysis_modes=["weighted_average"],
+        answer_mode="deterministic_compute",
+        compute_policy="required",
+    )
+    calls = {"count": 0}
+
+    def _fake_invoke(*args, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return (
+                {
+                    "function_name": "compute_capability",
+                    "function_code": (
+                        "def compute_capability(records, context):\n"
+                        "    import os\n"
+                        "    return {'final_value': 1.0, 'selected_record_ids': []}\n"
+                    ),
+                    "rationale": "unsafe first attempt",
+                    "required_record_fields": [],
+                    "validation_checks": [],
+                },
+                "fake-capability-model",
+            )
+        return (
+            {
+                "function_name": "compute_capability",
+                "function_code": (
+                    "def compute_capability(records, context):\n"
+                    "    selected = [record for record in records if record.get('normalized_value') is not None]\n"
+                    "    numerator = sum(float(record.get('normalized_value')) * int(record.get('month_index') or 1) for record in selected)\n"
+                    "    denominator = sum(int(record.get('month_index') or 1) for record in selected)\n"
+                    "    return {\n"
+                    "        'final_value': numerator / denominator,\n"
+                    "        'selected_record_ids': [record['record_id'] for record in selected],\n"
+                    "        'explanation': 'weighted average over ordered weights'\n"
+                    "    }\n"
+                ),
+                "rationale": "repaired weighted average implementation",
+                "required_record_fields": ["record_id", "normalized_value"],
+                "validation_checks": ["order_invariant"],
+            },
+            "fake-capability-model",
+        )
+
+    monkeypatch.setattr("agent.compute_capability.invoke_structured_output", _fake_invoke)
+
+    result, workpad, llm_state = maybe_acquire_officeqa_compute_result(
+        task_text="Compute the weighted average expenditures for 1953.",
+        retrieval_intent=retrieval_intent,
+        structured_evidence=_structured(
+            [
+                _monthly_value(1953, "January", 10.0),
+                _monthly_value(1953, "February", 20.0),
+                _monthly_value(1953, "March", 30.0),
+            ]
+        ),
+        workpad={},
+        llm_control_state={"compute_capability_calls": 0},
+        llm_control_budget={"compute_capability_calls": 2},
+    )
+
+    assert result is not None
+    assert result.status == "ok"
+    assert result.capability_source == "synthesized"
+    assert calls["count"] == 2
+    assert llm_state["compute_capability_calls"] == 2
+    assert workpad["officeqa_latest_llm_usage"]["reason"] == "capability_repaired"

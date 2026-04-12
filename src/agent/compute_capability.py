@@ -237,6 +237,8 @@ def _build_capability_prompt(
     retrieval_intent: RetrievalIntent,
     records: list[dict[str, Any]],
     signature: str,
+    prior_error: str = "",
+    attempt_index: int = 1,
 ) -> str:
     sample = []
     for record in records[:_MAX_SAMPLE_RECORDS]:
@@ -259,6 +261,7 @@ def _build_capability_prompt(
     return (
         f"TASK={task_text}\n"
         f"OPERATION_SIGNATURE={signature}\n"
+        f"ATTEMPT_INDEX={attempt_index}\n"
         f"AGGREGATION_SHAPE={retrieval_intent.aggregation_shape}\n"
         f"ANALYSIS_MODES={list(retrieval_intent.analysis_modes)}\n"
         f"ENTITY={retrieval_intent.entity}\n"
@@ -270,6 +273,7 @@ def _build_capability_prompt(
         f"GRANULARITY={retrieval_intent.granularity_requirement}\n"
         f"RECORD_COUNT={len(records)}\n"
         f"RECORD_SCHEMA=['record_id','row_label','row_path','column_label','column_path','numeric_value','normalized_value','year_refs','month_index','unit','unit_multiplier','table_family']\n"
+        f"PRIOR_ERROR={prior_error}\n"
         f"RECORD_SAMPLE={sample}"
     )
 
@@ -374,6 +378,23 @@ def _capability_context(task_text: str, retrieval_intent: RetrievalIntent) -> di
         "target_years": list(retrieval_intent.target_years or []),
         "expected_answer_unit_basis": str(retrieval_intent.expected_answer_unit_basis or ""),
         "granularity_requirement": str(retrieval_intent.granularity_requirement or ""),
+    }
+
+
+def _supports_compute_capability_repair(retrieval_intent: RetrievalIntent) -> bool:
+    analysis_modes = {
+        str(item or "").strip().lower()
+        for item in list(retrieval_intent.analysis_modes or [])
+        if str(item).strip()
+    }
+    if analysis_modes & {"statistical_analysis", "risk_metric", "weighted_average", "regression", "forecast"}:
+        return True
+    aggregation_shape = str(retrieval_intent.aggregation_shape or "").strip().lower()
+    return aggregation_shape in {
+        "weighted_average",
+        "distribution_summary",
+        "statistical_summary",
+        "risk_metric",
     }
 
 
@@ -493,65 +514,107 @@ def maybe_acquire_officeqa_compute_result(
         answer_mode=retrieval_intent.answer_mode,
         analysis_modes=retrieval_intent.analysis_modes,
     )
-    updated_llm_state["compute_capability_calls"] = call_count + 1
-    try:
-        parsed, resolved_model = invoke_structured_output(
-            "solver",
-            OfficeQAComputeCapabilitySpec,
-            [
-                SystemMessage(content=FINANCIAL_COMPUTE_CAPABILITY_SYSTEM),
-                HumanMessage(content=_build_capability_prompt(task_text=task_text, retrieval_intent=retrieval_intent, records=records, signature=signature)),
-            ],
-            temperature=0,
-            max_tokens=900,
-            model_name_override=model_name,
-            runtime_kwargs_override=runtime_kwargs,
-        )
-        spec = OfficeQAComputeCapabilitySpec.model_validate(parsed)
-        spec.model_name = resolved_model
-        spec.operation_signature = signature
-        final_value, selected_ids, explanation, error = _execute_capability(spec, records=records, context=context)
-    except Exception as exc:
-        updated_workpad = record_officeqa_llm_usage(
-            updated_workpad,
-            category="compute_capability_llm",
-            used=True,
-            reason="capability_generation_failed",
-            model_name=model_name,
-            applied=False,
-            details={"operation_signature": signature, "error": str(exc)[:240]},
-        )
-        return (
-            _result_with_diagnostics(
-                status="unsupported",
-                operation=operation,
-                retrieval_intent=retrieval_intent,
-                years=years,
-                validation_errors=[f"Compute capability acquisition failed: {str(exc)[:240]}"],
-                capability_source="native",
-                capability_signature=signature,
-            ),
-            updated_workpad,
-            updated_llm_state,
-        )
+    allow_repair_attempt = _supports_compute_capability_repair(retrieval_intent)
+    prior_error = ""
+    spec: OfficeQAComputeCapabilitySpec | None = None
+    final_value: float | None = None
+    selected_ids: list[str] = []
+    explanation = ""
+    error: str | None = None
+    last_failure_message = ""
+    max_attempts = min(call_budget - call_count, 2 if allow_repair_attempt else 1)
+    for attempt_offset in range(max_attempts):
+        updated_llm_state["compute_capability_calls"] = call_count + attempt_offset + 1
+        try:
+            parsed, resolved_model = invoke_structured_output(
+                "solver",
+                OfficeQAComputeCapabilitySpec,
+                [
+                    SystemMessage(content=FINANCIAL_COMPUTE_CAPABILITY_SYSTEM),
+                    HumanMessage(
+                        content=_build_capability_prompt(
+                            task_text=task_text,
+                            retrieval_intent=retrieval_intent,
+                            records=records,
+                            signature=signature,
+                            prior_error=prior_error,
+                            attempt_index=attempt_offset + 1,
+                        )
+                    ),
+                ],
+                temperature=0,
+                max_tokens=900,
+                model_name_override=model_name,
+                runtime_kwargs_override=runtime_kwargs,
+            )
+            spec = OfficeQAComputeCapabilitySpec.model_validate(parsed)
+            spec.model_name = resolved_model
+            spec.operation_signature = signature
+            final_value, selected_ids, explanation, error = _execute_capability(spec, records=records, context=context)
+            if error is None:
+                updated_workpad = record_officeqa_llm_usage(
+                    updated_workpad,
+                    category="compute_capability_llm",
+                    used=True,
+                    reason="capability_acquired" if attempt_offset == 0 else "capability_repaired",
+                    model_name=spec.model_name,
+                    applied=True,
+                    details={
+                        "operation_signature": signature,
+                        "validation_checks": list(spec.validation_checks[:6]),
+                        "attempt_index": attempt_offset + 1,
+                    },
+                )
+                break
+            last_failure_message = f"Validated compute capability was rejected: {error}."
+            updated_workpad = record_officeqa_llm_usage(
+                updated_workpad,
+                category="compute_capability_llm",
+                used=True,
+                reason="capability_rejected",
+                model_name=spec.model_name,
+                applied=False,
+                details={
+                    "operation_signature": signature,
+                    "validation_checks": list(spec.validation_checks[:6]),
+                    "attempt_index": attempt_offset + 1,
+                    "error": error,
+                },
+            )
+            prior_error = error
+        except Exception as exc:
+            last_failure_message = f"Compute capability acquisition failed: {str(exc)[:240]}"
+            updated_workpad = record_officeqa_llm_usage(
+                updated_workpad,
+                category="compute_capability_llm",
+                used=True,
+                reason="capability_generation_failed",
+                model_name=model_name,
+                applied=False,
+                details={
+                    "operation_signature": signature,
+                    "attempt_index": attempt_offset + 1,
+                    "error": str(exc)[:240],
+                },
+            )
+            prior_error = str(exc)[:240]
+            spec = None
+            error = prior_error
+        if attempt_offset + 1 >= max_attempts:
+            break
+        if not allow_repair_attempt:
+            break
+    else:
+        spec = None
 
-    updated_workpad = record_officeqa_llm_usage(
-        updated_workpad,
-        category="compute_capability_llm",
-        used=True,
-        reason="capability_acquired" if error is None else "capability_rejected",
-        model_name=spec.model_name,
-        applied=error is None,
-        details={"operation_signature": signature, "validation_checks": list(spec.validation_checks[:6])},
-    )
-    if error:
+    if spec is None or error is not None:
         return (
             _result_with_diagnostics(
                 status="unsupported",
                 operation=operation,
                 retrieval_intent=retrieval_intent,
                 years=years,
-                validation_errors=[f"Validated compute capability was rejected: {error}."],
+                validation_errors=[last_failure_message or "Compute capability acquisition failed."],
                 capability_source="native",
                 capability_signature=signature,
             ),

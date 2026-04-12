@@ -795,3 +795,60 @@ Rules:
   - retrieval-intent widening for advanced numeric tasks
   - executor handoff before required-compute insufficiency
   - OfficeQA compute/model-control/runtime slices
+
+### Chat 35: Phase 4 Guardrails Noted And V6 Phase 5 Completed With Constraint-Sensitive Semantic Planning
+
+- Added follow-up guardrails to the Phase 4 notes in `docs/v6_execution_plan.md`:
+  - keep the default compute-capability budget at one call
+  - only consider a second repair-style compute-capability attempt for genuinely complex acquisition cases
+  - keep prompt sample growth adaptive and operation-sensitive instead of globally increasing record count
+- Completed Phase 5 in the V6 architecture track by making the semantic plan carry an explicit contract surface instead of just extraction slots.
+- `src/agent/contracts.py`:
+  - `QuestionSemanticPlan` now records:
+    - `evidence_period`
+    - `publication_period`
+    - `aggregation_period`
+    - `display_unit_basis`
+    - `completeness_ok`
+    - `completeness_gaps`
+  - `RetrievalIntent` now records:
+    - `planning_completeness_ok`
+    - `planning_completeness_gaps`
+- `src/agent/context/extraction.py` now:
+  - performs a semantic completeness audit before retrieval planning
+  - treats missing answer-unit contracts on benchmark-style numeric questions as a semantic-planning trigger
+  - keeps include/exclude constraints and qualifier promotion on the semantic-contract surface
+- `src/agent/retrieval_reasoning.py` now routes part of strategy choice from the semantic contract, not only retrieval heuristics:
+  - constraint-sensitive questions can promote `table_first` into `hybrid`
+  - missing-core-slot questions bias toward hybrid retrieval
+  - publication-lag risk now strengthens richer fallback chains
+- Focused and broader validation stayed green after the Phase 5 changes, including:
+  - semantic-plan completeness coverage
+  - constraint-sensitive strategy selection
+  - OfficeQA question-decomposition and runtime slices
+
+### Chat 36: Phase 4 And Phase 5 Follow-Up Gaps Closed Before Phase 6
+
+- Closed the remaining Phase 4 runtime gap from senior review in `src/agent/compute_capability.py` and `src/agent/llm_control.py`.
+- Compute capability acquisition no longer hard-fails after one bad zero-shot generation on clearly complex operations.
+- The compute path now:
+  - keeps a single-call budget for ordinary cases
+  - allows a bounded second repair-style generation attempt for complex acquisition cases such as:
+    - `weighted_average`
+    - `statistical_analysis`
+    - `risk_metric`
+  - feeds the exact prior compile or validation failure back into the second prompt instead of retrying blind
+- Closed the remaining Phase 5 runtime gap in `src/agent/nodes/orchestrator.py`.
+- The executor now performs a semantic replan before retrieval when:
+  - `planning_completeness_ok` is false
+  - explicit `planning_completeness_gaps` are present
+  - semantic-plan budget remains
+- The semantic replan path is bounded and stale-safe:
+  - it records a semantic replan signature
+  - it refuses to repeat the same incomplete contract repair on identical inputs
+  - it updates retrieval intent and evidence sufficiency before entering the tool loop
+- Compatibility was preserved for older runtime/test payloads by only triggering the semantic-replan gate when explicit completeness gaps are present, not merely because legacy payloads omitted the new fields.
+- Focused validation stayed green for:
+  - compute-capability repair retry
+  - semantic replan before retrieval
+  - broader OfficeQA semantic-plan / compute-capability runtime slices

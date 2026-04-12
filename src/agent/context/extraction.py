@@ -503,21 +503,105 @@ def _needs_semantic_plan_llm(task_text: str, decomposition: QuestionDecompositio
         )
     ):
         return True
+    lowered = _normalize_space(task_text).lower()
+    numeric_contract = any(
+        token in lowered
+        for token in (
+            "calculate",
+            "compute",
+            "sum",
+            "total",
+            "average",
+            "difference",
+            "percent change",
+            "standard deviation",
+            "regression",
+            "forecast",
+            "weighted average",
+            "value at risk",
+            "variance",
+        )
+    )
+    if numeric_contract and not decomposition.expected_answer_unit_basis and re.search(
+        r"\bin\s+(?:millions?|billions?|thousands?)\b|\bpercent\b|%",
+        lowered,
+    ):
+        return True
     return decomposition.confidence < 0.8 or len(flags) >= 2
+
+
+def _semantic_contract_periods(
+    decomposition: QuestionDecomposition,
+) -> tuple[str, str, str, str]:
+    evidence_period = decomposition.period or "unspecified"
+    publication_period = " ".join(decomposition.preferred_publication_years[:3]) if decomposition.preferred_publication_years else ""
+    aggregation_period = decomposition.granularity_requirement or decomposition.period_type or "point_lookup"
+    display_unit_basis = decomposition.expected_answer_unit_basis or ""
+    return evidence_period, publication_period, aggregation_period, display_unit_basis
+
+
+def _semantic_completeness_audit(
+    task_text: str,
+    decomposition: QuestionDecomposition,
+) -> tuple[bool, list[str]]:
+    lowered = _normalize_space(task_text).lower()
+    gaps: list[str] = []
+    numeric_contract = any(
+        token in lowered
+        for token in (
+            "calculate",
+            "compute",
+            "sum",
+            "total",
+            "average",
+            "difference",
+            "percent change",
+            "standard deviation",
+            "regression",
+            "forecast",
+            "weighted average",
+            "value at risk",
+            "variance",
+        )
+    )
+    if not decomposition.metric:
+        gaps.append("missing_metric")
+    if not decomposition.period:
+        gaps.append("missing_period")
+    if numeric_contract and not decomposition.expected_answer_unit_basis and re.search(
+        r"\bin\s+(?:millions?|billions?|thousands?)\b|\bpercent\b|%",
+        lowered,
+    ):
+        gaps.append("missing_answer_unit_basis")
+    if numeric_contract and any(mode in lowered for mode in ("weighted average", "regression", "forecast", "standard deviation", "variance")):
+        if not decomposition.entity:
+            gaps.append("missing_core_entity")
+    if decomposition.include_constraints and not decomposition.qualifier_terms:
+        gaps.append("include_constraints_not_promoted")
+    if decomposition.exclude_constraints and not decomposition.qualifier_terms:
+        gaps.append("exclude_constraints_not_promoted")
+    return len(gaps) == 0, list(dict.fromkeys(gaps))
 
 
 def _semantic_plan_from_decomposition(
     decomposition: QuestionDecomposition,
     *,
+    task_text: str,
     rationale: str = "",
     used_llm: bool = False,
     model_name: str = "",
 ) -> QuestionSemanticPlan:
+    evidence_period, publication_period, aggregation_period, display_unit_basis = _semantic_contract_periods(decomposition)
+    completeness_ok, completeness_gaps = _semantic_completeness_audit(task_text, decomposition)
     return QuestionSemanticPlan(
         entity=_sanitize_source_cue_entity(decomposition.entity, decomposition.include_constraints),
         metric=decomposition.metric,
         period=decomposition.period,
         period_type=decomposition.period_type,
+        evidence_period=evidence_period,
+        publication_period=publication_period,
+        aggregation_period=aggregation_period,
+        display_unit_basis=display_unit_basis,
         target_years=list(decomposition.target_years),
         publication_year_window=list(decomposition.publication_year_window),
         preferred_publication_years=list(decomposition.preferred_publication_years),
@@ -531,6 +615,8 @@ def _semantic_plan_from_decomposition(
         exclude_constraints=list(decomposition.exclude_constraints),
         qualifier_terms=list(decomposition.qualifier_terms),
         ambiguity_flags=_semantic_ambiguity_flags("", decomposition),
+        completeness_ok=completeness_ok,
+        completeness_gaps=completeness_gaps,
         rationale=rationale,
         confidence=decomposition.confidence,
         used_llm=used_llm,
@@ -544,6 +630,10 @@ def _merge_semantic_plan(primary: QuestionSemanticPlan, fallback: QuestionSemant
         metric=primary.metric or fallback.metric,
         period=primary.period or fallback.period,
         period_type=primary.period_type or fallback.period_type,
+        evidence_period=primary.evidence_period or fallback.evidence_period,
+        publication_period=primary.publication_period or fallback.publication_period,
+        aggregation_period=primary.aggregation_period or fallback.aggregation_period,
+        display_unit_basis=primary.display_unit_basis or fallback.display_unit_basis,
         target_years=list(dict.fromkeys([*primary.target_years, *fallback.target_years]))[:4],
         publication_year_window=list(dict.fromkeys([*primary.publication_year_window, *fallback.publication_year_window]))[:12],
         preferred_publication_years=list(dict.fromkeys([*primary.preferred_publication_years, *fallback.preferred_publication_years]))[:12],
@@ -557,6 +647,8 @@ def _merge_semantic_plan(primary: QuestionSemanticPlan, fallback: QuestionSemant
         exclude_constraints=_dedupe_strings([*primary.exclude_constraints, *fallback.exclude_constraints], limit=6),
         qualifier_terms=_dedupe_strings([*primary.qualifier_terms, *fallback.qualifier_terms], limit=6),
         ambiguity_flags=_dedupe_strings([*primary.ambiguity_flags, *fallback.ambiguity_flags], limit=8),
+        completeness_ok=bool(primary.completeness_ok or fallback.completeness_ok),
+        completeness_gaps=_dedupe_strings([*primary.completeness_gaps, *fallback.completeness_gaps], limit=8),
         rationale=primary.rationale or fallback.rationale,
         confidence=max(primary.confidence, min(0.92, fallback.confidence)),
         used_llm=bool(primary.used_llm or fallback.used_llm),
@@ -575,7 +667,8 @@ def _fallback_semantic_plan(task_text: str, source_bundle: SourceBundle, decompo
                 f"ENTITIES={source_bundle.entities}\nSOURCE_FILES={source_bundle.source_files_expected}\n"
                 f"RULE_ENTITY={decomposition.entity}\nRULE_METRIC={decomposition.metric}\nRULE_PERIOD={decomposition.period}\n"
                 f"RULE_GRANULARITY={decomposition.granularity_requirement}\nRULE_ANSWER_UNIT_BASIS={decomposition.expected_answer_unit_basis}\nRULE_INCLUDE={decomposition.include_constraints}\n"
-                f"RULE_EXCLUDE={decomposition.exclude_constraints}\nRULE_QUALIFIERS={decomposition.qualifier_terms}"
+                f"RULE_EXCLUDE={decomposition.exclude_constraints}\nRULE_QUALIFIERS={decomposition.qualifier_terms}\n"
+                f"RULE_COMPLETENESS={_semantic_completeness_audit(task_text, decomposition)}"
             )
         ),
     ]
@@ -601,6 +694,7 @@ def build_question_semantic_plan(task_text: str, source_bundle: SourceBundle) ->
     decomposition = extract_question_decomposition(task_text, source_bundle, allow_llm_fallback=True)
     base_plan = _semantic_plan_from_decomposition(
         decomposition,
+        task_text=task_text,
         rationale="rule_based_semantic_plan",
         used_llm=bool(decomposition.used_llm_fallback),
     )
@@ -613,6 +707,28 @@ def build_question_semantic_plan(task_text: str, source_bundle: SourceBundle) ->
     merged = _merge_semantic_plan(base_plan, fallback)
     if not merged.rationale:
         merged.rationale = "semantic_plan_llm"
+    merged.completeness_ok, merged.completeness_gaps = _semantic_completeness_audit(
+        task_text,
+        QuestionDecomposition(
+            entity=merged.entity,
+            metric=merged.metric,
+            period=merged.period,
+            period_type=merged.period_type,
+            target_years=list(merged.target_years),
+            publication_year_window=list(merged.publication_year_window),
+            preferred_publication_years=list(merged.preferred_publication_years),
+            acceptable_publication_lag_years=merged.acceptable_publication_lag_years,
+            retrospective_evidence_allowed=merged.retrospective_evidence_allowed,
+            retrospective_evidence_required=merged.retrospective_evidence_required,
+            publication_scope_explicit=merged.publication_scope_explicit,
+            granularity_requirement=merged.granularity_requirement,
+            expected_answer_unit_basis=merged.expected_answer_unit_basis,
+            include_constraints=list(merged.include_constraints),
+            exclude_constraints=list(merged.exclude_constraints),
+            qualifier_terms=list(merged.qualifier_terms),
+            confidence=merged.confidence,
+        ),
+    )
     return merged
 
 

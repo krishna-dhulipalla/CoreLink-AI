@@ -5,7 +5,7 @@ from typing import Any
 
 from agent.benchmarks.officeqa import officeqa_analysis_modes
 from agent.context.extraction import build_question_semantic_plan
-from agent.contracts import EvidencePlan, EvidenceRequirement, EvidenceSufficiency, QueryPlan, RetrievalIntent, SourceBundle
+from agent.contracts import EvidencePlan, EvidenceRequirement, EvidenceSufficiency, QueryPlan, QuestionSemanticPlan, RetrievalIntent, SourceBundle
 
 _MONTH_NAMES = (
     "january",
@@ -350,6 +350,41 @@ def _select_retrieval_strategy(
     if narrative_support and aggregation_shape == "point_lookup":
         return "text_first", 0.74, ["hybrid", "table_first"], ["metric", "year"]
     return "table_first", 0.88, ["hybrid", "text_first"], []
+
+
+def _apply_semantic_contract_to_strategy(
+    strategy: str,
+    strategy_confidence: float,
+    fallback_chain: list[str],
+    join_requirements: list[str],
+    semantic_plan: QuestionSemanticPlan,
+) -> tuple[str, float, list[str], list[str]]:
+    updated_strategy = str(strategy or "table_first")
+    updated_confidence = float(strategy_confidence or 0.0)
+    updated_fallback = list(fallback_chain or [])
+    updated_join_requirements = list(join_requirements or [])
+
+    constraint_sensitive = bool(semantic_plan.include_constraints or semantic_plan.exclude_constraints)
+    missing_core_slot = any(flag == "missing_core_slot" for flag in semantic_plan.ambiguity_flags)
+    publication_lag_risk = any(flag == "temporal_publication_lag_risk" for flag in semantic_plan.ambiguity_flags)
+
+    if constraint_sensitive and updated_strategy == "table_first":
+        updated_strategy = "hybrid"
+        updated_confidence = min(updated_confidence, 0.8)
+        updated_fallback = ["multi_table", "text_first", *updated_fallback]
+        updated_join_requirements = list(dict.fromkeys([*updated_join_requirements, "constraint_support"]))
+
+    if missing_core_slot and updated_strategy == "table_first":
+        updated_strategy = "hybrid"
+        updated_confidence = min(updated_confidence, 0.72)
+        updated_fallback = ["text_first", "multi_document", *updated_fallback]
+
+    if publication_lag_risk and updated_strategy == "table_first":
+        updated_fallback = ["hybrid", "multi_document", *updated_fallback]
+
+    updated_fallback = list(dict.fromkeys([item for item in updated_fallback if item and item != updated_strategy]))
+    updated_join_requirements = list(dict.fromkeys(updated_join_requirements))
+    return updated_strategy, updated_confidence, updated_fallback, updated_join_requirements
 
 
 def _expected_unit_kind(task_text: str, metric: str, analysis_modes: list[str]) -> str:
@@ -755,6 +790,13 @@ def build_retrieval_intent(
         aggregation_shape,
         analysis_modes,
     )
+    strategy, strategy_confidence, fallback_chain, join_requirements = _apply_semantic_contract_to_strategy(
+        strategy,
+        strategy_confidence,
+        fallback_chain,
+        join_requirements,
+        semantic_plan,
+    )
     evidence_plan = _build_evidence_plan(
         task_text,
         source_bundle,
@@ -853,6 +895,8 @@ def build_retrieval_intent(
         decomposition_confidence=semantic_plan.confidence,
         decomposition_used_llm_fallback=semantic_plan.used_llm,
         semantic_plan=semantic_plan,
+        planning_completeness_ok=semantic_plan.completeness_ok,
+        planning_completeness_gaps=list(semantic_plan.completeness_gaps),
         query_plan=query_plan,
         must_include_terms=must_include_terms,
         must_exclude_terms=must_exclude_terms,

@@ -537,6 +537,10 @@ class QuestionSemanticPlan(BaseModel):
     metric: str = ""
     period: str = ""
     period_type: str = ""
+    evidence_period: str = ""
+    publication_period: str = ""
+    aggregation_period: str = ""
+    display_unit_basis: str = ""
     target_years: list[str] = Field(default_factory=list)
     publication_year_window: list[str] = Field(default_factory=list)
     preferred_publication_years: list[str] = Field(default_factory=list)
@@ -550,6 +554,8 @@ class QuestionSemanticPlan(BaseModel):
     exclude_constraints: list[str] = Field(default_factory=list)
     qualifier_terms: list[str] = Field(default_factory=list)
     ambiguity_flags: list[str] = Field(default_factory=list)
+    completeness_ok: bool = False
+    completeness_gaps: list[str] = Field(default_factory=list)
     rationale: str = ""
     confidence: float = 0.0
     used_llm: bool = False
@@ -588,6 +594,8 @@ class RetrievalIntent(BaseModel):
     decomposition_confidence: float = 0.0
     decomposition_used_llm_fallback: bool = False
     semantic_plan: QuestionSemanticPlan = Field(default_factory=QuestionSemanticPlan)
+    planning_completeness_ok: bool = False
+    planning_completeness_gaps: list[str] = Field(default_factory=list)
     query_plan: QueryPlan = Field(default_factory=QueryPlan)
     must_include_terms: list[str] = Field(default_factory=list)
     must_exclude_terms: list[str] = Field(default_factory=list)

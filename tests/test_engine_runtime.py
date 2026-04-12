@@ -4287,6 +4287,128 @@ def test_engine_executor_stops_cleanly_for_unsupported_artifact_tasks():
     assert "does not support" in str(result["messages"][0].content).lower()
 
 
+def test_officeqa_executor_repairs_incomplete_semantic_plan_before_retrieval(monkeypatch):
+    prompt = "What were the total expenditures of the U.S federal government for the Veterans Administration in FY 1934?"
+    repaired_intent = RetrievalIntent(
+        entity="Veterans Administration",
+        metric="total expenditures",
+        period="1934",
+        period_type="fiscal_year",
+        target_years=["1934"],
+        granularity_requirement="fiscal_year",
+        document_family="treasury_bulletin",
+        aggregation_shape="fiscal_year_total",
+        answer_mode="deterministic_compute",
+        compute_policy="required",
+        strategy="hybrid",
+        planning_completeness_ok=True,
+        planning_completeness_gaps=[],
+        semantic_plan={
+            "entity": "Veterans Administration",
+            "metric": "total expenditures",
+            "period": "1934",
+            "period_type": "fiscal_year",
+            "evidence_period": "1934",
+            "aggregation_period": "fiscal_year",
+            "completeness_ok": True,
+            "completeness_gaps": [],
+            "used_llm": True,
+            "model_name": "mock-semantic-planner",
+            "confidence": 0.82,
+            "rationale": "semantic_plan_llm",
+        },
+    )
+
+    monkeypatch.setattr(
+        "agent.nodes.orchestrator.build_retrieval_bundle",
+        lambda task_text, source_bundle, benchmark_overrides=None: (
+            repaired_intent,
+            EvidenceSufficiency(
+                source_family="official_government_finance",
+                period_scope="partial",
+                aggregation_type="matched",
+                entity_scope="matched",
+                is_sufficient=False,
+                missing_dimensions=["retrieved evidence"],
+                rationale="semantic plan repaired before retrieval",
+            ),
+        ),
+    )
+
+    state = make_state(
+        prompt,
+        task_profile="document_qa",
+        task_intent={
+            "task_family": "document_qa",
+            "execution_mode": "document_grounded_analysis",
+            "complexity_tier": "structured_analysis",
+            "tool_families_needed": ["document_retrieval"],
+            "evidence_strategy": "document_first",
+            "review_mode": "document_grounded",
+            "completion_mode": "document_grounded",
+            "routing_rationale": "",
+            "confidence": 0.88,
+            "planner_source": "heuristic",
+        },
+        benchmark_overrides={"benchmark_adapter": "officeqa"},
+        tool_plan={
+            "tool_families_needed": [],
+            "widened_families": [],
+            "selected_tools": [],
+            "pending_tools": [],
+            "blocked_families": [],
+            "ace_events": [],
+            "notes": [],
+            "stop_reason": "no_bindable_capability",
+        },
+        source_bundle={
+            "task_text": prompt,
+            "focus_query": "Veterans Administration total expenditures fiscal year 1934",
+            "target_period": "1934",
+            "entities": ["Veterans Administration"],
+            "urls": [],
+            "inline_facts": {},
+            "tables": [],
+            "formulas": [],
+        },
+        curated_context={"objective": prompt, "facts_in_use": [], "open_questions": [], "assumptions": [], "requested_output": {"format": "text"}, "provenance_summary": {}},
+        workpad={},
+    )
+    state["retrieval_intent"] = {
+        "entity": "",
+        "metric": "total expenditures",
+        "period": "1934",
+        "period_type": "fiscal_year",
+        "target_years": ["1934"],
+        "granularity_requirement": "fiscal_year",
+        "document_family": "treasury_bulletin",
+        "aggregation_shape": "fiscal_year_total",
+        "answer_mode": "deterministic_compute",
+        "compute_policy": "required",
+        "strategy": "table_first",
+        "planning_completeness_ok": False,
+        "planning_completeness_gaps": ["missing_core_entity"],
+        "semantic_plan": {
+            "entity": "",
+            "metric": "total expenditures",
+            "period": "1934",
+            "period_type": "fiscal_year",
+            "evidence_period": "1934",
+            "aggregation_period": "fiscal_year",
+            "completeness_ok": False,
+            "completeness_gaps": ["missing_core_entity"],
+            "used_llm": False,
+        },
+    }
+
+    executor = make_executor(build_capability_registry([CALCULATOR_TOOL, SEARCH_TOOL, *BUILTIN_LEGAL_TOOLS]))
+    result = asyncio.run(executor(state))
+
+    assert result["retrieval_intent"]["entity"] == "Veterans Administration"
+    assert result["retrieval_intent"]["planning_completeness_ok"] is True
+    assert result["workpad"]["officeqa_semantic_replan_attempted"] is True
+
+
 def test_engine_reviewer_collapses_exact_output_to_adapter_instead_of_looping():
     prompt = "Use Gordon Growth Model and return JSON as {\"answer\": <value>}."
     state = make_state(

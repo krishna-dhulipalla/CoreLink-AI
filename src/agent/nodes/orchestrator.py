@@ -808,6 +808,82 @@ def _seed_officeqa_semantic_plan_usage(workpad: dict[str, Any], retrieval_intent
     )
 
 
+def _officeqa_semantic_replan_signature(task_text: str, retrieval_intent: RetrievalIntent, source_bundle: SourceBundle) -> str:
+    payload = {
+        "task": str(task_text or "").strip().lower(),
+        "focus_query": str(source_bundle.focus_query or "").strip().lower(),
+        "target_period": str(source_bundle.target_period or "").strip().lower(),
+        "entity": str(retrieval_intent.entity or "").strip().lower(),
+        "metric": str(retrieval_intent.metric or "").strip().lower(),
+        "period": str(retrieval_intent.period or "").strip().lower(),
+        "planning_completeness_gaps": sorted(str(item or "").strip().lower() for item in list(retrieval_intent.planning_completeness_gaps or []) if str(item).strip()),
+    }
+    return hashlib.sha1(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+
+
+def _maybe_repair_officeqa_semantic_plan(
+    *,
+    task_text: str,
+    source_bundle: SourceBundle,
+    benchmark_overrides: dict[str, Any],
+    retrieval_intent: RetrievalIntent,
+    evidence_sufficiency: EvidenceSufficiency,
+    workpad: dict[str, Any],
+    llm_control_state: dict[str, int],
+    llm_control_budget: dict[str, int],
+) -> tuple[RetrievalIntent, EvidenceSufficiency, dict[str, Any], dict[str, int], bool]:
+    if retrieval_intent.planning_completeness_ok or not list(retrieval_intent.planning_completeness_gaps or []):
+        return retrieval_intent, evidence_sufficiency, workpad, llm_control_state, False
+    call_count = int(llm_control_state.get("semantic_plan_calls", 0) or 0)
+    call_budget = int(llm_control_budget.get("semantic_plan_calls", 0) or 0)
+    if call_count >= call_budget:
+        updated_workpad = record_officeqa_llm_usage(
+            workpad,
+            category="semantic_plan_llm",
+            used=False,
+            reason="semantic_plan_budget_exhausted",
+            applied=False,
+            details={"planning_completeness_gaps": list(retrieval_intent.planning_completeness_gaps[:6])},
+        )
+        return retrieval_intent, evidence_sufficiency, updated_workpad, llm_control_state, False
+    replan_signature = _officeqa_semantic_replan_signature(task_text, retrieval_intent, source_bundle)
+    if str(workpad.get("officeqa_semantic_replan_signature", "") or "").strip() == replan_signature:
+        updated_workpad = record_officeqa_llm_usage(
+            workpad,
+            category="semantic_plan_llm",
+            used=False,
+            reason="semantic_plan_repair_reused_stale_signature",
+            applied=False,
+            details={"planning_completeness_gaps": list(retrieval_intent.planning_completeness_gaps[:6])},
+        )
+        return retrieval_intent, evidence_sufficiency, updated_workpad, llm_control_state, False
+
+    updated_state = dict(llm_control_state)
+    updated_state["semantic_plan_calls"] = call_count + 1
+    rebuilt_intent, rebuilt_sufficiency = build_retrieval_bundle(task_text, source_bundle, benchmark_overrides)
+    changed = (
+        rebuilt_intent.model_dump(exclude={"query_candidates"}) != retrieval_intent.model_dump(exclude={"query_candidates"})
+        or bool(rebuilt_intent.query_candidates) != bool(retrieval_intent.query_candidates)
+    )
+    updated_workpad = dict(workpad)
+    updated_workpad["officeqa_semantic_replan_signature"] = replan_signature
+    updated_workpad["officeqa_semantic_replan_attempted"] = True
+    updated_workpad = record_officeqa_llm_usage(
+        updated_workpad,
+        category="semantic_plan_llm",
+        used=bool(rebuilt_intent.semantic_plan.used_llm),
+        reason="semantic_plan_repaired" if changed else "semantic_plan_repair_no_material_change",
+        model_name=rebuilt_intent.semantic_plan.model_name,
+        confidence=rebuilt_intent.semantic_plan.confidence,
+        applied=changed,
+        details={
+            "planning_completeness_ok": rebuilt_intent.planning_completeness_ok,
+            "planning_completeness_gaps": list(rebuilt_intent.planning_completeness_gaps[:6]),
+        },
+    )
+    return rebuilt_intent, rebuilt_sufficiency, updated_workpad, updated_state, changed
+
+
 def _apply_source_rerank_decision(
     retrieval_action: RetrievalAction,
     candidate_sources: list[dict[str, Any]],
@@ -1556,6 +1632,27 @@ def make_executor(registry: dict[str, dict[str, Any]]):
         tools_ran_this_call: list[str] = []
         task_text = latest_human_text(state["messages"])
         curated = attach_structured_evidence(curated, journal.tool_results, benchmark_overrides)
+
+        if officeqa_mode:
+            active_retrieval_intent, evidence_sufficiency, workpad, llm_control_state, semantic_replanned = _maybe_repair_officeqa_semantic_plan(
+                task_text=task_text,
+                source_bundle=source_bundle,
+                benchmark_overrides=benchmark_overrides,
+                retrieval_intent=active_retrieval_intent,
+                evidence_sufficiency=evidence_sufficiency,
+                workpad=workpad,
+                llm_control_state=llm_control_state,
+                llm_control_budget=llm_control_budget,
+            )
+            workpad["officeqa_llm_control_state"] = llm_control_state
+            if semantic_replanned:
+                tool_plan.pending_tools = []
+                workpad = _seed_officeqa_semantic_plan_usage(workpad, active_retrieval_intent)
+                workpad = _record_event(
+                    workpad,
+                    "executor",
+                    "semantic contract incomplete -> semantic replan before retrieval",
+                )
 
         if intent.task_family == "finance_options" and not _supports_options_fast_path(task_text):
             heuristic_intent, _, _ = _heuristic_intent(task_text, state.get("answer_contract", {}) or {}, benchmark_overrides)
