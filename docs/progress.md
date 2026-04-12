@@ -657,5 +657,53 @@ Rules:
   - task 2 records `evidence_commit_review_redirected_retrieval`
   - task 1 still passes
 - Integrated smoke is still not fully green:
-  - task 2 now fails later with `repair_applied_but_no_new_evidence`
+- task 2 now fails later with `repair_applied_but_no_new_evidence`
 - That narrows the remaining live issue further: the system can now review and redirect after widening, but some redirected paths still do not yield materially new evidence.
+
+### Chat 30: V6 Phase 1 Started With Typed Strategy Kernel And Stage-Local OfficeQA Planners
+
+- Began the V6 architecture track in `docs/v6_execution_plan.md` with Phase 1.
+- Added a typed retrieval-strategy kernel in `src/agent/retrieval_strategy_kernel.py` so retrieval planning now flows through explicit strategy dispatch rather than directly through `_plan_retrieval_action`.
+- `RetrievalAction` now carries `requested_strategy`, and the executor records structured `RetrievalStrategyAttempt` entries into runtime state and trace payloads.
+- The default `table_first` bias is now overridable when stronger semantic shape is already present in `RetrievalIntent`, such as:
+  - `cross_document_alignment`
+  - constraint-sensitive questions
+  - narrative/text-heavy analysis modes
+- Continued Phase 1 by pulling major OfficeQA strategy-specific branching into stage-local planners inside `src/agent/nodes/orchestrator_retrieval.py`:
+  - initial source choice
+  - post-search choice
+  - table follow-up
+  - row follow-up
+  - cell follow-up
+  - page follow-up
+- This did not finish the full decomposition of `orchestrator_retrieval.py`, but it created the seams needed for Phase 2 strategy rotation without further growing the old monolithic planner.
+- Focused validation stayed green across:
+  - kernel dispatch
+  - requested/applied strategy recording
+  - narrative `text_first` planning
+  - alternate-table retries for `multi_table` OfficeQA questions
+
+### Chat 31: V6 Phase 1 Closed With Dedicated OfficeQA Strategy Planner Module
+
+- Closed `P1.6` by moving the extracted OfficeQA stage planners out of `src/agent/nodes/orchestrator_retrieval.py` and into `src/agent/officeqa_strategy_planner.py`.
+- The new module now owns strategy-local planning for:
+  - initial source choice
+  - post-search source follow-up
+  - table follow-up
+  - row follow-up
+  - cell follow-up
+  - page follow-up
+- `src/agent/nodes/orchestrator_retrieval.py` now mainly does:
+  - helper lookup and scoring utilities
+  - strategy-kernel dispatch
+  - OfficeQA planner context assembly
+  - retrieval action validation
+  - retrieval diagnostics attachment
+- This closes the first V6 architectural seam:
+  - retrieval strategy selection is typed
+  - requested vs applied strategy is trace-visible
+  - OfficeQA planning logic is no longer embedded as one large node-local branch block
+- Focused validation remained green after the module split, including:
+  - strategy-kernel tests
+  - OfficeQA planner tests
+  - search-ranking and requested-strategy coverage

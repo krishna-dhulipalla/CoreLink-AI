@@ -41,6 +41,7 @@ from agent.nodes.orchestrator_retrieval import _tool_args_from_retrieval_action
 from agent.nodes.orchestrator import (
     _MAX_RETRIEVAL_HOPS,
     _apply_officeqa_llm_repair_decision,
+    _record_retrieval_strategy_attempt,
     _officeqa_retrieval_input_signature,
     context_curator,
     fast_path_gate,
@@ -243,6 +244,63 @@ def test_search_ranking_can_prefer_next_year_publication_for_calendar_year_summa
     ranked = _rank_search_candidates(candidates, retrieval_intent, source_bundle, {"benchmark_adapter": "officeqa"})
 
     assert ranked[0]["document_id"] == "treasury_bulletin_1941_11_json"
+
+
+def test_plan_retrieval_action_records_requested_strategy_from_kernel():
+    registry = build_capability_registry(BUILTIN_RETRIEVAL_TOOLS)
+    tool_plan = ToolPlan(selected_tools=["search_officeqa_documents"])
+    source_bundle = SourceBundle(
+        task_text="What were the total expenditures for U.S. national defense in the calendar year 1940?",
+        focus_query="U.S. national defense total expenditures calendar year 1940",
+        target_period="1940",
+        entities=["U.S. national defense"],
+    )
+    retrieval_intent = RetrievalIntent(
+        entity="U.S. national defense",
+        metric="total expenditures",
+        period="1940",
+        strategy="text_first",
+        fallback_chain=["hybrid", "table_first"],
+        source_constraint_policy="off",
+    )
+
+    action = _plan_retrieval_action(
+        execution_mode="document_grounded_analysis",
+        source_bundle=source_bundle,
+        retrieval_intent=retrieval_intent,
+        tool_plan=tool_plan,
+        journal=ExecutionJournal(),
+        registry=registry,
+        benchmark_overrides={"benchmark_adapter": "officeqa"},
+    )
+
+    assert action.requested_strategy == "text_first"
+    assert action.strategy in {"text_first", "hybrid"}
+
+
+def test_record_retrieval_strategy_attempt_persists_requested_and_applied_strategy():
+    workpad = {}
+    journal = ExecutionJournal(retrieval_iterations=2)
+    action = RetrievalAction(
+        action="tool",
+        requested_strategy="text_first",
+        strategy="hybrid",
+        stage="locate_pages",
+        tool_name="fetch_officeqa_pages",
+        evidence_gap="narrative support",
+        strategy_reason="hybrid strategy selected because narrative support is likely necessary",
+        query="national defense 1940",
+        document_id="treasury_bulletin_1941_11_json",
+        candidate_sources=[{"document_id": "treasury_bulletin_1941_11_json"}],
+    )
+
+    updated = _record_retrieval_strategy_attempt(workpad, journal, action)
+
+    latest = dict(updated.get("latest_retrieval_strategy_attempt") or {})
+    assert latest["iteration"] == 3
+    assert latest["requested_strategy"] == "text_first"
+    assert latest["applied_strategy"] == "hybrid"
+    assert latest["tool_name"] == "fetch_officeqa_pages"
 
 
 def test_search_ranking_ignores_generic_domain_tokens_and_prefers_entity_focused_table_family():

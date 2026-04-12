@@ -20,6 +20,7 @@ from agent.contracts import (
     QualityReport,
     RetrievalAction,
     RetrievalIntent,
+    RetrievalStrategyAttempt,
     ReviewPacket,
     SourceBundle,
     TaskIntent,
@@ -840,6 +841,31 @@ def _table_candidates_from_last_result(tool_result: dict[str, Any]) -> list[dict
 
 def _officeqa_trace_llm_usage(workpad: dict[str, Any]) -> list[dict[str, Any]]:
     return [dict(item) for item in list(workpad.get("officeqa_llm_usage", []) or [])[:8] if isinstance(item, dict)]
+
+
+def _record_retrieval_strategy_attempt(
+    workpad: dict[str, Any],
+    journal: ExecutionJournal,
+    retrieval_action: RetrievalAction,
+) -> dict[str, Any]:
+    payload = RetrievalStrategyAttempt(
+        iteration=int(journal.retrieval_iterations or 0) + 1,
+        requested_strategy=str(retrieval_action.requested_strategy or retrieval_action.strategy or ""),
+        applied_strategy=str(retrieval_action.strategy or retrieval_action.requested_strategy or ""),
+        stage=str(retrieval_action.stage or ""),
+        tool_name=str(retrieval_action.tool_name or ""),
+        evidence_gap=str(retrieval_action.evidence_gap or ""),
+        strategy_reason=str(retrieval_action.strategy_reason or ""),
+        query=str(retrieval_action.query or ""),
+        document_id=str(retrieval_action.document_id or ""),
+        candidate_source_count=len(list(retrieval_action.candidate_sources or [])),
+    ).model_dump()
+    updated = dict(workpad)
+    attempts = [dict(item) for item in list(updated.get("retrieval_strategy_attempts", []) or []) if isinstance(item, dict)]
+    attempts.append(payload)
+    updated["retrieval_strategy_attempts"] = attempts[-16:]
+    updated["latest_retrieval_strategy_attempt"] = payload
+    return updated
 
 
 def _apply_table_review_decision(
@@ -1757,6 +1783,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                 registry=registry,
                 benchmark_overrides=benchmark_overrides,
             )
+            workpad = _record_retrieval_strategy_attempt(workpad, journal, retrieval_action)
             if retrieval_action.action == "tool":
                 if budget and budget.tool_calls_exhausted():
                     budget.log_budget_exit("tool_budget_exhausted", f"Blocked tool '{retrieval_action.tool_name}' after reaching tool-call cap.")
@@ -1954,6 +1981,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                       "retrieval_decision": {
                           "tool_name": retrieval_action.tool_name,
                           "stage": retrieval_action.stage,
+                          "requested_strategy": retrieval_action.requested_strategy,
                           "strategy": retrieval_action.strategy,
                           "rationale": retrieval_action.rationale,
                           "evidence_gap": retrieval_action.evidence_gap,
@@ -2009,6 +2037,7 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                               "evidence_gaps": [retrieval_action.evidence_gap] if retrieval_action.evidence_gap else [],
                               "orchestration_strategy": review_feedback.get("orchestration_strategy", "") if targeted_retrieval_retry else "",
                               "retry_path": dict(workpad.get("officeqa_retry_path") or {}),
+                              "retrieval_strategy_attempts": list(workpad.get("retrieval_strategy_attempts", []) or [])[-6:],
                               "officeqa_llm_usage": _officeqa_trace_llm_usage(workpad),
                               "llm_repair_history": list(workpad.get("officeqa_llm_repair_history", []) or []),
                           },

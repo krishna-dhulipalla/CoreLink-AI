@@ -659,6 +659,7 @@ class ReviewPacket(BaseModel):
 class RetrievalAction(BaseModel):
     action: Literal["tool", "answer"] = "tool"
     stage: str = ""
+    requested_strategy: str = ""
     strategy: str = ""
     strategy_reason: str = ""
     tool_name: str = ""
@@ -676,6 +677,19 @@ class RetrievalAction(BaseModel):
     candidate_sources: list[dict[str, Any]] = Field(default_factory=list)
     rejected_candidates: list[dict[str, Any]] = Field(default_factory=list)
     rationale: str = ""
+
+
+class RetrievalStrategyAttempt(BaseModel):
+    iteration: int = 0
+    requested_strategy: str = ""
+    applied_strategy: str = ""
+    stage: str = ""
+    tool_name: str = ""
+    evidence_gap: str = ""
+    strategy_reason: str = ""
+    query: str = ""
+    document_id: str = ""
+    candidate_source_count: int = 0
 
 
 class ProgressSignature(BaseModel):
