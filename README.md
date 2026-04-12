@@ -1,115 +1,184 @@
-# CoreLinkAI
+# CoreLink AI
 
-CoreLinkAI is a document-grounded financial reasoning system. It is designed to answer financial questions from source documents by combining corpus retrieval, structured extraction, deterministic computation, validation, and strict output formatting.
+CoreLink AI is a reasoning engine for evidence-grounded analytical work. It plans tasks, retrieves supporting material, extracts structured evidence, performs deterministic computations when possible, and applies review before returning a final answer.
 
-## Overview
+The project is built for workflows where correctness, provenance, and controlled tool use matter more than unconstrained generation.
 
-CoreLinkAI is built for financial reasoning tasks where the answer must come from documents, not from unsupported model memory. The system is intended for workloads such as:
+## Why CoreLink AI
 
-- financial data extraction from reports and tables
-- multi-period and inflation-adjusted calculations
-- statistical analysis over document-derived series
-- forecasting and trend questions grounded in historical records
-- weighted averages, risk-style metrics, and similar finance computations
+Most agent systems fail in one of two ways:
 
-The current benchmark target is OfficeQA, which is used as a testing environment for this runtime.
+- they rely too heavily on model recall instead of evidence
+- they use tools, but without enough policy around when to search, when to compute, when to retry, and when to stop
+
+CoreLink AI is built to solve that gap. The runtime is designed to:
+
+- prefer grounded evidence over unsupported synthesis
+- prefer deterministic compute over free-form math when the task allows it
+- change retrieval strategy when a current search regime stalls
+- validate answerability before allowing a failure endpoint
+
+## What It Can Do
+
+CoreLink AI is intended for tasks such as:
+
+- document-grounded financial and analytical questions
+- table extraction and period-aware aggregation
+- multi-step reasoning over structured and unstructured evidence
+- tool-backed analysis with explicit review and retry policy
+- server-side A2A agent execution
 
 ## How It Works
 
-The active runtime flow is:
+At a high level, the system follows this flow:
 
-`A2A request -> benchmark adapter -> corpus retrieval -> structured extraction -> deterministic compute -> validator/reviewer -> output adapter`
+```text
+Request
+  -> plan the task
+  -> choose tools and retrieval strategy
+  -> gather and structure evidence
+  -> compute or synthesize within policy
+  -> review and repair if needed
+  -> format and return the final answer
+```
 
-Core runtime layers:
+The key runtime behaviors are:
 
-- document retrieval over local or packaged corpora
-- structured evidence extraction with provenance
-- deterministic compute for supported financial operations
-- validation before final answer formatting
-- exact answer adaptation for benchmark or task contracts
+- Typed planning
+  The system builds an explicit task and retrieval intent before entering the tool loop.
 
-## Current Benchmark
+- Strategy-based retrieval
+  Retrieval is not a single fixed path. The runtime can rotate between strategies such as table-first, hybrid, multi-table, or multi-document search depending on the question and prior failures.
 
-CoreLinkAI is currently evaluated against OfficeQA.
+- Structured evidence
+  Retrieved material is normalized into tables, rows, cells, and grounded text fragments so downstream steps operate on typed evidence instead of raw strings.
 
-OfficeQA is a benchmark, not the product identity of the system. It is useful because it stresses the kinds of document-grounded finance tasks CoreLinkAI is meant to handle, including:
+- Deterministic compute
+  When a question can be answered through explicit aggregation or transformation, the runtime prefers a deterministic compute path.
 
-- simple extraction
-- multi-year inflation-adjusted calculations
-- statistical analysis such as regression, correlation, and standard deviation
-- time-series forecasting
-- weighted averages and risk-style financial metrics
+- Bounded LLM arbitration
+  LLMs are used for planning, arbitration, repair, and capability acquisition at controlled boundaries rather than as a blanket fallback.
 
-## Model Configuration
+- Review before finalization
+  Answers are checked for semantic alignment, evidence sufficiency, and endpoint policy before they are emitted.
 
-The runtime uses role-based model selection from `src/agent/model_config.py`.
+## Design Principles
 
-Recommended setup:
+- Evidence first
+  Answers should come from retrieved evidence and verified transformations.
 
-- use a strong document-grounded solver
-- use a strong reviewer when ambiguity, scope, or long-context failures appear
-- keep adapter and reflection models lighter unless they become bottlenecks
+- Deterministic where possible
+  If the answer can be computed safely, the runtime should compute it rather than improvise it.
 
-The system supports role-specific overrides through `.env.example`, including:
+- Explicit retries
+  When the system is wrong, it should mutate strategy or search regime, not repeat the same failed path.
 
-- `SOLVER_MODEL`
-- `REVIEWER_MODEL`
-- `DOCUMENT_SOLVER_MODEL`
-- `LONG_CONTEXT_SOLVER_MODEL`
-- `DOCUMENT_REVIEWER_MODEL`
+- Policy-driven stopping
+  The runtime should not quietly give up. It should either continue through a materially new path or stop with a clear reason.
 
-## Getting Started
+- Operational transparency
+  The system is designed to be observable and diagnosable in local development and evaluation runs.
+
+## Quickstart
 
 ### Prerequisites
 
-- [uv](https://github.com/astral-sh/uv) or Python 3.13+
+- Python 3.13+
+- `uv`
 - an OpenAI-compatible API key
 
 ### Install
 
 ```bash
-git clone https://github.com/your-username/CoreLink-AI.git
-cd CoreLink-AI
+git clone <your-repo-url>
+cd Project-Pulse-Generalist-A2A-Reasoning-Engine
 uv sync
+```
+
+Create your local environment file:
+
+```bash
 cp .env.example .env
 ```
 
 Set at least:
 
-- `OPENAI_API_KEY`
-- `MODEL_PROFILE=officeqa`
-
-If you are running the current benchmark flow, also set:
-
-- `BENCHMARK_NAME=officeqa`
-
-## Local OfficeQA Data
-
-The canonical local layout is:
-
-```text
-data/
-  officeqa/
-    README.md
-    treasury_bulletins_parsed/
-    treasury_bulletin_pdfs/
-    officeqa.csv
+```bash
+OPENAI_API_KEY=your_key_here
 ```
 
-Fastest local setup:
+Optional:
 
-```powershell
-git clone https://github.com/databricks/officeqa.git data/officeqa/source
-$env:OFFICEQA_CORPUS_DIR="data/officeqa/source/treasury_bulletin_pdfs"
-uv run python scripts/build_officeqa_index.py --corpus-root "$env:OFFICEQA_CORPUS_DIR"
-uv run python scripts/verify_officeqa_corpus.py --corpus-root "$env:OFFICEQA_CORPUS_DIR"
+- `OPENAI_BASE_URL`
+- role-specific model overrides such as `SOLVER_MODEL` or `REVIEWER_MODEL`
+
+## Run The Server
+
+Start the A2A server:
+
+```bash
+uv run python src/server.py --host 127.0.0.1 --port 9009
 ```
 
-If you already have parsed artifacts locally, point `OFFICEQA_CORPUS_DIR` to `data/officeqa/treasury_bulletins_parsed` instead.
+The server exposes CoreLink AI as an A2A-compatible agent with streaming support.
 
-The runtime can index raw PDFs, JSON, CSV, TSV, and text files. Parsed artifacts are usually faster and cleaner, but the official OfficeQA PDF folder also works.
+## Run Locally
 
-After corpus setup, run the local smoke path:
+### General runtime smoke
+
+```bash
+uv run python scripts/run_live_engine_smoke.py
+```
+
+### Test suite
+
+```bash
+uv run pytest tests/
+```
+
+Focused examples:
+
+```bash
+uv run pytest tests/test_engine_runtime.py -q
+uv run pytest tests/test_retrieval_strategy_kernel.py -q
+uv run pytest tests/test_llm_repair.py -q
+```
+
+## Configuration
+
+The runtime is configured through environment variables in `.env`.
+
+Common settings include:
+
+- provider access
+  - `OPENAI_API_KEY`
+  - `OPENAI_BASE_URL`
+
+- model overrides
+  - `SOLVER_MODEL`
+  - `REVIEWER_MODEL`
+  - `DOCUMENT_SOLVER_MODEL`
+  - `DOCUMENT_REVIEWER_MODEL`
+
+- runtime controls
+  - `MAX_TOOL_CALLS`
+  - `MAX_REVISE_CYCLES`
+  - `MAX_CONTEXT_TOKENS`
+  - `STRUCTURED_OUTPUT_MODE`
+  - `TOOL_CALL_MODE`
+
+- optional persistence and diagnostics
+  - `ENABLE_RUN_TRACER`
+  - `TRACE_MAX_RECENT`
+  - `ENABLE_AGENT_MEMORY`
+
+For normal usage, only provider credentials are required. Benchmark- and corpus-specific settings are optional.
+
+## Evaluation
+
+CoreLink AI has been hardened with benchmark-driven testing, including document-heavy financial QA workloads. Evaluation support exists in the repo, but it is separate from the public runtime surface.
+
+If you want to run the current local benchmark smoke path:
 
 ```powershell
 $env:BENCHMARK_NAME="officeqa"
@@ -117,54 +186,31 @@ $env:BENCHMARK_STATELESS="1"
 uv run python scripts/run_officeqa_regression.py --smoke
 ```
 
-The index is written under `OFFICEQA_INDEX_DIR` or, by default, under `OFFICEQA_CORPUS_DIR/.officeqa_index/`.
+If the benchmark requires a local corpus index, build it first:
 
-## Competition And Deployment
-
-Do not assume the evaluation environment exposes the corpus to the agent.
-
-- keep the OfficeQA corpus out of git history
-- package or mount the corpus for benchmark runs
-- point `OFFICEQA_CORPUS_DIR` at that packaged path
-- when `COMPETITION_MODE=1` and `BENCHMARK_NAME=officeqa`, startup fails fast if corpus or index is missing
-
-Judge tools are optional auxiliary surfaces, not the primary data path.
-
-## Running
-
-Start the A2A server:
-
-```bash
-uv run src/server.py --port 9009
+```powershell
+$env:OFFICEQA_CORPUS_DIR="data/officeqa/source/treasury_bulletins_parsed/jsons"
+uv run python scripts/build_officeqa_index.py --corpus-root "$env:OFFICEQA_CORPUS_DIR"
+uv run python scripts/verify_officeqa_corpus.py --corpus-root "$env:OFFICEQA_CORPUS_DIR"
 ```
 
-Recommended local benchmark-testing defaults:
+OfficeQA is used here as an evaluation harness, not as the product identity of CoreLink AI.
 
-- `BENCHMARK_NAME=officeqa`
-- `BENCHMARK_STATELESS=1`
-- `ENABLE_RUN_TRACER=1`
-- `TRACE_MAX_RECENT=5`
-- `ENABLE_AGENT_MEMORY=0`
+## Operating Notes
 
-## Validation
+- The runtime supports strategy-aware retrieval rather than a single hardcoded search path.
+- Deterministic compute remains the preferred path for structured numeric questions.
+- Optional memory is available but disabled by default for most local and benchmark runs.
+- The system is designed to run cleanly in stateless benchmark mode and normal server mode.
 
-Run the full test suite:
+## Status
 
-```bash
-uv run pytest tests/
-```
+CoreLink AI is currently on the V6 architecture track, focused on:
 
-Useful smoke commands:
+- typed retrieval strategies
+- bounded repair and regime mutation
+- evidence arbitration
+- compute capability acquisition
+- answerability-aware stopping policy
 
-- `uv run pytest tests/test_engine_runtime.py -q`
-- `BENCHMARK_STATELESS=1 uv run python scripts/run_benchmark_stateless_smoke.py`
-- `BENCHMARK_NAME=officeqa BENCHMARK_STATELESS=1 uv run python scripts/run_officeqa_regression.py --smoke`
-
-The OfficeQA regression runner writes JSON reports under `Results&traces/` with subsystem classification, chosen sources, extracted tables, compute ledgers, and final answers.
-
-## Project Structure
-
-- `src/server.py`: A2A Starlette server entrypoint
-- `src/executor.py`: bridge between A2A requests and the runtime graph
-- `src/agent/`: core runtime implementation
-- `data/officeqa/`: local landing zone for the untracked OfficeQA corpus
+This is the most stable architecture the project has had so far.
