@@ -604,3 +604,130 @@ def test_build_case_report_includes_strategy_exhaustion_proof():
 
     assert report["artifacts"]["strategy_exhaustion_proof"]["strategies_exhausted"] is True
     assert len(report["artifacts"]["retrieval_strategy_attempts"]) == 2
+
+
+def test_build_case_report_flags_premature_insufficiency_without_exhaustion():
+    state = make_state(
+        "OfficeQA task",
+        benchmark_overrides={"benchmark_adapter": "officeqa"},
+        workpad={
+            "officeqa_answerability_policy": {
+                "insufficiency_requested": True,
+                "benchmark_terminal_allowed": False,
+                "policy_violation": True,
+                "policy_violation_reason": "insufficiency_without_exhaustion",
+                "insufficiency_answer_emitted": False,
+                "low_confidence_compute": False,
+            },
+            "officeqa_strategy_exhaustion_proof": {
+                "strategies_exhausted": False,
+                "benchmark_terminal_allowed": False,
+            },
+        },
+        execution_journal={
+            "events": [],
+            "tool_results": [],
+            "routed_tool_families": [],
+            "revision_count": 0,
+            "self_reflection_count": 0,
+            "retrieval_iterations": 1,
+            "retrieval_queries": [],
+            "retrieved_citations": [],
+            "final_artifact_signature": "",
+            "progress_signatures": [],
+            "stop_reason": "officeqa_no_retrieval_repair_path",
+            "contract_collapse_attempts": 0,
+        },
+    )
+
+    report = build_case_report(
+        {"id": "case", "prompt": "OfficeQA task", "case_kind": "benchmark_regression"},
+        _trace(state, "<FINAL_ANSWER>Cannot calculate</FINAL_ANSWER>"),
+    )
+
+    assert "premature_insufficiency" in report["benchmark_analysis"]["tags"]
+    assert "insufficiency_without_exhaustion" in report["benchmark_analysis"]["tags"]
+    assert report["artifacts"]["answerability_policy"]["policy_violation"] is True
+
+
+def test_build_case_report_flags_low_confidence_compute_separately():
+    state = make_state(
+        "OfficeQA task",
+        benchmark_overrides={"benchmark_adapter": "officeqa"},
+        curated_context={
+            "structured_evidence": {
+                "values": [{"document_id": "treasury_1940_json"}],
+                "structure_confidence_summary": {"table_confidence_gate_passed": False},
+            },
+            "compute_result": {
+                "status": "insufficient",
+                "validation_errors": ["Low-confidence table structure prevents deterministic compute on the current evidence."],
+            },
+        },
+        workpad={
+            "officeqa_answerability_policy": {
+                "insufficiency_requested": True,
+                "benchmark_terminal_allowed": True,
+                "policy_violation": False,
+                "insufficiency_answer_emitted": True,
+                "low_confidence_compute": True,
+                "low_confidence_reason": "Low-confidence table structure prevents deterministic compute on the current evidence.",
+            },
+            "officeqa_strategy_exhaustion_proof": {
+                "strategies_exhausted": True,
+                "benchmark_terminal_allowed": True,
+            },
+        },
+        execution_journal={
+            "events": [],
+            "tool_results": [],
+            "routed_tool_families": [],
+            "revision_count": 0,
+            "self_reflection_count": 0,
+            "retrieval_iterations": 2,
+            "retrieval_queries": [],
+            "retrieved_citations": [],
+            "final_artifact_signature": "",
+            "progress_signatures": [],
+            "stop_reason": "officeqa_low_confidence_structure",
+            "contract_collapse_attempts": 0,
+        },
+    )
+
+    report = build_case_report(
+        {"id": "case", "prompt": "OfficeQA task", "case_kind": "benchmark_regression"},
+        _trace(state, "<FINAL_ANSWER>Cannot calculate</FINAL_ANSWER>"),
+    )
+
+    assert "low_confidence_compute" in report["benchmark_analysis"]["tags"]
+    assert report["artifacts"]["answerability_policy"]["low_confidence_compute"] is True
+
+
+def test_summarize_regression_report_blocks_go_on_premature_insufficiency_and_low_confidence_compute():
+    reports = [
+        {
+            "case_kind": "benchmark_regression",
+            "classification": {"subsystem": "compute", "compute_status": "insufficient"},
+            "retrieval_strategy": "hybrid",
+            "answer_mode": "deterministic_compute",
+            "benchmark_analysis": {
+                "semantic_verdict": "fail",
+                "tags": ["premature_insufficiency", "insufficiency_without_exhaustion", "low_confidence_compute"],
+                "source_ranking_correct": None,
+            },
+            "artifacts": {
+                "chosen_sources": [{"document_id": "x"}],
+                "extracted_tables": [{"document_id": "x"}],
+                "final_answer": "Cannot calculate",
+                "compute_policy": "required",
+                "structure_confidence_summary": {"table_confidence_gate_passed": False},
+                "semantic_diagnostics": {"admissibility_passed": True},
+            },
+        }
+    ]
+
+    summary = summarize_regression_report(reports)
+
+    assert summary["premature_insufficiency_cases"] == 1
+    assert summary["low_confidence_compute_cases"] == 1
+    assert summary["go_for_full_benchmark"] is False

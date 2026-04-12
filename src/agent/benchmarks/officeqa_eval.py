@@ -14,6 +14,9 @@ BenchmarkFailureTag = Literal[
     "wrong_row_or_column_semantics",
     "incomplete_evidence",
     "false_semantic_pass",
+    "premature_insufficiency",
+    "insufficiency_without_exhaustion",
+    "low_confidence_compute",
     "repair_stall",
     "repair_applied_but_no_new_evidence",
     "repair_reused_stale_state",
@@ -133,6 +136,21 @@ def _normalized_answer_value(answer: str) -> str:
     return compact
 
 
+def _is_insufficiency_answer(answer: str) -> bool:
+    normalized = _normalized_answer_value(answer).lower()
+    return any(
+        token in normalized
+        for token in (
+            "cannot calculate",
+            "cannot determine",
+            "insufficient data",
+            "insufficient evidence",
+            "not present in the provided evidence",
+            "not available in the provided evidence",
+        )
+    )
+
+
 def _looks_navigational_table(table: dict[str, Any]) -> bool:
     headers = " | ".join(str(item or "") for item in list(table.get("headers", []))[:8]).lower()
     locators = " | ".join(
@@ -195,6 +213,8 @@ def _classify_benchmark_failure(
     evidence_gaps = [str(item or "") for item in list(artifacts.get("evidence_gaps", []) or [])]
     semantic_diagnostics = dict(artifacts.get("semantic_diagnostics", {}) or {})
     semantic_issues = [str(item or "") for item in list(semantic_diagnostics.get("issues", []) or [])]
+    answerability_policy = dict(artifacts.get("answerability_policy", {}) or {})
+    strategy_exhaustion_proof = dict(artifacts.get("strategy_exhaustion_proof", {}) or {})
     rejected_alternatives = [str(item or "") for item in list(artifacts.get("rejected_aggregation_alternatives", []) or [])]
     chosen_sources = list(artifacts.get("chosen_sources", []) or [])
     extracted_tables = [dict(item) for item in list(artifacts.get("extracted_tables", []) or []) if isinstance(item, dict)]
@@ -203,6 +223,7 @@ def _classify_benchmark_failure(
     repair_failure_codes = [str(item.get("code", "") or "") for item in repair_failures]
     retry_stop_reason = str(artifacts.get("retry_stop_reason", "") or "")
     final_answer = _normalized_answer_value(str(artifacts.get("final_answer", "") or ""))
+    insufficiency_answer = _is_insufficiency_answer(final_answer)
     expectations = _benchmark_expectations(case)
     expected_answer = _normalized_answer_value(str(expectations.get("expected_answer", "") or ""))
     source_match = _source_matches_expectations(
@@ -261,6 +282,22 @@ def _classify_benchmark_failure(
     semantic_ok = bool(semantic_diagnostics.get("admissibility_passed", True))
     if subsystem == "pass" and ((answer_match is False) or not semantic_ok):
         tags.append("false_semantic_pass")
+
+    if insufficiency_answer:
+        benchmark_terminal_allowed = bool(
+            answerability_policy.get("benchmark_terminal_allowed", strategy_exhaustion_proof.get("benchmark_terminal_allowed"))
+        )
+        if not benchmark_terminal_allowed:
+            tags.append("premature_insufficiency")
+            tags.append("insufficiency_without_exhaustion")
+    elif bool(answerability_policy.get("policy_violation")):
+        reason = str(answerability_policy.get("policy_violation_reason", "") or "").strip().lower()
+        if "insufficiency" in reason or "exhaustion" in reason:
+            tags.append("premature_insufficiency")
+            tags.append("insufficiency_without_exhaustion")
+
+    if bool(answerability_policy.get("low_confidence_compute")) or "low-confidence" in combined_signals:
+        tags.append("low_confidence_compute")
 
     if "repair_applied_but_no_new_evidence" in repair_failure_codes:
         tags.append("repair_applied_but_no_new_evidence")
@@ -446,6 +483,7 @@ def capture_officeqa_artifacts(trace: dict[str, Any] | None) -> dict[str, Any]:
         "llm_usage": list(workpad.get("officeqa_llm_usage", []) or [])[:10],
         "llm_repair_history": list(workpad.get("officeqa_llm_repair_history", []) or [])[:6],
         "repair_failures": list(workpad.get("officeqa_repair_failures", []) or [])[:6],
+        "answerability_policy": dict(workpad.get("officeqa_answerability_policy") or {}),
         "strategy_exhaustion_proof": dict(workpad.get("officeqa_strategy_exhaustion_proof") or {}),
         "retrieval_strategy_attempts": list(workpad.get("retrieval_strategy_attempts", []) or [])[:10],
         "latest_repair_transition": dict(
@@ -518,6 +556,8 @@ def summarize_regression_report(case_reports: list[dict[str, Any]]) -> dict[str,
     semantic_compute_passed = 0
     contract_success = 0
     false_semantic_pass_cases = 0
+    premature_insufficiency_cases = 0
+    low_confidence_compute_cases = 0
     repair_stall_cases = 0
     source_ranking_evaluable_cases = 0
     source_ranking_correct_cases = 0
@@ -544,6 +584,10 @@ def summarize_regression_report(case_reports: list[dict[str, Any]]) -> dict[str,
             counts_by_benchmark_failure[key] = counts_by_benchmark_failure.get(key, 0) + 1
         if "false_semantic_pass" in list(benchmark_analysis.get("tags", []) or []):
             false_semantic_pass_cases += 1
+        if any(tag in list(benchmark_analysis.get("tags", []) or []) for tag in ("premature_insufficiency", "insufficiency_without_exhaustion")):
+            premature_insufficiency_cases += 1
+        if "low_confidence_compute" in list(benchmark_analysis.get("tags", []) or []):
+            low_confidence_compute_cases += 1
         if "repair_stall" in list(benchmark_analysis.get("tags", []) or []):
             repair_stall_cases += 1
         source_ranking_correct = benchmark_analysis.get("source_ranking_correct")
@@ -592,6 +636,8 @@ def summarize_regression_report(case_reports: list[dict[str, Any]]) -> dict[str,
         qa_total > 0
         and qa_critical_failures == 0
         and false_semantic_pass_cases == 0
+        and premature_insufficiency_cases == 0
+        and low_confidence_compute_cases == 0
         and repair_stall_cases <= allowed_repair_stalls
         and (source_ranking_accuracy is None or source_ranking_accuracy >= 0.6)
         and extraction_ready >= required_qa_threshold
@@ -618,6 +664,8 @@ def summarize_regression_report(case_reports: list[dict[str, Any]]) -> dict[str,
         "semantic_compute_pass_cases": semantic_compute_passed,
         "contract_success_cases": contract_success,
         "false_semantic_pass_cases": false_semantic_pass_cases,
+        "premature_insufficiency_cases": premature_insufficiency_cases,
+        "low_confidence_compute_cases": low_confidence_compute_cases,
         "repair_stall_cases": repair_stall_cases,
         "allowed_repair_stalls": allowed_repair_stalls,
         "source_ranking_evaluable_cases": source_ranking_evaluable_cases,
@@ -627,6 +675,6 @@ def summarize_regression_report(case_reports: list[dict[str, Any]]) -> dict[str,
         "go_no_go_reason": (
             "QA and benchmark-regression cases meet routing/formatting/validation, semantic correctness, repair-stall, source-ranking, extraction, confidence, semantic compute, and final-contract thresholds."
             if go_for_full_benchmark
-            else "Hold full benchmark runs until QA and benchmark-regression cases have zero routing/formatting/validation failures, zero false semantic passes, bounded repair stalls, acceptable source-ranking accuracy on sampled benchmark cases, and at least 60% satisfy extraction quality, evidence confidence, semantic compute reliability, and final-answer contract success."
+            else "Hold full benchmark runs until QA and benchmark-regression cases have zero routing/formatting/validation failures, zero false semantic passes, zero premature insufficiency endpoints, zero low-confidence compute successes, bounded repair stalls, acceptable source-ranking accuracy on sampled benchmark cases, and at least 60% satisfy extraction quality, evidence confidence, semantic compute reliability, and final-answer contract success."
         ),
     }

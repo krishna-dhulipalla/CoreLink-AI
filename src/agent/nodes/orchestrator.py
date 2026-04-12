@@ -3055,6 +3055,32 @@ def reviewer(state: RuntimeState) -> dict[str, Any]:
             ],
             benchmark_overrides=benchmark_overrides,
         )
+        exhaustion_proof = dict(workpad.get("officeqa_strategy_exhaustion_proof") or {})
+        compute_result_payload = dict(curated.compute_result or {})
+        compute_validation_errors = [str(item).strip() for item in list(compute_result_payload.get("validation_errors", []) or []) if str(item).strip()]
+        structure_confidence_summary = dict((curated.structured_evidence or {}).get("structure_confidence_summary", {}) or {})
+        low_confidence_compute = bool(
+            journal.stop_reason == "officeqa_low_confidence_structure"
+            or any("low-confidence" in item.lower() for item in compute_validation_errors)
+            or (
+                bool(structure_confidence_summary)
+                and not bool(structure_confidence_summary.get("table_confidence_gate_passed", True))
+            )
+        )
+        answerability_policy = {
+            "insufficiency_requested": bool(officeqa_validation.insufficiency_answer),
+            "benchmark_terminal_allowed": bool(exhaustion_proof.get("benchmark_terminal_allowed")),
+            "strategies_exhausted": bool(exhaustion_proof.get("strategies_exhausted")),
+            "candidate_universe_exhausted": bool(exhaustion_proof.get("candidate_universe_exhausted")),
+            "compute_capability_missing": bool(exhaustion_proof.get("compute_capability_missing")),
+            "parser_or_extraction_gap": bool(exhaustion_proof.get("parser_or_extraction_gap")),
+            "terminal_reason": str(exhaustion_proof.get("terminal_reason", "") or ""),
+            "policy_violation": False,
+            "policy_violation_reason": "",
+            "insufficiency_answer_emitted": False,
+            "low_confidence_compute": low_confidence_compute,
+            "low_confidence_reason": "; ".join(compute_validation_errors[:2]) if low_confidence_compute else "",
+        }
         if officeqa_validation.verdict == "revise":
             retry_allowed, retry_stop_reason = _officeqa_retry_policy(
                 officeqa_validation,
@@ -3071,15 +3097,24 @@ def reviewer(state: RuntimeState) -> dict[str, Any]:
                 "remediation_codes": list(officeqa_validation.remediation_codes),
                 "retry_allowed": retry_allowed,
                 "retry_stop_reason": retry_stop_reason,
-                "strategy_exhaustion_proof": dict(workpad.get("officeqa_strategy_exhaustion_proof") or {}),
+                "strategy_exhaustion_proof": exhaustion_proof,
             }
-            benchmark_terminal_allowed = bool(dict(workpad.get("officeqa_strategy_exhaustion_proof") or {}).get("benchmark_terminal_allowed"))
+            benchmark_terminal_allowed = bool(exhaustion_proof.get("benchmark_terminal_allowed"))
             if not retry_allowed and officeqa_validation.insufficiency_answer and benchmark_terminal_allowed:
                 answer = officeqa_validation.insufficiency_answer
+                answerability_policy["insufficiency_answer_emitted"] = True
+            elif not retry_allowed and officeqa_validation.insufficiency_answer and not benchmark_terminal_allowed:
+                answerability_policy["policy_violation"] = True
+                answerability_policy["policy_violation_reason"] = "insufficiency_without_exhaustion"
         validator_result = officeqa_validation.model_dump()
-        benchmark_terminal_allowed = bool(dict(workpad.get("officeqa_strategy_exhaustion_proof") or {}).get("benchmark_terminal_allowed"))
+        benchmark_terminal_allowed = bool(exhaustion_proof.get("benchmark_terminal_allowed"))
         if officeqa_validation.replace_answer and officeqa_validation.insufficiency_answer and benchmark_terminal_allowed:
             answer = officeqa_validation.insufficiency_answer
+            answerability_policy["insufficiency_answer_emitted"] = True
+        elif officeqa_validation.replace_answer and officeqa_validation.insufficiency_answer and not benchmark_terminal_allowed:
+            answerability_policy["policy_violation"] = True
+            answerability_policy["policy_violation_reason"] = "insufficiency_without_exhaustion"
+        workpad["officeqa_answerability_policy"] = answerability_policy
     review_packet = build_review_packet(
         task_text=latest_human_text(state["messages"]),
         answer_text=answer,
@@ -3213,7 +3248,9 @@ def reviewer(state: RuntimeState) -> dict[str, Any]:
         stop_reason = "progress_stalled"
         score = min(score, 0.45)
     if verdict == "fail" and officeqa_validation and officeqa_validation.insufficiency_answer:
-        answer = officeqa_validation.insufficiency_answer
+        answerability_policy = dict(workpad.get("officeqa_answerability_policy") or {})
+        if bool(answerability_policy.get("benchmark_terminal_allowed")):
+            answer = officeqa_validation.insufficiency_answer
     journal.progress_signatures.append(progress.model_dump())
 
     report = QualityReport(

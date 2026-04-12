@@ -944,3 +944,24 @@ Rules:
   - candidate extraction and ranking
   - retrieval tool arg generation
   - retrieval strategy and repair slices through the existing OfficeQA runtime
+
+### Chat 40: V6 Phase 9 Completed With Explicit Benchmark Answerability Policy
+
+- Completed Phase 9 by turning benchmark answerability into an explicit runtime and evaluator policy instead of an implicit side effect of validator insufficiency text.
+- `src/agent/nodes/orchestrator.py` now records `officeqa_answerability_policy` during review with:
+  - whether insufficiency was requested
+  - whether benchmark terminal conditions were actually satisfied
+  - whether insufficiency was emitted
+  - whether a policy violation occurred
+  - whether low-confidence compute blocked or contaminated the endpoint
+- The reviewer no longer replaces the final answer with a safe insufficiency response unless the strategy-exhaustion proof explicitly allows a benchmark-terminal stop.
+- `src/agent/benchmarks/officeqa_eval.py` now surfaces answerability-policy failures as first-class benchmark tags:
+  - `premature_insufficiency`
+  - `insufficiency_without_exhaustion`
+  - `low_confidence_compute`
+- Regression summaries now count those cases separately and block `go_for_full_benchmark` when they appear, instead of letting them hide inside generic compute or validation misses.
+- Added focused runtime and evaluator coverage for:
+  - blocked premature insufficiency
+  - safe insufficiency with explicit exhaustion proof
+  - low-confidence compute tagging
+  - summary-level benchmark gating on answerability-policy failures

@@ -4592,7 +4592,17 @@ def test_engine_reviewer_collapses_exact_output_to_adapter_instead_of_looping():
         },
         execution_journal={"events": [], "tool_results": [], "routed_tool_families": [], "revision_count": 0, "self_reflection_count": 0, "final_artifact_signature": "abc", "progress_signatures": [], "stop_reason": "", "contract_collapse_attempts": 0},
         curated_context={"objective": prompt, "facts_in_use": [], "open_questions": [], "assumptions": [], "requested_output": {"format": "json", "requires_adapter": True, "wrapper_key": "answer"}, "provenance_summary": {}},
-        workpad={"events": [], "stage_outputs": {}, "tool_results": [], "review_ready": True},
+        workpad={
+            "events": [],
+            "stage_outputs": {},
+            "tool_results": [],
+            "review_ready": True,
+            "officeqa_strategy_exhaustion_proof": {
+                "strategies_exhausted": True,
+                "benchmark_terminal_allowed": True,
+                "candidate_universe_exhausted": True,
+            },
+        },
     )
     state["messages"].append(AIMessage(content="The fair value under the Gordon Growth Model is $53.00 per share."))
 
@@ -4689,7 +4699,17 @@ def test_engine_reviewer_flags_missing_grounding_for_document_answers():
             "contract_collapse_attempts": 0,
         },
         curated_context={"objective": prompt, "facts_in_use": [], "open_questions": [], "assumptions": [], "requested_output": {"format": "text"}, "provenance_summary": {}},
-        workpad={"events": [], "stage_outputs": {}, "tool_results": [], "review_ready": True},
+        workpad={
+            "events": [],
+            "stage_outputs": {},
+            "tool_results": [],
+            "review_ready": True,
+            "officeqa_strategy_exhaustion_proof": {
+                "strategies_exhausted": True,
+                "benchmark_terminal_allowed": True,
+                "candidate_universe_exhausted": True,
+            },
+        },
     )
     state["messages"].append(AIMessage(content="The total public debt outstanding in 1945 was 258.7 billion dollars."))
 
@@ -5112,7 +5132,17 @@ def test_officeqa_reviewer_emits_safe_insufficiency_answer_for_adapter():
             "structured_evidence": {},
             "compute_result": {},
         },
-        workpad={"events": [], "stage_outputs": {}, "tool_results": [], "review_ready": True},
+        workpad={
+            "events": [],
+            "stage_outputs": {},
+            "tool_results": [],
+            "review_ready": True,
+            "officeqa_strategy_exhaustion_proof": {
+                "strategies_exhausted": True,
+                "benchmark_terminal_allowed": True,
+                "candidate_universe_exhausted": True,
+            },
+        },
     )
     state["retrieval_intent"] = {
         "entity": "National Defense",
@@ -5135,6 +5165,99 @@ def test_officeqa_reviewer_emits_safe_insufficiency_answer_for_adapter():
     assert "provided Treasury Bulletin evidence" in rendered
     assert ("Cannot calculate" in rendered) or ("Cannot determine" in rendered)
     assert "<FINAL_ANSWER>" in rendered
+
+
+def test_officeqa_reviewer_records_premature_insufficiency_policy_without_emitting_answer(monkeypatch):
+    prompt = "What was the calendar year total for U.S. national defense expenditures in 1940?"
+    monkeypatch.setattr(
+        "agent.nodes.orchestrator.benchmark_validate_final",
+        lambda *args, **kwargs: OfficeQAValidationResult(
+            verdict="revise",
+            reasoning="Structured validation needs more retrieval.",
+            missing_dimensions=["retrieved evidence"],
+            hard_failures=["structured evidence presence"],
+            remediation_codes=["RETRIEVE_GROUNDED_EVIDENCE"],
+            remediation_guidance=["Retrieve grounded evidence before finalization."],
+            recommended_repair_target="gather",
+            orchestration_strategy="table_compute",
+            retry_allowed=True,
+            stop_reason="officeqa_structured_revision_required",
+            insufficiency_answer=(
+                "Structured OfficeQA validation failed because structured evidence presence.\n"
+                "Final answer: Cannot determine from the provided Treasury Bulletin evidence."
+            ),
+            replace_answer=False,
+        ),
+    )
+    monkeypatch.setattr(
+        "agent.nodes.orchestrator._officeqa_retry_policy",
+        lambda *args, **kwargs: (False, "officeqa_no_retrieval_repair_path"),
+    )
+    state = make_state(
+        prompt,
+        task_profile="document_qa",
+        task_intent={
+            "task_family": "document_qa",
+            "execution_mode": "document_grounded_analysis",
+            "complexity_tier": "structured_analysis",
+            "review_mode": "document_grounded",
+            "planner_source": "heuristic",
+        },
+        benchmark_overrides={"benchmark_adapter": "officeqa", "officeqa_xml_contract": True},
+        answer_contract={"format": "xml", "requires_adapter": True, "xml_root_tag": "FINAL_ANSWER", "value_rules": {"reasoning_tag": "REASONING", "final_answer_tag": "FINAL_ANSWER"}},
+        source_bundle={
+            "task_text": prompt,
+            "focus_query": "national defense expenditures 1940",
+            "target_period": "1940",
+            "entities": ["National Defense"],
+            "urls": [],
+            "inline_facts": {},
+            "tables": [],
+            "formulas": [],
+        },
+        tool_plan={"tool_families_needed": [], "widened_families": [], "selected_tools": [], "pending_tools": [], "blocked_families": [], "ace_events": [], "notes": [], "stop_reason": ""},
+        execution_journal={"events": [], "tool_results": [], "routed_tool_families": [], "revision_count": 0, "self_reflection_count": 0, "final_artifact_signature": "abc", "progress_signatures": [], "stop_reason": "", "contract_collapse_attempts": 0},
+        curated_context={
+            "objective": prompt,
+            "facts_in_use": [],
+            "open_questions": [],
+            "assumptions": [],
+            "requested_output": {"format": "xml"},
+            "provenance_summary": {},
+            "structured_evidence": {},
+            "compute_result": {},
+        },
+        workpad={
+            "events": [],
+            "stage_outputs": {},
+            "tool_results": [],
+            "review_ready": True,
+            "officeqa_strategy_exhaustion_proof": {
+                "strategies_exhausted": False,
+                "benchmark_terminal_allowed": False,
+                "candidate_universe_exhausted": False,
+            },
+        },
+    )
+    state["retrieval_intent"] = {
+        "entity": "National Defense",
+        "metric": "total expenditures",
+        "period": "1940",
+        "document_family": "official_government_finance",
+        "aggregation_shape": "calendar_year_total",
+        "must_include_terms": [],
+        "must_exclude_terms": [],
+        "query_candidates": [],
+    }
+    state["messages"].append(AIMessage(content="The answer was 123.4 million dollars."))
+
+    reviewed = reviewer(state)
+
+    policy = reviewed["workpad"]["officeqa_answerability_policy"]
+    assert policy["policy_violation"] is True
+    assert policy["policy_violation_reason"] == "insufficiency_without_exhaustion"
+    assert policy["insufficiency_answer_emitted"] is False
+    assert "provided Treasury Bulletin evidence" not in str(reviewed["messages"][0].content)
 
 
 def test_officeqa_reviewer_replaces_progress_stalled_answer_with_safe_insufficiency(monkeypatch):
@@ -5247,7 +5370,17 @@ def test_officeqa_reviewer_replaces_progress_stalled_answer_with_safe_insufficie
             "structured_evidence": {"tables": [{"document_id": "treasury_bulletin_1945_01_json"}], "values": []},
             "compute_result": {},
         },
-        workpad={"events": [], "stage_outputs": {}, "tool_results": [], "review_ready": True},
+        workpad={
+            "events": [],
+            "stage_outputs": {},
+            "tool_results": [],
+            "review_ready": True,
+            "officeqa_strategy_exhaustion_proof": {
+                "strategies_exhausted": True,
+                "benchmark_terminal_allowed": True,
+                "candidate_universe_exhausted": True,
+            },
+        },
     )
     state["retrieval_intent"] = {
         "entity": "Public debt",
