@@ -965,3 +965,82 @@ Rules:
   - safe insufficiency with explicit exhaustion proof
   - low-confidence compute tagging
   - summary-level benchmark gating on answerability-policy failures
+
+### Chat 41: V6 Smoke Regression Diagnosed And Stabilization Track Added
+
+- Reviewed the latest failing smoke run:
+  - `Results&traces/officeqa_regression_smoke_20260413T005534Z.json`
+  - `traces/2026-04-12_18-41-04/`
+  - `docs/v6_deep_diagnosis.md`
+- Created `docs/v6_smoke_failure_20260413.md` to capture the real failure stack from the newest traces.
+- Confirmed the primary incident is no longer ordinary retrieval miss behavior. The system crossed a control-safety boundary:
+  - reviewer and executor can cycle until recursion limit
+  - budget counters are not governing the live revise path
+  - abnormal exits can bypass final output-contract normalization
+- Identified additional issues beyond the original diagnosis:
+  - smoke summaries can misreport runtime strategy instead of runtime-applied strategy
+  - semantic plans can still claim completeness while carrying `missing_core_slot`
+  - LLM-planning telemetry is not fully aligned with the planner rationale it reports
+- Added a dedicated V6 stabilization track to `docs/v6_execution_plan.md` instead of patching these faults into the completed core phases:
+  - `Phase 10` Loop Safety And Terminal Integrity
+  - `Phase 11` Material-Change Enforcement In Retrieval Repair
+  - `Phase 12` Semantic Planning Contract Integrity
+  - `Phase 13` Runtime Reporting And Smoke Truthfulness
+- Recommended fix order is now:
+  1. restore loop safety and typed terminal stops
+  2. force material change in gather-side repair
+  3. clean up semantic-planning contract integrity
+  4. make smoke summaries reflect actual runtime behavior
+
+### Chat 42: Verified V6 Stabilization Phases 10 Through 12 Were Already Landed Cleanly
+
+- Audited the runtime and tests to verify whether the stabilization work after Phase 9 had actually been implemented or only planned.
+- Confirmed Phase 10 is present in code and clean enough to mark complete:
+  - reviewer-executor revise re-entry is now counted against the revise budget
+  - one-shot fresh-repair-path suppression exists
+  - repeated identical reviewer progress now terminates with `progress_stalled`
+  - loop-safety diagnostics are recorded explicitly in `workpad`
+- Confirmed Phase 11 is present in code and clean enough to mark complete:
+  - retrieval planning and retry now use material-input signatures
+  - `repair_reused_stale_state` is recorded explicitly
+  - stale validator repair now forces document rotation by excluding the current document
+  - retrieval exhaustion proofs now carry regime-change and no-material-change diagnostics
+- Confirmed Phase 12 is present in code and clean enough to mark complete:
+  - `missing_core_slot` can no longer coexist with `completeness_ok = true`
+  - semantic plan merging sanitizes provenance-only source cues from entity extraction
+  - bounded semantic replanning occurs before retrieval when completeness gaps are explicit
+- Verified with focused tests:
+  - `tests/test_engine_runtime.py`
+  - `tests/test_officeqa_eval.py`
+  - targeted slice result: `5 passed, 99 deselected`
+- Updated `docs/v6_execution_plan.md` to mark Phases 10 through 12 complete with implementation notes.
+- Remaining stabilization work is now correctly narrowed to `Phase 13: Runtime Reporting And Smoke Truthfulness`.
+
+### Chat 43: V6 Phase 13 Completed With Truthful Runtime Reporting
+
+- Completed Phase 13 by fixing the regression-reporting layer in `src/agent/benchmarks/officeqa_eval.py`.
+- Runtime strategy reporting now prefers actual runtime-applied strategy instead of fixture-configured strategy:
+  - latest retrieval strategy attempt
+  - recorded retrieval strategy attempts
+  - retrieval decision
+  - retrieval intent
+  - case-configured fallback only if runtime artifacts are absent
+- Case reports and execution summaries now keep all three strategy views explicit:
+  - runtime-applied strategy
+  - requested strategy
+  - configured strategy
+- Trace classification now separates primary subsystem failure from secondary formatting fallout:
+  - output-contract failure no longer masks a stronger control or validation failure
+  - formatting fallout is carried as secondary classification metadata
+- Loop-safety and abnormal termination are now first-class benchmark signals instead of being buried under generic validation or formatting outcomes.
+- Regression summaries now expose:
+  - `loop_safety_cases`
+  - `abnormal_termination_cases`
+  - `formatting_fallout_cases`
+- Added focused evaluator regressions for:
+  - secondary formatting fallout on loop-safety failure
+  - runtime-applied strategy overriding configured strategy in case reports
+  - loop-safety and abnormal termination counts in summary output
+- Focused validation remained green:
+  - `tests/test_officeqa_eval.py`: `6 passed`
+  - broader evaluator/runtime slice: `7 passed`

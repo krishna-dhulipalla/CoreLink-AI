@@ -21,11 +21,35 @@ def test_classify_officeqa_trace_flags_formatting_failure():
             "value_rules": {"reasoning_tag": "REASONING", "final_answer_tag": "FINAL_ANSWER"},
         },
         benchmark_overrides={"benchmark_adapter": "officeqa"},
+        curated_context={"structured_evidence": {"values": [{"document_id": "treasury_1940_json"}], "value_count": 1}},
     )
 
     classification = classify_officeqa_trace(_trace(state, "40.90"))
 
     assert classification["subsystem"] == "formatting"
+
+
+def test_classify_officeqa_trace_treats_formatting_as_secondary_on_loop_safety_failure():
+    state = make_state(
+        "OfficeQA task",
+        answer_contract={
+            "format": "xml",
+            "requires_adapter": True,
+            "xml_root_tag": "FINAL_ANSWER",
+            "value_rules": {"reasoning_tag": "REASONING", "final_answer_tag": "FINAL_ANSWER"},
+        },
+        benchmark_overrides={"benchmark_adapter": "officeqa"},
+        quality_report={"stop_reason": "progress_stalled", "missing_dimensions": [], "verdict": "fail", "score": 0.3},
+        workpad={"officeqa_loop_safety_failure": {"trigger": "progress_stalled"}},
+        review_packet={"validator_result": {"verdict": "revise", "reasoning": "Progress stalled"}},
+    )
+
+    classification = classify_officeqa_trace(_trace(state, "Cannot calculate from the provided evidence"))
+
+    assert classification["subsystem"] == "validation"
+    assert classification["formatting_fallout"] is True
+    assert classification["secondary_subsystems"] == ["formatting"]
+    assert classification["loop_safety_failure"] is True
 
 
 def test_classify_officeqa_trace_flags_extraction_failure():
@@ -555,6 +579,45 @@ def test_build_case_report_includes_classification_and_artifacts():
     assert report["execution_summary"]["answer_mode"] == "hybrid_grounded"
 
 
+def test_build_case_report_prefers_runtime_applied_strategy_over_case_configured_strategy():
+    state = make_state(
+        "OfficeQA task",
+        benchmark_overrides={"benchmark_adapter": "officeqa"},
+        task_intent={"task_family": "document_qa", "execution_mode": "document_grounded_analysis"},
+        workpad={
+            "latest_retrieval_strategy_attempt": {
+                "requested_strategy": "table_first",
+                "applied_strategy": "multi_table",
+            }
+        },
+        execution_journal={
+            "events": [],
+            "tool_results": [],
+            "routed_tool_families": [],
+            "revision_count": 0,
+            "self_reflection_count": 0,
+            "retrieval_iterations": 1,
+            "retrieval_queries": [],
+            "retrieved_citations": [],
+            "final_artifact_signature": "",
+            "progress_signatures": [],
+            "stop_reason": "",
+            "contract_collapse_attempts": 0,
+        },
+    )
+    state["retrieval_intent"] = {"strategy": "hybrid", "answer_mode": "hybrid_grounded"}
+
+    report = build_case_report(
+        {"id": "case_1", "prompt": "OfficeQA task", "retrieval_strategy": "table_first", "case_kind": "qa"},
+        _trace(state, "<REASONING>x</REASONING><FINAL_ANSWER>40.90</FINAL_ANSWER>"),
+    )
+
+    assert report["retrieval_strategy"] == "multi_table"
+    assert report["requested_retrieval_strategy"] == "table_first"
+    assert report["configured_retrieval_strategy"] == "table_first"
+    assert report["execution_summary"]["retrieval_strategy"] == "multi_table"
+
+
 def test_build_case_report_includes_strategy_exhaustion_proof():
     state = make_state(
         "OfficeQA task",
@@ -731,3 +794,41 @@ def test_summarize_regression_report_blocks_go_on_premature_insufficiency_and_lo
     assert summary["premature_insufficiency_cases"] == 1
     assert summary["low_confidence_compute_cases"] == 1
     assert summary["go_for_full_benchmark"] is False
+
+
+def test_summarize_regression_report_surfaces_loop_safety_and_formatting_fallout():
+    reports = [
+        {
+            "case_kind": "qa",
+            "classification": {
+                "subsystem": "validation",
+                "compute_status": "",
+                "loop_safety_failure": True,
+                "abnormal_termination": True,
+                "formatting_fallout": True,
+                "secondary_subsystems": ["formatting"],
+            },
+            "retrieval_strategy": "multi_table",
+            "answer_mode": "deterministic_compute",
+            "benchmark_analysis": {
+                "semantic_verdict": "fail",
+                "tags": ["loop_safety_failure", "abnormal_termination", "repair_stall"],
+                "source_ranking_correct": None,
+            },
+            "artifacts": {
+                "chosen_sources": [{"document_id": "x"}],
+                "extracted_tables": [],
+                "final_answer": "Cannot calculate",
+                "compute_policy": "required",
+                "structure_confidence_summary": {"table_confidence_gate_passed": True},
+                "semantic_diagnostics": {"admissibility_passed": False},
+            },
+        }
+    ]
+
+    summary = summarize_regression_report(reports)
+
+    assert summary["loop_safety_cases"] == 1
+    assert summary["abnormal_termination_cases"] == 1
+    assert summary["formatting_fallout_cases"] == 1
+    assert summary["counts_by_strategy"]["multi_table"] == 1

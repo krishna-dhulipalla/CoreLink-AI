@@ -1161,6 +1161,7 @@ def _attach_retrieval_diagnostics(
     journal: ExecutionJournal,
     source_bundle: SourceBundle,
     benchmark_overrides: dict[str, Any] | None = None,
+    excluded_document_ids: list[str] | None = None,
 ) -> RetrievalAction:
     if action.strategy:
         strategy = action.strategy
@@ -1174,6 +1175,16 @@ def _attach_retrieval_diagnostics(
         source_bundle,
         benchmark_overrides,
     )
+    # P11.1: Filter out documents already proven non-productive in this run.
+    if excluded_document_ids:
+        _excl_set = set(excluded_document_ids)
+        ranked_filtered = [
+            c for c in ranked
+            if str(c.get("document_id", "") or c.get("id", "") or "").strip() not in _excl_set
+        ]
+        # Only apply exclusion if it leaves at least one candidate, else keep full list
+        if ranked_filtered:
+            ranked = ranked_filtered
     candidate_sources, rejected_candidates = _candidate_diagnostics(
         ranked,
         retrieval_intent,
@@ -1752,6 +1763,7 @@ def _plan_retrieval_action(
         journal=journal,
         source_bundle=source_bundle,
         benchmark_overrides=benchmark_overrides,
+        excluded_document_ids=list(dict(workpad or {}).get("officeqa_excluded_documents") or []),
     )
     selected_action.exhaustion_proof = _build_retrieval_exhaustion_proof(
         admissible_strategies=admissible_strategies,

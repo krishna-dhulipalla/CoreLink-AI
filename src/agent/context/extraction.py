@@ -625,6 +625,12 @@ def _semantic_plan_from_decomposition(
 
 
 def _merge_semantic_plan(primary: QuestionSemanticPlan, fallback: QuestionSemanticPlan) -> QuestionSemanticPlan:
+    # P12.1: Pre-compute merged gaps so we can enforce completeness_ok contract.
+    # Never allow completeness_ok=True to coexist with any missing-core-slot gap —
+    # the LLM may optimistically claim completeness even when slots are unresolved.
+    _merged_gaps = _dedupe_strings([*primary.completeness_gaps, *fallback.completeness_gaps], limit=8)
+    _has_core_gap = any("missing" in g for g in _merged_gaps)
+    _completeness_ok = bool((primary.completeness_ok or fallback.completeness_ok) and not _has_core_gap)
     return QuestionSemanticPlan(
         entity=_sanitize_source_cue_entity(primary.entity or fallback.entity, [*primary.include_constraints, *fallback.include_constraints]),
         metric=primary.metric or fallback.metric,
@@ -647,8 +653,8 @@ def _merge_semantic_plan(primary: QuestionSemanticPlan, fallback: QuestionSemant
         exclude_constraints=_dedupe_strings([*primary.exclude_constraints, *fallback.exclude_constraints], limit=6),
         qualifier_terms=_dedupe_strings([*primary.qualifier_terms, *fallback.qualifier_terms], limit=6),
         ambiguity_flags=_dedupe_strings([*primary.ambiguity_flags, *fallback.ambiguity_flags], limit=8),
-        completeness_ok=bool(primary.completeness_ok or fallback.completeness_ok),
-        completeness_gaps=_dedupe_strings([*primary.completeness_gaps, *fallback.completeness_gaps], limit=8),
+        completeness_ok=_completeness_ok,
+        completeness_gaps=_merged_gaps,
         rationale=primary.rationale or fallback.rationale,
         confidence=max(primary.confidence, min(0.92, fallback.confidence)),
         used_llm=bool(primary.used_llm or fallback.used_llm),
@@ -729,6 +735,9 @@ def build_question_semantic_plan(task_text: str, source_bundle: SourceBundle) ->
             confidence=merged.confidence,
         ),
     )
+    # P12.1: Enforce contract rule — completeness_ok must be False if ANY core slot is missing.
+    if merged.completeness_gaps and any("missing" in g for g in merged.completeness_gaps):
+        merged.completeness_ok = False
     return merged
 
 

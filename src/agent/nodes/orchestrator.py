@@ -1746,6 +1746,8 @@ def make_executor(registry: dict[str, dict[str, Any]]):
             and review_feedback.get("repair_target") == "compute"
             and review_feedback.get("retry_allowed", True)
         )
+        # P10.2: Count every REVISE re-entry into executor against the budget.
+        is_revise_entry = bool(review_feedback and review_feedback.get("verdict") == "revise")
         active_retrieval_intent = _apply_review_orchestration(retrieval_intent, review_feedback)
         if officeqa_mode:
             active_retrieval_intent, workpad, rollback_applied = _restore_officeqa_repair_rollback_if_needed(
@@ -1790,6 +1792,9 @@ def make_executor(registry: dict[str, dict[str, Any]]):
         tools_ran_this_call: list[str] = []
         task_text = latest_human_text(state["messages"])
         curated = attach_structured_evidence(curated, journal.tool_results, benchmark_overrides)
+        # P10.2: Count every REVISE re-entry against the budget revise counter.
+        if is_revise_entry and budget:
+            budget.record_revise()
 
         if officeqa_mode:
             active_retrieval_intent, evidence_sufficiency, workpad, llm_control_state, semantic_replanned = _maybe_repair_officeqa_semantic_plan(
@@ -1949,15 +1954,29 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                     candidate_sources=validator_candidate_sources,
                 )
             else:
+                stale_trigger = str(review_feedback.get("orchestration_strategy", "") or review_feedback.get("repair_target", "") or "validator_retry")
                 workpad = _record_officeqa_repair_failure(
                     workpad,
                     code="repair_reused_stale_state",
                     details={
                         "stage": "validator_repair",
-                        "trigger": str(review_feedback.get("orchestration_strategy", "") or review_feedback.get("repair_target", "") or "validator_retry"),
+                        "trigger": stale_trigger,
                         "reason": "validator_repair_skipped_without_retrieval_input_change",
                     },
                 )
+                # P11.2: Force candidate rotation — exclude the current top document so the
+                # next retrieval cycle picks a materially different source.
+                current_doc_id = str(workpad.get("officeqa_current_document_id", "") or "").strip()
+                if current_doc_id:
+                    excluded = list(workpad.get("officeqa_excluded_documents") or [])
+                    if current_doc_id not in excluded:
+                        excluded.append(current_doc_id)
+                        workpad["officeqa_excluded_documents"] = excluded
+                        workpad = _record_event(
+                            workpad,
+                            "executor",
+                            f"repair_reused_stale_state: rotating away from {current_doc_id} — added to exclusion list",
+                        )
             if repair_decision is not None:
                 decision_payload = repair_decision.model_dump()
                 validator_trigger = str(review_feedback.get("orchestration_strategy", "") or review_feedback.get("repair_target", "") or "validator_retry")
@@ -1981,6 +2000,9 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                         post_retrieval_signature=post_retrieval_signature,
                     )
                     tool_plan.pending_tools = []
+                    # P10.1: Signal to reviewer that a material path change just happened.
+                    # The reviewer will consume this flag and suppress stall detection ONCE.
+                    workpad["officeqa_fresh_repair_path"] = True
                 llm_repair_state["validator_repair_calls"] = int(llm_repair_state.get("validator_repair_calls", 0) or 0) + 1
                 workpad["officeqa_llm_repair_state"] = llm_repair_state
                 workpad["solver_llm_decision"] = {
@@ -2250,6 +2272,8 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                                   benchmark_overrides=benchmark_overrides,
                                   workpad=workpad,
                               )
+                              # P10.1: Signal to reviewer that a material path change just happened.
+                              workpad["officeqa_fresh_repair_path"] = True
                           llm_repair_state["query_rewrite_calls"] = int(llm_repair_state.get("query_rewrite_calls", 0) or 0) + 1
                           workpad["officeqa_llm_repair_state"] = llm_repair_state
                           workpad["solver_llm_decision"] = {
@@ -3225,7 +3249,9 @@ def reviewer(state: RuntimeState) -> dict[str, Any]:
         elif deterministic_structured_answer and not missing:
             reasoning = "Reviewer accepted a deterministic structured answer backed by compute provenance and validator-approved evidence."
         if missing:
-            verdict = "revise" if journal.revision_count < 1 else "fail"
+            # Allow more repair cycles when OfficeQA validator explicitly allows retry
+            max_revise = 3 if (officeqa_validation and officeqa_validation.retry_allowed) else 1
+            verdict = "revise" if journal.revision_count < max_revise else "fail"
             reasoning = "Grounded retrieval answer is missing evidence quality, attribution, or semantic alignment with the requested source, period, entity, or aggregation."
             score = 0.58 if verdict == "revise" else 0.48
     progress = _build_progress_signature(
@@ -3242,11 +3268,27 @@ def reviewer(state: RuntimeState) -> dict[str, Any]:
         )
         stop_reason = officeqa_validation.retry_stop_reason or "officeqa_no_repair_path"
         score = min(score, 0.4)
-    if journal.progress_signatures and journal.progress_signatures[-1].get("signature") == progress.signature and verdict == "revise":
+    # P10.1: Consume the fresh-repair-path flag BEFORE inspecting the stall signature.
+    # Suppress stall detection ONLY for the single reviewer pass immediately after
+    # the executor applied a material path change. After that pass the flag is cleared,
+    # so any subsequent identical progress signature will correctly trip the stall detector.
+    officeqa_fresh_repair_path = bool(workpad.get("officeqa_fresh_repair_path"))
+    if officeqa_fresh_repair_path:
+        workpad["officeqa_fresh_repair_path"] = False  # consume — one-shot suppression
+    if journal.progress_signatures and journal.progress_signatures[-1].get("signature") == progress.signature and verdict == "revise" and not officeqa_fresh_repair_path:
         verdict = "fail"
         reasoning = "Progress stalled: the answer repeated the same unresolved gap without a materially different artifact."
         stop_reason = "progress_stalled"
         score = min(score, 0.45)
+        # P10.4: Record a typed loop-safety diagnostic so smoke summaries can distinguish
+        # this from a genuine evidence failure. P11.3: flag whether same-doc vs cross-doc.
+        _workpad_events = list(workpad.get("events", []) or [])
+        workpad["officeqa_loop_safety_failure"] = {
+            "trigger": "progress_stalled",
+            "repair_path_was_fresh": officeqa_fresh_repair_path,
+            "revision_count": journal.revision_count,
+            "signature_repeated": True,
+        }
     if verdict == "fail" and officeqa_validation and officeqa_validation.insufficiency_answer:
         answerability_policy = dict(workpad.get("officeqa_answerability_policy") or {})
         if bool(answerability_policy.get("benchmark_terminal_allowed")):

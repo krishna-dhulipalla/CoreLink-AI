@@ -1298,6 +1298,24 @@ def _rank_tables(tables: list[dict[str, Any]], table_query: str) -> list[dict[st
         score += _table_period_fit(table, table_query)
         score += 0.35 * _match_score(row_label_text, table_query)
         score += 0.2 * _match_score(headers_text, table_query)
+        # --- P1 Fix: locator-title match bonus ---
+        # The locator field is the table's official title (e.g. "Table 3.- Public
+        # Debt Outstanding, June 30, 1944 and 1945") and is the strongest
+        # relevance signal.  Boost tables whose locator directly matches the
+        # query's distinctive terms so that e.g. "Public Debt Outstanding" always
+        # outranks "Savings Bonds" when the query is about public debt.
+        locator_text = str(table.get("locator", "") or "")
+        locator_match = _match_score(locator_text, table_query)
+        score += 0.85 * locator_match
+        # Strong bonus when ALL distinctive query tokens appear in the locator
+        if distinctive_query_tokens:
+            locator_tokens = set(_tokenize(locator_text))
+            locator_distinctive_hits = distinctive_query_tokens & locator_tokens
+            if locator_distinctive_hits == distinctive_query_tokens and len(distinctive_query_tokens) >= 2:
+                score += 1.2
+            elif len(locator_distinctive_hits) >= max(1, len(distinctive_query_tokens) - 1):
+                score += 0.6
+        # --- End locator-title fix ---
         if distinctive_query_tokens:
             distinctive_hits = distinctive_query_tokens & key_surface_tokens
             score += 0.24 * len(distinctive_hits)

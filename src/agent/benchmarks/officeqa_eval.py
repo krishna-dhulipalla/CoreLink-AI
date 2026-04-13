@@ -20,6 +20,8 @@ BenchmarkFailureTag = Literal[
     "repair_stall",
     "repair_applied_but_no_new_evidence",
     "repair_reused_stale_state",
+    "loop_safety_failure",
+    "abnormal_termination",
 ]
 
 _EXTRACTION_STATUSES = {"missing_table", "partial_table", "missing_row", "missing_month_coverage", "unit_ambiguity"}
@@ -119,6 +121,35 @@ def _has_required_output_format(answer: str, answer_contract: dict[str, Any]) ->
         compact = answer.strip()
         return compact.startswith("{") and compact.endswith("}")
     return True
+
+
+def _latest_runtime_retrieval_strategy(state: dict[str, Any], case: dict[str, Any], artifacts: dict[str, Any]) -> tuple[str, str]:
+    workpad = _workpad(state)
+    latest_attempt = dict(workpad.get("latest_retrieval_strategy_attempt") or {})
+    if latest_attempt:
+        applied = str(latest_attempt.get("applied_strategy", "") or latest_attempt.get("requested_strategy", "") or "").strip()
+        requested = str(latest_attempt.get("requested_strategy", "") or applied).strip()
+        if applied or requested:
+            return applied or requested, requested or applied
+
+    attempts = [dict(item) for item in list(artifacts.get("retrieval_strategy_attempts", []) or []) if isinstance(item, dict)]
+    if attempts:
+        latest = attempts[-1]
+        applied = str(latest.get("applied_strategy", "") or latest.get("requested_strategy", "") or "").strip()
+        requested = str(latest.get("requested_strategy", "") or applied).strip()
+        if applied or requested:
+            return applied or requested, requested or applied
+
+    retrieval_decision = dict(artifacts.get("retrieval_decision") or {})
+    applied = str(retrieval_decision.get("strategy", "") or retrieval_decision.get("requested_strategy", "") or "").strip()
+    requested = str(retrieval_decision.get("requested_strategy", "") or applied).strip()
+    if applied or requested:
+        return applied or requested, requested or applied
+
+    retrieval_intent = _retrieval_intent(state)
+    applied = str(retrieval_intent.get("strategy", "") or "").strip()
+    requested = str(case.get("retrieval_strategy", "") or applied).strip()
+    return applied or requested, requested or applied
 
 
 def _normalized_text(value: Any) -> str:
@@ -305,6 +336,12 @@ def _classify_benchmark_failure(
     if "repair_reused_stale_state" in repair_failure_codes:
         tags.append("repair_reused_stale_state")
 
+    if bool(classification.get("loop_safety_failure")):
+        tags.append("loop_safety_failure")
+
+    if bool(classification.get("abnormal_termination")):
+        tags.append("abnormal_termination")
+
     if subsystem != "pass" and (
         llm_repair_history
         or repair_failure_codes
@@ -339,13 +376,18 @@ def classify_officeqa_trace(trace: dict[str, Any] | None) -> dict[str, Any]:
     stop_reason = _stop_reason(state)
     missing_dimensions = _missing_dimensions(state)
     tool_results = _tool_results(state)
+    workpad = _workpad(state)
+    formatting_failure = not _has_required_output_format(answer, answer_contract)
+    loop_safety_failure = bool(workpad.get("officeqa_loop_safety_failure")) or stop_reason == "progress_stalled"
+    abnormal_termination = stop_reason == "recursion_limit"
+    secondary_subsystems: list[FailureSubsystem] = []
 
     subsystem: FailureSubsystem = "pass"
     rationale = "Run completed without a classified failure."
 
-    if not _has_required_output_format(answer, answer_contract):
-        subsystem = "formatting"
-        rationale = "Final answer did not satisfy the required output contract."
+    if loop_safety_failure:
+        subsystem = "validation"
+        rationale = "Reviewer-executor progress stalled before a materially new artifact was produced."
     elif stop_reason in _ROUTING_STOP_REASONS or stop_reason.endswith("preflight_failure"):
         subsystem = "routing"
         rationale = f"Run stopped before a viable OfficeQA execution path was established ({stop_reason or 'routing failure'})."
@@ -378,8 +420,23 @@ def classify_officeqa_trace(trace: dict[str, Any] | None) -> dict[str, Any]:
             subsystem = "retrieval"
             rationale = "No OfficeQA retrieval artifacts were captured."
 
+    if formatting_failure:
+        if subsystem == "pass":
+            subsystem = "formatting"
+            rationale = "Final answer did not satisfy the required output contract."
+        else:
+            secondary_subsystems.append("formatting")
+            if abnormal_termination:
+                rationale = f"{rationale} Output-contract formatting was also lost on abnormal termination."
+            else:
+                rationale = f"{rationale} Output-contract formatting also failed on the terminal path."
+
     return {
         "subsystem": subsystem,
+        "secondary_subsystems": secondary_subsystems,
+        "formatting_fallout": bool(secondary_subsystems),
+        "loop_safety_failure": loop_safety_failure,
+        "abnormal_termination": abnormal_termination,
         "stop_reason": stop_reason,
         "missing_dimensions": missing_dimensions,
         "validator_verdict": str(validator.get("verdict", "") or ""),
@@ -503,9 +560,9 @@ def build_case_report(case: dict[str, Any], trace: dict[str, Any] | None) -> dic
     classification = classify_officeqa_trace(trace)
     artifacts = capture_officeqa_artifacts(trace)
     quality_report = _quality_report(state)
-    retrieval_intent = _retrieval_intent(state)
-    retrieval_strategy = str(case.get("retrieval_strategy", "") or retrieval_intent.get("strategy", "") or "").strip()
-    answer_mode = str(case.get("answer_mode", "") or retrieval_intent.get("answer_mode", "") or artifacts.get("answer_mode", "") or "").strip()
+    runtime_retrieval_strategy, requested_retrieval_strategy = _latest_runtime_retrieval_strategy(state, case, artifacts)
+    configured_retrieval_strategy = str(case.get("retrieval_strategy", "") or "").strip()
+    answer_mode = str(case.get("answer_mode", "") or _retrieval_intent(state).get("answer_mode", "") or artifacts.get("answer_mode", "") or "").strip()
     case_kind = str(case.get("case_kind", "") or "qa").strip() or "qa"
     benchmark_analysis = _classify_benchmark_failure(case, classification, artifacts)
     return {
@@ -513,7 +570,9 @@ def build_case_report(case: dict[str, Any], trace: dict[str, Any] | None) -> dic
         "prompt": str(case.get("prompt", "") or ""),
         "case_kind": case_kind,
         "focus_subsystem": str(case.get("focus_subsystem", "") or ""),
-        "retrieval_strategy": retrieval_strategy,
+        "retrieval_strategy": runtime_retrieval_strategy,
+        "requested_retrieval_strategy": requested_retrieval_strategy,
+        "configured_retrieval_strategy": configured_retrieval_strategy,
         "answer_mode": answer_mode,
         "smoke": bool(case.get("smoke")),
         "classification": classification,
@@ -528,7 +587,9 @@ def build_case_report(case: dict[str, Any], trace: dict[str, Any] | None) -> dic
         "execution_summary": {
             "task_family": str(dict(state.get("task_intent") or {}).get("task_family", "") or ""),
             "execution_mode": str(dict(state.get("task_intent") or {}).get("execution_mode", "") or ""),
-            "retrieval_strategy": retrieval_strategy,
+            "retrieval_strategy": runtime_retrieval_strategy,
+            "requested_retrieval_strategy": requested_retrieval_strategy,
+            "configured_retrieval_strategy": configured_retrieval_strategy,
             "answer_mode": answer_mode,
             "solver_llm_used": bool(dict(artifacts.get("solver_llm_decision") or {}).get("used_llm")),
             "solver_llm_decision_reason": str(dict(artifacts.get("solver_llm_decision") or {}).get("reason", "") or ""),
@@ -559,6 +620,9 @@ def summarize_regression_report(case_reports: list[dict[str, Any]]) -> dict[str,
     premature_insufficiency_cases = 0
     low_confidence_compute_cases = 0
     repair_stall_cases = 0
+    loop_safety_cases = 0
+    abnormal_termination_cases = 0
+    formatting_fallout_cases = 0
     source_ranking_evaluable_cases = 0
     source_ranking_correct_cases = 0
     qa_total = 0
@@ -590,6 +654,12 @@ def summarize_regression_report(case_reports: list[dict[str, Any]]) -> dict[str,
             low_confidence_compute_cases += 1
         if "repair_stall" in list(benchmark_analysis.get("tags", []) or []):
             repair_stall_cases += 1
+        if "loop_safety_failure" in list(benchmark_analysis.get("tags", []) or []):
+            loop_safety_cases += 1
+        if "abnormal_termination" in list(benchmark_analysis.get("tags", []) or []):
+            abnormal_termination_cases += 1
+        if bool(dict(item.get("classification") or {}).get("formatting_fallout")):
+            formatting_fallout_cases += 1
         source_ranking_correct = benchmark_analysis.get("source_ranking_correct")
         if isinstance(source_ranking_correct, bool):
             source_ranking_evaluable_cases += 1
@@ -667,6 +737,9 @@ def summarize_regression_report(case_reports: list[dict[str, Any]]) -> dict[str,
         "premature_insufficiency_cases": premature_insufficiency_cases,
         "low_confidence_compute_cases": low_confidence_compute_cases,
         "repair_stall_cases": repair_stall_cases,
+        "loop_safety_cases": loop_safety_cases,
+        "abnormal_termination_cases": abnormal_termination_cases,
+        "formatting_fallout_cases": formatting_fallout_cases,
         "allowed_repair_stalls": allowed_repair_stalls,
         "source_ranking_evaluable_cases": source_ranking_evaluable_cases,
         "source_ranking_correct_cases": source_ranking_correct_cases,
