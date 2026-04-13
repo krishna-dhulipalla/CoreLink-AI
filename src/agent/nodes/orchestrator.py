@@ -1006,6 +1006,11 @@ def _apply_table_review_decision(
 
 
 def _officeqa_retrieval_input_signature(retrieval_intent: RetrievalIntent, workpad: dict[str, Any]) -> str:
+    excluded_docs = sorted(
+        str(doc).strip()
+        for doc in list(workpad.get("officeqa_excluded_documents", []) or [])
+        if str(doc).strip()
+    )
     payload = {
         "strategy": retrieval_intent.strategy,
         "period_type": retrieval_intent.period_type,
@@ -1023,6 +1028,10 @@ def _officeqa_retrieval_input_signature(retrieval_intent: RetrievalIntent, workp
         "must_exclude_terms": list(retrieval_intent.must_exclude_terms),
         "override_query": str(workpad.get("officeqa_override_query", "") or ""),
         "override_table_query": str(workpad.get("officeqa_override_table_query", "") or ""),
+        # P14: Excluded documents are part of the retrieval input state; rotating
+        # away from a committed document must produce a distinct signature so the
+        # stale-repair guard can detect a genuine regime change.
+        "excluded_documents": excluded_docs,
     }
     return hashlib.sha1(json.dumps(payload, sort_keys=True, ensure_ascii=True).encode("utf-8")).hexdigest()[:16]
 
@@ -1392,6 +1401,32 @@ def _invalidate_officeqa_repair_state(
     updated_workpad["officeqa_last_retrieval_input_signature"] = post_retrieval_signature
     if stage == "validator_repair":
         updated_workpad["officeqa_last_validator_repair_signature"] = post_retrieval_signature
+    # P14: Clear the retrieval-strategy-attempts log when a genuine cross-regime
+    # transition is applied.  The duplicate-detection guard in _plan_retrieval_action
+    # compares each new planned action against ALL past attempts by material_input_signature.
+    # After a forced document-exclusion or strategy shift the new planning signature IS
+    # different (fixed by including excluded_documents in the hash), but the action-level
+    # material_input_signature (query + tool + doc) may still collide with the first-pass
+    # entry before a specific new document_id is resolved.  Clearing the list here lets
+    # the planner treat the fresh regime as untried while the exclusion-list prevents
+    # revisiting bad documents.  Old attempts are archived for trace visibility.
+    _ATTEMPTS_CLEARING_REROUTES = {
+        "cross_document_restart",
+        "strategy_shift",
+        "semantic_plan_restart",
+        "search_pool_widening",
+        "strategy_rotation",
+    }
+    if reroute_action in _ATTEMPTS_CLEARING_REROUTES or (
+        pre_retrieval_signature != post_retrieval_signature
+        and reroute_action not in {"same_document", "query_rewrite"}
+    ):
+        archived = list(updated_workpad.get("retrieval_strategy_attempts", []) or [])
+        if archived:
+            updated_workpad["officeqa_archived_strategy_attempts"] = (
+                list(updated_workpad.get("officeqa_archived_strategy_attempts", []) or []) + archived
+            )[-32:]
+        updated_workpad["retrieval_strategy_attempts"] = []
     return updated_workpad, updated_journal, updated_curated
 
 
@@ -2047,6 +2082,25 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                     "executor",
                     "repair_reused_stale_state: forcing deterministic gather retry with fresh retrieval regime",
                 )
+            if repair_decision is None and targeted_retrieval_retry:
+                # P14b: Unconditionally exclude the committed document on every
+                # reviewer-directed gather repair, regardless of which branch
+                # above was taken (fresh signature or stale).  Without this the
+                # second retrieval pass re-ranks the same bad document to #1
+                # because excluded_documents is still empty, causing the new
+                # planning-signature hash (which now includes excluded_docs) to
+                # be identical to the first-pass hash — no rotation occurs.
+                _exc_doc_id = str(workpad.get("officeqa_current_document_id", "") or "").strip()
+                if _exc_doc_id:
+                    _excluded_now = list(workpad.get("officeqa_excluded_documents") or [])
+                    if _exc_doc_id not in _excluded_now:
+                        _excluded_now.append(_exc_doc_id)
+                        workpad["officeqa_excluded_documents"] = _excluded_now
+                        workpad = _record_event(
+                            workpad,
+                            "executor",
+                            f"gather_repair_no_decision: excluding committed doc {_exc_doc_id} to force candidate rotation",
+                        )
             if repair_decision is not None:
                 decision_payload = repair_decision.model_dump()
                 validator_trigger = str(review_feedback.get("orchestration_strategy", "") or review_feedback.get("repair_target", "") or "validator_retry")
@@ -2413,6 +2467,8 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                       "candidate_sources": retrieval_action.candidate_sources,
                       "rejected_candidates": retrieval_action.rejected_candidates,
                   }
+                  if retrieval_action.document_id:
+                      workpad["officeqa_current_document_id"] = retrieval_action.document_id
                   provenance_summary = dict(curated.provenance_summary or {})
                   provenance_summary["retrieval_diagnostics"] = retrieval_diagnostics
                   curated.provenance_summary = provenance_summary

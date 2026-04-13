@@ -46,12 +46,13 @@ def build_agent_graph(external_tools: list | None = None):
     retrieval_tools = BUILTIN_RETRIEVAL_TOOLS if local_corpus_available() else []
     all_tools: list[Any] = [
         CALCULATOR_TOOL,
-        SEARCH_TOOL,
         get_current_time,
         *retrieval_tools,
         *BUILTIN_LEGAL_TOOLS,
         *(external_tools or []),
     ]
+    if os.getenv("TAVILY_API_KEY", "").strip():
+        all_tools.append(SEARCH_TOOL)
     registry = build_capability_registry(all_tools)
     registry = filter_registry_for_benchmark(
         registry,

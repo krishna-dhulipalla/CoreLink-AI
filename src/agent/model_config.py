@@ -443,17 +443,14 @@ def get_client_kwargs(role: str) -> dict[str, Any]:
             break
 
     if not api_key:
-        if is_nebius_profile and os.getenv("NEBIUS_API_KEY"):
-            api_key = os.getenv("NEBIUS_API_KEY")
+        if is_nebius_profile:
+            api_key = os.getenv("NEBIUS_API_KEY") or os.getenv("OPENAI_API_KEY")
         else:
             api_key = os.getenv("OPENAI_API_KEY")
 
     if not base_url:
-        if is_nebius_profile and os.getenv("NEBIUS_BASE_URL"):
-            base_url = os.getenv("NEBIUS_BASE_URL")
-        elif is_nebius_profile:
-            # Fallback to the known Nebius URL if using a Nebius profile but only the key was provided
-            base_url = "https://api.studio.nebius.ai/v1/"
+        if is_nebius_profile:
+            base_url = os.getenv("NEBIUS_BASE_URL") or "https://api.studio.nebius.ai/v1/"
         else:
             base_url = os.getenv("OPENAI_BASE_URL")
 

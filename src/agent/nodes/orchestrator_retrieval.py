@@ -1193,6 +1193,18 @@ def _attach_retrieval_diagnostics(
     )
     if not candidate_sources and source_bundle.source_files_found:
         candidate_sources, rejected_candidates = _source_file_candidate_diagnostics(list(source_bundle.source_files_found))
+    
+    # P14c: Re-apply exclusions to the fallback candidate list.
+    # If the last tool result was a fetch operation, ranked search candidates are empty,
+    # so we populate candidate_sources from the full corpus source list. We MUST filter
+    # the excluded documents from this fallback list too, otherwise the same bad doc
+    # floats right back to rank 1.
+    if excluded_document_ids and candidate_sources:
+        _excl_set = set(excluded_document_ids)
+        filtered_sources = [c for c in candidate_sources if str(c.get("document_id", "") or "").strip() not in _excl_set]
+        if filtered_sources:
+            candidate_sources = filtered_sources
+
     action.candidate_sources = candidate_sources
     action.rejected_candidates = rejected_candidates
     return action

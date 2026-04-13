@@ -31,9 +31,11 @@ def verify_officeqa_corpus_bundle(
 ) -> dict[str, Any]:
     root = resolve_officeqa_corpus_root(str(corpus_root) if corpus_root is not None else None)
     if root is None:
+        env_tip = " or ".join(_CORPUS_ENV_NAMES)
         raise OfficeQACorpusBootstrapError(
-            "OfficeQA competition mode requires a packaged corpus, but no corpus root was found. "
-            "Set OFFICEQA_CORPUS_DIR to the mounted or packaged Treasury corpus path before startup."
+            f"OfficeQA competition mode requires a packaged corpus, but no corpus root was found. "
+            f"Please set one of the following environment variables to the valid corpus path: {env_tip}. "
+            f"In containerized environments, ensure the dataset is correctly mounted to a candidate path (e.g., /data/treasury_bulletins_parsed)."
         )
 
     resolved_index_dir = resolve_officeqa_index_dir(

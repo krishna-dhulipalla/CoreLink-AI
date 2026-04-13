@@ -1,25 +1,56 @@
 {
-  "manifest_version": "0.1.0",
-  "program": {
-    "image": "ghcr.io/krishna-dhulipalla/corelink-ai:latest",
-    "entrypoint": "uv run src/server.py --host 0.0.0.0 --port 9009",
-    "network": {
-      "endpoints": [
-        {
-          "name": "endpoint",
-          "port": 9009
-        }
+  manifest_version: "0.1.0",
+
+  // Config values the deployer/submission UI can provide.
+  // We keep only the ones that are required for the competition environment.
+  config_schema: {
+    type: "object",
+    properties: {
+      nebius_api_key: { type: "string", secret: true },
+      nebius_base_url: { 
+        type: "string", 
+        default: "https://api.studio.nebius.ai/v1/" 
+      },
+      tavily_api_key: { type: "string", secret: true }
+    },
+    required: ["nebius_api_key"],
+    additionalProperties: false
+  },
+
+  // External services this agent may talk to inside an Amber scenario.
+  slots: {
+    proxy: { kind: "a2a", optional: true }
+  },
+
+  // How to run your agent container.
+  program: {
+    image: "ghcr.io/krishna-dhulipalla/corelink-ai:latest",
+    entrypoint: "uv run python src/server.py --host 0.0.0.0 --port 9009",
+
+    // Map config into runtime env vars your app actually reads.
+    env: {
+      NEBIUS_API_KEY: "${config.nebius_api_key}",
+      NEBIUS_BASE_URL: "${config.nebius_base_url}",
+      TAVILY_API_KEY: "${config.tavily_api_key}",
+      COMPETITION_MODE: "1",
+      BENCHMARK_NAME: "officeqa",
+      BENCHMARK_STATELESS: "1"
+    },
+
+    network: {
+      endpoints: [
+        { name: "a2a_endpoint", port: 9009 }
       ]
     }
   },
-  "slots": {},
-  "provides": {
-    "a2a": {
-      "kind": "a2a",
-      "endpoint": "endpoint"
-    }
+
+  // What capability this container provides.
+  provides: {
+    a2a: { kind: "a2a", endpoint: "a2a_endpoint" }
   },
-  "exports": {
-    "a2a": "a2a"
+
+  // What the scenario can reference from this manifest.
+  exports: {
+    a2a: "a2a"
   }
 }

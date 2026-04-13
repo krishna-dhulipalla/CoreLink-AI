@@ -17,6 +17,11 @@ def retrieval_planning_signature(
     workpad: dict[str, Any] | None = None,
 ) -> str:
     padded_workpad = dict(workpad or {})
+    excluded_docs = sorted(
+        str(doc).strip()
+        for doc in list(padded_workpad.get("officeqa_excluded_documents", []) or [])
+        if str(doc).strip()
+    )
     payload = {
         "focus_query": source_bundle.focus_query,
         "target_period": source_bundle.target_period,
@@ -37,6 +42,12 @@ def retrieval_planning_signature(
         "query_plan": retrieval_intent.query_plan.model_dump(),
         "override_query": str(padded_workpad.get("officeqa_override_query", "") or ""),
         "override_table_query": str(padded_workpad.get("officeqa_override_table_query", "") or ""),
+        # Including the excluded-document set ensures that rotating away from
+        # a bad document (P11.2) materialises as a genuinely new planning
+        # signature.  Without this, the duplicate-detection guard in
+        # _plan_retrieval_action sees the same hash as the first pass and
+        # refuses to plan a second retrieval tool call after REVISE.
+        "excluded_documents": excluded_docs,
     }
     return hashlib.sha1(json.dumps(payload, sort_keys=True, ensure_ascii=True).encode("utf-8")).hexdigest()[:16]
 
