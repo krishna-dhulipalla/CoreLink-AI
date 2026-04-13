@@ -1623,6 +1623,56 @@ def _apply_officeqa_llm_repair_decision(
     return updated_intent, updated_workpad, path_changed, reroute_action
 
 
+def _force_officeqa_validator_retry_regime_change(
+    *,
+    retrieval_intent: RetrievalIntent,
+    workpad: dict[str, Any],
+    journal: ExecutionJournal,
+    curated: CuratedContext,
+    validator_trigger: str,
+    validator_universe_signature: str,
+) -> tuple[RetrievalIntent, dict[str, Any], ExecutionJournal, CuratedContext]:
+    updated_intent = retrieval_intent.model_copy(deep=True)
+    updated_workpad = dict(workpad)
+    current_doc_id = str(updated_workpad.get("officeqa_current_document_id", "") or "").strip()
+    excluded = [str(item).strip() for item in list(updated_workpad.get("officeqa_excluded_documents", []) or []) if str(item).strip()]
+    if current_doc_id and current_doc_id not in excluded:
+        excluded.append(current_doc_id)
+    if excluded:
+        updated_workpad["officeqa_excluded_documents"] = excluded[-16:]
+    updated_workpad.pop("officeqa_current_document_id", None)
+    updated_workpad.pop("officeqa_override_table_query", None)
+    updated_workpad.pop("officeqa_evidence_commit_review", None)
+    pre_retrieval_signature = _officeqa_retrieval_input_signature(retrieval_intent, workpad)
+    post_retrieval_signature = _officeqa_retrieval_input_signature(updated_intent, updated_workpad)
+    decision_payload = {
+        "decision": "rewrite_query",
+        "mutation_class": "deterministic_retry",
+        "candidate_universe_signature": validator_universe_signature,
+        "prior_regime_exhausted": False,
+        "rollback_on_no_material_change": False,
+    }
+    reroute_action = "cross_document_restart" if current_doc_id else "strategy_shift"
+    updated_workpad, updated_journal, updated_curated = _invalidate_officeqa_repair_state(
+        workpad=updated_workpad,
+        journal=journal,
+        curated=curated,
+        stage="validator_repair",
+        trigger=validator_trigger,
+        decision=decision_payload,
+        reroute_action=reroute_action,
+        pre_retrieval_signature=pre_retrieval_signature,
+        post_retrieval_signature=post_retrieval_signature,
+    )
+    updated_workpad["officeqa_fresh_repair_path"] = True
+    updated_workpad["officeqa_last_validator_repair_signature"] = post_retrieval_signature
+    updated_workpad["solver_llm_decision"] = {
+        "used_llm": False,
+        "reason": "deterministic_validator_retry_regime_change",
+    }
+    return updated_intent, updated_workpad, updated_journal, updated_curated
+
+
 def _officeqa_retry_policy(
     officeqa_validation: Any,
     *,
@@ -1977,6 +2027,26 @@ def make_executor(registry: dict[str, dict[str, Any]]):
                             "executor",
                             f"repair_reused_stale_state: rotating away from {current_doc_id} — added to exclusion list",
                         )
+            if (
+                repair_decision is None
+                and targeted_retrieval_retry
+                and current_retrieval_signature == last_validator_repair_signature
+            ):
+                validator_trigger = str(review_feedback.get("orchestration_strategy", "") or review_feedback.get("repair_target", "") or "validator_retry")
+                active_retrieval_intent, workpad, journal, curated = _force_officeqa_validator_retry_regime_change(
+                    retrieval_intent=active_retrieval_intent,
+                    workpad=workpad,
+                    journal=journal,
+                    curated=curated,
+                    validator_trigger=validator_trigger,
+                    validator_universe_signature=validator_universe_signature,
+                )
+                tool_plan.pending_tools = []
+                workpad = _record_event(
+                    workpad,
+                    "executor",
+                    "repair_reused_stale_state: forcing deterministic gather retry with fresh retrieval regime",
+                )
             if repair_decision is not None:
                 decision_payload = repair_decision.model_dump()
                 validator_trigger = str(review_feedback.get("orchestration_strategy", "") or review_feedback.get("repair_target", "") or "validator_retry")

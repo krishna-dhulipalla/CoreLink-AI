@@ -3824,7 +3824,7 @@ def test_officeqa_pending_repair_rollback_restores_prior_regime():
     assert restored_workpad["officeqa_repair_failures"][-1]["code"] == "repair_mutation_rolled_back"
 
 
-def test_officeqa_validator_repair_does_not_repeat_without_retrieval_input_change(monkeypatch):
+def test_officeqa_validator_repair_forces_fresh_regime_when_signature_is_stale(monkeypatch):
     prompt = "According to the Treasury Bulletin, what was total public debt outstanding in 1945?"
     registry = build_capability_registry([CALCULATOR_TOOL, SEARCH_TOOL, *BUILTIN_RETRIEVAL_TOOLS])
     executor = make_executor(registry)
@@ -3878,7 +3878,7 @@ def test_officeqa_validator_repair_does_not_repeat_without_retrieval_input_chang
             query_candidates=["Treasury Bulletin total public debt outstanding 1945 year-end"],
             query_plan={"primary_semantic_query": "Treasury Bulletin total public debt outstanding 1945 year-end"},
         ),
-        {},
+        {"officeqa_override_table_query": "Amount issued Series A-1935"},
     )
 
     state = make_state(
@@ -3923,7 +3923,17 @@ def test_officeqa_validator_repair_does_not_repeat_without_retrieval_input_chang
             "notes": [],
             "stop_reason": "",
         },
-        workpad={"officeqa_last_validator_repair_signature": repair_signature},
+        workpad={
+            "officeqa_last_validator_repair_signature": repair_signature,
+            "officeqa_current_document_id": "treasury_bulletin_1945_08_json",
+            "officeqa_override_table_query": "Amount issued Series A-1935",
+            "retrieval_diagnostics": {
+                "candidate_sources": [
+                    {"document_id": "treasury_bulletin_1945_08_json"},
+                    {"document_id": "treasury_bulletin_1945_09_json"},
+                ]
+            },
+        },
         curated_context={
             "objective": "Find the exact public debt value for 1945.",
             "facts_in_use": [],
@@ -3954,6 +3964,12 @@ def test_officeqa_validator_repair_does_not_repeat_without_retrieval_input_chang
     assert result["solver_stage"] == "GATHER"
     assert call_count["validator"] == 0
     assert result["workpad"]["officeqa_repair_failures"][0]["code"] == "repair_reused_stale_state"
+    assert result["workpad"]["officeqa_excluded_documents"] == ["treasury_bulletin_1945_08_json"]
+    assert result["workpad"]["officeqa_fresh_repair_path"] is True
+    assert result["workpad"]["officeqa_latest_repair_transition"]["reroute_action"] == "cross_document_restart"
+    assert result["workpad"]["officeqa_latest_repair_transition"]["status"] == "repair_applied_but_no_new_evidence"
+    assert result["execution_journal"]["tool_results"]
+    assert result["last_tool_result"]["type"] == "search_officeqa_documents"
 
 
 def test_officeqa_tool_plan_prefers_native_search_over_generic_reference_search():
