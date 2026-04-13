@@ -1,216 +1,121 @@
 # CoreLink AI
 
-CoreLink AI is a reasoning engine for evidence-grounded analytical work. It plans tasks, retrieves supporting material, extracts structured evidence, performs deterministic computations when possible, and applies review before returning a final answer.
+CoreLink AI is a robust, Generalist Agent-to-Agent (A2A) reasoning engine built for evidence-grounded analytical workloads. Unlike systems that rely on unconstrained generation or raw LLM recall, the engine emphasizes deterministic compute, dynamic search strategies, and strict policy-driven tool use to prioritize correctness, transparency, and provenance.
 
-The project is built for workflows where correctness, provenance, and controlled tool use matter more than unconstrained generation.
+<p align="center">
+  <img src="assets/corelink_diagram.png" alt="CoreLink AI System Architecture" width="100%">
+</p>
 
-## Why CoreLink AI
+## Overview
 
-Most agent systems fail in one of two ways:
+Most agent systems fail by either relying too heavily on model recall instead of evidence, or using tools without enough policy around when to search, compute, retry, and stop. 
 
-- they rely too heavily on model recall instead of evidence
-- they use tools, but without enough policy around when to search, when to compute, when to retry, and when to stop
+CoreLink AI bridges this gap with a runtime designed to:
+- Prefer grounded evidence over unsupported synthesis.
+- Mutate retrieval strategies dynamically when a current search regime stalls.
+- Validate answerability before allowing a failure endpoint.
+- Opt for deterministic compute and fallback scripting over free-form math.
 
-CoreLink AI is built to solve that gap. The runtime is designed to:
+## Features
 
-- prefer grounded evidence over unsupported synthesis
-- prefer deterministic compute over free-form math when the task allows it
-- change retrieval strategy when a current search regime stalls
-- validate answerability before allowing a failure endpoint
+- **Evidence-First Retrieval:** Retrieval is not a single fixed path. The engine utilizes a dynamic retrieval retry policy that shifts seamlessly across different search regimes (e.g., table-first, text-first, hybrid, multi-document) based on execution feedback.
+- **Deterministic Compute & Sandbox Execution:** When a question requires explicit aggregation or transformation, the runtime bypasses raw LLM math. It normalizes retrieved material into structured evidence (tables, rows, cells). If an existing tool is insufficient, the engine can autonomously generate and execute custom Python scripts within an isolated sandbox to compute the answer reliably.
+- **Failure Recovery & Remediation:** LLMs act as arbiters and planners at explicit boundaries. Through a "Review before Finalization" cycle, any answer must meet rigorous sufficiency thresholds. If an answer lacks evidence or hits an exhaustion condition, the model will orchestrate a repair—rotating its search strategy or computing dynamically—rather than hallucinating an unsupported fact.
+- **Stateful Graph Execution:** Built on a solid, stateful execution architecture, the agent ensures strict adherence to exhaustion proofs so it does not loop endlessly or silently fail. It produces computationally valid evidence or gracefully halts with a definitive, explainable halt condition.
 
-## What It Can Do
+## Architecture
 
-CoreLink AI is intended for tasks such as:
+CoreLink AI consists of four primary operational modules:
 
-- document-grounded financial and analytical questions
-- table extraction and period-aware aggregation
-- multi-step reasoning over structured and unstructured evidence
-- tool-backed analysis with explicit review and retry policy
-- server-side A2A agent execution
+1. **Director/Orchestrator (Planning):** Acts as the central brain. It receives queries, breaks down analytical constraints, and issues structured instructions to the underlying mechanisms.
+2. **Perception/Retrieval (Data Sources):** Responsible for interfacing with data APIs, documents, or vector indices. It adapts its search strategy (e.g., querying tables vs. raw text) based on signals from the orchestrator.
+3. **Function/Tool Calling (Processing):** Takes retrieved segments and applies deterministic tools or sandboxed Python scripts. It converts abstract text questions into verifiable parameter execution.
+4. **Validation/Review (Arbitration):** Cross-checks interim outputs against the original query to decide whether to finalize an answer or loop back to the Orchestrator with an exhaustion proof or failure context.
 
-## How It Works
-
-At a high level, the system follows this flow:
-
-```text
-Request
-  -> plan the task
-  -> choose tools and retrieval strategy
-  -> gather and structure evidence
-  -> compute or synthesize within policy
-  -> review and repair if needed
-  -> format and return the final answer
-```
-
-The key runtime behaviors are:
-
-- Typed planning
-  The system builds an explicit task and retrieval intent before entering the tool loop.
-
-- Strategy-based retrieval
-  Retrieval is not a single fixed path. The runtime can rotate between strategies such as table-first, hybrid, multi-table, or multi-document search depending on the question and prior failures.
-
-- Structured evidence
-  Retrieved material is normalized into tables, rows, cells, and grounded text fragments so downstream steps operate on typed evidence instead of raw strings.
-
-- Deterministic compute
-  When a question can be answered through explicit aggregation or transformation, the runtime prefers a deterministic compute path.
-
-- Bounded LLM arbitration
-  LLMs are used for planning, arbitration, repair, and capability acquisition at controlled boundaries rather than as a blanket fallback.
-
-- Review before finalization
-  Answers are checked for semantic alignment, evidence sufficiency, and endpoint policy before they are emitted.
-
-## Design Principles
-
-- Evidence first
-  Answers should come from retrieved evidence and verified transformations.
-
-- Deterministic where possible
-  If the answer can be computed safely, the runtime should compute it rather than improvise it.
-
-- Explicit retries
-  When the system is wrong, it should mutate strategy or search regime, not repeat the same failed path.
-
-- Policy-driven stopping
-  The runtime should not quietly give up. It should either continue through a materially new path or stop with a clear reason.
-
-- Operational transparency
-  The system is designed to be observable and diagnosable in local development and evaluation runs.
-
-## Quickstart
+## Installation & Getting Started
 
 ### Prerequisites
-
 - Python 3.13+
-- `uv`
-- an OpenAI-compatible API key
+- `uv` (for fast Python package management)
+- Git
+- An OpenAI-compatible API key
 
-### Install
+### 1. Clone the Repository
 
 ```bash
-git clone <your-repo-url>
-cd Project-Pulse-Generalist-A2A-Reasoning-Engine
+git clone https://github.com/krishna-dhulipalla/CoreLink-AI.git
+cd CoreLink-AI
+```
+
+### 2. Install Dependencies
+
+Use `uv` to quickly sync the project environment:
+
+```bash
 uv sync
 ```
 
-Create your local environment file:
+### 3. Setup Configuration
+
+Create your local environment file by copying the example:
 
 ```bash
 cp .env.example .env
 ```
 
-Set at least:
+Ensure your provider credentials are set. Open `.env` and set at minimum:
 
-```bash
+```ini
 OPENAI_API_KEY=your_key_here
 ```
 
-Optional:
+### 4. Run Locally
 
-- `OPENAI_BASE_URL`
-- role-specific model overrides such as `SOLVER_MODEL` or `REVIEWER_MODEL`
-
-## Run The Server
-
-Start the A2A server:
-
-```bash
-uv run python src/server.py --host 127.0.0.1 --port 9009
-```
-
-The server exposes CoreLink AI as an A2A-compatible agent with streaming support.
-
-## Run Locally
-
-### General runtime smoke
+You can verify the runtime behaves correctly by running the live engine smoke tests:
 
 ```bash
 uv run python scripts/run_live_engine_smoke.py
 ```
 
-### Test suite
+### 5. Launch the Server
+
+Start the A2A compatible streaming server:
 
 ```bash
-uv run pytest tests/
-```
-
-Focused examples:
-
-```bash
-uv run pytest tests/test_engine_runtime.py -q
-uv run pytest tests/test_retrieval_strategy_kernel.py -q
-uv run pytest tests/test_llm_repair.py -q
+uv run python src/server.py --host 127.0.0.1 --port 9009
 ```
 
 ## Configuration
 
-The runtime is configured through environment variables in `.env`.
+The runtime is configured securely through environment variables in `.env`. Common settings include:
+- **Provider Access:** `OPENAI_API_KEY`, `OPENAI_BASE_URL`
+- **Model Overrides:** Option to specify targeted models for solvers and reviewers (e.g., `SOLVER_MODEL`, `REVIEWER_MODEL`).
+- **Runtime Controls:** Adjust execution boundaries with variables like `MAX_TOOL_CALLS`, `MAX_REVISE_CYCLES`, and `MAX_CONTEXT_TOKENS`.
 
-Common settings include:
+## Evaluation & Adaptability
 
-- provider access
-  - `OPENAI_API_KEY`
-  - `OPENAI_BASE_URL`
+CoreLink AI has been hardened using benchmark-driven testing (such as the document-heavy OfficeQA dataset). However, the engine itself is highly adaptable and decoupled from any specific format. It seamlessly wraps around custom environments, executing complex orchestrations while maintaining a highly transparent, stateless, and automatable execution trace. 
 
-- model overrides
-  - `SOLVER_MODEL`
-  - `REVIEWER_MODEL`
-  - `DOCUMENT_SOLVER_MODEL`
-  - `DOCUMENT_REVIEWER_MODEL`
+## Project Structure
 
-- runtime controls
-  - `MAX_TOOL_CALLS`
-  - `MAX_REVISE_CYCLES`
-  - `MAX_CONTEXT_TOKENS`
-  - `STRUCTURED_OUTPUT_MODE`
-  - `TOOL_CALL_MODE`
+A high-level overview of the codebase:
 
-- optional persistence and diagnostics
-  - `ENABLE_RUN_TRACER`
-  - `TRACE_MAX_RECENT`
-  - `ENABLE_AGENT_MEMORY`
-
-For normal usage, only provider credentials are required. Benchmark- and corpus-specific settings are optional.
-
-## Evaluation
-
-CoreLink AI has been hardened with benchmark-driven testing, including document-heavy financial QA workloads. Evaluation support exists in the repo, but it is separate from the public runtime surface.
-
-If you want to run the current local benchmark smoke path:
-
-```powershell
-$env:BENCHMARK_NAME="officeqa"
-$env:BENCHMARK_STATELESS="1"
-uv run python scripts/run_officeqa_regression.py --smoke
+```text
+CoreLink-AI/
+├── assets/                 # Architecture diagrams and images
+├── src/
+│   ├── agent/              # Core reasoning engine logic
+│   │   ├── nodes/          # Graph execution nodes (orchestrator, validator, parser)
+│   │   ├── graph.py        # Central state machine definition
+│   │   └── ...
+│   └── server.py           # A2A streaming server entrypoint
+├── scripts/                # Evaluation, smoke testing, and benchmark harnesses
+├── tests/                  # Unit and E2E regression tests
+├── amber-manifest.json5    # Deployment configurations
+├── Dockerfile              # Containerization specs
+└── .env                    # Runtime configuration
 ```
 
-If the benchmark requires a local corpus index, build it first:
+## Acknowledgements
 
-```powershell
-$env:OFFICEQA_CORPUS_DIR="data/officeqa/source/treasury_bulletins_parsed/jsons"
-uv run python scripts/build_officeqa_index.py --corpus-root "$env:OFFICEQA_CORPUS_DIR"
-uv run python scripts/verify_officeqa_corpus.py --corpus-root "$env:OFFICEQA_CORPUS_DIR"
-```
-
-OfficeQA is used here as an evaluation harness, not as the product identity of CoreLink AI.
-
-## Operating Notes
-
-- The runtime supports strategy-aware retrieval rather than a single hardcoded search path.
-- Deterministic compute remains the preferred path for structured numeric questions.
-- Optional memory is available but disabled by default for most local and benchmark runs.
-- The system is designed to run cleanly in stateless benchmark mode and normal server mode.
-
-## Status
-
-CoreLink AI is currently on the V6 architecture track, focused on:
-
-- typed retrieval strategies
-- bounded repair and regime mutation
-- evidence arbitration
-- compute capability acquisition
-- answerability-aware stopping policy
-
-This is the most stable architecture the project has had so far.
+CoreLink AI's structural design draws conceptual inspiration from advanced agent workflow architectures. Ensure you configure your required API keys correctly within the isolated environment before extensive execution.
