@@ -24,7 +24,7 @@
 
   // How to run your agent container.
   program: {
-    image: "ghcr.io/krishna-dhulipalla/corelink-ai:latest",
+    image: "ghcr.io/krishna-dhulipalla/corelink-ai:v1.0.0",
     entrypoint: "uv run python src/server.py --host 0.0.0.0 --port 9009",
 
     // Map config into runtime env vars your app actually reads.
