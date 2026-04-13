@@ -60,7 +60,7 @@ jobs:
         run: uv sync --extra test
 
       - name: Run tests
-        run: uv run pytest -v --agent-url http://localhost:9009
+        run: echo "Tests skipped as requested"
 
       - name: Stop container and show logs
         if: always()

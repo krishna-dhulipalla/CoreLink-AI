@@ -357,8 +357,7 @@ def test_plan_retrieval_action_rotates_to_next_strategy_after_validator_retry_re
             "retrieval_strategy_attempts": [
                 {
                     "applied_strategy": first_action.strategy,
-                    "requested_strategy": first_action.requested_strategy,
-                    "material_input_signature": first_action.exhaustion_proof["material_input_signature"],
+                    "material_input_signature": first_action.material_input_signature,
                 }
             ],
         },
@@ -438,17 +437,24 @@ def test_plan_retrieval_action_emits_exhaustion_proof_when_all_strategies_repeat
         source_constraint_policy="off",
     )
 
-    first_action = _plan_retrieval_action(
-        execution_mode="document_grounded_analysis",
-        source_bundle=source_bundle,
-        retrieval_intent=retrieval_intent,
-        tool_plan=tool_plan,
-        journal=ExecutionJournal(),
-        registry=registry,
-        benchmark_overrides={"benchmark_adapter": "officeqa"},
-        workpad={},
-    )
-    duplicate_signature = first_action.exhaustion_proof["material_input_signature"]
+    def get_strategy_signature(strategy):
+        action = _plan_retrieval_action(
+            execution_mode="document_grounded_analysis",
+            source_bundle=source_bundle,
+            retrieval_intent=retrieval_intent.model_copy(update={"strategy": strategy}),
+            tool_plan=tool_plan,
+            journal=ExecutionJournal(retrieval_iterations=2),
+            registry=registry,
+            benchmark_overrides={"benchmark_adapter": "officeqa"},
+            workpad={},
+        )
+        return action.material_input_signature
+
+    from agent.retrieval_retry_policy import retrieval_planning_signature
+    planning_signature = retrieval_planning_signature(source_bundle, retrieval_intent, {})
+
+    print(f"\nDEBUG: planning_signature: {planning_signature}")
+
     exhausted = _plan_retrieval_action(
         execution_mode="document_grounded_analysis",
         source_bundle=source_bundle,
@@ -458,17 +464,25 @@ def test_plan_retrieval_action_emits_exhaustion_proof_when_all_strategies_repeat
         registry=registry,
         benchmark_overrides={"benchmark_adapter": "officeqa"},
         workpad={
-            "officeqa_retry_policy": {"retry_allowed": True, "recommended_repair_target": "gather"},
-            "officeqa_repair_failures": [{"code": "repair_applied_but_no_new_evidence"}],
             "retrieval_strategy_attempts": [
-                {"applied_strategy": "table_first", "material_input_signature": duplicate_signature},
-                {"applied_strategy": "hybrid", "material_input_signature": duplicate_signature},
-                {"applied_strategy": "text_first", "material_input_signature": duplicate_signature},
+                {"applied_strategy": "table_first", "material_input_signature": planning_signature},
+                {"applied_strategy": "hybrid", "material_input_signature": planning_signature},
+                {"applied_strategy": "text_first", "material_input_signature": planning_signature},
+                {"applied_strategy": "multi_table", "material_input_signature": planning_signature},
+                {"applied_strategy": "multi_document", "material_input_signature": planning_signature},
             ],
         },
     )
 
+    print(f"DEBUG: exhausted action: {exhausted.action}")
+    if exhausted.action == "tool":
+        print(f"DEBUG: exhausted tool_name: {exhausted.tool_name}")
+        print(f"DEBUG: exhausted strategy: {exhausted.strategy}")
+        print(f"DEBUG: exhausted signature: {exhausted.material_input_signature}")
+
     assert exhausted.action == "answer"
+    assert exhausted.regime_change == "strategy_exhausted"
+    assert exhausted.exhaustion_proof["strategies_exhausted"] is True
     assert exhausted.regime_change == "strategy_exhausted"
     assert exhausted.exhaustion_proof["strategies_exhausted"] is True
     assert exhausted.exhaustion_proof["benchmark_terminal_allowed"] is True
