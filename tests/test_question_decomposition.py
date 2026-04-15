@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from agent.context.extraction import build_question_semantic_plan, extract_question_decomposition
-from agent.contracts import QuestionDecomposition, QuestionSemanticPlan, SourceBundle
-from agent.retrieval_reasoning import build_retrieval_intent
+from engine.agent.context.extraction import build_question_semantic_plan, extract_question_decomposition
+from engine.agent.contracts import QuestionDecomposition, QuestionSemanticPlan, SourceBundle
+from engine.agent.retrieval_reasoning import build_retrieval_intent
 
 
 def test_decomposition_extracts_calendar_year_category_slots():
@@ -277,7 +277,7 @@ def test_semantic_plan_uses_llm_for_constraint_sensitive_questions(monkeypatch):
             "semantic-plan-model",
         )
 
-    monkeypatch.setattr("agent.context.extraction.invoke_structured_output", _fake_invoke)
+    monkeypatch.setattr("engine.agent.context.extraction.invoke_structured_output", _fake_invoke)
 
     semantic_plan = build_question_semantic_plan(prompt, source_bundle)
 
@@ -296,7 +296,7 @@ def test_decomposition_llm_fallback_merges_missing_fields(monkeypatch):
     )
 
     monkeypatch.setattr(
-        "agent.context.extraction.invoke_structured_output",
+        "engine.agent.context.extraction.invoke_structured_output",
         lambda *args, **kwargs: (
             QuestionDecomposition(
                 entity="Public debt",
@@ -329,7 +329,7 @@ def test_semantic_plan_records_explicit_llm_usage(monkeypatch):
     )
 
     monkeypatch.setattr(
-        "agent.context.extraction.invoke_structured_output",
+        "engine.agent.context.extraction.invoke_structured_output",
         lambda *args, **kwargs: (
             QuestionSemanticPlan(
                 entity="Public debt",

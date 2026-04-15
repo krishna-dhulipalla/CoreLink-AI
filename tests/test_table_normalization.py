@@ -1,5 +1,5 @@
-from agent.tools.table_normalization import normalize_dense_table_grid, normalize_flat_table
-from agent.tools.tsr_fallback import select_dense_table_normalization
+from engine.agent.tools.table_normalization import normalize_dense_table_grid, normalize_flat_table
+from engine.agent.tools.tsr_fallback import select_dense_table_normalization
 
 
 def test_normalize_flat_table_builds_column_and_row_paths():
@@ -47,7 +47,7 @@ def test_normalize_dense_table_grid_collapses_repeated_hierarchical_headers():
 
 def test_tsr_fallback_auto_promotes_when_default_header_quality_is_low(monkeypatch):
     monkeypatch.setattr(
-        "agent.tools.tsr_fallback.compare_dense_table_normalizers",
+        "engine.agent.tools.tsr_fallback.compare_dense_table_normalizers",
         lambda *args, **kwargs: {
             "default": {"normalization_metrics": {"header_data_separation_quality": 0.32}},
             "fallback": {"normalization_metrics": {"header_data_separation_quality": 0.74}},

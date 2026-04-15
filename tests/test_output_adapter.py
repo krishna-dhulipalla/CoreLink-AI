@@ -1,7 +1,7 @@
 from langchain_core.messages import AIMessage
 
-from agent.nodes.output_adapter import output_adapter
-from agent.runtime_support import extract_answer_contract, infer_benchmark_overrides
+from engine.agent.nodes.output_adapter import output_adapter
+from engine.agent.runtime_support import extract_answer_contract, infer_benchmark_overrides
 from test_utils import make_state
 
 

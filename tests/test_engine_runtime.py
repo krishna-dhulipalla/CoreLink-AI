@@ -5,41 +5,41 @@ import shutil
 import uuid
 from pathlib import Path
 
-import agent.graph as graph_module
-import agent.benchmarks as benchmark_module
+import engine.agent.graph as graph_module
+import engine.agent.benchmarks as benchmark_module
 from langchain_core.messages import AIMessage
 from langchain_core.tools import tool
 
-from agent.budget import BudgetTracker
-from agent.benchmarks import (
+from engine.agent.budget import BudgetTracker
+from engine.agent.benchmarks import (
     benchmark_build_structured_evidence,
     benchmark_compute_result,
     benchmark_validate_final,
     register_benchmark_document_adapter,
 )
-from agent.benchmarks.officeqa_validator import validate_officeqa_final
-from agent.benchmarks.officeqa_index import build_officeqa_index
-from agent.contracts import CuratedContext, EvidenceSufficiency, ExecutionJournal, OfficeQAComputeResult, OfficeQALLMRepairDecision, OfficeQASourceRerankDecision, OfficeQAValidationResult, ProgressSignature, RetrievalAction, RetrievalIntent, SourceBundle, TaskIntent, ToolPlan
-from agent.officeqa_structured_evidence import build_officeqa_structured_evidence
-from agent.retrieval_tools import fetch_corpus_document as fetch_corpus_document_tool
-from agent.retrieval_tools import fetch_officeqa_table, lookup_officeqa_cells, search_reference_corpus
-from agent.retrieval_reasoning import assess_evidence_sufficiency, build_retrieval_intent, predictive_evidence_gaps
-from agent.strategy_journal import clear_strategy_journal, record_strategy_outcome
-from agent.tools.normalization import normalize_tool_output
-from agent.nodes.intake import intake
-from agent.nodes.output_adapter import output_adapter
-from agent.tracer import RunTracer
-from agent.capabilities import (
+from engine.agent.benchmarks.officeqa_validator import validate_officeqa_final
+from engine.agent.benchmarks.officeqa_index import build_officeqa_index
+from engine.agent.contracts import CuratedContext, EvidenceSufficiency, ExecutionJournal, OfficeQAComputeResult, OfficeQALLMRepairDecision, OfficeQASourceRerankDecision, OfficeQAValidationResult, ProgressSignature, RetrievalAction, RetrievalIntent, SourceBundle, TaskIntent, ToolPlan
+from engine.agent.officeqa_structured_evidence import build_officeqa_structured_evidence
+from engine.agent.retrieval_tools import fetch_corpus_document as fetch_corpus_document_tool
+from engine.agent.retrieval_tools import fetch_officeqa_table, lookup_officeqa_cells, search_reference_corpus
+from engine.agent.retrieval_reasoning import assess_evidence_sufficiency, build_retrieval_intent, predictive_evidence_gaps
+from engine.agent.strategy_journal import clear_strategy_journal, record_strategy_outcome
+from engine.agent.tools.normalization import normalize_tool_output
+from engine.agent.nodes.intake import intake
+from engine.agent.nodes.output_adapter import output_adapter
+from engine.agent.tracer import RunTracer
+from engine.agent.capabilities import (
     BUILTIN_LEGAL_TOOLS,
     BUILTIN_RETRIEVAL_TOOLS,
     build_capability_registry,
     filter_registry_for_benchmark,
     resolve_tool_plan,
 )
-from agent.curated_context import attach_structured_evidence, build_curated_context, build_source_bundle, solver_context_block
-from agent.nodes.orchestrator_retrieval import _plan_retrieval_action, _search_result_candidates
-from agent.nodes.orchestrator_retrieval import _tool_args_from_retrieval_action
-from agent.nodes.orchestrator import (
+from engine.agent.curated_context import attach_structured_evidence, build_curated_context, build_source_bundle, solver_context_block
+from engine.agent.nodes.orchestrator_retrieval import _plan_retrieval_action, _search_result_candidates
+from engine.agent.nodes.orchestrator_retrieval import _tool_args_from_retrieval_action
+from engine.agent.nodes.orchestrator import (
     _MAX_RETRIEVAL_HOPS,
     _apply_officeqa_llm_repair_decision,
     _finalize_pending_officeqa_repair_transition,
@@ -58,7 +58,7 @@ from agent.nodes.orchestrator import (
     _rank_search_candidates,
 )
 from test_utils import make_state
-from tools import CALCULATOR_TOOL, SEARCH_TOOL
+from engine.runtime.tools import CALCULATOR_TOOL, SEARCH_TOOL
 
 
 class _FakeModel:
@@ -72,7 +72,7 @@ class _FakeModel:
 
 
 def test_build_agent_graph_uses_active_runtime(monkeypatch):
-    monkeypatch.setattr("agent.graph.build_agent_graph", lambda external_tools=None: "engine_graph")
+    monkeypatch.setattr("engine.agent.graph.build_agent_graph", lambda external_tools=None: "engine_graph")
 
     assert graph_module.build_agent_graph() == "engine_graph"
 
@@ -450,7 +450,7 @@ def test_plan_retrieval_action_emits_exhaustion_proof_when_all_strategies_repeat
         )
         return action.material_input_signature
 
-    from agent.retrieval_retry_policy import retrieval_planning_signature
+    from engine.agent.retrieval_retry_policy import retrieval_planning_signature
     planning_signature = retrieval_planning_signature(source_bundle, retrieval_intent, {})
 
     print(f"\nDEBUG: planning_signature: {planning_signature}")
@@ -1342,13 +1342,13 @@ def test_officeqa_evidence_commit_review_redirects_to_gather_before_compute(monk
     registry = build_capability_registry([CALCULATOR_TOOL, SEARCH_TOOL, *BUILTIN_RETRIEVAL_TOOLS])
     executor = make_executor(registry)
 
-    monkeypatch.setattr("agent.nodes.orchestrator.predictive_evidence_gaps", lambda *args, **kwargs: [])
+    monkeypatch.setattr("engine.agent.nodes.orchestrator.predictive_evidence_gaps", lambda *args, **kwargs: [])
     monkeypatch.setattr(
-        "agent.nodes.orchestrator.should_use_evidence_commit_llm",
+        "engine.agent.nodes.orchestrator.should_use_evidence_commit_llm",
         lambda **kwargs: (True, "better_family_visible_in_candidate_pool"),
     )
     monkeypatch.setattr(
-        "agent.nodes.orchestrator.maybe_review_evidence_commitment",
+        "engine.agent.nodes.orchestrator.maybe_review_evidence_commitment",
         lambda **kwargs: OfficeQALLMRepairDecision(
             decision="retune_table_query",
             restart_scope="same_document",
@@ -1358,7 +1358,7 @@ def test_officeqa_evidence_commit_review_redirects_to_gather_before_compute(monk
         ),
     )
     monkeypatch.setattr(
-        "agent.nodes.orchestrator.assess_evidence_sufficiency",
+        "engine.agent.nodes.orchestrator.assess_evidence_sufficiency",
         lambda *args, **kwargs: EvidenceSufficiency(
             source_family="official_government_finance",
             period_scope="matched",
@@ -1758,7 +1758,7 @@ def test_officeqa_executor_uses_compute_capability_acquisition_before_required_i
     registry = build_capability_registry([CALCULATOR_TOOL, SEARCH_TOOL, *BUILTIN_RETRIEVAL_TOOLS])
     executor = make_executor(registry)
     monkeypatch.setattr(
-        "agent.nodes.orchestrator.assess_evidence_sufficiency",
+        "engine.agent.nodes.orchestrator.assess_evidence_sufficiency",
         lambda *args, **kwargs: EvidenceSufficiency(
             source_family="official_government_document",
             period_scope="match",
@@ -1770,7 +1770,7 @@ def test_officeqa_executor_uses_compute_capability_acquisition_before_required_i
         ),
     )
     monkeypatch.setattr(
-        "agent.nodes.orchestrator.benchmark_compute_result",
+        "engine.agent.nodes.orchestrator.benchmark_compute_result",
         lambda *args, **kwargs: OfficeQAComputeResult(
             status="unsupported",
             operation="point_lookup",
@@ -1778,7 +1778,7 @@ def test_officeqa_executor_uses_compute_capability_acquisition_before_required_i
         ),
     )
     monkeypatch.setattr(
-        "agent.nodes.orchestrator.maybe_acquire_officeqa_compute_result",
+        "engine.agent.nodes.orchestrator.maybe_acquire_officeqa_compute_result",
         lambda **kwargs: (
             OfficeQAComputeResult(
                 status="ok",
@@ -1796,7 +1796,7 @@ def test_officeqa_executor_uses_compute_capability_acquisition_before_required_i
         ),
     )
     monkeypatch.setattr(
-        "agent.nodes.orchestrator._plan_retrieval_action",
+        "engine.agent.nodes.orchestrator._plan_retrieval_action",
         lambda **kwargs: RetrievalAction(action="answer", stage="compute_ready", strategy="multi_table"),
     )
     state = make_state(
@@ -2331,7 +2331,7 @@ def test_intake_merges_source_files_from_benchmark_metadata(monkeypatch, tmp_pat
     (corpus_root / "treasury_1940.json").write_text(json.dumps({"title": "Treasury Bulletin 1940"}), encoding="utf-8")
     monkeypatch.setenv("OFFICEQA_CORPUS_DIR", str(corpus_root))
 
-    from agent.benchmarks.officeqa_index import build_officeqa_index
+    from engine.agent.benchmarks.officeqa_index import build_officeqa_index
 
     build_officeqa_index(corpus_root=corpus_root)
 
@@ -2391,10 +2391,10 @@ def test_engine_executor_runs_retrieval_search_then_fetch_before_final_answer(mo
 
     captured: list = []
     monkeypatch.setattr(
-        "agent.nodes.orchestrator.ChatOpenAI",
+        "engine.agent.nodes.orchestrator.ChatOpenAI",
         lambda **kwargs: _FakeModel(AIMessage(content='The total public debt outstanding in 1945 was 258.7 billion dollars. [Source: treasury_1945.txt]'), captured),
     )
-    monkeypatch.setattr("agent.nodes.orchestrator.invoke_structured_output", lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("fallback")))
+    monkeypatch.setattr("engine.agent.nodes.orchestrator.invoke_structured_output", lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("fallback")))
 
     registry = build_capability_registry([CALCULATOR_TOOL, SEARCH_TOOL, search_reference_corpus, fetch_corpus_document, *BUILTIN_LEGAL_TOOLS])
     executor = make_executor(registry)
@@ -2521,7 +2521,7 @@ def test_engine_executor_prefers_officeqa_table_first_retrieval(monkeypatch):
     captured: list = []
     monkeypatch.setenv("BENCHMARK_NAME", "officeqa")
     monkeypatch.setattr(
-        "agent.nodes.orchestrator.ChatOpenAI",
+        "engine.agent.nodes.orchestrator.ChatOpenAI",
         lambda **kwargs: _FakeModel(AIMessage(content="The total public debt outstanding in 1945 was 258.7. [Source: treasury_1945.json]"), captured),
     )
 
@@ -2560,7 +2560,7 @@ def test_officeqa_executor_uses_llm_wrapper_for_hybrid_answer_mode(monkeypatch):
     captured: list = []
     monkeypatch.setenv("BENCHMARK_NAME", "officeqa")
     monkeypatch.setattr(
-        "agent.nodes.orchestrator.ChatOpenAI",
+        "engine.agent.nodes.orchestrator.ChatOpenAI",
         lambda **kwargs: _FakeModel(
             AIMessage(
                 content=(
@@ -2864,7 +2864,7 @@ def test_officeqa_executor_applies_structured_validator_repair_before_gather(mon
     captured: dict[str, object] = {}
 
     monkeypatch.setattr(
-        "agent.nodes.orchestrator._plan_retrieval_action",
+        "engine.agent.nodes.orchestrator._plan_retrieval_action",
         lambda **kwargs: RetrievalAction(
             action="tool",
             tool_name="search_officeqa_documents",
@@ -2876,7 +2876,7 @@ def test_officeqa_executor_applies_structured_validator_repair_before_gather(mon
         ),
     )
     monkeypatch.setattr(
-        "agent.nodes.orchestrator.maybe_repair_from_validator",
+        "engine.agent.nodes.orchestrator.maybe_repair_from_validator",
         lambda **kwargs: OfficeQALLMRepairDecision(
             decision="rewrite_query",
             revised_query="Treasury Bulletin total public debt outstanding 1945 year-end",
@@ -2884,7 +2884,7 @@ def test_officeqa_executor_applies_structured_validator_repair_before_gather(mon
             confidence=0.91,
         ),
     )
-    monkeypatch.setattr("agent.nodes.orchestrator.maybe_rewrite_retrieval_path", lambda **kwargs: None)
+    monkeypatch.setattr("engine.agent.nodes.orchestrator.maybe_rewrite_retrieval_path", lambda **kwargs: None)
 
     async def _fake_run_tool_step_with_args(state, registry, tool_name, tool_args):
         captured["tool_name"] = tool_name
@@ -2895,7 +2895,7 @@ def test_officeqa_executor_applies_structured_validator_repair_before_gather(mon
             tool_args,
         )
 
-    monkeypatch.setattr("agent.nodes.orchestrator._run_tool_step_with_args", _fake_run_tool_step_with_args)
+    monkeypatch.setattr("engine.agent.nodes.orchestrator._run_tool_step_with_args", _fake_run_tool_step_with_args)
 
     state = make_state(
         prompt,
@@ -2981,7 +2981,7 @@ def test_officeqa_executor_uses_structured_query_rewrite_for_wrong_document_gap(
     captured: dict[str, object] = {}
 
     monkeypatch.setattr(
-        "agent.nodes.orchestrator._plan_retrieval_action",
+        "engine.agent.nodes.orchestrator._plan_retrieval_action",
         lambda **kwargs: RetrievalAction(
             action="tool",
             tool_name="search_officeqa_documents",
@@ -2993,9 +2993,9 @@ def test_officeqa_executor_uses_structured_query_rewrite_for_wrong_document_gap(
             candidate_sources=[{"document_id": "treasury_bulletin_1959_09_json", "score": 0.58}],
         ),
     )
-    monkeypatch.setattr("agent.nodes.orchestrator.maybe_repair_from_validator", lambda **kwargs: None)
+    monkeypatch.setattr("engine.agent.nodes.orchestrator.maybe_repair_from_validator", lambda **kwargs: None)
     monkeypatch.setattr(
-        "agent.nodes.orchestrator.maybe_rewrite_retrieval_path",
+        "engine.agent.nodes.orchestrator.maybe_rewrite_retrieval_path",
         lambda **kwargs: OfficeQALLMRepairDecision(
             decision="rewrite_query",
             revised_query="Treasury Bulletin Veterans Administration total expenditures fiscal year 1934 excluding trust accounts",
@@ -3013,7 +3013,7 @@ def test_officeqa_executor_uses_structured_query_rewrite_for_wrong_document_gap(
             tool_args,
         )
 
-    monkeypatch.setattr("agent.nodes.orchestrator._run_tool_step_with_args", _fake_run_tool_step_with_args)
+    monkeypatch.setattr("engine.agent.nodes.orchestrator._run_tool_step_with_args", _fake_run_tool_step_with_args)
 
     state = make_state(
         prompt,
@@ -3092,7 +3092,7 @@ def test_officeqa_validator_repair_invalidates_stale_state_before_new_search(mon
     captured: dict[str, object] = {}
 
     monkeypatch.setattr(
-        "agent.nodes.orchestrator._plan_retrieval_action",
+        "engine.agent.nodes.orchestrator._plan_retrieval_action",
         lambda **kwargs: RetrievalAction(
             action="tool",
             tool_name="search_officeqa_documents",
@@ -3104,7 +3104,7 @@ def test_officeqa_validator_repair_invalidates_stale_state_before_new_search(mon
         ),
     )
     monkeypatch.setattr(
-        "agent.nodes.orchestrator.maybe_repair_from_validator",
+        "engine.agent.nodes.orchestrator.maybe_repair_from_validator",
         lambda **kwargs: OfficeQALLMRepairDecision(
             decision="rewrite_query",
             revised_query="Treasury Bulletin total public debt outstanding 1945 year-end",
@@ -3112,7 +3112,7 @@ def test_officeqa_validator_repair_invalidates_stale_state_before_new_search(mon
             confidence=0.91,
         ),
     )
-    monkeypatch.setattr("agent.nodes.orchestrator.maybe_rewrite_retrieval_path", lambda **kwargs: None)
+    monkeypatch.setattr("engine.agent.nodes.orchestrator.maybe_rewrite_retrieval_path", lambda **kwargs: None)
 
     async def _fake_run_tool_step_with_args(state, registry, tool_name, tool_args):
         captured["tool_name"] = tool_name
@@ -3134,7 +3134,7 @@ def test_officeqa_validator_repair_invalidates_stale_state_before_new_search(mon
             tool_args,
         )
 
-    monkeypatch.setattr("agent.nodes.orchestrator._run_tool_step_with_args", _fake_run_tool_step_with_args)
+    monkeypatch.setattr("engine.agent.nodes.orchestrator._run_tool_step_with_args", _fake_run_tool_step_with_args)
 
     old_search = normalize_tool_output(
         "search_officeqa_documents",
@@ -3282,7 +3282,7 @@ def test_officeqa_retrieval_repair_retunes_table_query_and_replaces_stale_table_
     captured: dict[str, object] = {}
 
     monkeypatch.setattr(
-        "agent.nodes.orchestrator._plan_retrieval_action",
+        "engine.agent.nodes.orchestrator._plan_retrieval_action",
         lambda **kwargs: RetrievalAction(
             action="tool",
             tool_name="fetch_officeqa_table",
@@ -3295,9 +3295,9 @@ def test_officeqa_retrieval_repair_retunes_table_query_and_replaces_stale_table_
             rationale="Current table family is too generic.",
         ),
     )
-    monkeypatch.setattr("agent.nodes.orchestrator.maybe_repair_from_validator", lambda **kwargs: None)
+    monkeypatch.setattr("engine.agent.nodes.orchestrator.maybe_repair_from_validator", lambda **kwargs: None)
     monkeypatch.setattr(
-        "agent.nodes.orchestrator.maybe_rewrite_retrieval_path",
+        "engine.agent.nodes.orchestrator.maybe_rewrite_retrieval_path",
         lambda **kwargs: OfficeQALLMRepairDecision(
             decision="retune_table_query",
             revised_table_query="national defense expenditures calendar year 1940",
@@ -3322,7 +3322,7 @@ def test_officeqa_retrieval_repair_retunes_table_query_and_replaces_stale_table_
             tool_args,
         )
 
-    monkeypatch.setattr("agent.nodes.orchestrator._run_tool_step_with_args", _fake_run_tool_step_with_args)
+    monkeypatch.setattr("engine.agent.nodes.orchestrator._run_tool_step_with_args", _fake_run_tool_step_with_args)
 
     search_result = normalize_tool_output(
         "search_officeqa_documents",
@@ -3448,7 +3448,7 @@ def test_officeqa_executor_applies_llm_source_rerank_before_fetch(monkeypatch):
     captured: dict[str, object] = {}
 
     monkeypatch.setattr(
-        "agent.nodes.orchestrator._plan_retrieval_action",
+        "engine.agent.nodes.orchestrator._plan_retrieval_action",
         lambda **kwargs: RetrievalAction(
             action="tool",
             tool_name="fetch_officeqa_table",
@@ -3474,7 +3474,7 @@ def test_officeqa_executor_applies_llm_source_rerank_before_fetch(monkeypatch):
         ),
     )
     monkeypatch.setattr(
-        "agent.nodes.orchestrator.select_source_candidate",
+        "engine.agent.nodes.orchestrator.select_source_candidate",
         lambda **kwargs: type(
             "ArbiterResult",
             (),
@@ -3492,8 +3492,8 @@ def test_officeqa_executor_applies_llm_source_rerank_before_fetch(monkeypatch):
             },
         )(),
     )
-    monkeypatch.setattr("agent.nodes.orchestrator.maybe_rewrite_retrieval_path", lambda **kwargs: None)
-    monkeypatch.setattr("agent.nodes.orchestrator.maybe_repair_from_validator", lambda **kwargs: None)
+    monkeypatch.setattr("engine.agent.nodes.orchestrator.maybe_rewrite_retrieval_path", lambda **kwargs: None)
+    monkeypatch.setattr("engine.agent.nodes.orchestrator.maybe_repair_from_validator", lambda **kwargs: None)
 
     async def _fake_run_tool_step_with_args(state, registry, tool_name, tool_args):
         captured["tool_name"] = tool_name
@@ -3511,7 +3511,7 @@ def test_officeqa_executor_applies_llm_source_rerank_before_fetch(monkeypatch):
             tool_args,
         )
 
-    monkeypatch.setattr("agent.nodes.orchestrator._run_tool_step_with_args", _fake_run_tool_step_with_args)
+    monkeypatch.setattr("engine.agent.nodes.orchestrator._run_tool_step_with_args", _fake_run_tool_step_with_args)
 
     state = make_state(
         prompt,
@@ -3608,7 +3608,7 @@ def test_officeqa_retrieval_repair_records_document_pivot_separately_from_llm_pa
     executor = make_executor(registry)
 
     monkeypatch.setattr(
-        "agent.nodes.orchestrator._plan_retrieval_action",
+        "engine.agent.nodes.orchestrator._plan_retrieval_action",
         lambda **kwargs: RetrievalAction(
             action="tool",
             tool_name="fetch_officeqa_table",
@@ -3621,9 +3621,9 @@ def test_officeqa_retrieval_repair_records_document_pivot_separately_from_llm_pa
             rationale="Need a better source candidate.",
         ),
     )
-    monkeypatch.setattr("agent.nodes.orchestrator.maybe_repair_from_validator", lambda **kwargs: None)
+    monkeypatch.setattr("engine.agent.nodes.orchestrator.maybe_repair_from_validator", lambda **kwargs: None)
     monkeypatch.setattr(
-        "agent.nodes.orchestrator.maybe_rewrite_retrieval_path",
+        "engine.agent.nodes.orchestrator.maybe_rewrite_retrieval_path",
         lambda **kwargs: OfficeQALLMRepairDecision(
             decision="change_strategy",
             preferred_strategy="table_first",
@@ -3646,7 +3646,7 @@ def test_officeqa_retrieval_repair_records_document_pivot_separately_from_llm_pa
             tool_args,
         )
 
-    monkeypatch.setattr("agent.nodes.orchestrator._run_tool_step_with_args", _fake_run_tool_step_with_args)
+    monkeypatch.setattr("engine.agent.nodes.orchestrator._run_tool_step_with_args", _fake_run_tool_step_with_args)
 
     state = make_state(
         prompt,
@@ -3845,7 +3845,7 @@ def test_officeqa_validator_repair_forces_fresh_regime_when_signature_is_stale(m
     call_count = {"validator": 0}
 
     monkeypatch.setattr(
-        "agent.nodes.orchestrator._plan_retrieval_action",
+        "engine.agent.nodes.orchestrator._plan_retrieval_action",
         lambda **kwargs: RetrievalAction(
             action="tool",
             tool_name="search_officeqa_documents",
@@ -3866,8 +3866,8 @@ def test_officeqa_validator_repair_forces_fresh_regime_when_signature_is_stale(m
             confidence=0.91,
         )
 
-    monkeypatch.setattr("agent.nodes.orchestrator.maybe_repair_from_validator", _fake_validator_repair)
-    monkeypatch.setattr("agent.nodes.orchestrator.maybe_rewrite_retrieval_path", lambda **kwargs: None)
+    monkeypatch.setattr("engine.agent.nodes.orchestrator.maybe_repair_from_validator", _fake_validator_repair)
+    monkeypatch.setattr("engine.agent.nodes.orchestrator.maybe_rewrite_retrieval_path", lambda **kwargs: None)
 
     async def _fake_run_tool_step_with_args(state, registry, tool_name, tool_args):
         return tool_args, normalize_tool_output(
@@ -3876,7 +3876,7 @@ def test_officeqa_validator_repair_forces_fresh_regime_when_signature_is_stale(m
             tool_args,
         )
 
-    monkeypatch.setattr("agent.nodes.orchestrator._run_tool_step_with_args", _fake_run_tool_step_with_args)
+    monkeypatch.setattr("engine.agent.nodes.orchestrator._run_tool_step_with_args", _fake_run_tool_step_with_args)
 
     repair_signature = _officeqa_retrieval_input_signature(
         RetrievalIntent(
@@ -4252,7 +4252,7 @@ def test_engine_executor_paginates_corpus_before_answering(monkeypatch):
 
     captured: list = []
     monkeypatch.setattr(
-        "agent.nodes.orchestrator.ChatOpenAI",
+        "engine.agent.nodes.orchestrator.ChatOpenAI",
         lambda **kwargs: _FakeModel(
             AIMessage(content="The total public debt outstanding in 1945 was 258.7 billion dollars. [Source: treasury_1945.txt]"),
             captured,
@@ -4361,7 +4361,7 @@ def test_engine_executor_paginates_reference_file_before_answering(monkeypatch):
 
     captured: list = []
     monkeypatch.setattr(
-        "agent.nodes.orchestrator.ChatOpenAI",
+        "engine.agent.nodes.orchestrator.ChatOpenAI",
         lambda **kwargs: _FakeModel(
             AIMessage(content="The total public debt outstanding in 1945 was 258.7 billion dollars. [Source: treasury_1945.pdf]"),
             captured,
@@ -4503,7 +4503,7 @@ def test_officeqa_executor_repairs_incomplete_semantic_plan_before_retrieval(mon
     )
 
     monkeypatch.setattr(
-        "agent.nodes.orchestrator.build_retrieval_bundle",
+        "engine.agent.nodes.orchestrator.build_retrieval_bundle",
         lambda task_text, source_bundle, benchmark_overrides=None: (
             repaired_intent,
             EvidenceSufficiency(
@@ -4674,7 +4674,7 @@ def test_engine_executor_dedupes_legal_prompt_and_uses_higher_legal_completion_b
 
     captured: list = []
     monkeypatch.setattr(
-        "agent.nodes.orchestrator.ChatOpenAI",
+        "engine.agent.nodes.orchestrator.ChatOpenAI",
         lambda **kwargs: _FakeModel(AIMessage(content="Structured legal answer with multiple options."), captured),
     )
 
@@ -5200,7 +5200,7 @@ def test_officeqa_reviewer_emits_safe_insufficiency_answer_for_adapter():
 def test_officeqa_reviewer_records_premature_insufficiency_policy_without_emitting_answer(monkeypatch):
     prompt = "What was the calendar year total for U.S. national defense expenditures in 1940?"
     monkeypatch.setattr(
-        "agent.nodes.orchestrator.benchmark_validate_final",
+        "engine.agent.nodes.orchestrator.benchmark_validate_final",
         lambda *args, **kwargs: OfficeQAValidationResult(
             verdict="revise",
             reasoning="Structured validation needs more retrieval.",
@@ -5220,7 +5220,7 @@ def test_officeqa_reviewer_records_premature_insufficiency_policy_without_emitti
         ),
     )
     monkeypatch.setattr(
-        "agent.nodes.orchestrator._officeqa_retry_policy",
+        "engine.agent.nodes.orchestrator._officeqa_retry_policy",
         lambda *args, **kwargs: (False, "officeqa_no_retrieval_repair_path"),
     )
     state = make_state(
@@ -5293,7 +5293,7 @@ def test_officeqa_reviewer_records_premature_insufficiency_policy_without_emitti
 def test_officeqa_reviewer_replaces_progress_stalled_answer_with_safe_insufficiency(monkeypatch):
     prompt = "What was total public debt outstanding in 1945?"
     monkeypatch.setattr(
-        "agent.nodes.orchestrator.assess_evidence_sufficiency",
+        "engine.agent.nodes.orchestrator.assess_evidence_sufficiency",
         lambda *args, **kwargs: EvidenceSufficiency(
             source_family="official_government_document",
             period_scope="match",
@@ -5305,7 +5305,7 @@ def test_officeqa_reviewer_replaces_progress_stalled_answer_with_safe_insufficie
         ),
     )
     monkeypatch.setattr(
-        "agent.nodes.orchestrator.benchmark_validate_final",
+        "engine.agent.nodes.orchestrator.benchmark_validate_final",
         lambda *args, **kwargs: OfficeQAValidationResult(
             verdict="revise",
             reasoning="Structured validation still needs exact period repair.",
@@ -5325,7 +5325,7 @@ def test_officeqa_reviewer_replaces_progress_stalled_answer_with_safe_insufficie
         ),
     )
     monkeypatch.setattr(
-        "agent.nodes.orchestrator._build_progress_signature",
+        "engine.agent.nodes.orchestrator._build_progress_signature",
         lambda **kwargs: ProgressSignature(
             signature="same-signature",
             execution_mode=str(kwargs.get("execution_mode", "")),
@@ -5447,7 +5447,7 @@ def test_officeqa_reviewer_replaces_progress_stalled_answer_with_safe_insufficie
 def test_officeqa_reviewer_accepts_bounded_partial_answer_when_compute_is_only_preferred(monkeypatch):
     prompt = "Using Treasury Bulletin data, compute the weighted average expenditures for 1953 and explain the supported trend."
     monkeypatch.setattr(
-        "agent.nodes.orchestrator.assess_evidence_sufficiency",
+        "engine.agent.nodes.orchestrator.assess_evidence_sufficiency",
         lambda *args, **kwargs: EvidenceSufficiency(
             source_family="official_government_document",
             period_scope="match",
@@ -5569,7 +5569,7 @@ def test_officeqa_reviewer_accepts_bounded_partial_answer_when_compute_is_only_p
 def test_officeqa_reviewer_accepts_deterministic_compute_without_inline_quote(monkeypatch):
     prompt = "According to the Treasury Bulletin, what was total public debt outstanding in 1945?"
     monkeypatch.setattr(
-        "agent.nodes.orchestrator.assess_evidence_sufficiency",
+        "engine.agent.nodes.orchestrator.assess_evidence_sufficiency",
         lambda *args, **kwargs: EvidenceSufficiency(
             source_family="official_government_document",
             period_scope="match",
@@ -5998,7 +5998,7 @@ def test_engine_self_reflection_requests_one_extra_legal_deepen_pass(monkeypatch
     # LLM self-reflection finds missing items
     reflection_response = '{"score": 0.55, "complete": false, "missing": ["execution-specific next steps", "risk allocation detail"], "improve_prompt": "Add execution-specific next steps and risk-allocation detail."}'
     monkeypatch.setattr(
-        "agent.nodes.orchestrator.ChatOpenAI",
+        "engine.agent.nodes.orchestrator.ChatOpenAI",
         lambda **kwargs: _FakeModel(AIMessage(content=reflection_response)),
     )
 
@@ -6012,7 +6012,7 @@ def test_engine_tracer_captures_engine_headers_and_counts(monkeypatch):
     tracer = RunTracer()
     captured: dict[str, object] = {}
     monkeypatch.setattr(
-        "agent.tracer._write_trace_file",
+        "engine.agent.tracer._write_trace_file",
         lambda payload, profile, start_dt: captured.setdefault("payload", payload) or "ok",
     )
 

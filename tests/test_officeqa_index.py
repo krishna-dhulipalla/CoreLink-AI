@@ -1,13 +1,13 @@
 import json
 
-from agent.benchmarks.officeqa_index import (
+from engine.agent.benchmarks.officeqa_index import (
     build_officeqa_index,
     resolve_source_files_to_manifest,
     search_officeqa_corpus_index,
     validate_officeqa_index,
 )
-from agent.benchmarks.officeqa_runtime import OfficeQACorpusBootstrapError, verify_officeqa_corpus_bundle
-from agent.retrieval_tools import (
+from engine.agent.benchmarks.officeqa_runtime import OfficeQACorpusBootstrapError, verify_officeqa_corpus_bundle
+from engine.agent.retrieval_tools import (
     _OfficeQATableExtractionTimeout,
     _classify_table_family,
     _extract_tables_from_html_string,
@@ -889,7 +889,7 @@ def test_fetch_officeqa_table_surfaces_timeout_as_structured_status(monkeypatch,
     def _raise_timeout(*args, **kwargs):
         raise _OfficeQATableExtractionTimeout("simulated extraction timeout")
 
-    monkeypatch.setattr("agent.retrieval_tools._extract_document_tables", _raise_timeout)
+    monkeypatch.setattr("engine.agent.retrieval_tools._extract_document_tables", _raise_timeout)
 
     result = fetch_officeqa_table.invoke({"document_id": "treasury_1945_json", "table_query": "public debt"})
 

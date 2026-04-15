@@ -1,8 +1,8 @@
-from agent.compute_capability import (
+from engine.agent.compute_capability import (
     clear_compute_capability_cache,
     maybe_acquire_officeqa_compute_result,
 )
-from agent.contracts import RetrievalIntent
+from engine.agent.contracts import RetrievalIntent
 
 
 def _monthly_value(year: int, month: str, raw_value: float) -> dict:
@@ -93,7 +93,7 @@ def test_compute_capability_acquires_and_caches_validated_function(monkeypatch):
             "fake-capability-model",
         )
 
-    monkeypatch.setattr("agent.compute_capability.invoke_structured_output", _fake_invoke)
+    monkeypatch.setattr("engine.agent.compute_capability.invoke_structured_output", _fake_invoke)
 
     result, workpad, llm_state = maybe_acquire_officeqa_compute_result(
         task_text=prompt,
@@ -159,7 +159,7 @@ def test_compute_capability_rejects_unsafe_generated_code(monkeypatch):
             "fake-capability-model",
         )
 
-    monkeypatch.setattr("agent.compute_capability.invoke_structured_output", _fake_invoke)
+    monkeypatch.setattr("engine.agent.compute_capability.invoke_structured_output", _fake_invoke)
 
     result, workpad, llm_state = maybe_acquire_officeqa_compute_result(
         task_text="calculate the standard deviation",
@@ -232,7 +232,7 @@ def test_compute_capability_can_repair_after_first_generation_failure(monkeypatc
             "fake-capability-model",
         )
 
-    monkeypatch.setattr("agent.compute_capability.invoke_structured_output", _fake_invoke)
+    monkeypatch.setattr("engine.agent.compute_capability.invoke_structured_output", _fake_invoke)
 
     result, workpad, llm_state = maybe_acquire_officeqa_compute_result(
         task_text="Compute the weighted average expenditures for 1953.",

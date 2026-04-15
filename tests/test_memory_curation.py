@@ -1,4 +1,4 @@
-from agent.memory.curation import build_curation_signals, summarize_curation_signals
+from engine.agent.memory.curation import build_curation_signals, summarize_curation_signals
 
 
 def test_build_curation_signals_emits_review_assumption_and_tool_patterns():

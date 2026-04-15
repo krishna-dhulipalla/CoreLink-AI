@@ -1,9 +1,9 @@
 import pandas as pd
 import pytest
 
-pytest.importorskip("mcp.server.fastmcp")
+pytest.importorskip("engine.mcp.server.fastmcp")
 
-from mcp_servers.market_data import server as market_server
+from engine.mcp.mcp_servers.market_data import server as market_server
 
 
 class _DummyTicker:

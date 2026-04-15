@@ -1,7 +1,7 @@
 import asyncio
 
-from agent.contracts import RetrievalAction, RetrievalIntent, SourceBundle
-from agent.retrieval_tool_runtime import tool_args_from_retrieval_action
+from engine.agent.contracts import RetrievalAction, RetrievalIntent, SourceBundle
+from engine.agent.retrieval_tool_runtime import tool_args_from_retrieval_action
 
 
 def test_tool_args_from_retrieval_action_builds_officeqa_table_fetch_args():
@@ -49,7 +49,7 @@ def test_run_tool_step_with_args_filters_unknown_fields():
             return {"ok": True, "args": args}
 
     async def _run():
-        from agent.retrieval_tool_runtime import run_tool_step_with_args
+        from engine.agent.retrieval_tool_runtime import run_tool_step_with_args
 
         args, result = await run_tool_step_with_args(
             {"search_reference_corpus": {"tool": _FakeTool(), "descriptor": {}}},

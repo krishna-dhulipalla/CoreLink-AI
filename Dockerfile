@@ -19,7 +19,7 @@ RUN --mount=type=cache,target=/home/agent/.cache/uv,uid=1000 \
 COPY src src
 
 # Production entrypoint
-ENTRYPOINT ["uv", "run", "src/server.py"]
+ENTRYPOINT ["uv", "run", "python", "-m", "engine.a2a.server"]
 CMD ["--host", "0.0.0.0", "--port", "9009"]
 
 EXPOSE 9009

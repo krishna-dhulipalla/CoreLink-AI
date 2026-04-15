@@ -1,8 +1,8 @@
 import pytest
 
-pytest.importorskip("mcp.server.fastmcp")
+pytest.importorskip("engine.mcp.server.fastmcp")
 
-from mcp_servers.risk_metrics import server as risk_server
+from engine.mcp.mcp_servers.risk_metrics import server as risk_server
 
 
 def test_scenario_pnl_returns_structured_scenarios():

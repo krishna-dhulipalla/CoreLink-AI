@@ -24,8 +24,8 @@ Part = a2a_types.Part
 Role = a2a_types.Role
 TextPart = a2a_types.TextPart
 
-from executor import Executor
-from mcp_client import load_mcp_tools_from_env
+from engine.a2a.executor import Executor
+from engine.mcp.mcp_client import load_mcp_tools_from_env
 
 
 def _configured_mcp() -> bool:

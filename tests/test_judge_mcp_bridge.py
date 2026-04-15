@@ -3,8 +3,8 @@ import asyncio
 import httpx
 import pytest
 
-from agent.model_config import get_model_name
-from judge_mcp_bridge import JudgeMcpConnectionError, call_judge_tool, discover_judge_tools, validate_tool_call
+from engine.agent.model_config import get_model_name
+from engine.mcp.judge_mcp_bridge import JudgeMcpConnectionError, call_judge_tool, discover_judge_tools, validate_tool_call
 
 
 class _FakeResponse:
@@ -74,7 +74,7 @@ class _NotFoundAsyncClient:
 def test_discover_judge_tools_uses_session_scoped_tools_endpoint(monkeypatch):
     monkeypatch.setenv("ENABLE_JUDGE_MCP_DISCOVERY", "1")
     monkeypatch.setenv("BENCHMARK_JUDGE_MCP_URL", "http://judge:9009/mcp/tools")
-    monkeypatch.setattr("judge_mcp_bridge.httpx.AsyncClient", _FakeAsyncClient)
+    monkeypatch.setattr("engine.mcp.judge_mcp_bridge.httpx.AsyncClient", _FakeAsyncClient)
     _FakeAsyncClient.calls = []
     _FakeAsyncClient.get_payload = [{"name": "search_treasury_bulletins", "description": "Search bulletins"}]
 
@@ -107,7 +107,7 @@ def test_call_judge_tool_validates_required_params_before_network():
 def test_call_judge_tool_posts_expected_payload(monkeypatch):
     monkeypatch.setenv("ENABLE_JUDGE_MCP_DISCOVERY", "1")
     monkeypatch.setenv("BENCHMARK_JUDGE_MCP_URL", "http://judge:9009/mcp")
-    monkeypatch.setattr("judge_mcp_bridge.httpx.AsyncClient", _FakeAsyncClient)
+    monkeypatch.setattr("engine.mcp.judge_mcp_bridge.httpx.AsyncClient", _FakeAsyncClient)
     _FakeAsyncClient.calls = []
     _FakeAsyncClient.post_payload = {"result": {"value": "2602"}}
 
@@ -145,7 +145,7 @@ def test_discover_judge_tools_falls_back_on_connection_failures_by_default(monke
     monkeypatch.setenv("ENABLE_JUDGE_MCP_DISCOVERY", "1")
     monkeypatch.setenv("BENCHMARK_JUDGE_MCP_URL", "http://judge:9009/mcp")
     monkeypatch.delenv("STRICT_JUDGE_MCP_DISCOVERY", raising=False)
-    monkeypatch.setattr("judge_mcp_bridge.httpx.AsyncClient", _FailingAsyncClient)
+    monkeypatch.setattr("engine.mcp.judge_mcp_bridge.httpx.AsyncClient", _FailingAsyncClient)
 
     tools = asyncio.run(discover_judge_tools(session_id="session-xyz"))
 
@@ -156,7 +156,7 @@ def test_discover_judge_tools_falls_back_on_404_for_local_lightweight_runner(mon
     monkeypatch.setenv("ENABLE_JUDGE_MCP_DISCOVERY", "1")
     monkeypatch.setenv("BENCHMARK_JUDGE_MCP_URL", "http://127.0.0.1:9009/mcp")
     monkeypatch.delenv("STRICT_JUDGE_MCP_DISCOVERY", raising=False)
-    monkeypatch.setattr("judge_mcp_bridge.httpx.AsyncClient", _NotFoundAsyncClient)
+    monkeypatch.setattr("engine.mcp.judge_mcp_bridge.httpx.AsyncClient", _NotFoundAsyncClient)
 
     tools = asyncio.run(discover_judge_tools(session_id="session-xyz"))
 
@@ -167,7 +167,7 @@ def test_discover_judge_tools_strict_mode_no_longer_raises_exceptions_on_failure
     monkeypatch.setenv("ENABLE_JUDGE_MCP_DISCOVERY", "1")
     monkeypatch.setenv("BENCHMARK_JUDGE_MCP_URL", "http://judge:9009/mcp")
     monkeypatch.setenv("STRICT_JUDGE_MCP_DISCOVERY", "1")
-    monkeypatch.setattr("judge_mcp_bridge.httpx.AsyncClient", _FailingAsyncClient)
+    monkeypatch.setattr("engine.mcp.judge_mcp_bridge.httpx.AsyncClient", _FailingAsyncClient)
 
     tools = asyncio.run(discover_judge_tools(session_id="session-xyz"))
     assert tools == []

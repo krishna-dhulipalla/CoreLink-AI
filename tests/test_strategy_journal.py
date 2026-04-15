@@ -1,5 +1,5 @@
-from agent.contracts import RetrievalIntent
-from agent.strategy_journal import (
+from engine.agent.contracts import RetrievalIntent
+from engine.agent.strategy_journal import (
     clear_strategy_journal,
     record_strategy_outcome,
     recommend_strategy_order,

@@ -1,5 +1,5 @@
-from agent.contracts import RetrievalIntent
-from agent.llm_control import (
+from engine.agent.contracts import RetrievalIntent
+from engine.agent.llm_control import (
     maybe_review_evidence_commitment,
     officeqa_llm_control_budget,
     should_use_evidence_commit_llm,
@@ -284,7 +284,7 @@ def test_evidence_commit_llm_triggers_when_better_family_is_visible_after_repair
 
 def test_evidence_commit_llm_can_request_same_document_restart(monkeypatch):
     monkeypatch.setattr(
-        "agent.llm_control.invoke_structured_output",
+        "engine.agent.llm_control.invoke_structured_output",
         lambda *args, **kwargs: (
             {
                 "decision": "retune_table_query",

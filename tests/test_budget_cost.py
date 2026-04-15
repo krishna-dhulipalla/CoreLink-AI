@@ -1,5 +1,5 @@
-from agent.budget import BudgetTracker
-from agent.cost import CostTracker
+from engine.agent.budget import BudgetTracker
+from engine.agent.cost import CostTracker
 
 
 def test_budget_tracker_configures_caps_by_complexity_tier():

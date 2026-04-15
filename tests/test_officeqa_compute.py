@@ -1,9 +1,9 @@
 import asyncio
 
-from agent.benchmarks.officeqa_compute import compute_officeqa_result
-from agent.contracts import RetrievalIntent, SourceBundle
-from agent.nodes.orchestrator import make_executor
-from agent.retrieval_reasoning import build_retrieval_intent
+from engine.agent.benchmarks.officeqa_compute import compute_officeqa_result
+from engine.agent.contracts import RetrievalIntent, SourceBundle
+from engine.agent.nodes.orchestrator import make_executor
+from engine.agent.retrieval_reasoning import build_retrieval_intent
 from test_utils import make_state
 
 
@@ -630,7 +630,7 @@ def test_executor_prefers_deterministic_officeqa_compute_without_llm(monkeypatch
     def _should_not_build_model(**kwargs):
         raise AssertionError("LLM synthesis should not run for deterministic OfficeQA compute.")
 
-    monkeypatch.setattr("agent.nodes.orchestrator.ChatOpenAI", _should_not_build_model)
+    monkeypatch.setattr("engine.agent.nodes.orchestrator.ChatOpenAI", _should_not_build_model)
 
     result = asyncio.run(make_executor({})(state))
 

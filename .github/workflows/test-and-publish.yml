@@ -60,7 +60,7 @@ jobs:
         run: uv sync --extra test
 
       - name: Run tests
-        run: echo "Tests skipped as requested"
+        run: uv run pytest
 
       - name: Stop container and show logs
         if: always()

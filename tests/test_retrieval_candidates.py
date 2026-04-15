@@ -1,5 +1,5 @@
-from agent.contracts import RetrievalIntent, SourceBundle
-from agent.retrieval_candidates import rank_search_candidates, search_result_candidates
+from engine.agent.contracts import RetrievalIntent, SourceBundle
+from engine.agent.retrieval_candidates import rank_search_candidates, search_result_candidates
 
 
 def test_search_result_candidates_uses_typed_candidate_schema_and_dedupes():

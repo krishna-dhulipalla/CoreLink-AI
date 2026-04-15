@@ -2,8 +2,8 @@ import sqlite3
 import uuid
 from pathlib import Path
 
-from agent.memory.schema import CurationSignal, ReviewMemory, RunMemory, ToolMemory, task_signature
-from agent.memory.store import MemoryStore
+from engine.agent.memory.schema import CurationSignal, ReviewMemory, RunMemory, ToolMemory, task_signature
+from engine.agent.memory.store import MemoryStore
 
 
 def _workspace_temp_db_path() -> Path:

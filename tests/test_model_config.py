@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 
 def _reload_model_config():
-    import agent.model_config as model_config
+    import engine.agent.model_config as model_config
 
     return importlib.reload(model_config)
 

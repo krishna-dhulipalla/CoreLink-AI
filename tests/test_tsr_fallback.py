@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from agent.tools.tsr_fallback import compare_dense_table_normalizers, select_dense_table_normalization
+from engine.agent.tools.tsr_fallback import compare_dense_table_normalizers, select_dense_table_normalization
 
 
 def _fixture(name: str) -> dict:
@@ -39,7 +39,7 @@ def test_tsr_fallback_selection_remains_default_when_experiment_disabled(monkeyp
 
     assert diagnostics["selected_mode"] == "tsr_split_merge_heuristic"
     assert selected["experimental_tsr"]["enabled"] is False
-    assert selected["column_paths"][1] == ["January"]
+    assert selected["column_paths"][1] == ["Expenditures, calendar year 1953", "January"]
 
 
 def test_tsr_fallback_selection_uses_fallback_when_enabled(monkeypatch):

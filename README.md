@@ -79,10 +79,10 @@ uv run python scripts/run_live_engine_smoke.py
 
 ### 5. Launch the Server
 
-Start the A2A compatible streaming server:
+Start the A2A compatible streaming server using the modular entrypoint:
 
 ```bash
-uv run python src/server.py --host 127.0.0.1 --port 9009
+uv run python -m engine.a2a.server --host 127.0.0.1 --port 9009
 ```
 
 ## Configuration
@@ -98,22 +98,23 @@ CoreLink AI has been hardened using benchmark-driven testing (such as the docume
 
 ## Project Structure
 
-A high-level overview of the codebase:
+A high-level overview of the reorganized engine namespace:
 
 ```text
 CoreLink-AI/
-├── assets/                 # Architecture diagrams and images
-├── src/
-│   ├── agent/              # Core reasoning engine logic
-│   │   ├── nodes/          # Graph execution nodes (orchestrator, validator, parser)
-│   │   ├── graph.py        # Central state machine definition
-│   │   └── ...
-│   └── server.py           # A2A streaming server entrypoint
-├── scripts/                # Evaluation, smoke testing, and benchmark harnesses
+├── data/persistence/       # Local database storage
+├── src/engine/             # Main application namespace
+│   ├── a2a/                # A2A streaming server and messenger
+│   ├── mcp/                # Model Context Protocol bridge and client
+│   ├── runtime/            # Shared utilities and state management
+│   └── agent/              # Core reasoning engine logic
+│       ├── nodes/          # Graph execution nodes
+│       ├── tools/          # Specialized agent tools
+│       └── graph.py        # Central state machine definition
+├── scripts/                # Evaluation and smoke testing harnesses
 ├── tests/                  # Unit and E2E regression tests
-├── amber-manifest.json5    # Deployment configurations
-├── Dockerfile              # Containerization specs
-└── .env                    # Runtime configuration
+├── pyproject.toml          # Project dependencies
+└── Dockerfile              # Containerization specs
 ```
 
 ## Acknowledgements

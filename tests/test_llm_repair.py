@@ -1,5 +1,5 @@
-from agent.contracts import CuratedContext, ExecutionJournal, OfficeQALLMRepairDecision, RetrievalIntent, SourceBundle
-from agent.llm_repair import (
+from engine.agent.contracts import CuratedContext, ExecutionJournal, OfficeQALLMRepairDecision, RetrievalIntent, SourceBundle
+from engine.agent.llm_repair import (
     maybe_repair_from_validator,
     maybe_rewrite_retrieval_path,
     officeqa_llm_repair_budget,
@@ -16,7 +16,7 @@ def test_officeqa_llm_repair_budget_is_explicit_and_deeper_than_single_retry():
 
 def test_validator_repair_supports_compute_target(monkeypatch):
     monkeypatch.setattr(
-        "agent.llm_repair._invoke_repair_decision",
+        "engine.agent.llm_repair._invoke_repair_decision",
         lambda prompt: OfficeQALLMRepairDecision(
             decision="retune_table_query",
             revised_table_query="Veterans Administration expenditures fiscal year 1934",
@@ -53,7 +53,7 @@ def test_retrieval_repair_prompt_includes_execution_journal_snapshot(monkeypatch
         captured["prompt"] = prompt
         return OfficeQALLMRepairDecision(decision="keep", confidence=0.9)
 
-    monkeypatch.setattr("agent.llm_repair._invoke_repair_decision", _fake_invoke)
+    monkeypatch.setattr("engine.agent.llm_repair._invoke_repair_decision", _fake_invoke)
 
     retrieval_intent = RetrievalIntent(
         entity="U.S. national defense",
@@ -107,7 +107,7 @@ def test_retrieval_repair_prompt_includes_execution_journal_snapshot(monkeypatch
 
 def test_retrieval_repair_requires_stall_signals(monkeypatch):
     monkeypatch.setattr(
-        "agent.llm_repair._invoke_repair_decision",
+        "engine.agent.llm_repair._invoke_repair_decision",
         lambda prompt: OfficeQALLMRepairDecision(decision="rewrite_query", revised_query="better query", confidence=0.9),
     )
 
@@ -142,7 +142,7 @@ def test_retrieval_repair_requires_stall_signals(monkeypatch):
 
 def test_retrieval_repair_skips_candidate_universe_already_marked_exhausted(monkeypatch):
     monkeypatch.setattr(
-        "agent.llm_repair._invoke_repair_decision",
+        "engine.agent.llm_repair._invoke_repair_decision",
         lambda prompt: OfficeQALLMRepairDecision(decision="rewrite_query", revised_query="better query", confidence=0.9),
     )
 
@@ -187,7 +187,7 @@ def test_retrieval_repair_skips_candidate_universe_already_marked_exhausted(monk
 
 def test_validator_repair_sets_typed_mutation_metadata(monkeypatch):
     monkeypatch.setattr(
-        "agent.llm_repair._invoke_repair_decision",
+        "engine.agent.llm_repair._invoke_repair_decision",
         lambda prompt: OfficeQALLMRepairDecision(
             decision="change_strategy",
             preferred_strategy="hybrid",

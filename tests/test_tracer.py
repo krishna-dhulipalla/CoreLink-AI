@@ -1,8 +1,8 @@
 import asyncio
 import os
 
-import agent.tracer as tracer_module
-from agent.tracer import finalize_tracer, get_tracer, start_tracer
+import engine.agent.tracer as tracer_module
+from engine.agent.tracer import finalize_tracer, get_tracer, start_tracer
 
 
 def test_tracer_is_request_scoped_under_concurrent_tasks(monkeypatch):
@@ -14,7 +14,7 @@ def test_tracer_is_request_scoped_under_concurrent_tasks(monkeypatch):
         captured.append((str(trace_identity.get("request_id", "")), payload))
         return "ok"
 
-    monkeypatch.setattr("agent.tracer._write_trace_file", _capture)
+    monkeypatch.setattr("engine.agent.tracer._write_trace_file", _capture)
 
     async def _run(request_id: str, question: str) -> None:
         tracer = start_tracer({"request_id": request_id, "task_id": request_id, "benchmark_uid": request_id})
@@ -84,7 +84,7 @@ def test_tracer_preserves_structured_diagnostic_artifacts(monkeypatch):
         captured.append(payload)
         return "ok"
 
-    monkeypatch.setattr("agent.tracer._write_trace_file", _capture)
+    monkeypatch.setattr("engine.agent.tracer._write_trace_file", _capture)
 
     tracer = start_tracer({"request_id": "diag-1"})
     assert tracer is not None
@@ -161,7 +161,7 @@ def test_tracer_execution_summary_compacts_candidate_lists(monkeypatch):
         captured.append(payload)
         return "ok"
 
-    monkeypatch.setattr("agent.tracer._write_trace_file", _capture)
+    monkeypatch.setattr("engine.agent.tracer._write_trace_file", _capture)
 
     tracer = start_tracer({"request_id": "diag-compact"})
     assert tracer is not None
@@ -200,7 +200,7 @@ def test_tracer_prefers_cost_tracker_counts_for_llm_and_tool_totals(monkeypatch)
         captured.append(payload)
         return "ok"
 
-    monkeypatch.setattr("agent.tracer._write_trace_file", _capture)
+    monkeypatch.setattr("engine.agent.tracer._write_trace_file", _capture)
 
     tracer = start_tracer({"request_id": "count-sync"})
     assert tracer is not None

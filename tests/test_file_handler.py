@@ -2,7 +2,7 @@ import sys
 import types
 
 
-fastmcp_module = types.ModuleType("mcp.server.fastmcp")
+fastmcp_module = types.ModuleType("engine.mcp.server.fastmcp")
 
 
 class _FakeFastMCP:
@@ -17,13 +17,13 @@ class _FakeFastMCP:
 
 
 fastmcp_module.FastMCP = _FakeFastMCP
-server_module = types.ModuleType("mcp.server")
+server_module = types.ModuleType("engine.mcp.server")
 mcp_module = types.ModuleType("mcp")
 sys.modules.setdefault("mcp", mcp_module)
-sys.modules.setdefault("mcp.server", server_module)
-sys.modules.setdefault("mcp.server.fastmcp", fastmcp_module)
+sys.modules.setdefault("engine.mcp.server", server_module)
+sys.modules.setdefault("engine.mcp.server.fastmcp", fastmcp_module)
 
-from mcp_servers.file_handler.server import _is_probably_binary, _sniff_format
+from engine.mcp.mcp_servers.file_handler.server import _is_probably_binary, _sniff_format
 
 
 def test_file_handler_sniffs_pdf_from_magic_bytes_even_without_extension():

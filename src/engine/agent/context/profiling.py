@@ -1,0 +1,403 @@
+"""
+Profiling and answer-contract helpers.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from typing import Any
+
+from langchain_core.messages import BaseMessage, HumanMessage
+
+from engine.agent.benchmarks import benchmark_answer_contract, build_benchmark_overrides
+from engine.agent.context.extraction import extract_urls
+from engine.agent.contracts import AnswerContract, ExecutionTemplate, ProfileDecision, TaskProfile
+from engine.agent.profile_packs import get_profile_pack
+
+_XML_TAG_RE = re.compile(r"<([A-Za-z][A-Za-z0-9_\-]*)>")
+
+
+def infer_benchmark_overrides(task_text: str) -> dict[str, Any]:
+    return build_benchmark_overrides(task_text)
+
+
+def _extract_labeled_json_block(text: str, label: str) -> Any | None:
+    pattern = re.compile(rf"{re.escape(label)}\s*:\s*", re.IGNORECASE)
+    match = pattern.search(text or "")
+    if not match:
+        return None
+    tail = (text or "")[match.end():].lstrip()
+    if not tail or tail[0] not in "[{":
+        return None
+    try:
+        parsed, _ = json.JSONDecoder().raw_decode(tail)
+        return parsed
+    except Exception:
+        return None
+
+
+def allowed_tools_for_profile(profile: str) -> set[str]:
+    return set(get_profile_pack(profile).allowed_tools)
+
+
+def allowed_tools_for_template(template: dict[str, Any] | ExecutionTemplate | None, profile: str) -> set[str]:
+    if isinstance(template, dict):
+        allowed = set(template.get("allowed_tool_names", []))
+    elif isinstance(template, ExecutionTemplate):
+        allowed = set(template.allowed_tool_names)
+    else:
+        allowed = set()
+    if not allowed:
+        return allowed_tools_for_profile(profile)
+    return allowed & allowed_tools_for_profile(profile)
+
+
+def apply_profile_contract_rules(answer_contract: AnswerContract, task_profile: str) -> AnswerContract:
+    pack = get_profile_pack(task_profile)
+    contract = answer_contract.model_copy(deep=True)
+
+    if pack.content_rules:
+        merged_rules = list(dict.fromkeys([*contract.content_rules, *pack.content_rules]))
+        contract.content_rules = merged_rules
+
+    has_strict_wrapper = contract.requires_adapter and contract.format in {"json", "xml"}
+    if not has_strict_wrapper and pack.section_requirements:
+        contract.section_requirements = list(
+            dict.fromkeys([*contract.section_requirements, *pack.section_requirements])
+        )
+
+    if pack.required_evidence_types:
+        required = list(
+            dict.fromkeys(
+                [*(contract.schema_hint.get("required_evidence_types", []) or []), *pack.required_evidence_types]
+            )
+        )
+        contract.schema_hint["required_evidence_types"] = required
+
+    return contract
+
+
+def latest_human_text(messages: list[BaseMessage]) -> str:
+    for msg in reversed(messages):
+        if isinstance(msg, HumanMessage) and msg.content:
+            return str(msg.content)
+    return ""
+
+
+def normalize_whitespace(text: str) -> str:
+    return re.sub(r"\s+", " ", text or "").strip()
+
+
+def extract_answer_contract(task_text: str, benchmark_overrides: dict[str, Any] | None = None) -> AnswerContract:
+    text = task_text or ""
+    lowered = text.lower()
+    overrides = dict(benchmark_overrides or infer_benchmark_overrides(text))
+
+    benchmark_contract = benchmark_answer_contract(text, overrides)
+    if benchmark_contract is not None:
+        return benchmark_contract
+
+    if "output format" in lowered or "json format" in lowered or '{"answer"' in text:
+        wrapper = None
+        wrapper_match = re.search(r'\{\s*"([A-Za-z0-9_]+)"\s*:', text)
+        if wrapper_match:
+            wrapper = wrapper_match.group(1)
+        example_match = re.search(r"(\{.*?\})", text, flags=re.DOTALL)
+        example = example_match.group(1).strip() if example_match else None
+        return AnswerContract(
+            format="json",
+            requires_adapter=True,
+            raw_instruction="JSON output required by the task prompt.",
+            wrapper_key=wrapper,
+            exact_output_example=example,
+        )
+
+    if "xml" in lowered or "</" in text:
+        tag_match = _XML_TAG_RE.search(text)
+        return AnswerContract(
+            format="xml",
+            requires_adapter=True,
+            raw_instruction="XML output required by the task prompt.",
+            xml_root_tag=tag_match.group(1) if tag_match else None,
+        )
+
+    return AnswerContract()
+
+
+def detect_capability_flags(task_text: str, answer_contract: AnswerContract) -> list[str]:
+    normalized = (task_text or "").lower()
+    flags: set[str] = set()
+
+    if any(
+        re.search(pattern, normalized)
+        for pattern in (
+            r"\bcalculate\b",
+            r"\bformula\b",
+            r"\bratio\b",
+            r"\bnumerical\b",
+            r"\bcompute\b",
+        )
+    ):
+        flags.add("needs_math")
+    if any(
+        token in normalized
+        for token in (
+            "inflation adjusted",
+            "inflation-adjusted",
+            "adjusted for inflation",
+            "weighted average",
+            "weighted mean",
+            "value at risk",
+            "regression",
+            "correlation",
+            "standard deviation",
+            "std dev",
+            "variance",
+            "forecast",
+            "forecasting",
+            "projection",
+            "time series",
+        )
+    ):
+        flags.add("needs_math")
+    if re.search(r"\bvar\b", normalized):
+        flags.add("needs_math")
+    if "|---" in task_text or ("row" in normalized and "column" in normalized):
+        flags.add("needs_tables")
+    if extract_urls(task_text) or any(ext in normalized for ext in (".pdf", ".csv", ".xlsx", ".xls", ".docx", ".json")):
+        flags.add("needs_files")
+    if any(
+        token in normalized
+        for token in ("latest", "today", "recent", "look up", "search", "source-backed", "source citation", "cite sources", "as of")
+    ):
+        flags.add("needs_live_data")
+    if any(token in normalized for token in ("iv percentile", "implied volatility", "historical volatility", "greeks", "straddle", "strangle", "iron condor", "credit spread", "call option", "put option")):
+        flags.add("needs_options_engine")
+    if any(
+        token in normalized
+        for token in (
+            "acquisition",
+            "merger",
+            "transaction structure",
+            "deal structure",
+            "compliance",
+            "regulatory",
+            "stock consideration",
+            "tax reasons",
+            "indemnification",
+            "indemnity",
+            "compliance liabilities",
+            "liability protection",
+            "liability isolation",
+            "escrow",
+            "warranties",
+            "reverse triangular",
+            "asset purchase",
+        )
+    ):
+        flags.add("needs_legal_reasoning")
+    if any(
+        token in normalized
+        for token in (
+            "equity research",
+            "research note",
+            "investment thesis",
+            "target price",
+            "bull case",
+            "bear case",
+            "catalyst",
+            "research report",
+        )
+    ):
+        flags.add("needs_equity_research")
+    if any(
+        token in normalized
+        for token in (
+            "portfolio risk",
+            "risk review",
+            "concentration",
+            "risk budget",
+            "drawdown",
+            "exposure review",
+            "factor exposure",
+            "var limit",
+            "portfolio exposures",
+            "position weights",
+        )
+    ):
+        flags.add("needs_portfolio_risk")
+    if any(
+        token in normalized
+        for token in (
+            "event-driven",
+            "earnings",
+            "guidance",
+            "macro event",
+            "cpi release",
+            "fed meeting",
+            "corporate action",
+            "catalyst trade",
+            "merger arb",
+        )
+    ):
+        flags.add("needs_event_analysis")
+    if any(
+        token in normalized
+        for token in (
+            "derivative of",
+            "differentiate",
+            "marginal cost",
+            "marginal revenue",
+            "integral",
+            "optimize",
+            "maximise",
+            "maximize",
+            "minimise",
+            "minimize",
+            "prove that",
+            "regression",
+            "correlation",
+            "standard deviation",
+            "std dev",
+            "variance",
+            "forecast",
+            "forecasting",
+            "projection",
+            "time series",
+        )
+    ):
+        flags.add("needs_analytical_reasoning")
+    if any(
+        token in normalized
+        for token in (
+            "flash crash",
+            "liquidity crisis",
+            "stress scenario",
+            "scenario validation",
+            "crypto",
+            "drawdown scenario",
+        )
+    ):
+        flags.add("needs_market_scenario")
+    if any(
+        token in normalized
+        for token in (
+            ".wav",
+            ".mp3",
+            "audio file",
+            "music producer",
+            "render audio",
+            "generate audio",
+            "create a track",
+            "zip file",
+            "video file",
+            "image file",
+        )
+    ):
+        flags.add("needs_artifact_generation")
+    if answer_contract.requires_adapter:
+        flags.add("requires_exact_format")
+    if "value at risk" in normalized or re.search(r"\bvar\b", normalized):
+        flags.add("needs_portfolio_risk")
+
+    return sorted(flags)
+
+
+def detect_ambiguity_flags(task_text: str, capability_flags: list[str]) -> list[str]:
+    normalized = (task_text or "").lower()
+    flags = set(capability_flags)
+    ambiguity: set[str] = set()
+
+    if "needs_legal_reasoning" in flags and (
+        "needs_math" in flags
+        or any(token in normalized for token in ("roe", "roa", "yield", "valuation", "financial"))
+    ):
+        ambiguity.add("legal_finance_overlap")
+
+    if "needs_legal_reasoning" in flags and "needs_options_engine" in flags:
+        ambiguity.add("legal_options_overlap")
+
+    if "needs_files" in flags and "needs_math" in flags:
+        ambiguity.add("document_math_overlap")
+
+    if "needs_files" in flags and "needs_live_data" in flags:
+        ambiguity.add("document_live_overlap")
+
+    domain_markers = 0
+    if "needs_legal_reasoning" in flags:
+        domain_markers += 1
+    if "needs_options_engine" in flags or "needs_math" in flags:
+        domain_markers += 1
+    if "needs_files" in flags or "needs_tables" in flags:
+        domain_markers += 1
+    if "needs_live_data" in flags:
+        domain_markers += 1
+    if domain_markers >= 3:
+        ambiguity.add("broad_multi_capability")
+
+    return sorted(ambiguity)
+
+
+def infer_task_profile(task_text: str, capability_flags: list[str]) -> TaskProfile:
+    normalized = (task_text or "").lower()
+    flags = set(capability_flags)
+    finance_data_markers = (
+        "price history",
+        "historical prices",
+        "1-month return",
+        "monthly return",
+        "return over",
+        "fundamentals",
+        "yield curve",
+        "income statement",
+        "balance sheet",
+        "cash flow",
+        "financial statements",
+        "statement line item",
+        "corporate actions",
+    )
+
+    if "needs_artifact_generation" in flags:
+        return "unsupported_artifact"
+    if "needs_market_scenario" in flags:
+        return "market_scenario"
+    if "needs_options_engine" in flags:
+        return "finance_options"
+    if "needs_legal_reasoning" in flags:
+        return "legal_transactional"
+    if "needs_analytical_reasoning" in flags and "needs_live_data" not in flags:
+        return "analytical_reasoning"
+    if {"needs_equity_research", "needs_portfolio_risk", "needs_event_analysis"} & flags:
+        return "finance_quant"
+    if any(marker in normalized for marker in finance_data_markers):
+        return "finance_quant"
+    if "needs_math" in flags and any(
+        token in normalized
+        for token in ("annual report", "roe", "roa", "financial leverage", "inventory turnover", "equity multiplier", "valuation", "yield", "p&l")
+    ):
+        return "finance_quant"
+    if "needs_live_data" in flags and not {"needs_legal_reasoning", "needs_options_engine"} & flags:
+        return "external_retrieval"
+    if "needs_files" in flags or "needs_tables" in flags:
+        return "document_qa"
+    if "needs_math" in flags:
+        return "finance_quant"
+    return "general"
+
+
+def build_profile_decision(task_text: str, answer_contract: AnswerContract) -> ProfileDecision:
+    capability_flags = detect_capability_flags(task_text, answer_contract)
+    primary_profile = infer_task_profile(task_text, capability_flags)
+    ambiguity_flags = detect_ambiguity_flags(task_text, capability_flags)
+
+    if "legal_options_overlap" in ambiguity_flags:
+        primary_profile = "general"
+
+    return ProfileDecision(
+        primary_profile=primary_profile,
+        capability_flags=capability_flags,
+        ambiguity_flags=ambiguity_flags,
+        needs_external_data="needs_live_data" in capability_flags,
+        needs_output_adapter=answer_contract.requires_adapter,
+    )

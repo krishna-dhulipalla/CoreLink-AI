@@ -1,4 +1,4 @@
-from agent.tool_normalization import normalize_tool_output
+from engine.agent.tool_normalization import normalize_tool_output
 
 
 def test_normalize_tool_output_preserves_structured_envelope_dict():

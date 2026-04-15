@@ -1,5 +1,5 @@
-from agent.contracts import ExecutionJournal, RetrievalAction, RetrievalIntent, SourceBundle, ToolPlan
-from agent.retrieval_strategy_kernel import FunctionRetrievalStrategyHandler, RetrievalStrategyContext, RetrievalStrategyKernel
+from engine.agent.contracts import ExecutionJournal, RetrievalAction, RetrievalIntent, SourceBundle, ToolPlan
+from engine.agent.retrieval_strategy_kernel import FunctionRetrievalStrategyHandler, RetrievalStrategyContext, RetrievalStrategyKernel
 
 
 def test_retrieval_strategy_kernel_dispatches_to_requested_strategy():

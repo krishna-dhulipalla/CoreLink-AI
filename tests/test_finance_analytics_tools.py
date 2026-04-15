@@ -1,8 +1,8 @@
 import pytest
 
-pytest.importorskip("mcp.server.fastmcp")
+pytest.importorskip("engine.mcp.server.fastmcp")
 
-from mcp_servers.finance_analytics.server import (
+from engine.mcp.mcp_servers.finance_analytics.server import (
     bond_spread_duration,
     cashflow_waterfall,
     dcf_sensitivity_grid,
