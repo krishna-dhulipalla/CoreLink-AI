@@ -7,6 +7,7 @@ from typing import Any
 
 from .base import benchmark_name_from_env, truthy_env
 from .officeqa_manifest import (
+    _CORPUS_ENV_NAMES,
     load_officeqa_index_metadata,
     load_officeqa_manifest,
     officeqa_index_schema_version,
