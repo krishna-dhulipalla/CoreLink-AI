@@ -13,16 +13,18 @@ WORKDIR /home/agent
 # Install third-party dependencies first for better caching.
 # Do not install the local project yet, because setuptools expects `src/`
 # to exist when building the package.
-COPY pyproject.toml uv.lock README.md ./
+COPY --chown=agent:agent pyproject.toml uv.lock README.md ./
 RUN --mount=type=cache,target=/home/agent/.cache/uv,uid=1000 \
     uv sync --locked --no-dev --no-install-project
 
 # Copy source code
-COPY src src
+COPY --chown=agent:agent src src
 
 # Install the local project after source is present.
+# Use a non-editable install for container builds so setuptools does not try
+# to write egg-info back into the source tree.
 RUN --mount=type=cache,target=/home/agent/.cache/uv,uid=1000 \
-    uv sync --locked --no-dev
+    uv sync --locked --no-dev --no-editable
 
 # Production entrypoint
 ENTRYPOINT ["uv", "run", "python", "-m", "engine.a2a.server"]
