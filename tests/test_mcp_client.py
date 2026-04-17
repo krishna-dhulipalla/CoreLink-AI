@@ -119,9 +119,9 @@ def test_executor_refreshes_even_when_nonempty_tools_exist_if_judge_discovery_is
     monkeypatch.setenv("COMPETITION_MODE", "0")
     monkeypatch.delenv("BENCHMARK_NAME", raising=False)
     monkeypatch.setenv("ENABLE_JUDGE_MCP_DISCOVERY", "1")
-    monkeypatch.setattr("a2a.executor.build_agent_graph", lambda external_tools=None: "graph")
-    monkeypatch.setattr("a2a.executor.startup_compatibility_warnings", lambda: [])
-    monkeypatch.setattr("a2a.executor.load_mcp_tools_from_env", fake_loader)
+    monkeypatch.setattr("engine.a2a.executor.build_agent_graph", lambda external_tools=None: "graph")
+    monkeypatch.setattr("engine.a2a.executor.startup_compatibility_warnings", lambda: [])
+    monkeypatch.setattr("engine.a2a.executor.load_mcp_tools_from_env", fake_loader)
 
     executor = Executor()
 
@@ -137,7 +137,7 @@ def test_executor_fails_fast_when_officeqa_competition_mode_has_no_corpus(monkey
 
     monkeypatch.setenv("BENCHMARK_NAME", "officeqa")
     monkeypatch.setenv("COMPETITION_MODE", "1")
-    monkeypatch.setattr("a2a.executor.startup_compatibility_warnings", lambda: [])
+    monkeypatch.setattr("engine.a2a.executor.startup_compatibility_warnings", lambda: [])
     monkeypatch.setattr("engine.agent.benchmarks.officeqa_runtime.resolve_officeqa_corpus_root", lambda raw=None: None)
 
     with pytest.raises(RuntimeError, match="requires a packaged corpus"):

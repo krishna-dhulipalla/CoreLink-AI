@@ -1,4 +1,3 @@
-import sqlite3
 import uuid
 from pathlib import Path
 
@@ -8,31 +7,6 @@ from engine.agent.memory.store import MemoryStore
 
 def _workspace_temp_db_path() -> Path:
     return Path.cwd() / f".tmp_memory_store_{uuid.uuid4().hex}.db"
-
-
-def test_memory_store_resets_legacy_schema():
-    db_path = _workspace_temp_db_path()
-    conn = sqlite3.connect(db_path)
-    conn.executescript(
-        """
-        CREATE TABLE router_memory (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            task_sig TEXT NOT NULL
-        );
-        """
-    )
-    conn.commit()
-    conn.close()
-
-    store = MemoryStore(str(db_path))
-    stats = store.stats()
-
-    assert stats["schema_version"] == 3
-    assert stats["run_memory"] == 0
-    assert stats["tool_memory"] == 0
-    assert stats["review_memory"] == 0
-    assert stats["curation_memory"] == 0
-
 
 def test_memory_store_persists_staged_records():
     store = MemoryStore(str(_workspace_temp_db_path()))

@@ -113,8 +113,10 @@ def merge_benchmark_overrides(task_text: str, runtime_overrides: dict[str, Any] 
     source_files.extend(_coerce_string_list(incoming.get("source_docs")))
     source_files = list(dict.fromkeys(source_files))
     merged["source_files_expected"] = source_files
-    if merged.get("benchmark_adapter") == "officeqa" and source_files:
+    if source_files:
         matches = resolve_source_files_to_manifest(source_files)
+        if matches and any(item.get("matched") for item in matches) and not merged.get("benchmark_adapter"):
+            merged["benchmark_adapter"] = "officeqa"
         merged["source_files_found"] = [item for item in matches if item.get("matched")]
         merged["source_files_missing"] = [item for item in matches if not item.get("matched")]
     else:

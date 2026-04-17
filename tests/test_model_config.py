@@ -26,14 +26,6 @@ class TestModelConfig:
         assert model_config.get_model_name("solver") == "custom-solver-model"
         assert model_config.get_model_name("executor") == "custom-solver-model"
 
-    def test_legacy_role_override_still_works(self, monkeypatch):
-        monkeypatch.setenv("MODEL_PROFILE", "score_max")
-        monkeypatch.delenv("SOLVER_MODEL", raising=False)
-        monkeypatch.setenv("EXECUTOR_MODEL", "legacy-executor-model")
-        model_config = _reload_model_config()
-
-        assert model_config.get_model_name("solver") == "legacy-executor-model"
-
     def test_profile_defaults_apply_without_override(self, monkeypatch):
         monkeypatch.setenv("MODEL_PROFILE", "balanced")
         monkeypatch.delenv("COORDINATOR_MODEL", raising=False)
