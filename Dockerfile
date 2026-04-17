@@ -10,13 +10,19 @@ ENV PYTHONPATH=/home/agent/src
 USER agent
 WORKDIR /home/agent
 
-# Install dependencies first for better caching
+# Install third-party dependencies first for better caching.
+# Do not install the local project yet, because setuptools expects `src/`
+# to exist when building the package.
 COPY pyproject.toml uv.lock README.md ./
 RUN --mount=type=cache,target=/home/agent/.cache/uv,uid=1000 \
-    uv sync --locked --no-dev
+    uv sync --locked --no-dev --no-install-project
 
 # Copy source code
 COPY src src
+
+# Install the local project after source is present.
+RUN --mount=type=cache,target=/home/agent/.cache/uv,uid=1000 \
+    uv sync --locked --no-dev
 
 # Production entrypoint
 ENTRYPOINT ["uv", "run", "python", "-m", "engine.a2a.server"]
