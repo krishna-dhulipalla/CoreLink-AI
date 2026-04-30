@@ -5,7 +5,7 @@ CoreLink AI is a modular reasoning engine for evidence-grounded analytical tasks
 The runtime combines adaptive retrieval, structured evidence extraction, deterministic compute, bounded model-controlled recovery, and explicit answerability policy. It is built for tool-using agents that need to search, compute, validate, and stop safely.
 
 <p align="center">
-  <img src="assets/corelink_diagram.png" alt="CoreLink AI architecture" width="100%">
+  <img src="assets/architecture/architecture.svg" alt="CoreLink AI architecture" width="100%">
 </p>
 
 ## Why CoreLink AI
@@ -53,24 +53,15 @@ At a high level, CoreLink AI follows this flow:
 
 ## Architecture
 
-The V6 runtime centers around a few stable boundaries:
+The runtime is organized around five implementation boundaries:
 
-- **Semantic planning**
-  - captures the contract of the task before retrieval starts
-- **Strategy kernel**
-  - selects retrieval strategy and manages strategy rotation
-- **Candidate generation and tool runtime**
-  - performs document and evidence discovery
-- **Evidence arbitration**
-  - chooses the best candidate set from shortlisted options
-- **Structured extraction**
-  - converts raw retrieval outputs into compute-ready evidence
-- **Deterministic and synthesized compute**
-  - executes validated calculations against structured evidence
-- **Validation and recovery**
-  - decides whether to finalize, revise, rotate strategy, or stop
+- **Problem formalization** extracts the answer contract, task intent, benchmark overrides, and source bundle.
+- **Capability and evidence planning** builds the tool registry, resolves a safe tool plan, and derives retrieval intent.
+- **Grounded reasoning** curates context, invokes deterministic compute or tools, and normalizes evidence into auditable facts.
+- **Verification and repair** reviews answer quality, detects missing evidence or contract gaps, and routes bounded revise cycles.
+- **Learning and observability** records memory, execution traces, budget/cost summaries, and failure diagnostics.
 
-This architecture is designed to keep the runtime modular, auditable, and recoverable under failure.
+The editable diagram source is available at `assets/architecture/architecture.mmd`.
 
 ## Getting Started
 

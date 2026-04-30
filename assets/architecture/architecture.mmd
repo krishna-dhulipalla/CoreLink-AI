@@ -1,0 +1,66 @@
+flowchart TB
+    Task["User or Benchmark Task"]
+
+    subgraph A["1. Problem Formalization"]
+        Intake["Intake Node<br/>AnswerContract<br/>BenchmarkOverrides"]
+        Profile["Adaptive Task Profiling<br/>TaskIntent<br/>Capability and Ambiguity Flags"]
+        Source["SourceBundle Construction<br/>entities, tables, formulas, files, URLs"]
+    end
+
+    subgraph B["2. Capability and Evidence Planning"]
+        Registry["Capability Registry<br/>built-in tools + MCP tools"]
+        Plan["ToolPlan Resolution<br/>selected, pending, widened, blocked"]
+        EvidencePlan["RetrievalIntent + EvidencePlan<br/>entity, metric, period, strategy"]
+    end
+
+    subgraph C["3. Grounded Reasoning Loop"]
+        Curate["Context Curation<br/>CuratedContext + EvidenceSufficiency"]
+        Execute["Executor<br/>deterministic solvers, LLM synthesis, tool calls"]
+        Normalize["Tool Normalization<br/>facts, assumptions, provenance, quality"]
+        Compute["Structured Compute<br/>finance analytics, OfficeQA compute, safe arithmetic"]
+    end
+
+    subgraph D["4. Verification and Repair"]
+        Journal["ExecutionJournal<br/>tool results, routes, citations, progress signatures"]
+        Review["Reviewer<br/>QualityReport + benchmark validator"]
+        Reflect["Self Reflection<br/>repair prompts or completion"]
+        Adapter["Output Adapter<br/>JSON/XML/scalar contract enforcement"]
+    end
+
+    subgraph E["5. Learning and Observability"]
+        Memory["Memory Curation<br/>RunMemory, ToolMemory, ReviewMemory"]
+        Trace["Run Tracing<br/>node records, cost, budget, failure traces"]
+    end
+
+    Answer["Final Answer Artifact"]
+
+    Task --> Intake --> Profile --> Source
+    Source --> Registry
+    Profile --> Plan
+    Registry --> Plan --> EvidencePlan --> Curate
+    Curate --> Execute
+    Execute --> Normalize --> Curate
+    Execute --> Compute --> Curate
+    Curate --> Journal
+    Execute --> Journal --> Review
+    Review -->|"revise: missing evidence or contract gap"| Execute
+    Review -->|"complex qualitative gap"| Reflect
+    Reflect -->|"revise"| Execute
+    Review -->|"pass or fail ceiling"| Adapter
+    Reflect -->|"complete"| Adapter
+    Adapter --> Answer
+    Answer --> Memory
+    Answer --> Trace
+    Journal --> Trace
+
+    classDef input fill:#f7f3e8,stroke:#7d6b43,stroke-width:1.2px,color:#1f1b12;
+    classDef formal fill:#e9f2f8,stroke:#355f7a,stroke-width:1.2px,color:#102431;
+    classDef reason fill:#ecf5ea,stroke:#4c7a47,stroke-width:1.2px,color:#142414;
+    classDef verify fill:#f6ecec,stroke:#8a4d4d,stroke-width:1.2px,color:#2d1515;
+    classDef obs fill:#f1eef8,stroke:#655287,stroke-width:1.2px,color:#211832;
+
+    class Task,Answer input;
+    class Intake,Profile,Source,Registry,Plan,EvidencePlan formal;
+    class Curate,Execute,Normalize,Compute reason;
+    class Journal,Review,Reflect,Adapter verify;
+    class Memory,Trace obs;
