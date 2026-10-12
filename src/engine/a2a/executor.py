@@ -17,7 +17,6 @@ from a2a.server.events import EventQueue
 from a2a.server.tasks import TaskUpdater
 from a2a.types import (
     Part,
-    Task,
     TaskState,
     TextPart,
     UnsupportedOperationError,
@@ -140,7 +139,8 @@ class Executor(AgentExecutor):
                 self._runtime_mcp_refresh_attempted = True
                 await self._refresh_mcp_tools()
 
-            judge_tools = []
+            judge_tools: list = []
+            judge_tool_schemas: list[dict] = []
             if judge_mcp_discovery_enabled():
                 judge_tools, judge_tool_schemas = await load_judge_tools_for_session(session_id=session_id)
                 if judge_tools:

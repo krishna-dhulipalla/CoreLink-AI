@@ -12,7 +12,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from agent.benchmarks.officeqa_index import build_officeqa_index, resolve_source_files_to_manifest
+from engine.agent.benchmarks.officeqa_index import build_officeqa_index, resolve_source_files_to_manifest
 
 
 def main() -> int:

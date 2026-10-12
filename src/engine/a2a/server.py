@@ -10,7 +10,7 @@ from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.tasks import InMemoryTaskStore
 from a2a.types import AgentCapabilities, AgentCard, AgentSkill
 
-_ROOT_DIR = Path(__file__).resolve().parent.parent.parent
+_ROOT_DIR = Path(__file__).resolve().parents[3]
 if str(_ROOT_DIR / "src") not in sys.path:
     sys.path.insert(0, str(_ROOT_DIR / "src"))
 

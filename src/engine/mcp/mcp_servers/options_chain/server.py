@@ -6,7 +6,7 @@ the Black-Scholes model. Operates as a standalone stdio MCP server.
 """
 
 import math
-from engine.mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP("Options Chain")
 

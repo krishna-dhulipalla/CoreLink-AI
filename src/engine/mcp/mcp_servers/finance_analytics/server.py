@@ -3,7 +3,7 @@ import math
 from statistics import mean, median
 from typing import Any
 
-from engine.mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP("FinanceAnalytics")
 logger = logging.getLogger(__name__)

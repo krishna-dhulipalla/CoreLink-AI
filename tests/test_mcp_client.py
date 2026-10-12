@@ -11,7 +11,7 @@ from engine.mcp.mcp_client import load_mcp_tools_from_env
 
 try:
     from engine.a2a.executor import Executor
-except ModuleNotFoundError:
+except (ModuleNotFoundError, ImportError, AttributeError):
     Executor = None
 
 

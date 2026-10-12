@@ -7,7 +7,7 @@ outputs to prevent regression when the tools are modified.
 """
 
 import pytest
-pytest.importorskip("engine.mcp.server.fastmcp")
+pytest.importorskip("mcp.server.fastmcp")
 
 from engine.mcp.mcp_servers.finance.server import black_scholes_price, option_greeks, mispricing_analysis
 

@@ -76,7 +76,7 @@ async def send_message(
                 outputs["context_id"] = msg.context_id
                 outputs["response"] += merge_parts(msg.parts)
 
-            case (task, update):
+            case (task, _):
                 outputs["context_id"] = task.context_id
                 outputs["status"] = task.status.state.value
                 msg = task.status.message

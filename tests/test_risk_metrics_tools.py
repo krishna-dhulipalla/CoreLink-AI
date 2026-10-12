@@ -1,6 +1,6 @@
 import pytest
 
-pytest.importorskip("engine.mcp.server.fastmcp")
+pytest.importorskip("mcp.server.fastmcp")
 
 from engine.mcp.mcp_servers.risk_metrics import server as risk_server
 

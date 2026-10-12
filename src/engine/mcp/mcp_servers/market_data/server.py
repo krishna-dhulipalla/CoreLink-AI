@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import pandas as pd
-from engine.mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP("MarketData")
 logger = logging.getLogger(__name__)

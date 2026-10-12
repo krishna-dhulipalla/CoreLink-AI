@@ -7,7 +7,7 @@ synthetic options trades. All state is per-process (ephemeral).
 
 import math
 import uuid
-from engine.mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP("Paper Trading Simulator")
 

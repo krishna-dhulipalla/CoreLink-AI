@@ -26,7 +26,7 @@ if str(SRC) not in sys.path:
 
 from langchain_core.messages import AIMessage, HumanMessage
 
-from agent.runner import run_agent_trace
+from engine.agent.runner import run_agent_trace
 TRACE_DIR = ROOT / "Results&traces"
 
 

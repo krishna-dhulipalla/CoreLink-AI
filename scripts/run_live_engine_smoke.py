@@ -24,9 +24,9 @@ TRACE_DIR = ROOT / "Results&traces"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from agent.graph import build_agent_graph
-from agent.runner import run_agent_trace
-from mcp_client import load_mcp_tools_from_env
+from engine.agent.graph import build_agent_graph
+from engine.agent.runner import run_agent_trace
+from engine.mcp.mcp_client import load_mcp_tools_from_env
 
 
 PROMPTS = [

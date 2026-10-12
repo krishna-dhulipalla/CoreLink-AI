@@ -1,4 +1,4 @@
-from engine.mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP
 import math
 
 # Create a FastMCP server instance

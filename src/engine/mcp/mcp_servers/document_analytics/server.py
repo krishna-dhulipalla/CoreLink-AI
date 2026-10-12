@@ -5,7 +5,7 @@ import uuid
 from typing import Optional, Dict, Any
 
 import pandas as pd
-from engine.mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP
 
 # Initialize FastMCP Server
 mcp = FastMCP("DocumentAnalytics")

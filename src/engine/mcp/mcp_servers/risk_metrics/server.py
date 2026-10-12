@@ -10,7 +10,7 @@ import math
 import random
 from typing import Any
 
-from engine.mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP("Risk Metrics")
 

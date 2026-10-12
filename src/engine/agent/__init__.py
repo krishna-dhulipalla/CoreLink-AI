@@ -1,6 +1,6 @@
 """
-Purple Agent: Multi-Agent Reasoning Engine
-============================================
+CoreLink AI: Modular Reasoning Engine
+=======================================
 Public API for the LangGraph-based agent.
 
 Usage:

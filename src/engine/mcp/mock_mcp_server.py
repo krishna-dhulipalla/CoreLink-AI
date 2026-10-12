@@ -10,7 +10,7 @@ Stdio usage:
 
 import argparse
 
-from engine.mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP
 
 
 def build_server(host: str, port: int) -> FastMCP:

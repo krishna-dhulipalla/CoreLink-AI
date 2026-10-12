@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Awaitable, Callable
+from typing import Any, Callable
 
 from engine.agent.context.extraction import derive_market_snapshot
 from engine.agent.contracts import RetrievalAction, RetrievalIntent, SourceBundle

@@ -22,10 +22,15 @@ ClientFactory = a2a_client.ClientFactory
 Message = a2a_types.Message
 Part = a2a_types.Part
 Role = a2a_types.Role
-TextPart = a2a_types.TextPart
+TextPart = getattr(a2a_types, "TextPart", None)
+if TextPart is None:
+    pytest.skip("a2a.types.TextPart not available in this SDK version", allow_module_level=True)
 
-from engine.a2a.executor import Executor
-from engine.mcp.mcp_client import load_mcp_tools_from_env
+try:
+    from engine.a2a.executor import Executor  # noqa: F401
+    from engine.mcp.mcp_client import load_mcp_tools_from_env
+except ImportError:
+    pytest.skip("A2A runtime dependencies are not installed", allow_module_level=True)
 
 
 def _configured_mcp() -> bool:

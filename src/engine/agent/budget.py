@@ -1,6 +1,6 @@
 """
-Budget Tracker (Sprint 4C)
-===========================
+Budget Tracker
+===============
 Enforces per-run hard caps on tool calls, verifier cycles, and hint tokens.
 
 Inspired by MaAS cost-constrained early exits — prevents runaway loops

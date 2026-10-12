@@ -9,19 +9,26 @@ build/
 dist/
 wheels/
 *.egg-info
+.pytest_cache/
+.ruff_cache/
 
 # Virtual environments
 .venv
 
-
-# Results & traces
+# Results, traces & persistence
 results/
 traces/
-results&traces/
+src/traces/
+src/data/
+[Rr]esults&traces/
 .officeqa_index/
 data/officeqa/*
 !data/officeqa/README.md
 data/officeqa/source/
 data/officeqa/source/**
-docs/*
+*.db
+*.sqlite
 langsmith_traces
+graphify-out/
+scratch/
+docs/*

@@ -11,7 +11,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from agent.tools.tsr_fallback import compare_dense_table_normalizers, compare_flat_table_normalizers
+from engine.agent.tools.tsr_fallback import compare_dense_table_normalizers, compare_flat_table_normalizers
 
 DEFAULT_FIXTURE_PATH = ROOT / "eval" / "officeqa_tsr_fixture_set.json"
 
